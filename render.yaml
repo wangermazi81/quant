@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: quant-platform
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -c gunicorn.conf.py main:app
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true       # Render 自动生成随机值
+      - key: AI_API_KEY
+        sync: false               # 在 Render 控制台手动填写
+      - key: AI_BASE_URL
+        value: https://integrate.api.nvidia.com/v1
+      - key: AI_MODEL
+        value: moonshotai/kimi-k2-6
+      - key: PYTHON_VERSION
+        value: 3.11.0

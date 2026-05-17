@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+.env/
+
+# ── 敏感配置（绝对不能提交）──────────────────────
+data/ai_config.json
+data/users.db
+data/users.db-wal
+data/users.db-shm
+.env
+secrets.json
+api_keys.json
+
+# ── 模拟盘数据库（本地运行状态）────────────────────
+data/paper_trading.db
+data/paper_trading.db-wal
+data/paper_trading.db-shm
+
+# ── 历史行情数据（体积大）───────────────────────────
+data/daily/
+data/stock_names.json
+data/metadata.json
+
+# ── 回测缓存 ──────────────────────────────────────
+data/bt_cache/
+*.bt.json
+
+# ── IDE ───────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── 日志 ──────────────────────────────────────────
+*.log
+logs/
+
+# ── 测试覆盖率 ────────────────────────────────────
+.coverage
+htmlcov/
+.pytest_cache/

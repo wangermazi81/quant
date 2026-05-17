@@ -1,0 +1,66 @@
+﻿当前所有顶层窗口:
+  [任务栏] class=Shell_TrayWnd handle=65844
+  [Claude] class=Chrome_WidgetWin_1 handle=132588
+  [同花顺(9.50.90) - 短线] class=Afx:00110000:b:00010003:00000006:009207A9 handle=263882
+  [此电脑 - 文件资源管理器] class=CabinetWClass handle=199838
+  [hexin_UserEnum] class=#32770 handle=395076
+  [Program Manager] class=Progman handle=65878
+
+同花顺主窗口结构:
+[Window] name='同花顺(9.50.90) - 短线' class='Afx:00110000:b:00010003:00000006:009207A9' auto_id='' rect=(L0, T0, R0, B0)
+  [StatusBar] name='' class='msctls_statusbar32' auto_id='59393' rect=(L-48000, T-46731, R-45760, B-46702)
+    [Pane] name='' class='AfxWnd140s' auto_id='762817964' rect=(L-47561, T-46730, R-46554, B-46701)
+    [Pane] name='' class='KeySpriteManageWnd' auto_id='62258' rect=(L-46176, T-46725, R-45861, B-46701)
+      [Button] name='' class='Button' auto_id='62269' rect=(L-45891, T-46724, R-45861, B-46701)
+      [Edit] name='' class='Edit' auto_id='62267' rect=(L-46176, T-46725, R-45891, B-46701)
+    [Text] name='手机端' class='' auto_id='' rect=(L-48000, T-46728, R-47937, B-46702)
+    [Text] name='反馈' class='' auto_id='' rect=(L-47934, T-46728, R-47889, B-46702)
+    [Text] name='日记' class='' auto_id='' rect=(L-47886, T-46728, R-47841, B-46702)
+    [Text] name='测速' class='' auto_id='' rect=(L-47838, T-46728, R-47793, B-46702)
+    [Text] name='行情' class='' auto_id='' rect=(L-47790, T-46728, R-47745, B-46702)
+    [Text] name='7*24快讯' class='' auto_id='' rect=(L-47742, T-46728, R-47661, B-46702)
+    [Text] name='盯盘' class='' auto_id='' rect=(L-47658, T-46728, R-47613, B-46702)
+    [Text] name='智能问答' class='' auto_id='' rect=(L-47610, T-46728, R-47563, B-46702)
+    [Text] name='' class='' auto_id='' rect=(L-47561, T-46728, R-46556, B-46702)
+    [Text] name='' class='' auto_id='' rect=(L-46553, T-46728, R-46187, B-46702)
+    [Text] name='' class='' auto_id='' rect=(L-46184, T-46728, R-45863, B-46702)
+    [Text] name='' class='' auto_id='' rect=(L-45860, T-46728, R-45785, B-46702)
+  [StatusBar] name='' class='msctls_statusbar32' auto_id='59393' rect=(L-48000, T-46760, R-45760, B-46731)
+    [Text] name='' class='' auto_id='' rect=(L-48000, T-46757, R-47556, B-46731)
+    [Text] name='' class='' auto_id='' rect=(L-47553, T-46757, R-47109, B-46731)
+    [Text] name='' class='' auto_id='' rect=(L-47106, T-46757, R-46662, B-46731)
+    [Text] name='' class='' auto_id='' rect=(L-46659, T-46757, R-46215, B-46731)
+    [Text] name='' class='' auto_id='' rect=(L-46212, T-46757, R-45784, B-46731)
+  [Button] name='' class='Button' auto_id='62311' rect=(L-47996, T-47994, R-47933, B-47928)
+  [Button] name='' class='Button' auto_id='65508' rect=(L-47928, T-47994, R-47865, B-47928)
+  [Button] name='' class='Button' auto_id='57616' rect=(L-47861, T-47994, R-47798, B-47928)
+  [Button] name='' class='Button' auto_id='30974' rect=(L-47793, T-47994, R-47748, B-47959)
+  [Button] name='' class='Button' auto_id='30973' rect=(L-47793, T-47960, R-47748, B-47925)
+  [Button] name='' class='Button' auto_id='31061' rect=(L-47744, T-47994, R-47699, B-47928)
+  [Button] name='' class='Button' auto_id='30975' rect=(L-47694, T-47994, R-47649, B-47928)
+  [Button] name='' class='Button' auto_id='30976' rect=(L-47645, T-47994, R-47600, B-47928)
+  [Button] name='' class='Button' auto_id='31047' rect=(L-47595, T-47994, R-47550, B-47928)
+  [Button] name='' class='Button' auto_id='36787' rect=(L-47546, T-47994, R-47483, B-47928)
+  [Button] name='' class='Button' auto_id='31052' rect=(L-47478, T-47994, R-47433, B-47928)
+  [Button] name='' class='Button' auto_id='32892' rect=(L-47429, T-47994, R-47366, B-47928)
+  [Button] name='' class='Button' auto_id='31256' rect=(L-47361, T-47994, R-47298, B-47928)
+  [Button] name='' class='Button' auto_id='41902' rect=(L-47294, T-47994, R-47231, B-47928)
+  [Button] name='' class='Button' auto_id='31481' rect=(L-47226, T-47994, R-47163, B-47928)
+  [Button] name='' class='Button' auto_id='33041' rect=(L-47159, T-47994, R-47096, B-47928)
+  [Button] name='' class='Button' auto_id='53302' rect=(L-47091, T-47994, R-47028, B-47928)
+  [Button] name='' class='Button' auto_id='40501' rect=(L-47024, T-47994, R-46955, B-47961)
+  [Button] name='' class='Button' auto_id='52731' rect=(L-47024, T-47961, R-46955, B-47928)
+  [Button] name='' class='Button' auto_id='53557' rect=(L-46950, T-47994, R-46881, B-47961)
+  [Button] name='' class='Button' auto_id='31474' rect=(L-46950, T-47961, R-46881, B-47928)
+  [Button] name='' class='Button' auto_id='52936' rect=(L-46877, T-47994, R-46808, B-47961)
+  [Button] name='' class='Button' auto_id='51366' rect=(L-46877, T-47961, R-46808, B-47928)
+  [Button] name='' class='Button' auto_id='53676' rect=(L-46803, T-47994, R-46734, B-47961)
+  [Button] name='' class='Button' auto_id='50303' rect=(L-46803, T-47961, R-46734, B-47928)
+  [Button] name='' class='Button' auto_id='55009' rect=(L-46730, T-47994, R-46661, B-47961)
+  [Button] name='' class='Button' auto_id='51300' rect=(L-46730, T-47961, R-46661, B-47928)
+  [Button] name='' class='Button' auto_id='38327' rect=(L-46656, T-47994, R-46611, B-47928)
+
+========== Win32 Backend ==========
+
+窗口: [同花顺(9.50.90) - 短线] class=Afx:00110000:b:00010003:00000006:009207A9
+  (print_control_identifiers失败: 'DialogWrapper' object has no attribute 'print_control_identifiers')

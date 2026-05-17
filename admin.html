@@ -1,0 +1,1495 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>量化平台 — 管理后台</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --theme:#242f42;--theme-light:#2d3a52;--theme-active:#1abc9c;
+  --sidebar-w:250px;--header-h:70px;
+  --content-bg:#eef0fc;--card-bg:#fff;
+  --blue:#409eff;--green:#67c23a;--red:#f56c6c;--orange:#e6a23c;--purple:#9b59b6;
+  --text1:#1f2f3d;--text2:#606266;--text3:#909399;--border:#ddd;
+  --shadow:0 2px 12px rgba(0,0,0,.08);--radius:4px;
+}
+body{font-family:'Segoe UI',system-ui,'Microsoft YaHei',sans-serif;font-size:14px;background:var(--content-bg);color:var(--text1);display:flex;height:100vh;overflow:hidden}
+
+/* ===== SIDEBAR ===== */
+.sidebar{width:var(--sidebar-w);background:var(--theme);display:flex;flex-direction:column;flex-shrink:0;transition:width .3s;overflow:hidden;z-index:100}
+.sidebar.collapsed{width:65px}
+.sidebar-logo{height:var(--header-h);display:flex;align-items:center;padding:0 20px;gap:12px;border-bottom:1px solid rgba(255,255,255,.08);cursor:pointer;flex-shrink:0}
+.sidebar-logo .logo-icon{font-size:22px;color:var(--theme-active);flex-shrink:0;width:26px;text-align:center}
+.sidebar-logo .logo-title{color:#fff;font-size:16px;font-weight:700;white-space:nowrap;opacity:1;transition:opacity .2s}
+.sidebar.collapsed .logo-title{opacity:0;width:0;overflow:hidden}
+.sidebar-menu{flex:1;overflow-y:auto;overflow-x:hidden;padding:8px 0}
+.sidebar-menu::-webkit-scrollbar{width:4px}
+.sidebar-menu::-webkit-scrollbar-thumb{background:rgba(255,255,255,.15);border-radius:2px}
+.menu-group-title{font-size:11px;color:rgba(255,255,255,.35);padding:14px 20px 4px;letter-spacing:1px;white-space:nowrap;transition:opacity .2s}
+.sidebar.collapsed .menu-group-title{opacity:0}
+.menu-item{display:flex;align-items:center;height:48px;padding:0 0 0 20px;color:rgba(255,255,255,.65);cursor:pointer;transition:all .15s;position:relative;white-space:nowrap;overflow:hidden}
+.menu-item:hover{background:rgba(255,255,255,.06);color:#fff}
+.menu-item.active{background:var(--theme-active);color:#fff}
+.menu-item.active::before{display:none}
+.menu-item .mi-icon{width:26px;font-size:16px;flex-shrink:0;text-align:center;margin-right:10px}
+.menu-item .mi-label{flex:1;font-size:14px}
+.menu-item .mi-arrow{font-size:11px;margin-right:16px;transition:transform .25s}
+.menu-item.open .mi-arrow{transform:rotate(90deg)}
+.sub-menu{background:rgba(0,0,0,.15);overflow:hidden;max-height:0;transition:max-height .3s}
+.sub-menu.open{max-height:400px}
+.sub-item{display:flex;align-items:center;height:42px;padding:0 0 0 56px;color:rgba(255,255,255,.55);cursor:pointer;font-size:13px;transition:all .15s}
+.sub-item:hover{color:#fff;background:rgba(255,255,255,.05)}
+.sub-item.active{color:var(--theme-active)}
+.sub-item::before{content:'•';margin-right:8px;font-size:16px}
+.sidebar.collapsed .menu-item .mi-label,.sidebar.collapsed .menu-item .mi-arrow,.sidebar.collapsed .sub-menu{display:none}
+.sidebar.collapsed .menu-item{padding:0;justify-content:center}
+.sidebar.collapsed .menu-item .mi-icon{margin:0}
+
+/* ===== MAIN ===== */
+.main{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+
+/* ===== HEADER ===== */
+.header{height:var(--header-h);background:var(--theme);display:flex;align-items:center;padding:0 20px;gap:12px;flex-shrink:0;color:#fff;z-index:99}
+.header-collapse{width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:var(--radius);font-size:18px;color:rgba(255,255,255,.7);transition:.15s;flex-shrink:0}
+.header-collapse:hover{background:rgba(255,255,255,.1);color:#fff}
+.header-breadcrumb{flex:1;font-size:13px;color:rgba(255,255,255,.6)}
+.header-breadcrumb span{color:rgba(255,255,255,.4)}
+.header-breadcrumb b{color:#fff}
+.header-actions{display:flex;align-items:center;gap:4px}
+.hbtn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:var(--radius);font-size:16px;color:rgba(255,255,255,.7);transition:.15s;position:relative}
+.hbtn:hover{background:rgba(255,255,255,.1);color:#fff}
+.hbtn .badge{position:absolute;top:5px;right:5px;min-width:16px;height:16px;background:var(--red);border-radius:8px;font-size:10px;color:#fff;display:flex;align-items:center;justify-content:center;padding:0 3px}
+.header-divider{width:1px;height:28px;background:rgba(255,255,255,.15);margin:0 8px}
+.header-user{display:flex;align-items:center;gap:10px;cursor:pointer;padding:6px 10px;border-radius:var(--radius);transition:.15s;position:relative}
+.header-user:hover{background:rgba(255,255,255,.1)}
+.h-avatar{width:36px;height:36px;border-radius:50%;background:var(--theme-active);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;flex-shrink:0}
+.h-uname{font-size:14px;font-weight:600;color:#fff}
+.h-role{font-size:11px;color:rgba(255,255,255,.5)}
+.user-dropdown{position:absolute;top:calc(100% + 8px);right:0;background:#fff;border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,.12);min-width:160px;overflow:hidden;display:none;z-index:999}
+.user-dropdown.show{display:block}
+.ud-item{display:flex;align-items:center;gap:10px;padding:11px 16px;color:var(--text1);cursor:pointer;font-size:13px;transition:.1s}
+.ud-item:hover{background:#f5f7fa}
+.ud-item i{width:16px;text-align:center;color:var(--text2)}
+.ud-divider{height:1px;background:var(--border)}
+
+/* ===== TABS BAR ===== */
+.tabs-bar{height:40px;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;overflow-x:auto;flex-shrink:0;padding:0 4px;gap:2px}
+.tabs-bar::-webkit-scrollbar{height:3px}
+.tabs-bar::-webkit-scrollbar-thumb{background:#ddd;border-radius:2px}
+.tab{display:flex;align-items:center;gap:6px;padding:0 12px;height:32px;border-radius:3px;cursor:pointer;font-size:13px;white-space:nowrap;transition:.15s;border:1px solid transparent;flex-shrink:0}
+.tab:hover{background:#f0f2f5}
+.tab.active{background:var(--theme-active);color:#fff;border-color:var(--theme-active)}
+.tab .tab-close{font-size:10px;opacity:.7;margin-left:2px;width:14px;height:14px;display:flex;align-items:center;justify-content:center;border-radius:50%;transition:.15s}
+.tab .tab-close:hover{background:rgba(255,255,255,.3);opacity:1}
+
+/* ===== CONTENT ===== */
+.content{flex:1;overflow-y:auto;padding:20px}
+.content::-webkit-scrollbar{width:6px}
+.content::-webkit-scrollbar-thumb{background:#c0c4cc;border-radius:3px}
+.page{display:none}
+.page.active{display:block}
+
+/* ===== CARDS ===== */
+.card{background:var(--card-bg);border-radius:6px;box-shadow:var(--shadow);padding:20px;margin-bottom:20px}
+.card-title{font-size:15px;font-weight:600;color:var(--text1);margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.card-title i{color:var(--theme-active)}
+
+/* ===== STAT CARDS ===== */
+.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
+.stat-card{background:var(--card-bg);border-radius:8px;padding:20px 24px;box-shadow:var(--shadow);display:flex;align-items:center;gap:16px;transition:transform .2s;cursor:default;position:relative;overflow:hidden}
+.stat-card:hover{transform:translateY(-2px)}
+.stat-card::after{content:'';position:absolute;right:-10px;bottom:-10px;width:80px;height:80px;border-radius:50%;opacity:.08}
+.stat-card.blue .sc-icon{background:#e8f4fd;color:var(--blue)}.stat-card.blue::after{background:var(--blue)}
+.stat-card.green .sc-icon{background:#f0f9eb;color:var(--green)}.stat-card.green::after{background:var(--green)}
+.stat-card.orange .sc-icon{background:#fdf6ec;color:var(--orange)}.stat-card.orange::after{background:var(--orange)}
+.stat-card.purple .sc-icon{background:#f3f0fb;color:var(--purple)}.stat-card.purple::after{background:var(--purple)}
+.sc-icon{width:54px;height:54px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0}
+.sc-body{flex:1}
+.sc-label{font-size:13px;color:var(--text3);margin-bottom:6px}
+.sc-value{font-size:28px;font-weight:700;color:var(--text1);line-height:1}
+.sc-sub{font-size:12px;color:var(--text3);margin-top:4px}
+
+/* ===== CHARTS ===== */
+.chart-row{display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:20px}
+.chart-box{height:300px}
+
+/* ===== ACTIVITY ===== */
+.timeline{list-style:none;padding:0}
+.tl-item{display:flex;gap:12px;margin-bottom:16px}
+.tl-dot{width:10px;height:10px;border-radius:50%;background:var(--theme-active);flex-shrink:0;margin-top:5px}
+.tl-body{flex:1}
+.tl-title{font-size:13px;color:var(--text1)}
+.tl-time{font-size:12px;color:var(--text3);margin-top:2px}
+
+/* ===== TABLE ===== */
+.toolbar{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.search-box{display:flex;align-items:center;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;background:#fff}
+.search-box input{border:none;outline:none;padding:8px 12px;font-size:13px;width:220px}
+.search-box button{padding:8px 14px;border:none;background:var(--theme-active);color:#fff;cursor:pointer;font-size:13px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:var(--radius);border:none;cursor:pointer;font-size:13px;transition:.15s;font-family:inherit}
+.btn-primary{background:var(--theme-active);color:#fff}.btn-primary:hover{filter:brightness(1.1)}
+.btn-danger{background:var(--red);color:#fff}.btn-danger:hover{filter:brightness(1.1)}
+.btn-warning{background:var(--orange);color:#fff}.btn-warning:hover{filter:brightness(1.1)}
+.btn-outline{background:#fff;color:var(--text2);border:1px solid var(--border)}.btn-outline:hover{border-color:var(--theme-active);color:var(--theme-active)}
+.btn-sm{padding:5px 10px;font-size:12px}
+table{width:100%;border-collapse:collapse;background:#fff}
+thead tr{background:#f8f9fa}
+th{padding:12px 14px;text-align:left;font-weight:600;font-size:13px;color:var(--text2);border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:11px 14px;border-bottom:1px solid #f0f0f0;font-size:13px;color:var(--text1)}
+tr:hover td{background:#fafbff}
+.tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.tag-green{background:#f0f9eb;color:var(--green)}
+.tag-red{background:#fef0f0;color:var(--red)}
+.tag-blue{background:#ecf5ff;color:var(--blue)}
+.tag-orange{background:#fdf6ec;color:var(--orange)}
+.tag-purple{background:#f3f0fb;color:var(--purple)}
+.tag-gray{background:#f4f4f5;color:var(--text3)}
+
+/* ===== PAGINATION ===== */
+.pagination{display:flex;align-items:center;gap:6px;padding-top:16px;justify-content:flex-end}
+.page-info{font-size:13px;color:var(--text2);margin-right:auto}
+.pg-btn{padding:6px 12px;border:1px solid var(--border);background:#fff;border-radius:var(--radius);cursor:pointer;font-size:13px;transition:.15s}
+.pg-btn:hover:not(:disabled){border-color:var(--theme-active);color:var(--theme-active)}
+.pg-btn:disabled{opacity:.4;cursor:not-allowed}
+.pg-btn.active{background:var(--theme-active);color:#fff;border-color:var(--theme-active)}
+
+/* ===== MODAL ===== */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:none;align-items:center;justify-content:center}
+.modal-overlay.show{display:flex}
+.modal{background:#fff;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,.18);width:480px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column}
+.modal-lg{width:640px}
+.modal-header{padding:18px 24px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0}
+.modal-title{font-size:16px;font-weight:600;color:var(--text1);flex:1}
+.modal-close{width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;color:var(--text3);transition:.15s;font-size:16px}
+.modal-close:hover{background:#f0f2f5;color:var(--text1)}
+.modal-body{padding:20px 24px;overflow-y:auto;flex:1}
+.modal-footer{padding:14px 24px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px;flex-shrink:0}
+
+/* ===== FORM ===== */
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.form-group{margin-bottom:16px}
+.form-label{display:block;font-size:13px;color:var(--text2);margin-bottom:6px;font-weight:500}
+.form-label .req{color:var(--red);margin-left:2px}
+.form-input{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;outline:none;transition:.15s;font-family:inherit;background:#fff;color:var(--text1)}
+.form-input:focus{border-color:var(--theme-active);box-shadow:0 0 0 2px rgba(26,188,156,.1)}
+.form-select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24'%3E%3Cpath fill='%23909399' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
+.form-hint{font-size:12px;color:var(--text3);margin-top:4px}
+.form-err{font-size:12px;color:var(--red);margin-top:4px;min-height:18px}
+
+/* ===== ALERT ===== */
+.alert{padding:10px 14px;border-radius:var(--radius);font-size:13px;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.alert-err{background:#fef0f0;color:var(--red);border:1px solid #fcd5d5}
+.alert-ok{background:#f0f9eb;color:var(--green);border:1px solid #c2e7a9}
+.alert-warn{background:#fdf6ec;color:var(--orange);border:1px solid #fcd899}
+
+/* ===== THEME PANEL ===== */
+.theme-panel{position:fixed;right:0;top:50%;transform:translateY(-50%);background:#fff;border:1px solid var(--border);border-right:none;border-radius:8px 0 0 8px;box-shadow:-4px 0 20px rgba(0,0,0,.1);padding:16px;z-index:500;transition:transform .3s}
+.theme-panel.hidden{transform:translate(100%,-50%)}
+.theme-toggle{position:absolute;left:-36px;top:50%;transform:translateY(-50%);width:36px;height:60px;background:#fff;border:1px solid var(--border);border-right:none;border-radius:8px 0 0 8px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;color:var(--theme-active);box-shadow:-4px 0 12px rgba(0,0,0,.08)}
+.theme-colors{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+.theme-dot{width:28px;height:28px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:.2s}
+.theme-dot.active{transform:scale(1.2);border-color:#fff;box-shadow:0 0 0 2px var(--theme-active)}
+.theme-label{font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px}
+
+/* ===== USER CENTER ===== */
+.profile-layout{display:grid;grid-template-columns:220px 1fr;gap:20px}
+.profile-card{background:#fff;border-radius:8px;box-shadow:var(--shadow);padding:30px 20px;text-align:center}
+.profile-avatar{width:80px;height:80px;border-radius:50%;background:var(--theme-active);color:#fff;font-size:32px;font-weight:700;display:flex;align-items:center;justify-content:center;margin:0 auto 14px}
+.profile-name{font-size:18px;font-weight:700;margin-bottom:4px}
+.profile-role{font-size:12px;color:var(--text3)}
+.profile-stats{display:flex;justify-content:space-around;margin-top:20px;padding-top:16px;border-top:1px solid var(--border)}
+.ps-item{text-align:center}
+.ps-value{font-size:20px;font-weight:700;color:var(--theme-active)}
+.ps-label{font-size:11px;color:var(--text3);margin-top:2px}
+
+/* ===== RESPONSIVE ===== */
+@media(max-width:900px){
+  .stat-grid{grid-template-columns:1fr 1fr}
+  .chart-row{grid-template-columns:1fr}
+  .profile-layout{grid-template-columns:1fr}
+  .form-row{grid-template-columns:1fr}
+}
+
+/* ===== EMPTY STATE ===== */
+.empty{text-align:center;padding:60px 20px;color:var(--text3)}
+.empty i{font-size:48px;margin-bottom:12px;display:block;opacity:.4}
+.empty p{font-size:14px}
+
+/* ===== LOADING ===== */
+.loading-spin{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{animation:spin .8s linear infinite}
+
+/* ===== NOTICE PANEL ===== */
+.notice-panel{position:absolute;top:calc(var(--header-h) + 4px);right:160px;width:320px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.12);z-index:990;display:none}
+.notice-panel.show{display:block}
+.np-header{padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:13px;display:flex;align-items:center;justify-content:space-between}
+.np-list{max-height:300px;overflow-y:auto}
+.np-item{padding:12px 16px;border-bottom:1px solid #f0f0f0;cursor:pointer;transition:.1s}
+.np-item:hover{background:#f5f7fa}
+.np-item-title{font-size:13px;font-weight:500}
+.np-item-time{font-size:11px;color:var(--text3);margin-top:3px}
+.np-footer{padding:10px;text-align:center;font-size:13px;color:var(--theme-active);cursor:pointer;border-top:1px solid var(--border)}
+
+/* ===== PERMISSIONS ===== */
+.perm-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.perm-item{display:flex;align-items:center;gap:8px;padding:10px;border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;transition:.15s}
+.perm-item:hover{border-color:var(--theme-active);background:#f9fffd}
+.perm-check{width:16px;height:16px;border-radius:3px;border:2px solid var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:.15s}
+.perm-item.checked .perm-check{background:var(--theme-active);border-color:var(--theme-active);color:#fff}
+.perm-item.checked .perm-check::after{content:'✓';font-size:10px}
+.perm-name{font-size:13px}
+
+/* ===== ROLE CARDS ===== */
+.role-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.role-card{background:#fff;border-radius:8px;padding:20px;box-shadow:var(--shadow);border-top:3px solid var(--border);transition:.2s}
+.role-card:hover{border-top-color:var(--theme-active);transform:translateY(-2px)}
+.rc-title{font-size:15px;font-weight:700;margin-bottom:6px}
+.rc-desc{font-size:12px;color:var(--text3);margin-bottom:12px}
+.rc-perms{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:14px}
+.rc-perm{padding:2px 8px;background:var(--content-bg);border-radius:10px;font-size:11px;color:var(--text2)}
+.rc-footer{display:flex;gap:8px;justify-content:flex-end}
+
+/* ===== SWITCH ===== */
+.switch{width:40px;height:22px;background:#ddd;border-radius:11px;position:relative;cursor:pointer;transition:.25s;flex-shrink:0}
+.switch.on{background:var(--theme-active)}
+.switch::after{content:'';position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:2px;left:2px;transition:.25s;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.switch.on::after{left:20px}
+</style>
+</head>
+<body>
+
+<!-- ===== SIDEBAR ===== -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-logo" onclick="navigate('dashboard')">
+    <i class="fas fa-chart-line logo-icon"></i>
+    <span class="logo-title">量化平台管理</span>
+  </div>
+  <nav class="sidebar-menu" id="sidebarMenu">
+    <!-- menu built by JS -->
+  </nav>
+</aside>
+
+<!-- ===== MAIN ===== -->
+<div class="main">
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-collapse" onclick="toggleSidebar()" title="折叠菜单">
+      <i class="fas fa-bars"></i>
+    </div>
+    <div class="header-breadcrumb" id="headerBread">
+      <span>管理后台</span> / <b>工作台</b>
+    </div>
+    <div class="header-actions">
+      <div class="hbtn" id="noticeBtn" onclick="toggleNotice()" title="通知">
+        <i class="fas fa-bell"></i>
+        <span class="badge" id="noticeBadge">3</span>
+      </div>
+      <div class="hbtn" onclick="toggleFullscreen()" title="全屏">
+        <i class="fas fa-expand" id="fsIcon"></i>
+      </div>
+      <div class="hbtn" onclick="toggleThemePanel()" title="主题设置">
+        <i class="fas fa-palette"></i>
+      </div>
+      <div class="header-divider"></div>
+      <div class="header-user" id="headerUser" onclick="toggleUserDropdown()">
+        <div class="h-avatar" id="hAvatar">A</div>
+        <div>
+          <div class="h-uname" id="hUname">管理员</div>
+          <div class="h-role" id="hRole">超级管理员</div>
+        </div>
+        <i class="fas fa-chevron-down" style="font-size:11px;color:rgba(255,255,255,.5);margin-left:4px"></i>
+        <div class="user-dropdown" id="userDropdown">
+          <div class="ud-item" onclick="navigate('user-center');closeDropdown()"><i class="fas fa-user"></i> 个人中心</div>
+          <div class="ud-item" onclick="navigate('change-pwd');closeDropdown()"><i class="fas fa-key"></i> 修改密码</div>
+          <div class="ud-divider"></div>
+          <div class="ud-item" onclick="doLogout()"><i class="fas fa-sign-out-alt"></i> 退出登录</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- NOTICE PANEL -->
+  <div class="notice-panel" id="noticePanel">
+    <div class="np-header">
+      <span>通知消息</span>
+      <span style="font-size:12px;color:var(--text3);cursor:pointer" onclick="clearNotices()">全部已读</span>
+    </div>
+    <div class="np-list" id="npList"></div>
+    <div class="np-footer" onclick="navigate('notifications');closeNotice()">查看全部</div>
+  </div>
+
+  <!-- TABS BAR -->
+  <div class="tabs-bar" id="tabsBar"></div>
+
+  <!-- CONTENT -->
+  <div class="content">
+
+    <!-- ===== DASHBOARD ===== -->
+    <div class="page active" id="page-dashboard">
+      <div class="stat-grid">
+        <div class="stat-card blue">
+          <div class="sc-icon"><i class="fas fa-users"></i></div>
+          <div class="sc-body">
+            <div class="sc-label">注册用户</div>
+            <div class="sc-value" id="st-users">—</div>
+            <div class="sc-sub" id="st-active-sub">活跃用户 —</div>
+          </div>
+        </div>
+        <div class="stat-card green">
+          <div class="sc-icon"><i class="fas fa-coins"></i></div>
+          <div class="sc-body">
+            <div class="sc-label">平台总积分</div>
+            <div class="sc-value" id="st-points">—</div>
+            <div class="sc-sub">全体用户持有</div>
+          </div>
+        </div>
+        <div class="stat-card orange">
+          <div class="sc-icon"><i class="fas fa-bolt"></i></div>
+          <div class="sc-body">
+            <div class="sc-label">今日调用</div>
+            <div class="sc-value" id="st-calls">—</div>
+            <div class="sc-sub">消耗积分操作数</div>
+          </div>
+        </div>
+        <div class="stat-card purple">
+          <div class="sc-icon"><i class="fas fa-user-check"></i></div>
+          <div class="sc-body">
+            <div class="sc-label">活跃用户</div>
+            <div class="sc-value" id="st-active">—</div>
+            <div class="sc-sub">账号启用中</div>
+          </div>
+        </div>
+      </div>
+      <div class="chart-row">
+        <div class="card">
+          <div class="card-title"><i class="fas fa-chart-line"></i> 近7日积分消耗趋势</div>
+          <div class="chart-box" id="chartLine"></div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i class="fas fa-chart-pie"></i> 功能使用分布</div>
+          <div class="chart-box" id="chartPie"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><i class="fas fa-history"></i> 最近活动</div>
+        <ul class="timeline" id="activityList">
+          <li class="tl-item"><div class="tl-dot"></div><div class="tl-body"><div class="tl-title">加载中...</div></div></li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ===== USER MANAGEMENT ===== -->
+    <div class="page" id="page-users">
+      <div class="card">
+        <div class="toolbar">
+          <div class="search-box">
+            <input type="text" id="userSearch" placeholder="搜索用户名 / 邮箱" onkeydown="if(event.key==='Enter')loadUsers(1)">
+            <button onclick="loadUsers(1)"><i class="fas fa-search"></i></button>
+          </div>
+          <button class="btn btn-primary" onclick="openUserModal()"><i class="fas fa-user-plus"></i> 新建用户</button>
+          <button class="btn btn-outline" onclick="loadUsers(usersState.page)" style="margin-left:auto"><i class="fas fa-sync-alt"></i> 刷新</button>
+        </div>
+        <table id="usersTable">
+          <thead><tr>
+            <th>ID</th><th>用户名</th><th>邮箱</th><th>积分</th>
+            <th>角色</th><th>状态</th><th>注册时间</th><th>最后登录</th><th>操作</th>
+          </tr></thead>
+          <tbody id="usersTbody"></tbody>
+        </table>
+        <div class="pagination" id="usersPager"></div>
+      </div>
+    </div>
+
+    <!-- ===== ROLE MANAGEMENT ===== -->
+    <div class="page" id="page-roles">
+      <div class="card">
+        <div class="card-title"><i class="fas fa-shield-alt"></i> 角色权限管理</div>
+        <div class="toolbar"><button class="btn btn-primary" onclick="openRoleModal()"><i class="fas fa-plus"></i> 新建角色</button></div>
+        <div class="role-grid" id="roleGrid"></div>
+      </div>
+    </div>
+
+    <!-- ===== POINTS RECORDS ===== -->
+    <div class="page" id="page-points">
+      <div class="card">
+        <div class="toolbar">
+          <span style="font-size:13px;color:var(--text2)">积分流水记录（全平台）</span>
+          <button class="btn btn-outline" onclick="loadTransactions(txState.page)" style="margin-left:auto"><i class="fas fa-sync-alt"></i> 刷新</button>
+        </div>
+        <table>
+          <thead><tr><th>ID</th><th>用户</th><th>操作</th><th>变化</th><th>余额</th><th>说明</th><th>时间</th></tr></thead>
+          <tbody id="txTbody"></tbody>
+        </table>
+        <div class="pagination" id="txPager"></div>
+      </div>
+    </div>
+
+    <!-- ===== USAGE STATS ===== -->
+    <div class="page" id="page-stats">
+      <div class="card">
+        <div class="card-title"><i class="fas fa-chart-bar"></i> 功能调用统计</div>
+        <div class="chart-box" id="chartBar" style="height:360px"></div>
+      </div>
+      <div class="chart-row">
+        <div class="card">
+          <div class="card-title"><i class="fas fa-chart-line"></i> 用户增长趋势</div>
+          <div class="chart-box" id="chartGrowth"></div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i class="fas fa-chart-pie"></i> 积分类型分布</div>
+          <div class="chart-box" id="chartDist"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== USER CENTER ===== -->
+    <div class="page" id="page-user-center">
+      <div class="profile-layout">
+        <div class="profile-card">
+          <div class="profile-avatar" id="pcAvatar">A</div>
+          <div class="profile-name" id="pcName">管理员</div>
+          <div class="profile-role" id="pcRole">超级管理员</div>
+          <div class="profile-stats">
+            <div class="ps-item"><div class="ps-value" id="pcPoints">—</div><div class="ps-label">积分</div></div>
+            <div class="ps-item"><div class="ps-value" id="pcUserId">—</div><div class="ps-label">用户ID</div></div>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <div class="card-title"><i class="fas fa-user-edit"></i> 个人信息</div>
+            <div class="form-group">
+              <label class="form-label">用户名</label>
+              <input class="form-input" id="pc-username" readonly style="background:#f5f7fa">
+            </div>
+            <div class="form-group">
+              <label class="form-label">邮箱</label>
+              <input class="form-input" id="pc-email" type="email" placeholder="请输入邮箱">
+            </div>
+            <div id="pc-msg" class="form-err" style="min-height:0"></div>
+          </div>
+          <div class="card">
+            <div class="card-title"><i class="fas fa-key"></i> 修改密码</div>
+            <div id="page-change-pwd-inline">
+              <div class="form-group">
+                <label class="form-label">当前密码 <span class="req">*</span></label>
+                <input class="form-input" type="password" id="cpOld" placeholder="当前密码">
+              </div>
+              <div class="form-group">
+                <label class="form-label">新密码 <span class="req">*</span></label>
+                <input class="form-input" type="password" id="cpNew" placeholder="至少6位">
+              </div>
+              <div class="form-group">
+                <label class="form-label">确认新密码 <span class="req">*</span></label>
+                <input class="form-input" type="password" id="cpNew2" placeholder="再次输入新密码">
+              </div>
+              <div id="cp-msg" class="form-err" style="min-height:0;margin-bottom:12px"></div>
+              <button class="btn btn-primary" onclick="doChangePassword()"><i class="fas fa-save"></i> 保存密码</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== CHANGE PWD (standalone tab) ===== -->
+    <div class="page" id="page-change-pwd"></div>
+
+    <!-- ===== NOTIFICATIONS ===== -->
+    <div class="page" id="page-notifications">
+      <div class="card">
+        <div class="card-title"><i class="fas fa-bell"></i> 系统通知</div>
+        <div id="noticeList"></div>
+      </div>
+    </div>
+
+    <!-- ===== 403 ===== -->
+    <div class="page" id="page-403">
+      <div class="empty" style="padding:120px 20px">
+        <i class="fas fa-lock" style="font-size:72px;opacity:.25;margin-bottom:20px;display:block"></i>
+        <div style="font-size:32px;font-weight:700;color:#ddd;margin-bottom:12px">403</div>
+        <p>您没有权限访问此页面</p>
+        <button class="btn btn-outline" style="margin-top:20px" onclick="navigate('dashboard')">返回首页</button>
+      </div>
+    </div>
+
+    <!-- ===== 404 ===== -->
+    <div class="page" id="page-404">
+      <div class="empty" style="padding:120px 20px">
+        <i class="fas fa-search" style="font-size:72px;opacity:.25;margin-bottom:20px;display:block"></i>
+        <div style="font-size:32px;font-weight:700;color:#ddd;margin-bottom:12px">404</div>
+        <p>页面不存在</p>
+        <button class="btn btn-outline" style="margin-top:20px" onclick="navigate('dashboard')">返回首页</button>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /main -->
+
+<!-- ===== THEME PANEL ===== -->
+<div class="theme-panel hidden" id="themePanel">
+  <div class="theme-toggle" onclick="toggleThemePanel()"><i class="fas fa-palette"></i></div>
+  <div class="theme-label">主题色</div>
+  <div class="theme-colors">
+    <div class="theme-dot" data-color="#242f42" style="background:#242f42" title="深海蓝（默认）"></div>
+    <div class="theme-dot" data-color="#1abc9c" style="background:#1abc9c" title="薄荷绿"></div>
+    <div class="theme-dot" data-color="#722ed1" style="background:#722ed1" title="皇家紫"></div>
+    <div class="theme-dot" data-color="#f44336" style="background:#f44336" title="活力红"></div>
+    <div class="theme-dot" data-color="#00bcd4" style="background:#00bcd4" title="天空蓝"></div>
+  </div>
+</div>
+
+<!-- ===== MODALS ===== -->
+
+<!-- Add/Edit User Modal -->
+<div class="modal-overlay" id="modalUser">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="modalUserTitle">新建用户</div>
+      <div class="modal-close" onclick="closeModal('modalUser')"><i class="fas fa-times"></i></div>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">用户名 <span class="req">*</span></label>
+          <input class="form-input" id="u-username" placeholder="2-20个字符">
+        </div>
+        <div class="form-group">
+          <label class="form-label">邮箱 <span class="req">*</span></label>
+          <input class="form-input" id="u-email" type="email" placeholder="example@mail.com">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">密码 <span class="req" id="u-pwd-req">*</span></label>
+          <input class="form-input" id="u-password" type="password" placeholder="至少6位">
+          <div class="form-hint" id="u-pwd-hint"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">初始积分</label>
+          <input class="form-input" id="u-points" type="number" value="100" min="0">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">角色</label>
+          <select class="form-input form-select" id="u-role">
+            <option value="0">普通用户</option>
+            <option value="1">管理员</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">状态</label>
+          <select class="form-input form-select" id="u-active">
+            <option value="1">启用</option>
+            <option value="0">禁用</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-err" id="u-err"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('modalUser')">取消</button>
+      <button class="btn btn-primary" id="u-submit-btn" onclick="submitUser()"><i class="fas fa-save"></i> 保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Points Modal -->
+<div class="modal-overlay" id="modalPoints">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">充值积分</div>
+      <div class="modal-close" onclick="closeModal('modalPoints')"><i class="fas fa-times"></i></div>
+    </div>
+    <div class="modal-body">
+      <div class="alert alert-warn"><i class="fas fa-info-circle"></i> 为用户 <b id="pts-uname">—</b> 充值积分</div>
+      <div class="form-group">
+        <label class="form-label">充值数量 <span class="req">*</span></label>
+        <input class="form-input" id="pts-amount" type="number" min="1" placeholder="请输入正整数">
+      </div>
+      <div class="form-group">
+        <label class="form-label">备注说明</label>
+        <input class="form-input" id="pts-desc" placeholder="管理员充值">
+      </div>
+      <div class="form-err" id="pts-err"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('modalPoints')">取消</button>
+      <button class="btn btn-primary" onclick="submitPoints()"><i class="fas fa-coins"></i> 确认充值</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reset Password Modal -->
+<div class="modal-overlay" id="modalResetPwd">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">重置密码</div>
+      <div class="modal-close" onclick="closeModal('modalResetPwd')"><i class="fas fa-times"></i></div>
+    </div>
+    <div class="modal-body">
+      <div class="alert alert-warn"><i class="fas fa-exclamation-triangle"></i> 重置用户 <b id="rp-uname">—</b> 的密码</div>
+      <div class="form-group">
+        <label class="form-label">新密码 <span class="req">*</span></label>
+        <input class="form-input" id="rp-pwd" type="password" placeholder="至少6位">
+      </div>
+      <div class="form-group">
+        <label class="form-label">确认新密码 <span class="req">*</span></label>
+        <input class="form-input" id="rp-pwd2" type="password" placeholder="再次输入">
+      </div>
+      <div class="form-err" id="rp-err"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('modalResetPwd')">取消</button>
+      <button class="btn btn-danger" onclick="submitResetPwd()"><i class="fas fa-key"></i> 重置密码</button>
+    </div>
+  </div>
+</div>
+
+<!-- Role Modal -->
+<div class="modal-overlay" id="modalRole">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div class="modal-title">角色配置</div>
+      <div class="modal-close" onclick="closeModal('modalRole')"><i class="fas fa-times"></i></div>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">角色名称 <span class="req">*</span></label>
+        <input class="form-input" id="role-name" placeholder="如：数据分析师">
+      </div>
+      <div class="form-group">
+        <label class="form-label">角色描述</label>
+        <input class="form-input" id="role-desc" placeholder="简短说明此角色的职责">
+      </div>
+      <div class="form-group">
+        <label class="form-label">权限分配</label>
+        <div class="perm-grid" id="permGrid"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('modalRole')">取消</button>
+      <button class="btn btn-primary" onclick="submitRole()"><i class="fas fa-save"></i> 保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm Modal -->
+<div class="modal-overlay" id="modalConfirm">
+  <div class="modal" style="width:380px">
+    <div class="modal-header">
+      <div class="modal-title" id="cfTitle">确认操作</div>
+      <div class="modal-close" onclick="closeModal('modalConfirm')"><i class="fas fa-times"></i></div>
+    </div>
+    <div class="modal-body">
+      <p id="cfMsg" style="font-size:14px;color:var(--text1);line-height:1.6"></p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('modalConfirm')">取消</button>
+      <button class="btn" id="cfOkBtn" onclick="cfCallback && cfCallback()">确认</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ================================================================
+// STATE
+// ================================================================
+const API = '/api';
+let currentUser = null;
+let currentPage = 'dashboard';
+let tabs = [];
+let usersState = {page:1, search:''};
+let txState = {page:1};
+let editingUserId = null;
+let pointsTargetId = null;
+let resetPwdTargetId = null;
+let cfCallback = null;
+let notices = [
+  {title:'新用户注册', desc:'用户 testuser 刚刚注册', time:'刚刚'},
+  {title:'积分消耗预警', desc:'今日消耗积分超过 500 分', time:'1分钟前'},
+  {title:'系统消息', desc:'欢迎使用量化平台管理后台', time:'5分钟前'},
+];
+let roles = [
+  {id:1, name:'超级管理员', desc:'拥有全部权限', perms:['user_manage','role_manage','points_manage','stats_view','system_config']},
+  {id:2, name:'运营人员', desc:'管理用户和积分', perms:['user_manage','points_manage','stats_view']},
+  {id:3, name:'数据分析师', desc:'查看统计数据', perms:['stats_view']},
+];
+const ALL_PERMS = [
+  {key:'user_manage', label:'用户管理'},
+  {key:'role_manage', label:'角色管理'},
+  {key:'points_manage', label:'积分管理'},
+  {key:'stats_view', label:'统计查看'},
+  {key:'system_config', label:'系统配置'},
+  {key:'ai_analyze', label:'AI分析'},
+];
+
+// ================================================================
+// MENU DEFINITION
+// ================================================================
+const MENU = [
+  {id:'dashboard', icon:'fas fa-tachometer-alt', label:'工作台', group:'主菜单'},
+  {id:'users',     icon:'fas fa-users',          label:'用户管理', group:'系统管理'},
+  {id:'roles',     icon:'fas fa-shield-alt',      label:'角色权限', group:'系统管理'},
+  {id:'points',    icon:'fas fa-coins',           label:'积分流水', group:'系统管理'},
+  {id:'stats',     icon:'fas fa-chart-bar',       label:'使用统计', group:'数据分析'},
+  {id:'user-center',icon:'fas fa-user-circle',   label:'个人中心', group:'账户'},
+];
+const PAGE_NAMES = {
+  'dashboard':'工作台','users':'用户管理','roles':'角色权限',
+  'points':'积分流水','stats':'使用统计','user-center':'个人中心',
+  'change-pwd':'修改密码','notifications':'系统通知',
+};
+
+// ================================================================
+// SIDEBAR RENDER
+// ================================================================
+function renderMenu(){
+  const menu = document.getElementById('sidebarMenu');
+  const groups = {};
+  MENU.forEach(m=>{
+    if(!groups[m.group]) groups[m.group]=[];
+    groups[m.group].push(m);
+  });
+  let html='';
+  Object.entries(groups).forEach(([g,items])=>{
+    html+=`<div class="menu-group-title">${g}</div>`;
+    items.forEach(m=>{
+      html+=`<div class="menu-item${currentPage===m.id?' active':''}" onclick="navigate('${m.id}')" data-id="${m.id}">
+        <i class="${m.icon} mi-icon"></i>
+        <span class="mi-label">${m.label}</span>
+      </div>`;
+    });
+  });
+  menu.innerHTML=html;
+}
+
+function toggleSidebar(){
+  document.getElementById('sidebar').classList.toggle('collapsed');
+}
+
+// ================================================================
+// TABS
+// ================================================================
+function renderTabs(){
+  const bar = document.getElementById('tabsBar');
+  if(!tabs.length){bar.innerHTML='';return;}
+  bar.innerHTML = tabs.map((t,i)=>`
+    <div class="tab${t.id===currentPage?' active':''}" onclick="navigate('${t.id}')" oncontextmenu="tabCtxMenu(event,${i})">
+      ${PAGE_NAMES[t.id]||t.id}
+      ${t.closable?`<span class="tab-close" onclick="event.stopPropagation();closeTab('${t.id}')"><i class="fas fa-times"></i></span>`:''}
+    </div>`).join('');
+}
+
+function addTab(id){
+  if(!tabs.find(t=>t.id===id)){
+    tabs.push({id, closable: id!=='dashboard'});
+    renderTabs();
+  }
+}
+
+function closeTab(id){
+  const idx = tabs.findIndex(t=>t.id===id);
+  if(idx<0) return;
+  tabs.splice(idx,1);
+  if(currentPage===id){
+    const next = tabs[Math.min(idx, tabs.length-1)];
+    if(next) navigate(next.id, false);
+  }
+  renderTabs();
+}
+
+// ================================================================
+// NAVIGATE
+// ================================================================
+function navigate(id, addTabFlag=true){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  const pg = document.getElementById('page-'+id);
+  if(!pg){navigate('404'); return;}
+  pg.classList.add('active');
+  currentPage = id;
+  if(addTabFlag){
+    if(!tabs.find(t=>t.id==='dashboard')) tabs.unshift({id:'dashboard',closable:false});
+    addTab(id);
+  }
+  renderMenu();
+  renderTabs();
+
+  // Breadcrumb
+  const bread = PAGE_NAMES[id]||id;
+  document.getElementById('headerBread').innerHTML = `<span>管理后台</span> / <b>${bread}</b>`;
+
+  // Lazy load
+  if(id==='dashboard') loadDashboard();
+  if(id==='users') loadUsers(usersState.page);
+  if(id==='roles') renderRoles();
+  if(id==='points') loadTransactions(1);
+  if(id==='stats') loadStats();
+  if(id==='user-center') loadUserCenter();
+  if(id==='notifications') renderNotifications();
+}
+
+// ================================================================
+// AUTH
+// ================================================================
+async function checkAuth(){
+  try{
+    const r = await fetch(`${API}/auth/me`,{credentials:'include'});
+    if(!r.ok){location.href='/'; return;}
+    currentUser = await r.json();
+    if(!currentUser.is_admin){location.href='/'; return;}
+    document.getElementById('hAvatar').textContent = currentUser.username[0].toUpperCase();
+    document.getElementById('hUname').textContent = currentUser.username;
+    document.getElementById('hRole').textContent = currentUser.is_admin?'超级管理员':'普通用户';
+    navigate('dashboard');
+  }catch(e){location.href='/';}
+}
+
+async function doLogout(){
+  await fetch(`${API}/auth/logout`,{method:'POST',credentials:'include'});
+  location.href='/';
+}
+
+// ================================================================
+// DASHBOARD
+// ================================================================
+async function loadDashboard(){
+  const r = await fetch(`${API}/admin/stats`,{credentials:'include'});
+  if(!r.ok) return;
+  const d = await r.json();
+  document.getElementById('st-users').textContent = d.total_users;
+  document.getElementById('st-active-sub').textContent = `活跃用户 ${d.active_users}`;
+  document.getElementById('st-points').textContent = d.total_points.toLocaleString();
+  document.getElementById('st-calls').textContent = d.today_calls;
+  document.getElementById('st-active').textContent = d.active_users;
+  renderLineChart();
+  renderPieChart();
+  renderActivity();
+}
+
+function renderLineChart(){
+  const el = document.getElementById('chartLine');
+  if(!el) return;
+  const chart = echarts.init(el);
+  const days = [];
+  for(let i=6;i>=0;i--){
+    const d=new Date(); d.setDate(d.getDate()-i);
+    days.push(`${d.getMonth()+1}/${d.getDate()}`);
+  }
+  const vals = days.map(()=>Math.floor(Math.random()*200+50));
+  chart.setOption({
+    tooltip:{trigger:'axis'},
+    grid:{left:'3%',right:'4%',bottom:'3%',containLabel:true},
+    xAxis:{type:'category',data:days,axisLine:{lineStyle:{color:'#ddd'}}},
+    yAxis:{type:'value',axisLine:{show:false},splitLine:{lineStyle:{color:'#f0f0f0'}}},
+    series:[{
+      name:'积分消耗',type:'line',smooth:true,data:vals,
+      symbol:'circle',symbolSize:6,
+      lineStyle:{color:'#1abc9c',width:2},
+      itemStyle:{color:'#1abc9c'},
+      areaStyle:{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[
+        {offset:0,color:'rgba(26,188,156,.3)'},{offset:1,color:'rgba(26,188,156,.02)'}
+      ]}}
+    }]
+  });
+  window.addEventListener('resize',()=>chart.resize());
+}
+
+function renderPieChart(){
+  const el = document.getElementById('chartPie');
+  if(!el) return;
+  const chart = echarts.init(el);
+  chart.setOption({
+    tooltip:{trigger:'item',formatter:'{b}: {c} ({d}%)'},
+    legend:{orient:'vertical',right:10,top:'center',textStyle:{color:'#606266',fontSize:12}},
+    series:[{
+      type:'pie',radius:['40%','70%'],center:['40%','50%'],avoidLabelOverlap:false,
+      itemStyle:{borderRadius:6,borderColor:'#fff',borderWidth:2},
+      label:{show:false},
+      data:[
+        {value:45,name:'AI分析',itemStyle:{color:'#409eff'}},
+        {value:25,name:'策略回测',itemStyle:{color:'#67c23a'}},
+        {value:20,name:'全市场扫描',itemStyle:{color:'#e6a23c'}},
+        {value:10,name:'模拟交易',itemStyle:{color:'#9b59b6'}},
+      ]
+    }]
+  });
+  window.addEventListener('resize',()=>chart.resize());
+}
+
+function renderActivity(){
+  const list = document.getElementById('activityList');
+  const items = [
+    {text:'用户 admin 充值了 500 积分', time:'5分钟前'},
+    {text:'新用户注册：test001', time:'23分钟前'},
+    {text:'AI深度分析完成：600519', time:'1小时前'},
+    {text:'策略回测执行完成', time:'2小时前'},
+    {text:'全市场扫描完成，找到 47 只股票', time:'3小时前'},
+  ];
+  list.innerHTML = items.map(i=>`
+    <li class="tl-item">
+      <div class="tl-dot"></div>
+      <div class="tl-body"><div class="tl-title">${i.text}</div><div class="tl-time">${i.time}</div></div>
+    </li>`).join('');
+}
+
+// ================================================================
+// USER MANAGEMENT
+// ================================================================
+async function loadUsers(page){
+  usersState.page = page;
+  usersState.search = document.getElementById('userSearch').value.trim();
+  const params = new URLSearchParams({page, per_page:15, search:usersState.search});
+  const r = await fetch(`${API}/admin/users?${params}`,{credentials:'include'});
+  if(!r.ok) return;
+  const d = await r.json();
+  renderUsersTable(d.users);
+  renderPager('usersPager', d.total, d.page, d.per_page, p=>loadUsers(p));
+}
+
+function renderUsersTable(users){
+  const tbody = document.getElementById('usersTbody');
+  if(!users.length){tbody.innerHTML=`<tr><td colspan="9" style="text-align:center;padding:40px;color:var(--text3)"><i class="fas fa-inbox" style="font-size:32px;opacity:.3;display:block;margin-bottom:8px"></i>暂无数据</td></tr>`;return;}
+  tbody.innerHTML = users.map(u=>`
+    <tr>
+      <td>${u.id}</td>
+      <td><b>${esc(u.username)}</b></td>
+      <td style="color:var(--text2)">${esc(u.email)}</td>
+      <td><span style="font-weight:600;color:var(--orange)">${u.points.toLocaleString()}</span></td>
+      <td>${u.is_admin?'<span class="tag tag-purple">管理员</span>':'<span class="tag tag-blue">用户</span>'}</td>
+      <td>${u.is_active?'<span class="tag tag-green">启用</span>':'<span class="tag tag-red">禁用</span>'}</td>
+      <td style="color:var(--text3);font-size:12px">${u.created_at||'—'}</td>
+      <td style="color:var(--text3);font-size:12px">${u.last_login||'从未'}</td>
+      <td>
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
+          <button class="btn btn-outline btn-sm" onclick="openPointsModal(${u.id},'${esc(u.username)}')"><i class="fas fa-coins"></i> 充值</button>
+          <button class="btn btn-outline btn-sm" onclick="openResetPwdModal(${u.id},'${esc(u.username)}')"><i class="fas fa-key"></i></button>
+          <button class="btn btn-outline btn-sm" onclick="toggleActive(${u.id},${u.is_active},'${esc(u.username)}')" title="${u.is_active?'禁用':'启用'}">
+            <i class="fas fa-${u.is_active?'ban':'check'}"></i>
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="toggleAdmin(${u.id},${u.is_admin},'${esc(u.username)}')" title="${u.is_admin?'撤销管理员':'设为管理员'}">
+            <i class="fas fa-${u.is_admin?'user-minus':'user-shield'}"></i>
+          </button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+function openUserModal(uid){
+  editingUserId = uid||null;
+  document.getElementById('modalUserTitle').textContent = uid?'编辑用户':'新建用户';
+  document.getElementById('u-username').value='';
+  document.getElementById('u-email').value='';
+  document.getElementById('u-password').value='';
+  document.getElementById('u-points').value='100';
+  document.getElementById('u-role').value='0';
+  document.getElementById('u-active').value='1';
+  document.getElementById('u-err').textContent='';
+  document.getElementById('u-pwd-req').style.display = uid?'none':'inline';
+  document.getElementById('u-pwd-hint').textContent = uid?'留空则不修改密码':'';
+  openModal('modalUser');
+}
+
+async function submitUser(){
+  const username = document.getElementById('u-username').value.trim();
+  const email = document.getElementById('u-email').value.trim();
+  const password = document.getElementById('u-password').value;
+  const points = parseInt(document.getElementById('u-points').value)||100;
+  const is_admin = parseInt(document.getElementById('u-role').value);
+  const is_active = parseInt(document.getElementById('u-active').value);
+  const errEl = document.getElementById('u-err');
+  errEl.textContent='';
+
+  if(!username||!email){errEl.textContent='用户名和邮箱为必填项';return;}
+  if(!editingUserId && !password){errEl.textContent='新建用户必须设置密码';return;}
+
+  const btn = document.getElementById('u-submit-btn');
+  btn.disabled=true;btn.innerHTML='<span class="loading-spin"></span> 保存中';
+  try{
+    const r = await fetch(`${API}/auth/register`,{
+      method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username,email,password:password||'temp123456'})
+    });
+    const d = await r.json();
+    if(d.ok){closeModal('modalUser');loadUsers(usersState.page);}
+    else errEl.textContent = d.error||'操作失败';
+  }finally{btn.disabled=false;btn.innerHTML='<i class="fas fa-save"></i> 保存';}
+}
+
+async function toggleActive(uid, current, uname){
+  const next = !current;
+  showConfirm(`确定要${next?'启用':'禁用'}用户 <b>${esc(uname)}</b> 吗？`, next?'btn-primary':'btn-danger',
+    async()=>{
+      const r = await fetch(`${API}/admin/users/${uid}/active`,{
+        method:'POST',credentials:'include',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({active:next})
+      });
+      closeModal('modalConfirm');
+      if(r.ok) loadUsers(usersState.page);
+    }
+  );
+}
+
+async function toggleAdmin(uid, current, uname){
+  const next = !current;
+  showConfirm(`确定要${next?'设置':'撤销'} <b>${esc(uname)}</b> 的管理员权限吗？`, 'btn-warning',
+    async()=>{
+      const r = await fetch(`${API}/admin/users/${uid}/admin`,{
+        method:'POST',credentials:'include',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({is_admin:next})
+      });
+      closeModal('modalConfirm');
+      if(r.ok) loadUsers(usersState.page);
+    }
+  );
+}
+
+// ================================================================
+// POINTS MODAL
+// ================================================================
+function openPointsModal(uid, uname){
+  pointsTargetId = uid;
+  document.getElementById('pts-uname').textContent = uname;
+  document.getElementById('pts-amount').value='';
+  document.getElementById('pts-desc').value='';
+  document.getElementById('pts-err').textContent='';
+  openModal('modalPoints');
+}
+
+async function submitPoints(){
+  const amount = parseInt(document.getElementById('pts-amount').value);
+  const desc = document.getElementById('pts-desc').value.trim()||'管理员充值';
+  const err = document.getElementById('pts-err');
+  err.textContent='';
+  if(!amount||amount<=0){err.textContent='请输入有效的积分数量';return;}
+  const r = await fetch(`${API}/admin/users/${pointsTargetId}/points`,{
+    method:'POST',credentials:'include',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({amount,description:desc})
+  });
+  const d = await r.json();
+  if(d.ok){closeModal('modalPoints');loadUsers(usersState.page);}
+  else err.textContent = d.error||'充值失败';
+}
+
+// ================================================================
+// RESET PASSWORD MODAL
+// ================================================================
+function openResetPwdModal(uid, uname){
+  resetPwdTargetId = uid;
+  document.getElementById('rp-uname').textContent = uname;
+  document.getElementById('rp-pwd').value='';
+  document.getElementById('rp-pwd2').value='';
+  document.getElementById('rp-err').textContent='';
+  openModal('modalResetPwd');
+}
+
+async function submitResetPwd(){
+  const pwd = document.getElementById('rp-pwd').value;
+  const pwd2 = document.getElementById('rp-pwd2').value;
+  const err = document.getElementById('rp-err');
+  err.textContent='';
+  if(!pwd||pwd.length<6){err.textContent='密码至少6位';return;}
+  if(pwd!==pwd2){err.textContent='两次密码不一致';return;}
+  const r = await fetch(`${API}/admin/users/${resetPwdTargetId}/reset_password`,{
+    method:'POST',credentials:'include',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({new_password:pwd})
+  });
+  const d = await r.json();
+  if(d.ok){closeModal('modalResetPwd');showToast('密码已重置','success');}
+  else err.textContent = d.error||'重置失败';
+}
+
+// ================================================================
+// TRANSACTIONS
+// ================================================================
+async function loadTransactions(page){
+  txState.page = page;
+  const r = await fetch(`${API}/admin/transactions?page=${page}&per_page=20`,{credentials:'include'});
+  if(!r.ok) return;
+  const d = await r.json();
+  const tbody = document.getElementById('txTbody');
+  if(!d.records.length){tbody.innerHTML=`<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text3)">暂无记录</td></tr>`;return;}
+  tbody.innerHTML = d.records.map(r=>`
+    <tr>
+      <td>${r.id}</td>
+      <td><b>${esc(r.username||'—')}</b></td>
+      <td><span class="tag ${typeTag(r.type)}">${typeLabel(r.type)}</span></td>
+      <td style="font-weight:600;color:${r.amount>0?'var(--green)':'var(--red)'}">
+        ${r.amount>0?'+':''}${r.amount}
+      </td>
+      <td>${r.balance}</td>
+      <td style="color:var(--text2)">${esc(r.description||'—')}</td>
+      <td style="color:var(--text3);font-size:12px">${r.created_at||'—'}</td>
+    </tr>`).join('');
+  renderPager('txPager', d.total, d.page, d.per_page, p=>loadTransactions(p));
+}
+
+function typeTag(t){
+  const m={'register':'tag-green','admin_add':'tag-blue','ai_analysis':'tag-orange','backtest':'tag-purple','scan':'tag-orange','paper_trade':'tag-blue'};
+  return m[t]||'tag-gray';
+}
+function typeLabel(t){
+  const m={'register':'注册赠送','admin_add':'管理充值','ai_analysis':'AI分析','backtest':'策略回测','scan':'市场扫描','paper_trade':'模拟交易'};
+  return m[t]||t;
+}
+
+// ================================================================
+// STATS CHARTS
+// ================================================================
+function loadStats(){
+  setTimeout(()=>{
+    renderBarChart();
+    renderGrowthChart();
+    renderDistChart();
+  },100);
+}
+
+function renderBarChart(){
+  const el = document.getElementById('chartBar');
+  if(!el||el._inited) return; el._inited=true;
+  const chart = echarts.init(el);
+  chart.setOption({
+    tooltip:{trigger:'axis'},
+    legend:{data:['AI分析','策略回测','市场扫描','模拟交易']},
+    grid:{left:'3%',right:'4%',bottom:'3%',containLabel:true},
+    xAxis:{type:'category',data:['周一','周二','周三','周四','周五','周六','周日']},
+    yAxis:{type:'value'},
+    series:[
+      {name:'AI分析',type:'bar',stack:'total',data:[30,40,28,52,35,42,38],itemStyle:{color:'#409eff'}},
+      {name:'策略回测',type:'bar',stack:'total',data:[20,25,15,30,18,22,20],itemStyle:{color:'#67c23a'}},
+      {name:'市场扫描',type:'bar',stack:'total',data:[15,20,12,25,15,18,14],itemStyle:{color:'#e6a23c'}},
+      {name:'模拟交易',type:'bar',stack:'total',data:[8,12,6,15,9,10,8],itemStyle:{color:'#9b59b6'}},
+    ]
+  });
+  window.addEventListener('resize',()=>chart.resize());
+}
+
+function renderGrowthChart(){
+  const el = document.getElementById('chartGrowth');
+  if(!el||el._inited) return; el._inited=true;
+  const chart = echarts.init(el);
+  chart.setOption({
+    tooltip:{trigger:'axis'},
+    grid:{left:'3%',right:'4%',bottom:'3%',containLabel:true},
+    xAxis:{type:'category',data:['1月','2月','3月','4月','5月','6月']},
+    yAxis:{type:'value'},
+    series:[{
+      name:'新增用户',type:'line',smooth:true,
+      data:[5,8,12,20,28,35],
+      lineStyle:{color:'#409eff'},itemStyle:{color:'#409eff'},
+      areaStyle:{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[
+        {offset:0,color:'rgba(64,158,255,.3)'},{offset:1,color:'rgba(64,158,255,.02)'}
+      ]}}
+    }]
+  });
+  window.addEventListener('resize',()=>chart.resize());
+}
+
+function renderDistChart(){
+  const el = document.getElementById('chartDist');
+  if(!el||el._inited) return; el._inited=true;
+  const chart = echarts.init(el);
+  chart.setOption({
+    tooltip:{trigger:'item',formatter:'{b}: {d}%'},
+    legend:{bottom:0,textStyle:{fontSize:12}},
+    series:[{
+      type:'pie',radius:'60%',
+      data:[
+        {value:400,name:'注册赠送',itemStyle:{color:'#67c23a'}},
+        {value:300,name:'管理充值',itemStyle:{color:'#409eff'}},
+        {value:200,name:'功能消耗',itemStyle:{color:'#f56c6c'}},
+      ],
+      emphasis:{itemStyle:{shadowBlur:10,shadowOffsetX:0,shadowColor:'rgba(0,0,0,.3)'}}
+    }]
+  });
+  window.addEventListener('resize',()=>chart.resize());
+}
+
+// ================================================================
+// ROLES
+// ================================================================
+function renderRoles(){
+  const grid = document.getElementById('roleGrid');
+  grid.innerHTML = roles.map(r=>`
+    <div class="role-card">
+      <div class="rc-title">${esc(r.name)}</div>
+      <div class="rc-desc">${esc(r.desc)}</div>
+      <div class="rc-perms">${r.perms.map(p=>`<span class="rc-perm">${ALL_PERMS.find(x=>x.key===p)?.label||p}</span>`).join('')}</div>
+      <div class="rc-footer">
+        <button class="btn btn-outline btn-sm" onclick="openRoleModal(${r.id})"><i class="fas fa-edit"></i> 编辑</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteRole(${r.id})"><i class="fas fa-trash"></i></button>
+      </div>
+    </div>`).join('');
+}
+
+function openRoleModal(rid){
+  const role = rid ? roles.find(r=>r.id===rid) : null;
+  document.getElementById('role-name').value = role?.name||'';
+  document.getElementById('role-desc').value = role?.desc||'';
+  const permGrid = document.getElementById('permGrid');
+  permGrid.innerHTML = ALL_PERMS.map(p=>`
+    <div class="perm-item${role?.perms.includes(p.key)?' checked':''}" onclick="this.classList.toggle('checked')" data-key="${p.key}">
+      <div class="perm-check"></div>
+      <span class="perm-name">${p.label}</span>
+    </div>`).join('');
+  openModal('modalRole');
+}
+
+function submitRole(){
+  const name = document.getElementById('role-name').value.trim();
+  if(!name){alert('请输入角色名称');return;}
+  const perms = [...document.querySelectorAll('.perm-item.checked')].map(el=>el.dataset.key);
+  const desc = document.getElementById('role-desc').value.trim();
+  roles.push({id:Date.now(),name,desc,perms});
+  closeModal('modalRole');
+  renderRoles();
+  showToast('角色已创建','success');
+}
+
+function deleteRole(id){
+  showConfirm('确定删除此角色吗？','btn-danger',()=>{
+    roles = roles.filter(r=>r.id!==id);
+    closeModal('modalConfirm');
+    renderRoles();
+  });
+}
+
+// ================================================================
+// USER CENTER
+// ================================================================
+async function loadUserCenter(){
+  const r = await fetch(`${API}/auth/me`,{credentials:'include'});
+  if(!r.ok) return;
+  const u = await r.json();
+  currentUser = u;
+  const initials = u.username[0].toUpperCase();
+  document.getElementById('pcAvatar').textContent = initials;
+  document.getElementById('pcName').textContent = u.username;
+  document.getElementById('pcRole').textContent = u.is_admin?'超级管理员':'普通用户';
+  document.getElementById('pcPoints').textContent = u.points?.toLocaleString()||'—';
+  document.getElementById('pcUserId').textContent = u.user_id||'—';
+  document.getElementById('pc-username').value = u.username;
+  document.getElementById('pc-email').value = u.email||'';
+}
+
+async function doChangePassword(){
+  const old = document.getElementById('cpOld').value;
+  const nw = document.getElementById('cpNew').value;
+  const nw2 = document.getElementById('cpNew2').value;
+  const msg = document.getElementById('cp-msg');
+  msg.textContent=''; msg.style.color='var(--red)';
+  if(!old||!nw){msg.textContent='请填写完整';return;}
+  if(nw.length<6){msg.textContent='新密码至少6位';return;}
+  if(nw!==nw2){msg.textContent='两次密码不一致';return;}
+  const r = await fetch(`${API}/user/change_password`,{
+    method:'POST',credentials:'include',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({old_password:old,new_password:nw})
+  });
+  const d = await r.json();
+  if(d.ok){
+    msg.style.color='var(--green)'; msg.textContent='密码修改成功！';
+    document.getElementById('cpOld').value='';
+    document.getElementById('cpNew').value='';
+    document.getElementById('cpNew2').value='';
+  } else msg.textContent = d.error||'修改失败';
+}
+
+// ================================================================
+// NOTIFICATIONS
+// ================================================================
+function renderNotifications(){
+  const list = document.getElementById('noticeList');
+  list.innerHTML = notices.map(n=>`
+    <div style="padding:16px;border-bottom:1px solid var(--border);display:flex;gap:12px">
+      <i class="fas fa-bell" style="color:var(--theme-active);margin-top:3px;flex-shrink:0"></i>
+      <div>
+        <div style="font-size:14px;font-weight:600">${n.title}</div>
+        <div style="font-size:13px;color:var(--text2);margin-top:4px">${n.desc}</div>
+        <div style="font-size:12px;color:var(--text3);margin-top:6px">${n.time}</div>
+      </div>
+    </div>`).join('') || '<div style="text-align:center;padding:40px;color:var(--text3)">暂无通知</div>';
+}
+
+function renderNpList(){
+  const list = document.getElementById('npList');
+  list.innerHTML = notices.slice(0,5).map(n=>`
+    <div class="np-item">
+      <div class="np-item-title">${n.title}</div>
+      <div class="np-item-time">${n.time}</div>
+    </div>`).join('') || '<div style="padding:20px;text-align:center;color:var(--text3)">暂无通知</div>';
+  document.getElementById('noticeBadge').textContent = notices.length;
+}
+
+function clearNotices(){
+  notices=[];
+  renderNpList();
+  document.getElementById('noticeBadge').style.display='none';
+}
+
+// ================================================================
+// PAGINATION
+// ================================================================
+function renderPager(id, total, page, perPage, cb){
+  const el = document.getElementById(id);
+  const pages = Math.ceil(total/perPage)||1;
+  let html = `<div class="page-info">共 ${total} 条</div>`;
+  html += `<button class="pg-btn" ${page<=1?'disabled':''} onclick="${cb.name||''}(${page-1})">&#8249;</button>`;
+  for(let i=Math.max(1,page-2);i<=Math.min(pages,page+2);i++){
+    html += `<button class="pg-btn${i===page?' active':''}" onclick="void 0" data-p="${i}">${i}</button>`;
+  }
+  html += `<button class="pg-btn" ${page>=pages?'disabled':''} onclick="void 0" data-p="${page+1}">&#8250;</button>`;
+  el.innerHTML = html;
+  el.querySelectorAll('[data-p]').forEach(btn=>{
+    btn.addEventListener('click',()=>cb(parseInt(btn.dataset.p)));
+  });
+}
+
+// ================================================================
+// MODALS
+// ================================================================
+function openModal(id){document.getElementById(id).classList.add('show')}
+function closeModal(id){document.getElementById(id).classList.remove('show')}
+
+function showConfirm(msg, btnClass, cb){
+  document.getElementById('cfMsg').innerHTML = msg;
+  const btn = document.getElementById('cfOkBtn');
+  btn.className = `btn ${btnClass}`;
+  btn.textContent = '确认';
+  cfCallback = cb;
+  openModal('modalConfirm');
+}
+
+document.querySelectorAll('.modal-overlay').forEach(overlay=>{
+  overlay.addEventListener('click',e=>{
+    if(e.target===overlay) overlay.classList.remove('show');
+  });
+});
+
+// ================================================================
+// THEME
+// ================================================================
+function toggleThemePanel(){
+  document.getElementById('themePanel').classList.toggle('hidden');
+}
+
+document.querySelectorAll('.theme-dot').forEach(dot=>{
+  dot.addEventListener('click',()=>{
+    const color = dot.dataset.color;
+    document.documentElement.style.setProperty('--theme', color);
+    document.documentElement.style.setProperty('--theme-light', color);
+    document.querySelectorAll('.theme-dot').forEach(d=>d.classList.remove('active'));
+    dot.classList.add('active');
+    localStorage.setItem('adminTheme', color);
+    // Update theme-active for non-dark themes
+    if(color==='#242f42'){
+      document.documentElement.style.setProperty('--theme-active','#1abc9c');
+    } else {
+      document.documentElement.style.setProperty('--theme-active', color);
+    }
+  });
+});
+
+function loadTheme(){
+  const saved = localStorage.getItem('adminTheme');
+  if(saved){
+    const dot = document.querySelector(`.theme-dot[data-color="${saved}"]`);
+    if(dot) dot.click();
+  } else {
+    document.querySelector('.theme-dot[data-color="#242f42"]').classList.add('active');
+  }
+}
+
+// ================================================================
+// FULLSCREEN
+// ================================================================
+function toggleFullscreen(){
+  if(!document.fullscreenElement){
+    document.documentElement.requestFullscreen();
+    document.getElementById('fsIcon').className='fas fa-compress';
+  } else {
+    document.exitFullscreen();
+    document.getElementById('fsIcon').className='fas fa-expand';
+  }
+}
+
+// ================================================================
+// NOTICE PANEL
+// ================================================================
+function toggleNotice(){
+  const panel = document.getElementById('noticePanel');
+  panel.classList.toggle('show');
+  renderNpList();
+}
+function closeNotice(){document.getElementById('noticePanel').classList.remove('show')}
+
+// ================================================================
+// USER DROPDOWN
+// ================================================================
+function toggleUserDropdown(){
+  document.getElementById('userDropdown').classList.toggle('show');
+}
+function closeDropdown(){document.getElementById('userDropdown').classList.remove('show')}
+
+// ================================================================
+// TOAST
+// ================================================================
+function showToast(msg, type='info'){
+  const toast = document.createElement('div');
+  const colors = {success:'var(--green)',error:'var(--red)',info:'var(--blue)',warning:'var(--orange)'};
+  Object.assign(toast.style,{
+    position:'fixed',bottom:'24px',right:'24px',
+    background:colors[type]||colors.info,color:'#fff',
+    padding:'12px 20px',borderRadius:'6px',fontSize:'13px',fontWeight:'600',
+    boxShadow:'0 4px 16px rgba(0,0,0,.2)',zIndex:'9999',
+    transform:'translateY(20px)',opacity:'0',transition:'.3s',
+    maxWidth:'320px'
+  });
+  toast.textContent=msg;
+  document.body.appendChild(toast);
+  requestAnimationFrame(()=>{toast.style.transform='translateY(0)';toast.style.opacity='1';});
+  setTimeout(()=>{
+    toast.style.opacity='0';toast.style.transform='translateY(20px)';
+    setTimeout(()=>toast.remove(),300);
+  },2800);
+}
+
+// ================================================================
+// UTILS
+// ================================================================
+function esc(s){
+  if(s===null||s===undefined) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ================================================================
+// GLOBAL CLICK CLOSE
+// ================================================================
+document.addEventListener('click',e=>{
+  if(!e.target.closest('#headerUser')) closeDropdown();
+  if(!e.target.closest('#noticeBtn')&&!e.target.closest('#noticePanel')) closeNotice();
+});
+
+// ================================================================
+// INIT
+// ================================================================
+window.addEventListener('DOMContentLoaded',()=>{
+  loadTheme();
+  renderMenu();
+  checkAuth();
+  renderNpList();
+  // Default tab
+  tabs = [{id:'dashboard',closable:false}];
+  renderTabs();
+});
+</script>
+</body>
+</html>

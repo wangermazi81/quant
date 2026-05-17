@@ -1,0 +1,1033 @@
+# -*- coding: utf-8 -*-
+"""
+回测引擎 v4 — Backtrader 架构启发
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+核心设计（参考 backtrader 源码架构）：
+
+  Cerebro          — 总编排器，管理全生命周期
+  BackBroker       — 模拟券商：订单状态机、佣金、持仓
+  Order            — 9 状态机 (submitted→accepted→completed/rejected)
+  Trade            — 一次完整买卖记录
+  Analyzer(s)      — 可插拔指标收集器
+    ├ SharpeAnalyzer    (ddof=1, rf=2.5%, 年化)
+    ├ DrawDownAnalyzer  (逐日最大回撤序列)
+    ├ TradeAnalyzer     (胜率/盈亏比/连胜/连败)
+    └ MonthlyAnalyzer   (月度收益热力图)
+
+关键改进（vs 简单 for 循环）：
+  ✓ 信号日收盘生成 → 次日开盘成交（无前视偏差）
+  ✓ 双边佣金（A股标准：买 0.03%、卖 0.13%）
+  ✓ 按仓位百分比动态计算手数
+  ✓ 止损/止盈在收盘触发，次日开盘执行
+  ✓ 组合市值实时估值（持仓收盘价）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+import math, os, tempfile, traceback, logging, importlib.util
+import threading as _bt_threading
+import uuid as _bt_uuid
+import time as _bt_time
+from pathlib import Path
+from collections import defaultdict
+
+import numpy as np
+import pandas as pd
+
+DATA_DIR = Path(__file__).parent / "data" / "daily"
+logger   = logging.getLogger(__name__)
+
+# ── 异步回测任务注册表 ──────────────────────────────────
+_bt_tasks: dict = {}   # task_id -> {status, progress, result, created}
+
+
+# ══════════════════════════════════════════════════
+# Order — 完整状态机
+# ══════════════════════════════════════════════════
+class OrderStatus:
+    SUBMITTED = "submitted"
+    ACCEPTED  = "accepted"
+    COMPLETED = "completed"
+    CANCELED  = "canceled"
+    REJECTED  = "rejected"
+
+class Order:
+    _id_seq = 0
+
+    def __init__(self, code, action, budget=0.0, reason=""):
+        Order._id_seq += 1
+        self.id          = Order._id_seq
+        self.code        = code
+        self.action      = action        # "buy" | "sell"
+        self.budget      = budget        # buy: 可用资金; sell: 忽略
+        self.reason      = reason        # "signal" | "stop_loss" | "take_profit"
+        self.status      = OrderStatus.SUBMITTED
+        self.submit_date = None
+        self.exec_date   = None
+        self.exec_price  = None
+        self.qty         = 0
+        self.commission  = 0.0
+
+    def to_dict(self):
+        return {
+            "id": self.id, "code": self.code, "action": self.action,
+            "status": self.status, "exec_date": self.exec_date,
+            "exec_price": self.exec_price, "qty": self.qty,
+            "commission": round(self.commission, 2), "reason": self.reason,
+        }
+
+
+# ══════════════════════════════════════════════════
+# Trade — 一次完整的买卖记录
+# ══════════════════════════════════════════════════
+class Trade:
+    def __init__(self, code, buy_date, buy_price, sell_date, sell_price, qty, commission):
+        self.code       = code
+        self.buy_date   = buy_date
+        self.buy_price  = buy_price
+        self.sell_date  = sell_date
+        self.sell_price = sell_price
+        self.qty        = qty
+        self.commission = commission
+        self.pnl        = round((sell_price - buy_price) * qty - commission, 2)
+        self.pnl_pct    = round((sell_price - buy_price) / buy_price * 100, 2)
+        self.hold_days  = (pd.Timestamp(sell_date) - pd.Timestamp(buy_date)).days
+
+    def to_dict(self):
+        return {
+            "code": self.code,
+            "buy_date": self.buy_date, "buy_price": round(self.buy_price, 2),
+            "sell_date": self.sell_date, "sell_price": round(self.sell_price, 2),
+            "qty": self.qty, "commission": round(self.commission, 2),
+            "pnl": self.pnl, "pnl_pct": self.pnl_pct, "hold_days": self.hold_days,
+            # 兼容旧格式，方便前端 trades 表渲染
+            "date": self.sell_date, "action": "sell",
+            "price": round(self.sell_price, 2),
+        }
+
+
+# ══════════════════════════════════════════════════
+# Position
+# ══════════════════════════════════════════════════
+class Position:
+    def __init__(self, code, qty, cost, entry_date):
+        self.code       = code
+        self.qty        = qty
+        self.cost       = cost        # 买入均价
+        self.entry_date = entry_date
+
+
+# ══════════════════════════════════════════════════
+# BackBroker — 模拟券商
+# ══════════════════════════════════════════════════
+class BackBroker:
+    """
+    参考 backtrader brokers/brokerback.py 的佣金模型和订单执行逻辑。
+    A 股双边佣金：
+      买入：0.03% 印花税豁免 + 0.02% 过户费 ≈ 0.03%（取整）
+      卖出：0.1% 印花税 + 0.02% + 0.03% ≈ 0.13%
+    """
+    BUY_COMMISSION  = 0.0003   # 0.03%
+    SELL_COMMISSION = 0.0013   # 0.13%
+    MIN_COMMISSION  = 5.0      # 最低 5 元
+
+    def __init__(self, cash: float):
+        self.cash       = cash
+        self.positions  = {}          # code -> Position
+        self._pending   = []          # 待执行订单（下一个交易日开盘执行）
+        self.all_orders = []
+        self.trades     = []
+        self._buy_commissions  = 0.0
+        self._sell_commissions = 0.0
+
+    # ── 佣金计算 ──
+    def _comm(self, value: float, action: str) -> float:
+        rate = self.BUY_COMMISSION if action == "buy" else self.SELL_COMMISSION
+        return max(value * rate, self.MIN_COMMISSION)
+
+    # ── 提交订单（当日信号，加入待执行队列）──
+    def submit_buy(self, code: str, date, budget: float, reason="signal") -> Order:
+        o = Order(code, "buy", budget=budget, reason=reason)
+        o.status = OrderStatus.ACCEPTED
+        o.submit_date = str(date)
+        self._pending.append(o)
+        return o
+
+    def submit_sell(self, code: str, date, reason="signal") -> Order:
+        if code not in self.positions:
+            return None
+        o = Order(code, "sell", reason=reason)
+        o.status = OrderStatus.ACCEPTED
+        o.submit_date = str(date)
+        o.qty = self.positions[code].qty
+        self._pending.append(o)
+        return o
+
+    # ── 次日开盘执行所有待定订单 ──
+    def process_pending(self, day, open_prices: dict, logs: list):
+        filled, rejected = [], []
+        remaining = []
+
+        # 先处理卖单（释放资金）
+        sells = [o for o in self._pending if o.action == "sell"]
+        buys  = [o for o in self._pending if o.action == "buy"]
+
+        for o in sells:
+            code = o.code
+            if code not in open_prices or code not in self.positions:
+                o.status = OrderStatus.CANCELED
+                rejected.append(o)
+                continue
+            px  = open_prices[code]
+            pos = self.positions.pop(code)
+            comm = self._comm(px * pos.qty, "sell")
+            self._sell_commissions += comm
+            self.cash += px * pos.qty - comm
+
+            o.exec_price = px
+            o.exec_date  = str(day.date())
+            o.qty        = pos.qty
+            o.commission = comm
+            o.status     = OrderStatus.COMPLETED
+
+            trade = Trade(
+                code=code,
+                buy_date=pos.entry_date,   buy_price=pos.cost,
+                sell_date=str(day.date()), sell_price=px,
+                qty=pos.qty,
+                commission=self._comm(pos.cost * pos.qty, "buy") + comm,
+            )
+            self.trades.append(trade)
+            self.all_orders.append(o)
+            filled.append(o)
+
+        # 再处理买单
+        for o in buys:
+            code = o.code
+            if code not in open_prices or code in self.positions:
+                o.status = OrderStatus.CANCELED
+                rejected.append(o)
+                continue
+            px  = open_prices[code]
+            qty = int(o.budget / px / 100) * 100   # 整手
+            if qty < 100:
+                o.status = OrderStatus.REJECTED
+                logs.append({"level": "WARNING",
+                             "msg": f"{day.date()} {code}: 预算¥{o.budget:.0f} 不足买 100 股（¥{px*100:.0f}），跳过"})
+                rejected.append(o)
+                continue
+            comm  = self._comm(px * qty, "buy")
+            total = px * qty + comm
+            if total > self.cash:
+                o.status = OrderStatus.REJECTED
+                logs.append({"level": "WARNING",
+                             "msg": f"{day.date()} {code}: 现金¥{self.cash:.0f} 不足，需¥{total:.0f}，跳过"})
+                rejected.append(o)
+                continue
+            self.cash -= total
+            self._buy_commissions += comm
+            self.positions[code] = Position(code, qty, px, str(day.date()))
+
+            o.exec_price = px
+            o.exec_date  = str(day.date())
+            o.qty        = qty
+            o.commission = comm
+            o.status     = OrderStatus.COMPLETED
+            self.all_orders.append(o)
+            filled.append(o)
+
+        self._pending = []
+        return filled, rejected
+
+    # ── 当前持仓市值 ──
+    def portfolio_value(self, close_prices: dict) -> float:
+        val = self.cash
+        for code, pos in self.positions.items():
+            val += close_prices.get(code, pos.cost) * pos.qty
+        return val
+
+    @property
+    def total_commission(self):
+        return self._buy_commissions + self._sell_commissions
+
+
+# ══════════════════════════════════════════════════
+# Analyzers — 可插拔指标收集器
+# ══════════════════════════════════════════════════
+class SharpeAnalyzer:
+    """参考 backtrader analyzers/sharpe.py，年化 Sharpe（ddof=1）"""
+    def __init__(self, rf_annual=0.025):
+        self.rf_daily = rf_annual / 252
+        self._equity  = []
+
+    def notify_equity(self, equity: float):
+        self._equity.append(equity)
+
+    def get_analysis(self) -> dict:
+        eq = self._equity
+        if len(eq) < 2:
+            return {"sharpe": 0.0}
+        rets   = [(eq[i] - eq[i-1]) / eq[i-1] for i in range(1, len(eq)) if eq[i-1] > 0]
+        excess = [r - self.rf_daily for r in rets]
+        if len(excess) < 2:
+            return {"sharpe": 0.0}
+        std = float(np.std(excess, ddof=1))
+        if std < 1e-8:
+            return {"sharpe": 0.0}
+        raw = float(np.mean(excess)) / std * math.sqrt(252)
+        return {"sharpe": round(max(-99.0, min(99.0, raw)), 2)}
+
+
+class DrawDownAnalyzer:
+    """参考 backtrader analyzers/drawdown.py，逐日回撤序列 + 最大回撤"""
+    def __init__(self):
+        self._series = []   # list of {"date":str, "drawdown":float}
+        self._peak   = None
+
+    def notify_equity(self, date: str, equity: float):
+        if self._peak is None or equity > self._peak:
+            self._peak = equity
+        dd = (self._peak - equity) / self._peak * 100 if self._peak > 0 else 0.0
+        self._series.append({"date": date, "drawdown": round(dd, 2)})
+
+    def get_analysis(self) -> dict:
+        if not self._series:
+            return {"max_drawdown": 0.0, "series": []}
+        max_dd = max(s["drawdown"] for s in self._series)
+        return {"max_drawdown": round(max_dd, 2), "series": self._series}
+
+
+class TradeAnalyzer:
+    """参考 backtrader analyzers/tradeanalyzer.py"""
+    def __init__(self):
+        self._trades = []
+
+    def notify_trade(self, trade: Trade):
+        self._trades.append(trade)
+
+    def get_analysis(self) -> dict:
+        trades = self._trades
+        if not trades:
+            return {
+                "total_trades": 0, "win_rate": 0.0,
+                "avg_win": 0.0, "avg_loss": 0.0, "profit_factor": 0.0,
+                "max_win_streak": 0, "max_loss_streak": 0,
+                "avg_hold_days": 0.0, "total_pnl": 0.0,
+                "pnl_dist": [], "hold_days_dist": [],
+            }
+        wins    = [t for t in trades if t.pnl_pct > 0]
+        losses  = [t for t in trades if t.pnl_pct < 0]
+        avg_win  = float(np.mean([t.pnl_pct for t in wins]))  if wins   else 0.0
+        avg_loss = float(np.mean([t.pnl_pct for t in losses]))if losses else 0.0
+        pf_denom = abs(avg_loss * len(losses))
+        pf       = round(abs(avg_win * len(wins)) / pf_denom, 2) if pf_denom > 0 else 0.0
+
+        # 连胜/连败
+        max_win_streak = max_loss_streak = cur_win = cur_loss = 0
+        for t in trades:
+            if t.pnl_pct > 0:
+                cur_win  += 1; cur_loss = 0
+                max_win_streak = max(max_win_streak, cur_win)
+            elif t.pnl_pct < 0:
+                cur_loss += 1; cur_win  = 0
+                max_loss_streak = max(max_loss_streak, cur_loss)
+            else:
+                cur_win = cur_loss = 0
+
+        pnl_dist = [round(t.pnl_pct, 2) for t in trades]
+
+        return {
+            "total_trades":    len(trades),
+            "win_rate":        round(len(wins) / len(trades) * 100, 1) if trades else 0.0,
+            "avg_win":         round(avg_win, 2),
+            "avg_loss":        round(avg_loss, 2),
+            "profit_factor":   pf,
+            "max_win_streak":  max_win_streak,
+            "max_loss_streak": max_loss_streak,
+            "avg_hold_days":   round(float(np.mean([t.hold_days for t in trades])), 1),
+            "total_pnl":       round(sum(t.pnl for t in trades), 2),
+            "pnl_dist":        pnl_dist,
+            "hold_days_dist":  [t.hold_days for t in trades],
+        }
+
+
+class MonthlyAnalyzer:
+    """月度收益热力图数据"""
+    def __init__(self):
+        self._equity = []
+
+    def notify_equity(self, date: str, equity: float):
+        self._equity.append({"date": date, "equity": equity})
+
+    def get_analysis(self) -> dict:
+        if not self._equity:
+            return {}
+        df = pd.DataFrame(self._equity)
+        df["date"]  = pd.to_datetime(df["date"])
+        df["year"]  = df["date"].dt.year
+        df["month"] = df["date"].dt.month
+        monthly = {}
+        for (yr, mo), grp in df.groupby(["year", "month"]):
+            start = grp["equity"].iloc[0]
+            end   = grp["equity"].iloc[-1]
+            if start > 0:
+                monthly.setdefault(str(yr), {})[str(mo)] = round((end - start) / start * 100, 2)
+        return monthly
+
+
+# ══════════════════════════════════════════════════
+# Cerebro — 总编排器
+# ══════════════════════════════════════════════════
+class Cerebro:
+    """
+    Backtrader Cerebro 的轻量实现。
+    负责：数据加载 → 逐日模拟 → 策略执行 → 指标收集 → 结果汇总
+    """
+
+    def __init__(self, initial_cash=100_000, max_positions=5,
+                 stop_loss=-0.05, take_profit=0.10):
+        self.broker        = BackBroker(initial_cash)
+        self.initial_cash  = initial_cash
+        self.max_positions = max_positions
+        self.stop_loss     = stop_loss
+        self.take_profit   = take_profit
+
+        # Analyzers（参考 backtrader addanalyzer 接口）
+        self._sharpe   = SharpeAnalyzer()
+        self._drawdown = DrawDownAnalyzer()
+        self._trade    = TradeAnalyzer()
+        self._monthly  = MonthlyAnalyzer()
+
+        self.data_feeds  = {}   # code -> pd.DataFrame
+        self.scan_fn     = None
+        self.logs        = []
+        self.equity_curve= []
+        self._signal_cnt = 0
+
+    def add_data(self, code: str, df: pd.DataFrame):
+        self.data_feeds[code] = df.sort_values("date").reset_index(drop=True)
+
+    def set_scan(self, fn):
+        """设置 scan() 策略函数"""
+        self.scan_fn = fn
+
+    # ── 数据辅助 ──
+    def _open_prices(self, day) -> dict:
+        prices = {}
+        for code, df in self.data_feeds.items():
+            row = df[df["date"] == day]
+            if not row.empty:
+                prices[code] = float(row.iloc[0]["open"])
+        return prices
+
+    def _close_prices(self, day) -> dict:
+        prices = {}
+        for code, df in self.data_feeds.items():
+            row = df[df["date"] == day]
+            if not row.empty:
+                prices[code] = float(row.iloc[0]["close"])
+        return prices
+
+    def _kline(self, code: str, n: int, day) -> pd.DataFrame:
+        df = self.data_feeds.get(code)
+        if df is None:
+            return pd.DataFrame()
+        return df[df["date"] <= day].tail(n).reset_index(drop=True)
+
+    def _quotes(self, codes: list, day) -> pd.DataFrame:
+        rows = []
+        for c in codes:
+            df = self.data_feeds.get(c)
+            if df is None:
+                continue
+            sub = df[df["date"] <= day]
+            if not sub.empty:
+                last = sub.iloc[-1]
+                rows.append({
+                    "代码": c, "名称": "",
+                    "最新价": float(last["close"]),
+                    "涨跌幅": float(last.get("change_pct", 0)),
+                    "成交量": float(last["volume"]),
+                    "换手率": 0,
+                })
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+    # ── 主运行循环 ──
+    def run(self, start_date: str, end_date: str, _progress_fn=None, _cancel_fn=None) -> "Cerebro":
+        start_ts = pd.Timestamp(start_date)
+        end_ts   = pd.Timestamp(end_date)
+
+        # 收集有效交易日
+        days_set = set()
+        for df in self.data_feeds.values():
+            mask = (df["date"] >= start_ts) & (df["date"] <= end_ts)
+            days_set.update(df[mask]["date"].tolist())
+        days = sorted(days_set)
+
+        if not days:
+            self.logs.append({"level": "ERROR",
+                               "msg": f"区间 {start_date}~{end_date} 无交易日数据"})
+            return self
+
+        self.logs.append({"level": "INFO",
+                           "msg": f"Cerebro 启动: {len(days)} 交易日，"
+                                  f"{len(self.data_feeds)} 只标的，"
+                                  f"初始资金 ¥{self.initial_cash:,.0f}"})
+        self.logs.append({"level": "INFO",
+                           "msg": f"参数: 最大持仓={self.max_positions}，"
+                                  f"止损={self.stop_loss*100}%，"
+                                  f"止盈={self.take_profit*100}%"})
+
+        for i, day in enumerate(days):
+            # 终止检查（每5天检查一次）
+            if _cancel_fn and i % 5 == 0 and _cancel_fn():
+                break
+            # 进度回调（每 5 天更新一次，减少开销）
+            if _progress_fn and i % 5 == 0:
+                _progress_fn(i + 1, len(days), f"模拟 {day.date()} ({i+1}/{len(days)}天)")
+
+            # ── Step 1: 次日开盘执行昨日订单（backtrader 核心：无前视偏差）──
+            open_px = self._open_prices(day)
+            filled, rejected = self.broker.process_pending(day, open_px, self.logs)
+            for o in filled:
+                if o.action == "buy":
+                    self.logs.append({"level": "INFO",
+                                       "msg": f"[成交-买] {day.date()} {o.code} "
+                                              f"¥{o.exec_price:.2f}×{o.qty}股 "
+                                              f"佣金¥{o.commission:.2f}"})
+                else:
+                    # 卖出成交 → 通知 TradeAnalyzer
+                    for t in self.broker.trades:
+                        if t.sell_date == str(day.date()) and t.code == o.code:
+                            self._trade.notify_trade(t)
+                    self.logs.append({"level": "INFO",
+                                       "msg": f"[成交-卖] {day.date()} {o.code} "
+                                              f"¥{o.exec_price:.2f}×{o.qty}股 "
+                                              f"原因={o.reason}"})
+
+            # ── Step 2: 当日收盘价格 ──
+            close_px = self._close_prices(day)
+
+            # ── Step 3: 止损/止盈检查（收盘价触发，次日开盘执行）──
+            for code, pos in list(self.broker.positions.items()):
+                if code not in close_px:
+                    continue
+                cp  = close_px[code]
+                pnl = (cp - pos.cost) / pos.cost
+                if pnl <= self.stop_loss:
+                    self.broker.submit_sell(code, day, "stop_loss")
+                    self.logs.append({"level": "INFO",
+                                       "msg": f"[止损] {day.date()} {code} "
+                                              f"浮亏{pnl*100:.1f}%，次日卖出"})
+                elif pnl >= self.take_profit:
+                    self.broker.submit_sell(code, day, "take_profit")
+                    self.logs.append({"level": "INFO",
+                                       "msg": f"[止盈] {day.date()} {code} "
+                                              f"浮盈{pnl*100:.1f}%，次日卖出"})
+
+            # ── Step 4: 组合权益估值（参考 backtrader broker.getvalue）──
+            equity = self.broker.portfolio_value(close_px)
+            self.equity_curve.append({"date": str(day.date()), "equity": round(equity, 2)})
+            self._sharpe.notify_equity(equity)
+            self._drawdown.notify_equity(str(day.date()), equity)
+            self._monthly.notify_equity(str(day.date()), equity)
+
+            # ── Step 5: 收盘运行策略，生成次日信号 ──
+            if i < len(days) - 1 and self.scan_fn:
+                slots  = self.max_positions - len(self.broker.positions)
+                # 排除已有待售单的标的
+                pending_sell = {o.code for o in self.broker._pending if o.action == "sell"}
+                if slots > 0:
+                    try:
+                        _day = day
+                        sigs = self.scan_fn(
+                            list(self.data_feeds.keys()),
+                            lambda c, d=60, _d=_day: self._kline(c, d, _d),
+                            lambda cs, _d=_day: self._quotes(cs, _d),
+                        )
+                        self._signal_cnt += len(sigs)
+                        budget = self.broker.cash / max(slots, 1)
+                        for sig in sigs[:slots]:
+                            code = sig.get("code", "")
+                            if code and code not in self.broker.positions \
+                                    and code not in pending_sell:
+                                self.broker.submit_buy(code, day, budget, "signal")
+                    except Exception as e:
+                        self.logs.append({"level": "WARNING",
+                                           "msg": f"{day.date()} 策略出错: {e}"})
+
+        # ── 回测结束统计 ──
+        open_cnt = len(self.broker.positions)
+        if open_cnt:
+            self.logs.append({"level": "WARNING",
+                               "msg": f"回测结束仍有 {open_cnt} 只未平仓: "
+                                      f"{list(self.broker.positions.keys())}"})
+        ta = self._trade.get_analysis()
+        self.logs.append({"level": "INFO",
+                           "msg": f"Cerebro 完成: "
+                                  f"总交易={ta['total_trades']} "
+                                  f"胜率={ta['win_rate']}% "
+                                  f"信号={self._signal_cnt} "
+                                  f"总佣金=¥{self.broker.total_commission:.0f}"})
+        return self
+
+    # ── 汇总结果 ──
+    def get_results(self) -> dict:
+        ta      = self._trade.get_analysis()
+        sharpe  = self._sharpe.get_analysis()
+        dd_data = self._drawdown.get_analysis()
+        monthly = self._monthly.get_analysis()
+
+        eq  = [e["equity"] for e in self.equity_curve]
+        n   = len(eq)
+        cap = self.initial_cash
+        final = eq[-1] if eq else cap
+
+        total_ret  = (final - cap) / cap
+        annual_ret = (1 + total_ret) ** (252 / n) - 1 if n > 1 else 0.0
+        calmar     = abs(annual_ret / (dd_data["max_drawdown"] / 100)) \
+                     if dd_data["max_drawdown"] > 0 else 0.0
+
+        metrics = {
+            "total_return":    round(total_ret * 100, 2),
+            "annual_return":   round(annual_ret * 100, 2),
+            "max_drawdown":    dd_data["max_drawdown"],
+            "sharpe":          sharpe["sharpe"],
+            "calmar":          round(calmar, 2),
+            "win_rate":        ta["win_rate"],
+            "total_trades":    ta["total_trades"],
+            "open_positions":  len(self.broker.positions),
+            "avg_win":         ta["avg_win"],
+            "avg_loss":        ta["avg_loss"],
+            "profit_factor":   ta["profit_factor"],
+            "max_win_streak":  ta["max_win_streak"],
+            "max_loss_streak": ta["max_loss_streak"],
+            "avg_hold_days":   ta["avg_hold_days"],
+            "total_pnl":       ta["total_pnl"],
+            "total_commission":round(self.broker.total_commission, 2),
+            "final_equity":    round(final, 2),
+            "total_days":      n,
+        }
+
+        # 兼容旧前端格式（trades 列表）
+        all_trades = []
+        for t in self.broker.trades:
+            all_trades.append({
+                "date": t.sell_date, "code": t.code, "action": "sell",
+                "price": round(t.sell_price, 2), "qty": t.qty,
+                "pnl_pct": t.pnl_pct, "hold_days": t.hold_days,
+            })
+            all_trades.append({
+                "date": t.buy_date, "code": t.code, "action": "buy",
+                "price": round(t.buy_price, 2), "qty": t.qty,
+                "pnl_pct": 0, "hold_days": 0,
+            })
+        all_trades.sort(key=lambda x: x["date"])
+
+        return {
+            "metrics":         metrics,
+            "equity_curve":    self.equity_curve,
+            "drawdown_series": dd_data["series"],
+            "monthly_returns": monthly,
+            "pnl_dist":        ta["pnl_dist"],
+            "hold_days_dist":  ta.get("hold_days_dist", []),
+            "trades":          all_trades,
+            "logs":            self.logs,
+            "commission_total":round(self.broker.total_commission, 2),
+        }
+
+
+# ══════════════════════════════════════════════════
+# 全市场数据加载（本地 CSV + TDX 活跃补充）
+# ══════════════════════════════════════════════════
+def _load_full_market_data(start_date: str, end_date: str, logs: list,
+                            progress_fn=None) -> dict:
+    """
+    全市场回测数据两阶段加载：
+      Phase 1: 本地 CSV 全量（data/daily/*.csv）— 快速
+      Phase 2: TDX 实时行情预筛选 → 按成交量取前 800 只补充 K 线
+    progress_fn(current, total, stage) 每步回调，供前端显示进度条。
+    """
+    from data_manager import get_local
+    lookback_ts = pd.Timestamp(start_date) - pd.Timedelta(days=120)
+    all_data: dict = {}
+
+    # ── Phase 1: 本地 CSV 全量 ────────────────────────────────
+    local_files = sorted(DATA_DIR.glob("*.csv"))
+    total_local  = len(local_files)
+    logs.append({"level": "INFO",
+                 "msg": f"[全市场] 本地CSV {total_local} 只，开始加载..."})
+
+    for i, f in enumerate(local_files):
+        code = f.stem
+        if progress_fn and i % 10 == 0:
+            progress_fn(i + 1, total_local + 800, f"本地CSV {i+1}/{total_local}")
+        try:
+            df = get_local(code)
+            if df is not None and not df.empty and len(df) >= 10:
+                df = df[df["date"] >= lookback_ts].reset_index(drop=True)
+                if not df.empty:
+                    all_data[code] = df
+        except Exception:
+            pass
+
+    logs.append({"level": "INFO",
+                 "msg": f"[全市场] 本地加载完成: {len(all_data)} 只"})
+
+    # ── Phase 2: TDX 活跃标的补充 ─────────────────────────────
+    _tdx_client = None
+    try:
+        import ths_quote as tq
+        c = tq.get_client()
+        if c and c._ok:
+            _tdx_client = c
+    except Exception:
+        pass
+
+    if not _tdx_client:
+        logs.append({"level": "WARNING",
+                     "msg": "[全市场] TDX未连接，仅使用本地数据"})
+        return all_data
+
+    try:
+        all_codes = _tdx_client.get_all_stock_codes()
+        if not all_codes:
+            return all_data
+
+        logs.append({"level": "INFO",
+                     "msg": f"[全市场] TDX行情预筛选: {len(all_codes)} 只..."})
+        if progress_fn:
+            progress_fn(total_local, total_local + 800, "TDX行情预筛选中...")
+
+        quotes = _tdx_client.get_quotes(all_codes)
+        if not quotes:
+            return all_data
+
+        # 预筛选：价格 > 3 元、成交量 > 100 手、非停牌
+        active = [q for q in quotes
+                  if q.get("price", 0) > 3
+                  and q.get("vol", 0) > 100
+                  and q.get("last_close", 0) > 0]
+        active.sort(key=lambda q: q.get("vol", 0), reverse=True)
+
+        # 取前 800 只中本地尚无数据的
+        top_codes = [q["code"] for q in active[:800] if q["code"] not in all_data]
+        logs.append({"level": "INFO",
+                     "msg": f"[全市场] TDX补充标的: {len(top_codes)} 只（排除本地已有）"})
+
+        for i, code in enumerate(top_codes):
+            if progress_fn and i % 10 == 0:
+                progress_fn(total_local + i + 1,
+                            total_local + len(top_codes),
+                            f"TDX K线 {i+1}/{len(top_codes)}")
+            try:
+                bars = _tdx_client.get_kline(code, 800)
+                if bars:
+                    df = pd.DataFrame(bars)
+                    df["date"] = pd.to_datetime(df["date"])
+                    df = df[df["date"] >= lookback_ts].sort_values("date").reset_index(drop=True)
+                    if not df.empty:
+                        all_data[code] = df
+            except Exception:
+                pass
+
+        logs.append({"level": "INFO",
+                     "msg": f"[全市场] TDX补充完成，总计 {len(all_data)} 只数据"})
+
+    except Exception as e:
+        logs.append({"level": "WARNING", "msg": f"[全市场] TDX补充失败: {e}"})
+
+    return all_data
+
+
+# ══════════════════════════════════════════════════
+# 指定股票数据加载（本地 CSV + TDX）
+# ══════════════════════════════════════════════════
+def _load_data(codes: list, start_date: str, end_date: str, logs: list) -> dict:
+    """
+    数据加载：本地 CSV 优先，TDX 次选。
+    完全移除 akshare 降级（akshare 受代理/网络影响会长时间挂起）。
+    """
+    from data_manager import get_local
+    lookback_ts = pd.Timestamp(start_date) - pd.Timedelta(days=120)
+    all_data    = {}
+
+    # 获取 TDX 客户端（复用单例，不重复连接）
+    _tdx_client = None
+    try:
+        import sys as _sys, os as _os
+        _sys.path.insert(0, _os.path.dirname(os.path.abspath(__file__)))
+        import ths_quote as tq
+        c = tq.get_client()
+        if c and c._ok:
+            _tdx_client = c
+    except Exception:
+        pass
+
+    for code in codes:
+        # ── 优先：本地 CSV ────────────────────────────────────
+        try:
+            df = get_local(code)
+            if df is not None and not df.empty and len(df) >= 10:
+                df = df[df["date"] >= lookback_ts].reset_index(drop=True)
+                if not df.empty:
+                    all_data[code] = df
+                    logs.append({"level": "INFO", "msg": f"[本地] {code}: {len(df)} 行"})
+                    continue
+        except Exception:
+            pass
+
+        # ── 次选：TDX 日K（TCP直连，无代理风险）──────────────
+        if _tdx_client:
+            try:
+                bars = _tdx_client.get_kline(code, 800)
+                if bars:
+                    df = pd.DataFrame(bars)
+                    df["date"] = pd.to_datetime(df["date"])
+                    df = df[df["date"] >= lookback_ts].sort_values("date").reset_index(drop=True)
+                    if not df.empty:
+                        all_data[code] = df
+                        logs.append({"level": "INFO", "msg": f"[TDX] {code}: {len(df)} 行"})
+                        continue
+                logs.append({"level": "WARNING",
+                              "msg": f"{code}: TDX无历史数据，请在「数据管理」下载"})
+            except Exception as e:
+                logs.append({"level": "WARNING", "msg": f"{code}: TDX获取失败 — {e}"})
+        else:
+            logs.append({"level": "WARNING",
+                          "msg": f"{code}: TDX未连接，请在「数据管理」下载本地数据"})
+
+    if not all_data:
+        logs.append({"level": "ERROR",
+                      "msg": "所有股票均无可用数据。请先在「数据管理」下载本地历史数据，"
+                             "或确认 TDX 行情服务器已连接。"})
+    return all_data
+
+
+def _load_strategy(code_str: str):
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py",
+                                     encoding="utf-8", delete=False) as f:
+        f.write(code_str)
+        tmp = f.name
+    try:
+        spec = importlib.util.spec_from_file_location("_bt_mod", tmp)
+        mod  = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        os.unlink(tmp)
+
+
+# ══════════════════════════════════════════════════
+# 公开入口（保持与 main.py 调用签名兼容）
+# ══════════════════════════════════════════════════
+def run_backtest(strategy_code: str, codes: list,
+                 start_date: str, end_date: str,
+                 initial_capital: float = 100_000,
+                 max_positions: int = 5,
+                 stop_loss: float = -0.05,
+                 take_profit: float = 0.10,
+                 _progress_fn=None,
+                 _cancel_fn=None) -> dict:
+    """
+    Backtrader 风格回测入口。
+    codes=[] → 全市场模式（本地CSV + TDX活跃前800只）
+    _progress_fn(current, total, stage) → 供异步轮询使用
+    """
+    logs = []
+    Order._id_seq = 0   # 每次回测重置 ID 计数器
+
+    def _prog(cur, total, stage=""):
+        if _progress_fn:
+            _progress_fn(cur, total, stage)
+
+    try:
+        # 编译策略
+        try:
+            mod = _load_strategy(strategy_code)
+        except Exception as e:
+            return {"ok": False, "error": f"策略编译失败: {e}", "logs": logs}
+        if not hasattr(mod, "scan"):
+            return {"ok": False, "error": "策略必须包含 scan() 函数", "logs": logs}
+
+        full_market = not codes   # codes=[] → 全市场模式
+        logs.append({"level": "INFO",
+                      "msg": f"策略加载成功，{'全市场' if full_market else f'{len(codes)}只'}回测模式，开始数据加载..."})
+
+        # ── 数据加载（阶段1：占总进度 0-70%）──────────────────
+        def _data_prog(cur, total, stage):
+            _prog(int(cur / max(total, 1) * 70), 100, stage)
+
+        if full_market:
+            all_data = _load_full_market_data(start_date, end_date, logs, _data_prog)
+        else:
+            all_data = _load_data(codes, start_date, end_date, logs)
+            _prog(70, 100, "数据加载完成")
+
+        if not all_data:
+            return {"ok": False,
+                    "error": "无可用历史数据，请先在「数据管理」下载，或确认 TDX 已连接",
+                    "logs": logs}
+
+        actual_codes = list(all_data.keys())
+
+        if not full_market:
+            missing = [c for c in codes if c not in all_data]
+            if missing:
+                logs.append({"level": "WARNING",
+                              "msg": f"以下股票无数据，跳过: {missing}"})
+
+        logs.append({"level": "INFO",
+                      "msg": f"数据就绪: {len(actual_codes)} 只，启动 Cerebro..."})
+        _prog(70, 100, f"数据就绪 {len(actual_codes)} 只，启动模拟...")
+
+        # ── 构建 Cerebro ─────────────────────────────────────
+        cerebro = Cerebro(
+            initial_cash  = initial_capital,
+            max_positions = max_positions,
+            stop_loss     = stop_loss,
+            take_profit   = take_profit,
+        )
+        for code, df in all_data.items():
+            cerebro.add_data(code, df)
+        cerebro.logs = logs
+        cerebro.set_scan(mod.scan)
+
+        # ── 运行（阶段2：占总进度 70-100%）─────────────────────
+        def _sim_prog(cur, total, stage):
+            _prog(70 + int(cur / max(total, 1) * 30), 100, stage)
+
+        cerebro.run(start_date, end_date, _progress_fn=_sim_prog, _cancel_fn=_cancel_fn)
+
+        results = cerebro.get_results()
+        m = results["metrics"]
+
+        # 股票名称
+        from data_manager import get_stock_name
+        stock_names = {c: get_stock_name(c) for c in actual_codes}
+
+        logs.append({"level": "INFO",
+                      "msg": f"回测完成: "
+                             f"收益={m['total_return']}% "
+                             f"年化={m['annual_return']}% "
+                             f"回撤={m['max_drawdown']}% "
+                             f"Sharpe={m['sharpe']} "
+                             f"胜率={m['win_rate']}% "
+                             f"佣金=¥{m['total_commission']}"})
+
+        _prog(100, 100, "完成")
+
+        return {
+            "ok":            True,
+            "metrics":       results["metrics"],
+            "equity_curve":  results["equity_curve"],
+            "drawdown_series":results["drawdown_series"],
+            "monthly_returns":results["monthly_returns"],
+            "pnl_dist":      results["pnl_dist"],
+            "hold_days_dist":results["hold_days_dist"],
+            "trades":        results["trades"],
+            "logs":          logs,
+            "stock_names":   stock_names,
+            "universe_size": len(actual_codes),
+            "full_market":   full_market,
+            "data_sources":  {c: "local" if (DATA_DIR / f"{c}.csv").exists() else "tdx"
+                              for c in actual_codes},
+        }
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        logs.append({"level": "ERROR", "msg": f"Cerebro 异常: {e}"})
+        logs.append({"level": "ERROR", "msg": tb})
+        logger.error(f"回测异常: {e}\n{tb}")
+        _prog(-1, 100, f"错误: {e}")
+        return {"ok": False, "error": str(e), "traceback": tb, "logs": logs}
+
+
+# ══════════════════════════════════════════════════
+# 异步回测 API（全市场需要60-120秒，前端需轮询）
+# ══════════════════════════════════════════════════
+def start_backtest_async(strategy_code: str, codes: list,
+                          start_date: str, end_date: str,
+                          initial_capital: float = 100_000,
+                          max_positions: int = 5,
+                          stop_loss: float = -0.05,
+                          take_profit: float = 0.10) -> str:
+    """在后台线程运行回测，立即返回 task_id（前端轮询 /api/backtest/task/<task_id>）"""
+    task_id = str(_bt_uuid.uuid4())[:8]
+    _bt_tasks[task_id] = {
+        "status":   "running",
+        "progress": {"current": 0, "total": 100, "stage": "初始化..."},
+        "result":   None,
+        "created":  _bt_time.time(),
+        "cancel":   False,   # 终止标志
+    }
+
+    def _worker():
+        def _prog(cur, total, stage=""):
+            _bt_tasks[task_id]["progress"] = {
+                "current": cur, "total": total, "stage": stage
+            }
+        def _is_canceled():
+            return _bt_tasks[task_id].get("cancel", False)
+
+        try:
+            result = run_backtest(
+                strategy_code   = strategy_code,
+                codes           = codes,
+                start_date      = start_date,
+                end_date        = end_date,
+                initial_capital = initial_capital,
+                max_positions   = max_positions,
+                stop_loss       = stop_loss,
+                take_profit     = take_profit,
+                _progress_fn    = _prog,
+                _cancel_fn      = _is_canceled,
+            )
+            # 检查是否在运行中被取消
+            if _bt_tasks[task_id].get("cancel"):
+                _bt_tasks[task_id]["status"]   = "canceled"
+                _bt_tasks[task_id]["result"]   = {"ok": False, "error": "用户已终止回测"}
+                _bt_tasks[task_id]["progress"] = {"current": 0, "total": 100, "stage": "已终止"}
+            else:
+                _bt_tasks[task_id]["status"]   = "done"
+                _bt_tasks[task_id]["result"]   = result
+                _bt_tasks[task_id]["progress"] = {"current": 100, "total": 100, "stage": "完成"}
+        except Exception as e:
+            if _bt_tasks[task_id].get("cancel"):
+                _bt_tasks[task_id]["status"]   = "canceled"
+                _bt_tasks[task_id]["result"]   = {"ok": False, "error": "用户已终止回测"}
+                _bt_tasks[task_id]["progress"] = {"current": 0, "total": 100, "stage": "已终止"}
+            else:
+                tb = traceback.format_exc()
+                _bt_tasks[task_id]["status"]   = "error"
+                _bt_tasks[task_id]["result"]   = {"ok": False, "error": str(e), "traceback": tb}
+                _bt_tasks[task_id]["progress"] = {"current": -1, "total": 100, "stage": f"失败: {e}"}
+
+    _bt_threading.Thread(target=_worker, daemon=True).start()
+    return task_id
+
+
+def cancel_backtest_task(task_id: str) -> dict:
+    """请求终止一个正在运行的回测任务"""
+    task = _bt_tasks.get(task_id)
+    if not task:
+        return {"ok": False, "msg": "任务不存在"}
+    if task["status"] != "running":
+        return {"ok": False, "msg": f"任务状态为 {task['status']}，无法终止"}
+    task["cancel"] = True
+    task["status"] = "canceling"
+    task["progress"]["stage"] = "正在终止..."
+    return {"ok": True, "msg": "已发送终止信号"}
+
+
+def get_backtest_task(task_id: str) -> dict:
+    """查询异步回测任务的状态、进度与结果"""
+    task = _bt_tasks.get(task_id)
+    if not task:
+        return {"ok": False, "msg": "任务不存在"}
+    return {
+        "ok":       True,
+        "status":   task["status"],
+        "progress": task["progress"],
+        # 只在完成/出错时返回 result（running 时不传，减少带宽）
+        "result":   task["result"] if task["status"] not in ("running", "canceling") else None,
+    }
