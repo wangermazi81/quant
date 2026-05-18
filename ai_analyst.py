@@ -56,6 +56,7 @@ PROVIDER_PRESETS = {
     "qwen":      {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen-plus"},
     "zhipu":     {"base_url": "https://open.bigmodel.cn/api/paas/v4",    "model": "glm-4-flash"},
     "nvidia":    {"base_url": "https://integrate.api.nvidia.com/v1",     "model": "nvidia/llama-3.1-nemotron-70b-instruct"},
+    "xiaomimimo":{"base_url": "https://token-plan-cn.xiaomimimo.com/v1", "model": "MiMo-V2.5-Pro"},
     "custom":    {"base_url": "",                                         "model": ""},
 }
 

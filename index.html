@@ -978,6 +978,7 @@ tr:hover td{background:var(--card)}
         <div style="margin-top:16px;padding:12px;background:var(--card);border-radius:8px;font-size:11px;color:var(--t3);line-height:1.7">
           <b style="color:var(--t2)">推荐提供商（国内可用）：</b><br>
           • DeepSeek — deepseek.com，性价比高，中文理解强<br>
+          • 小米MiMo — platform.xiaomimimo.com，国产推理模型，中文效果佳<br>
           • NVIDIA NIM — integrate.api.nvidia.com，多款免费模型（Base URL 必须填 API 端点）<br>
           • 通义千问 — aliyun.com，阿里云服务<br>
           • 智谱GLM — bigmodel.cn，GLM-4-Flash 免费额度<br>
@@ -1725,7 +1726,7 @@ async function initAI(){
 function renderProvGrid(){
   const presets = aiCfg.presets || {}
   const cur     = aiCfg.provider || 'deepseek'
-  const labels  = {deepseek:'DeepSeek',openai:'OpenAI',anthropic:'Claude',nvidia:'NVIDIA',qwen:'通义千问',zhipu:'智谱GLM',custom:'自定义'}
+  const labels  = {deepseek:'DeepSeek',openai:'OpenAI',anthropic:'Claude',nvidia:'NVIDIA',qwen:'通义千问',zhipu:'智谱GLM',xiaomimimo:'小米MiMo',custom:'自定义'}
   const el = document.getElementById('provGrid')
   el.innerHTML = Object.keys(labels).map(k=>`
     <div class="prov-btn ${k===cur?'active':''}" onclick="selectProv('${k}')">
@@ -2108,10 +2109,10 @@ function renderAIResult(r){
         启用AI后可获得：<b>技术分析师 → 多方研究员 → 空方研究员 → 风险管理师 → 首席决策官</b> 六级深度分析。
       </div>
       <div style="font-size:11px;color:#a37a2a;margin-bottom:10px;line-height:1.6">
-        📌 推荐使用 <b>DeepSeek</b>（国内可用，性价比高）：<br>
-        1. 访问 <b>platform.deepseek.com</b> 注册并获取 API Key<br>
-        2. 点击下方「前往AI设置」填入 Key 并保存<br>
-        NVIDIA NIM — integrate.api.nvidia.com，多款免费模型可用
+        📌 推荐使用 <b>DeepSeek</b> 或 <b>小米MiMo</b>（国内可用，性价比高）：<br>
+        1. DeepSeek：访问 <b>platform.deepseek.com</b> 注册并获取 API Key<br>
+        2. 小米MiMo：访问 <b>platform.xiaomimimo.com</b> 注册并获取 API Key<br>
+        3. 点击下方「前往AI设置」选择提供商，填入 Key 并保存
       </div>
       <button class="btn btn-orange btn-sm" onclick="switchRTab('aiset',document.querySelectorAll('.rtab')[4])">⚙ 前往AI设置 →</button>
     </div>`
