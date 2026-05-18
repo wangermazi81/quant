@@ -1284,7 +1284,7 @@ def ai_test_conn():
     try:
         reply = ai._call_llm(cfg, [
             {"role": "user", "content": "请回复'OK'，不要任何其他内容。"},
-        ], temperature=0, max_tokens=5)
+        ], temperature=0.1, max_tokens=16)
         return jsonify({"ok": True, "reply": reply.strip(),
                         "model": cfg.get("model"), "base_url": cfg.get("base_url")})
     except Exception as e:
