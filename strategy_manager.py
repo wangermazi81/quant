@@ -264,27 +264,71 @@ _MKT_CACHE_TTL = 300  # 5 分钟
 def _refresh_market_cache() -> list:
     """
     刷新全市场行情缓存：
-      1. 从名称缓存获取所有 A 股代码（~5000+）
-      2. 批量获取实时行情（80只/批）
+      1. 优先尝试 TDX 批量行情（~5000 只）
+      2. TDX 不可用时，自动降级到 akshare（ak.stock_zh_a_spot_em）
       3. 过滤停牌/超低价，按成交量降序存入共享缓存
     返回：排序后的行情列表 [{code, price, vol, ...}, ...]
     """
+    # ── 路径 1：TDX ────────────────────────────────────────────────
     try:
         import ths_quote as _tq
         client = _tq.get_client()
-        if not client or not client._ok:
-            return []
+        if client and client._ok:
+            all_codes = client.get_all_stock_codes()
+            if all_codes:
+                logger.info(f"[SM] 全市场宇宙：共 {len(all_codes)} 只，开始批量行情筛选...")
+                quotes = client.get_quotes(all_codes)
+                if quotes:
+                    active = [q for q in quotes
+                              if q.get("price", 0) > 3
+                              and q.get("vol", 0) > 100
+                              and q.get("last_close", 0) > 0]
+                    active.sort(key=lambda q: q.get("vol", 0), reverse=True)
+                    _mkt_cache["sorted_quotes"] = active
+                    _mkt_cache["ts"] = _time.time()
+                    logger.info(f"[SM] 全市场行情缓存刷新（TDX）：{len(active)} 只有效标的")
+                    return active
+    except Exception as e:
+        logger.warning(f"[SM] TDX 全市场行情获取失败: {e}")
 
-        all_codes = client.get_all_stock_codes()
-        if not all_codes:
-            return []
+    # ── 路径 2：akshare 兜底 ────────────────────────────────────────
+    try:
+        import os as _os, akshare as ak
+        # 清除代理，避免代理服务器拦截
+        _proxy_bak = {k: _os.environ.pop(k, None)
+                      for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+                                "all_proxy", "ALL_PROXY")}
+        logger.info("[SM] TDX 不可用，切换到 akshare 获取全市场行情（可能较慢）...")
+        try:
+            df = ak.stock_zh_a_spot_em()
+        finally:
+            # 还原代理设置
+            for k, v in _proxy_bak.items():
+                if v is not None:
+                    _os.environ[k] = v
+        if df is None or df.empty:
+            raise ValueError("akshare 返回空数据")
 
-        logger.info(f"[SM] 全市场宇宙：共 {len(all_codes)} 只，开始批量行情筛选...")
-        quotes = client.get_quotes(all_codes)
-        if not quotes:
-            return []
+        # akshare 列名映射 → 内部行情字典格式
+        col_map = {
+            "代码": "code",
+            "名称": "name",
+            "最新价": "price",
+            "涨跌幅": "change_pct",
+            "昨收": "last_close",
+            "成交量": "vol",
+            "量比": "volume_ratio",
+        }
+        keep = [c for c in col_map if c in df.columns]
+        df2 = df[keep].rename(columns=col_map).copy()
+        for col in ("price", "change_pct", "last_close", "vol", "volume_ratio"):
+            if col in df2.columns:
+                df2[col] = df2[col].apply(
+                    lambda x: float(x) if x is not None and str(x).strip() not in ("", "-", "None") else 0.0
+                )
+        records = df2.to_dict("records")
 
-        active = [q for q in quotes
+        active = [q for q in records
                   if q.get("price", 0) > 3
                   and q.get("vol", 0) > 100
                   and q.get("last_close", 0) > 0]
@@ -292,12 +336,93 @@ def _refresh_market_cache() -> list:
 
         _mkt_cache["sorted_quotes"] = active
         _mkt_cache["ts"] = _time.time()
-        logger.info(f"[SM] 全市场行情缓存刷新：{len(active)} 只有效标的")
+        logger.info(f"[SM] 全市场行情缓存刷新（akshare）：{len(active)} 只有效标的")
         return active
 
     except Exception as e:
-        logger.warning(f"[SM] 全市场宇宙构建失败: {e}")
-        return []
+        logger.warning(f"[SM] akshare 全市场行情获取失败: {e}")
+
+    # ── 路径 3：baostock 兜底 ──────────────────────────────────────
+    try:
+        import baostock as bs
+        import pandas as pd
+        logger.info("[SM] 切换到 baostock 获取全市场行情...")
+        lg = bs.login()
+        if lg.error_code != '0':
+            raise RuntimeError(f"baostock 登录失败: {lg.error_msg}")
+        try:
+            rs = bs.query_all_stock()
+            if rs.error_code != '0':
+                raise RuntimeError(f"baostock query 失败: {rs.error_msg}")
+            rows = []
+            while rs.next():
+                row = rs.get_row_data()
+                rows.append(row)
+        finally:
+            bs.logout()
+        if not rows:
+            raise ValueError("baostock 返回空数据")
+        # baostock 返回的是代码列表，无实时行情，只能返回代码（无成交量排序）
+        codes = []
+        for row in rows:
+            code_raw = row[0] if row else ""
+            if code_raw.startswith("sz.") or code_raw.startswith("sh."):
+                code = code_raw[3:]
+                # 过滤指数、基金等
+                if len(code) == 6 and code[0] in ("0", "3", "6"):
+                    codes.append(code)
+        if not codes:
+            raise ValueError("baostock 未返回有效股票代码")
+        # 构造轻量行情（无实时价，成交量为0，仍可用于代码宇宙）
+        active = [{"code": c, "name": c, "price": 10.0, "vol": 1000,
+                   "last_close": 10.0, "change_pct": 0.0} for c in codes]
+        _mkt_cache["sorted_quotes"] = active
+        _mkt_cache["ts"] = _time.time()
+        logger.info(f"[SM] 全市场行情缓存刷新（baostock，仅代码列表）：{len(active)} 只")
+        return active
+    except ImportError:
+        logger.debug("[SM] baostock 未安装，跳过")
+    except Exception as e:
+        logger.warning(f"[SM] baostock 全市场行情获取失败: {e}")
+
+    # ── 路径 4：efinance 兜底 ──────────────────────────────────────
+    try:
+        import efinance as ef
+        import pandas as pd
+        logger.info("[SM] 切换到 efinance 获取全市场行情...")
+        df = ef.stock.get_realtime_quotes()
+        if df is None or df.empty:
+            raise ValueError("efinance 返回空数据")
+        col_map = {
+            "股票代码": "code",
+            "股票名称": "name",
+            "最新价": "price",
+            "涨跌幅": "change_pct",
+            "昨日收盘": "last_close",
+            "成交量": "vol",
+        }
+        keep = [c for c in col_map if c in df.columns]
+        df2 = df[keep].rename(columns=col_map).copy()
+        for col in ("price", "change_pct", "last_close", "vol"):
+            if col in df2.columns:
+                df2[col] = pd.to_numeric(df2[col], errors="coerce").fillna(0.0)
+        records = df2.to_dict("records")
+        active = [q for q in records
+                  if q.get("price", 0) > 3
+                  and q.get("vol", 0) > 100
+                  and q.get("last_close", 0) > 0]
+        active.sort(key=lambda q: q.get("vol", 0), reverse=True)
+        _mkt_cache["sorted_quotes"] = active
+        _mkt_cache["ts"] = _time.time()
+        logger.info(f"[SM] 全市场行情缓存刷新（efinance）：{len(active)} 只有效标的")
+        return active
+    except ImportError:
+        logger.debug("[SM] efinance 未安装，跳过")
+    except Exception as e:
+        logger.warning(f"[SM] efinance 全市场行情获取失败: {e}")
+
+    logger.error("[SM] 全部数据源均不可用，无法获取全市场行情")
+    return []
 
 
 def _get_market_quotes_cached(force_refresh: bool = False) -> list:

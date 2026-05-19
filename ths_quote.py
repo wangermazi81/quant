@@ -416,7 +416,12 @@ _client_lock = threading.Lock()
 
 
 def get_client() -> Optional[TDXQuoteClient]:
+    """获取全局 TDX 客户端单例（双重检查锁，避免初始化后不必要的锁争用）"""
     global _client
+    # 快速路径：已初始化则直接返回（无锁）
+    if _client is not None:
+        return _client
+    # 慢速路径：首次初始化加锁
     with _client_lock:
         if _client is None:
             try:

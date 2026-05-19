@@ -3,11 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>量化平台 — 管理后台</title>
+<title>见微 Alpha — 管理后台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+body,button,input,select,textarea{font-family:'Noto Sans SC',-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif!important;}
 :root{
   --theme:#242f42;--theme-light:#2d3a52;--theme-active:#1abc9c;
   --sidebar-w:250px;--header-h:70px;
@@ -223,6 +227,20 @@ tr:hover td{background:#fafbff}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spin{animation:spin .8s linear infinite}
 
+/* ===== ANNOUNCEMENTS ===== */
+.ann-row{display:flex;align-items:flex-start;gap:12px;padding:14px 0;border-bottom:1px solid var(--border)}
+.ann-row:last-child{border-bottom:none}
+.ann-badge{font-size:11px;padding:2px 8px;border-radius:4px;white-space:nowrap;flex-shrink:0;margin-top:2px}
+.ann-badge.info{background:rgba(52,152,219,.15);color:#3498db}
+.ann-badge.success{background:rgba(46,204,113,.15);color:#27ae60}
+.ann-badge.warning{background:rgba(243,156,18,.15);color:#f39c12}
+.ann-badge.danger{background:rgba(231,76,60,.15);color:#e74c3c}
+.ann-title{font-size:14px;font-weight:600;margin-bottom:4px}
+.ann-content{font-size:13px;color:var(--text2);line-height:1.5;white-space:pre-wrap}
+.ann-meta{font-size:11px;color:var(--text3);margin-top:6px}
+.ann-actions{margin-left:auto;display:flex;gap:6px;flex-shrink:0}
+.ann-status-on{font-size:11px;color:#27ae60}
+.ann-status-off{font-size:11px;color:var(--text3)}
 /* ===== NOTICE PANEL ===== */
 .notice-panel{position:absolute;top:calc(var(--header-h) + 4px);right:160px;width:320px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.12);z-index:990;display:none}
 .notice-panel.show{display:block}
@@ -266,7 +284,7 @@ tr:hover td{background:#fafbff}
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-logo" onclick="navigate('dashboard')">
     <i class="fas fa-chart-line logo-icon"></i>
-    <span class="logo-title">量化平台管理</span>
+    <span class="logo-title">见微 Alpha</span>
   </div>
   <nav class="sidebar-menu" id="sidebarMenu">
     <!-- menu built by JS -->
@@ -497,6 +515,55 @@ tr:hover td{background:#fafbff}
     <!-- ===== CHANGE PWD (standalone tab) ===== -->
     <div class="page" id="page-change-pwd"></div>
 
+    <!-- ===== ANNOUNCEMENTS ===== -->
+    <div class="page" id="page-announcements">
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+          <span><i class="fas fa-bullhorn"></i> 发布新公告</span>
+        </div>
+        <div style="display:grid;gap:12px">
+          <div class="form-group" style="margin:0">
+            <label class="form-label">标题 <span style="color:#e74c3c">*</span></label>
+            <input id="ann-title" class="form-input" placeholder="公告标题（必填）" maxlength="100">
+          </div>
+          <div class="form-group" style="margin:0">
+            <label class="form-label">正文内容 <span style="color:#e74c3c">*</span></label>
+            <textarea id="ann-content" class="form-input" rows="4" placeholder="公告正文，支持换行" style="resize:vertical"></textarea>
+          </div>
+          <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+            <div class="form-group" style="margin:0;flex:1;min-width:140px">
+              <label class="form-label">类型</label>
+              <select id="ann-type" class="form-input">
+                <option value="info">📢 普通通知</option>
+                <option value="success">✅ 功能更新</option>
+                <option value="warning">⚠️ 注意事项</option>
+                <option value="danger">🚨 紧急公告</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin:0;flex:1;min-width:160px">
+              <label class="form-label">过期时间（留空永久有效）</label>
+              <input id="ann-expires" class="form-input" type="datetime-local">
+            </div>
+            <button class="btn btn-primary" onclick="createAnnouncement()" style="padding:8px 24px;white-space:nowrap">
+              <i class="fas fa-paper-plane"></i> 发布公告
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+          <span><i class="fas fa-list"></i> 已发公告列表</span>
+          <button class="btn btn-outline" onclick="loadAnnouncements()" style="padding:4px 12px;font-size:12px">
+            <i class="fas fa-sync-alt"></i> 刷新
+          </button>
+        </div>
+        <div id="ann-list-body">
+          <div class="empty" style="padding:40px">暂无公告</div>
+        </div>
+      </div>
+    </div>
+
     <!-- ===== NOTIFICATIONS ===== -->
     <div class="page" id="page-notifications">
       <div class="card">
@@ -711,7 +778,7 @@ let cfCallback = null;
 let notices = [
   {title:'新用户注册', desc:'用户 testuser 刚刚注册', time:'刚刚'},
   {title:'积分消耗预警', desc:'今日消耗积分超过 500 分', time:'1分钟前'},
-  {title:'系统消息', desc:'欢迎使用量化平台管理后台', time:'5分钟前'},
+  {title:'系统消息', desc:'欢迎使用见微 Alpha 管理后台', time:'5分钟前'},
 ];
 let roles = [
   {id:1, name:'超级管理员', desc:'拥有全部权限', perms:['user_manage','role_manage','points_manage','stats_view','system_config']},
@@ -735,13 +802,14 @@ const MENU = [
   {id:'users',     icon:'fas fa-users',          label:'用户管理', group:'系统管理'},
   {id:'roles',     icon:'fas fa-shield-alt',      label:'角色权限', group:'系统管理'},
   {id:'points',    icon:'fas fa-coins',           label:'积分流水', group:'系统管理'},
-  {id:'stats',     icon:'fas fa-chart-bar',       label:'使用统计', group:'数据分析'},
-  {id:'user-center',icon:'fas fa-user-circle',   label:'个人中心', group:'账户'},
+  {id:'stats',         icon:'fas fa-chart-bar',       label:'使用统计',  group:'数据分析'},
+  {id:'announcements', icon:'fas fa-bullhorn',         label:'公告管理',  group:'内容管理'},
+  {id:'user-center',   icon:'fas fa-user-circle',     label:'个人中心',  group:'账户'},
 ];
 const PAGE_NAMES = {
   'dashboard':'工作台','users':'用户管理','roles':'角色权限',
-  'points':'积分流水','stats':'使用统计','user-center':'个人中心',
-  'change-pwd':'修改密码','notifications':'系统通知',
+  'points':'积分流水','stats':'使用统计','announcements':'公告管理',
+  'user-center':'个人中心','change-pwd':'修改密码','notifications':'系统通知',
 };
 
 // ================================================================
@@ -817,6 +885,9 @@ function navigate(id, addTabFlag=true){
   }
   renderMenu();
   renderTabs();
+
+  // 页面专属初始化
+  if(id === 'announcements') loadAnnouncements();
 
   // Breadcrumb
   const bread = PAGE_NAMES[id]||id;
@@ -1490,6 +1561,141 @@ window.addEventListener('DOMContentLoaded',()=>{
   tabs = [{id:'dashboard',closable:false}];
   renderTabs();
 });
+
+// ================================================================
+// 公告管理
+// ================================================================
+const ANN_TYPE_LABELS = {
+  info:'📢 普通通知', success:'✅ 功能更新',
+  warning:'⚠️ 注意事项', danger:'🚨 紧急公告'
+};
+
+async function _annFetch(method, path, body){
+  const opts = {method, credentials:'include', headers:{'Content-Type':'application/json'}};
+  if(body) opts.body = JSON.stringify(body);
+  const r = await fetch(`${API}${path}`, opts);
+  return r.json();
+}
+
+async function loadAnnouncements(){
+  const box = document.getElementById('ann-list-body');
+  box.innerHTML = '<div class="empty" style="padding:30px">加载中…</div>';
+  try {
+    const r    = await _annFetch('GET', '/admin/announcements');
+    const list = r.announcements || [];
+    if(!list.length){
+      box.innerHTML = '<div class="empty" style="padding:40px">暂无公告，请在上方发布第一条</div>';
+      return;
+    }
+    box.innerHTML = list.map(a => {
+      const typeLabel = ANN_TYPE_LABELS[a.type] || a.type;
+      const typeCls   = a.type || 'info';
+      const active    = a.is_active !== 0;
+      const expires   = a.expires_at ? `· 过期：${String(a.expires_at).slice(0,16)}` : '· 永久有效';
+      const creator   = a.creator   ? `· 发布者：${a.creator}` : '';
+      return `<div class="ann-row" id="ann-row-${a.id}">
+        <span class="ann-badge ${typeCls}">${typeLabel}</span>
+        <div style="flex:1;min-width:0">
+          <div class="ann-title">${esc(a.title)}
+            <span class="${active?'ann-status-on':'ann-status-off'}" style="font-weight:400;margin-left:8px">
+              ${active ? '● 显示中' : '○ 已隐藏'}
+            </span>
+          </div>
+          <div class="ann-content">${esc(a.content)}</div>
+          <div class="ann-meta">ID：${a.id} · 创建：${String(a.created_at||'').slice(0,16)} ${expires} ${creator}</div>
+        </div>
+        <div class="ann-actions">
+          <button class="btn btn-outline btn-sm" onclick="toggleAnn(${a.id},${active?0:1})" title="${active?'隐藏':'显示'}">
+            <i class="fas fa-${active?'eye-slash':'eye'}"></i>
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="editAnn(${a.id})" title="编辑">
+            <i class="fas fa-edit"></i>
+          </button>
+          <button class="btn btn-danger btn-sm" onclick="deleteAnn(${a.id})" title="删除">
+            <i class="fas fa-trash"></i>
+          </button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    box.innerHTML = `<div class="empty" style="padding:30px;color:#e74c3c">加载失败：${e.message}</div>`;
+  }
+}
+
+async function createAnnouncement(){
+  const title   = document.getElementById('ann-title').value.trim();
+  const content = document.getElementById('ann-content').value.trim();
+  const type    = document.getElementById('ann-type').value;
+  const expires = document.getElementById('ann-expires').value;
+  if(!title)  { showToast('请输入公告标题','warning'); return; }
+  if(!content){ showToast('请输入公告内容','warning'); return; }
+  const r = await _annFetch('POST', '/admin/announcements', {
+    title, content, type,
+    expires_at: expires ? expires.replace('T',' ')+':00' : null
+  });
+  if(r && r.ok){
+    showToast('公告已发布','success');
+    document.getElementById('ann-title').value   = '';
+    document.getElementById('ann-content').value = '';
+    document.getElementById('ann-expires').value = '';
+    loadAnnouncements();
+  } else {
+    showToast((r&&r.error)||'发布失败','error');
+  }
+}
+
+async function toggleAnn(id, active){
+  const r = await _annFetch('PUT', `/admin/announcements/${id}`, {active});
+  if(r && r.ok){ showToast(active?'已设为显示':'已隐藏','success'); loadAnnouncements(); }
+  else showToast((r&&r.error)||'操作失败','error');
+}
+
+async function deleteAnn(id){
+  if(!confirm('确定删除该公告？删除后不可恢复。')) return;
+  const r = await _annFetch('DELETE', `/admin/announcements/${id}`);
+  if(r && r.ok){ showToast('已删除','success'); loadAnnouncements(); }
+  else showToast((r&&r.error)||'删除失败','error');
+}
+
+function editAnn(id){
+  const row = document.getElementById(`ann-row-${id}`);
+  if(!row) return;
+  const title   = row.querySelector('.ann-title').childNodes[0].textContent.trim();
+  const content = row.querySelector('.ann-content').textContent;
+  document.getElementById('ann-title').value         = title;
+  document.getElementById('ann-content').value       = content;
+  document.getElementById('ann-title').dataset.editId = id;
+  const btn = document.querySelector('[onclick="createAnnouncement()"]');
+  if(btn){ btn.innerHTML='<i class="fas fa-save"></i> 更新公告'; btn.setAttribute('onclick','updateAnnouncement()'); }
+  document.getElementById('ann-title').scrollIntoView({behavior:'smooth'});
+}
+
+async function updateAnnouncement(){
+  const titleEl = document.getElementById('ann-title');
+  const id      = titleEl.dataset.editId;
+  if(!id){ createAnnouncement(); return; }
+  const title   = titleEl.value.trim();
+  const content = document.getElementById('ann-content').value.trim();
+  const type    = document.getElementById('ann-type').value;
+  const expires = document.getElementById('ann-expires').value;
+  if(!title||!content){ showToast('标题和内容不能为空','warning'); return; }
+  const r = await _annFetch('PUT', `/admin/announcements/${id}`, {
+    title, content, type,
+    expires_at: expires ? expires.replace('T',' ')+':00' : null
+  });
+  if(r && r.ok){
+    showToast('公告已更新','success');
+    titleEl.value = ''; titleEl.dataset.editId = '';
+    document.getElementById('ann-content').value = '';
+    document.getElementById('ann-expires').value = '';
+    const btn = document.querySelector('[onclick="updateAnnouncement()"]');
+    if(btn){ btn.innerHTML='<i class="fas fa-paper-plane"></i> 发布公告'; btn.setAttribute('onclick','createAnnouncement()'); }
+    loadAnnouncements();
+  } else {
+    showToast((r&&r.error)||'更新失败','error');
+  }
+}
+
 </script>
 </body>
 </html>

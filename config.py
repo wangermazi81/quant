@@ -1,8 +1,18 @@
 # 策略参数配置
-STOCK_POOL = [
-    "000001", "002594", "600519", "300750", "600036",
-    "000858", "601318", "300015", "002415", "600900"
-]
+# STOCK_POOL 为空列表表示全市场扫描（两阶段预过滤）
+STOCK_POOL = []
+
+# 全市场两阶段预过滤参数
+MARKET_FILTER = {
+    "min_change":    2.0,    # 最低涨幅%（第一阶段过滤）
+    "max_change":    9.8,    # 最高涨幅%（排除涨停封板）
+    "min_volume":    5000,   # 最小成交量（手）
+    "min_price":     3.0,    # 最低股价（排除仙股）
+    "max_price":     200.0,  # 最高股价
+    "exclude_st":    True,   # 排除ST/退市股
+    "exclude_bj":    True,   # 排除北交所
+    "max_candidates": 300,   # 第二阶段最多处理只数
+}
 
 STRATEGY = {
     "ma_short": 5,
@@ -23,7 +33,7 @@ RISK = {
 # ── 账户与仓位配置 ─────────────────────────────
 INITIAL_CAPITAL  = 500_000    # 初始资金（元），可在界面修改
 POSITION_RATIO   = 0.20       # 单次建仓比例 20%
-MAX_DAILY_TRADES = 3          # 打板策略每日最多买入只数
+# MAX_DAILY_TRADES 已移除 —— 由资金管理自然控制开仓数量
 
 SCAN_INTERVAL = 30            # 扫描间隔秒
 DRY_RUN = True                # True=模拟盘/paper trading，False=实盘

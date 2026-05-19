@@ -1031,3 +1031,77 @@ def get_backtest_task(task_id: str) -> dict:
         # 只在完成/出错时返回 result（running 时不传，减少带宽）
         "result":   task["result"] if task["status"] not in ("running", "canceling") else None,
     }
+
+
+# ══════════════════════════════════════════════════
+# Qlib 风格扩展指标
+# ══════════════════════════════════════════════════
+def compute_metrics(equity_curve: list[dict],
+                    benchmark: list[float] = None,
+                    rf_annual: float = 0.025) -> dict:
+    """
+    计算 Qlib 风格回测指标:
+      annual_return, calmar, sortino, alpha, beta, information_ratio
+
+    参数:
+      equity_curve  — [{"date": str, "equity": float}, ...]
+      benchmark     — 基准每日净值序列（与 equity_curve 等长），默认沪深300
+      rf_annual     — 无风险年化收益率（默认2.5%）
+
+    返回 dict，所有值保留4位小数。
+    """
+    if not equity_curve or len(equity_curve) < 2:
+        return {}
+
+    try:
+        equity = np.array([d["equity"] for d in equity_curve], dtype=float)
+        daily_ret = np.diff(equity) / equity[:-1]
+        n_days    = len(daily_ret)
+        rf_daily  = rf_annual / 252
+
+        # 年化收益
+        total_ret   = equity[-1] / equity[0] - 1
+        years       = n_days / 252
+        annual_ret  = (1 + total_ret) ** (1 / years) - 1 if years > 0 else 0
+
+        # 最大回撤
+        peak        = np.maximum.accumulate(equity)
+        drawdown    = (equity - peak) / (peak + 1e-9)
+        max_dd      = float(np.min(drawdown))
+
+        # Calmar = 年化收益 / |最大回撤|
+        calmar = annual_ret / abs(max_dd) if max_dd != 0 else 0
+
+        # Sortino（只惩罚下行波动）
+        excess      = daily_ret - rf_daily
+        downside    = excess[excess < 0]
+        down_std    = float(np.std(downside)) * np.sqrt(252) if len(downside) > 0 else 1e-9
+        sortino     = float(annual_ret - rf_annual) / down_std if down_std > 0 else 0
+
+        # Alpha / Beta（vs 基准）
+        alpha = beta = information_ratio = None
+        if benchmark and len(benchmark) == len(equity):
+            bm     = np.array(benchmark, dtype=float)
+            bm_ret = np.diff(bm) / (bm[:-1] + 1e-9)
+            if len(bm_ret) == len(daily_ret) and np.std(bm_ret) > 1e-9:
+                cov    = np.cov(daily_ret, bm_ret)
+                beta   = round(float(cov[0, 1] / (np.var(bm_ret) + 1e-9)), 4)
+                alpha  = round(float((annual_ret - rf_annual) - beta * (
+                    (1 + np.mean(bm_ret)) ** 252 - 1 - rf_annual)), 4)
+                # IR = mean(excess_vs_bm) / std(excess_vs_bm) * sqrt(252)
+                excess_bm = daily_ret - bm_ret
+                if np.std(excess_bm) > 0:
+                    information_ratio = round(
+                        float(np.mean(excess_bm) / np.std(excess_bm) * np.sqrt(252)), 4)
+
+        return {
+            "annual_return":      round(float(annual_ret), 4),
+            "calmar":             round(float(calmar), 4),
+            "sortino":            round(float(sortino), 4),
+            "alpha":              alpha,
+            "beta":               beta,
+            "information_ratio":  information_ratio,
+        }
+    except Exception as e:
+        logger.warning(f"[compute_metrics] {e}")
+        return {}

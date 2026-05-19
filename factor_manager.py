@@ -415,7 +415,7 @@ def run(filename: str, codes: list) -> dict:
                 except Exception:
                     pass
             if not universe:
-                return {"ok": False, "msg": "无法获取股票池，请检查 TDX 连接", "results": []}
+                return {"ok": False, "msg": "无法获取全市场行情（TDX 未连接，akshare 也无法访问），请检查网络或手动指定股票池", "results": []}
         else:
             # 指定股票池：直接批量获取行情
             universe = codes

@@ -2,7 +2,10 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>量化交易平台</title>
+<title>见微 Alpha</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/lib/codemirror.min.css">
 <link rel="stylesheet" href="/static/lib/dracula.min.css">
 <script src="/static/lib/codemirror.min.js"></script>
@@ -10,6 +13,7 @@
 <script src="/static/lib/chart.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+body,button,input,select,textarea{font-family:'Noto Sans SC',-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif!important;}
 :root{
   --bg:#0d1117;--panel:#161b22;--card:#1c2128;--inp:#21262d;
   --b1:#30363d;--b2:#21262d;
@@ -453,8 +457,8 @@ tr:hover td{background:var(--card)}
 <div class="auth-overlay" id="authOverlay">
   <div class="auth-box">
     <div class="auth-header">
-      <div class="auth-logo">📈</div>
-      <div class="auth-title">量化交易平台</div>
+      <div class="auth-logo">🔬</div>
+      <div class="auth-title">见微 Alpha</div>
       <div class="auth-sub">登录后使用完整功能</div>
     </div>
     <div class="auth-tabs" style="margin-top:16px">
@@ -509,10 +513,12 @@ tr:hover td{background:var(--card)}
 <div class="points-warn" id="pointsWarn"></div>
 
 <nav class="nav">
-  <div class="nav-brand">📈 量化交易平台</div>
+  <div class="nav-brand">🔬 见微 Alpha</div>
   <div class="ntab active" onclick="switchPage('monitor',this)">📊 监控中心</div>
   <div class="ntab" onclick="switchPage('strategy',this)">🧪 策略中心</div>
   <div class="ntab" onclick="switchPage('paper',this);loadPaperPage()">💹 模拟盘</div>
+  <div class="ntab" onclick="switchPage('search',this);initSearchPage()">🔍 智能搜索</div>
+  <div class="ntab" onclick="switchPage('daily',this);initDailyPage()">📋 日报</div>
   <div class="nav-r">
     <span id="runBadge" class="badge stop">已停止</span>
     <span class="badge dry">模拟</span>
@@ -756,6 +762,125 @@ tr:hover td{background:var(--card)}
   </div>
 </div>
 
+<!-- 智能搜索页 -->
+<div class="page" id="page-search" style="flex-direction:column;overflow:hidden">
+  <div style="display:flex;flex:1;gap:0;overflow:hidden;height:100%">
+    <!-- 左侧搜索区 -->
+    <div style="width:400px;min-width:360px;border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
+      <!-- 搜索框 -->
+      <div style="padding:16px;border-bottom:1px solid var(--b1)">
+        <div style="font-size:16px;font-weight:700;color:var(--t1);margin-bottom:12px">🔍 智能搜索</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <input id="srchInput" class="set-fi" placeholder="输入股票代码/名称/关键词..."
+            style="flex:1" onkeydown="if(event.key==='Enter')doSearch()">
+          <button class="btn btn-blue" onclick="doSearch()">搜索</button>
+        </div>
+        <!-- 搜索模式 -->
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+          <span style="font-size:11px;color:var(--t4);line-height:26px">模式：</span>
+          <button class="srch-mode-btn active" data-mode="news" onclick="setSrchMode('news',this)">📰 新闻</button>
+          <button class="srch-mode-btn" data-mode="general" onclick="setSrchMode('general',this)">🌐 网页</button>
+          <button class="srch-mode-btn" data-mode="stock" onclick="setSrchMode('stock',this)">📈 行情</button>
+          <button class="srch-mode-btn" data-mode="research" onclick="setSrchMode('research',this)">🔬 研究</button>
+        </div>
+        <!-- 快捷搜索 -->
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
+          <span style="font-size:11px;color:var(--t4)">快捷：</span>
+          <button class="btn btn-gray btn-xs" onclick="quickSearch('A股市场 今日行情 涨停 热点')">今日热点</button>
+          <button class="btn btn-gray btn-xs" onclick="quickSearch('宏观经济 政策 利好')">政策动向</button>
+          <button class="btn btn-gray btn-xs" onclick="quickSearch('人工智能 概念股 A股')">AI概念</button>
+          <button class="btn btn-gray btn-xs" onclick="quickSearch('新能源 锂电池 光伏 A股')">新能源</button>
+        </div>
+        <div id="srchStatus" style="font-size:11px;color:var(--t3);margin-top:8px"></div>
+      </div>
+
+      <!-- 服务状态栏 -->
+      <div style="padding:10px 16px;border-bottom:1px solid var(--b1);background:var(--card)">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span style="font-size:11px;color:var(--t4)">搜索引擎：</span>
+          <div id="srchServiceBadges" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          <div style="flex:1"></div>
+          <button class="btn btn-gray btn-xs" onclick="refreshSrchStats()">刷新额度</button>
+        </div>
+      </div>
+
+      <!-- 搜索结果列表 -->
+      <div id="srchResults" style="flex:1;overflow-y:auto;padding:0">
+        <div style="padding:32px 16px;text-align:center;color:var(--t4);font-size:13px">
+          输入关键词开始搜索
+        </div>
+      </div>
+    </div>
+
+    <!-- 右侧详情区 -->
+    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+      <!-- 标题栏 -->
+      <div style="padding:14px 20px;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:12px">
+        <span id="srchDetailTitle" style="font-size:15px;font-weight:700;color:var(--t1)">搜索结果详情</span>
+        <span id="srchDetailMeta" style="font-size:11px;color:var(--t4)"></span>
+        <div style="flex:1"></div>
+        <button class="btn btn-gray btn-xs" id="srchAnalyzeBtn" onclick="analyzeFromSearch()" style="display:none">🤖 AI分析此股</button>
+        <button class="btn btn-gray btn-xs" id="srchAddQueueBtn" onclick="addSearchToQueue()" style="display:none">📌 加入队列</button>
+      </div>
+
+      <!-- 详情内容 -->
+      <div id="srchDetail" style="flex:1;overflow-y:auto;padding:20px">
+        <!-- TwelveData 报价卡 -->
+        <div id="srchQuoteCard" style="display:none;background:var(--card);border:1px solid var(--b1);border-radius:10px;padding:16px;margin-bottom:16px">
+          <div style="font-size:11px;font-weight:700;color:var(--t4);letter-spacing:.6px;margin-bottom:10px">📡 TwelveData 行情数据</div>
+          <div id="srchQuoteContent"></div>
+        </div>
+
+        <!-- 新闻/结果列表 -->
+        <div id="srchNewsDetail"></div>
+
+        <!-- 搜索用量统计 -->
+        <div id="srchStatsPanel" style="margin-top:20px;display:none">
+          <div style="font-size:11px;font-weight:700;color:var(--t2);margin-bottom:10px">📊 搜索服务用量（本月）</div>
+          <div id="srchStatsContent"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 日报页 -->
+<div class="page" id="page-daily" style="flex-direction:column;overflow:hidden">
+  <div style="display:flex;flex:1;gap:0;overflow:hidden;height:100%">
+
+    <!-- 左：大盘复盘 -->
+    <div id="daily-left" style="width:360px;min-width:320px;border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
+      <div style="padding:14px 16px;border-bottom:1px solid var(--b1);display:flex;align-items:center;justify-content:space-between">
+        <b style="font-size:15px">📊 大盘复盘</b>
+        <button class="btn" style="padding:3px 10px;font-size:12px" onclick="loadMarketReview()">刷新</button>
+      </div>
+      <div id="market-review-body" style="flex:1;overflow-y:auto;padding:14px">
+        <div class="empty-hint">点击「刷新」获取大盘数据</div>
+      </div>
+    </div>
+
+    <!-- 右：决策仪表盘 -->
+    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+      <!-- 顶部输入区 -->
+      <div style="padding:12px 16px;border-bottom:1px solid var(--b1);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <textarea id="dash-codes-input" placeholder="输入股票代码，逗号或换行分隔&#10;如：000657,600105,300260"
+          style="flex:1;min-width:200px;height:52px;resize:none;padding:6px 10px;border:1px solid var(--b1);border-radius:6px;background:var(--bg);color:var(--t1);font-size:13px"></textarea>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <label style="font-size:12px;color:var(--t2);display:flex;align-items:center;gap:4px">
+            <input type="checkbox" id="dash-with-ai" checked> AI摘要
+          </label>
+          <button class="btn btn-blue" style="padding:5px 16px;font-size:13px" onclick="generateDashboard()">生成报告</button>
+        </div>
+        <button class="btn" style="padding:5px 12px;font-size:12px;align-self:flex-end" onclick="dashFromQueue()">从队列导入</button>
+      </div>
+      <!-- 报告区 -->
+      <div id="dash-report-body" style="flex:1;overflow-y:auto;padding:14px">
+        <div class="empty-hint">输入股票代码后点击「生成报告」</div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- 策略中心 -->
 <div class="page" id="page-strategy">
 <div class="strat-wrap">
@@ -861,6 +986,7 @@ tr:hover td{background:var(--card)}
       <div class="sc-hd">
         <span style="font-size:13px;color:var(--t3)" id="scInfo">点击「选股」开始</span>
         <button class="btn btn-green btn-sm" id="addAllBtn" style="display:none" onclick="addAllQ()">全部入队</button>
+        <button class="btn btn-sm" id="optBtn" style="display:none;background:linear-gradient(135deg,#0ea5e9,#6366f1);color:#fff" onclick="openPortfolioOpt()" title="对选股结果进行投资组合优化（等权/最大夏普/最小波动/风险平价）">⚖ 组合优化</button>
       </div>
       <div class="scan-prog" id="scProgWrap" style="display:none">
         <div class="scan-prog-bar pulse" id="scProgBar"></div>
@@ -985,6 +1111,103 @@ tr:hover td{background:var(--card)}
           • OpenAI / Anthropic — 需要代理<br>
           ⚠ Base URL 须填 API 端点（如 https://integrate.api.nvidia.com/v1），不要填文档或图片 URL
         </div>
+
+        <!-- ══ 券商接口配置 ══════════════════════════════════════════ -->
+        <div style="border-top:1px solid var(--b1);margin:20px 0 16px"></div>
+        <div class="set-sec">
+          <div class="set-ttl">🏦 券商接口</div>
+          <div style="font-size:11px;color:var(--t3);margin-bottom:12px">
+            选择下单通道。切换后需重启策略才能生效。
+          </div>
+
+          <!-- 券商类型选择 -->
+          <div id="brokerTypeGrid" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:14px"></div>
+
+          <!-- 动态配置区 -->
+          <div id="brokerFieldsBox"></div>
+
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+            <button class="btn btn-blue" onclick="saveBrokerConfig()">💾 保存券商配置</button>
+          </div>
+          <div id="brokerSetMsg" style="margin-top:10px;font-size:12px"></div>
+
+          <!-- 各类型说明 -->
+          <div style="margin-top:14px;padding:12px;background:var(--card);border-radius:8px;font-size:11px;color:var(--t3);line-height:1.8">
+            <b style="color:var(--t2)">接入说明：</b><br>
+            • <b style="color:var(--t1)">模拟盘</b> — 无需配置，内置虚拟账户，安全练习<br>
+            • <b style="color:var(--t1)">EasyTrader</b> — 自动操作同花顺/通达信客户端下单，需在<b>同一台电脑</b>打开客户端软件<br>
+            • <b style="color:var(--t1)">长桥证券</b> — 通过长桥 OpenAPI 下单，在长桥开发者中心申请 app_key/secret/token<br>
+            • <b style="color:var(--t1)">自定义HTTP</b> — 对接私有交易系统，实现标准 buy/sell/positions 接口即可
+          </div>
+        </div>
+
+        <!-- ══ 消息推送配置 ══════════════════════════════════════════ -->
+        <div style="border-top:1px solid var(--b1);margin:20px 0 16px"></div>
+        <div class="set-sec">
+          <div class="set-ttl">🔔 消息推送通知</div>
+          <div style="font-size:11px;color:var(--t3);margin-bottom:14px">
+            扫描到买入信号时自动推送。支持企业微信、飞书、钉钉、Telegram。
+          </div>
+
+          <!-- 企业微信 -->
+          <div class="notify-ch-card" id="ntWeCom">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <label class="tog-wrap"><input type="checkbox" id="ntWeComEn" onchange="notifyChannelToggle('wecom',this)"><span class="tog-sl"></span></label>
+              <span style="font-size:13px;font-weight:600;color:var(--t1)">💼 企业微信</span>
+            </div>
+            <div id="ntWeComFields" style="display:none">
+              <div class="set-row"><div class="fc"><label style="font-size:11px;color:var(--t3)">Webhook URL</label>
+                <input id="ntWeComWh" class="set-fi" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."></div></div>
+            </div>
+          </div>
+
+          <!-- 飞书 -->
+          <div class="notify-ch-card" id="ntFeiShu">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <label class="tog-wrap"><input type="checkbox" id="ntFeiShuEn" onchange="notifyChannelToggle('feishu',this)"><span class="tog-sl"></span></label>
+              <span style="font-size:13px;font-weight:600;color:var(--t1)">🐦 飞书</span>
+            </div>
+            <div id="ntFeiShuFields" style="display:none">
+              <div class="set-row"><div class="fc"><label style="font-size:11px;color:var(--t3)">Webhook URL</label>
+                <input id="ntFeiShuWh" class="set-fi" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..."></div></div>
+            </div>
+          </div>
+
+          <!-- 钉钉 -->
+          <div class="notify-ch-card" id="ntDingTalk">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <label class="tog-wrap"><input type="checkbox" id="ntDingTalkEn" onchange="notifyChannelToggle('dingtalk',this)"><span class="tog-sl"></span></label>
+              <span style="font-size:13px;font-weight:600;color:var(--t1)">📌 钉钉</span>
+            </div>
+            <div id="ntDingTalkFields" style="display:none">
+              <div class="set-row"><div class="fc"><label style="font-size:11px;color:var(--t3)">Webhook URL</label>
+                <input id="ntDingTalkWh" class="set-fi" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."></div></div>
+              <div class="set-row"><div class="fc"><label style="font-size:11px;color:var(--t3)">加签密钥（可选）</label>
+                <input id="ntDingTalkSec" class="set-fi" placeholder="SECxxxxxxxx"></div></div>
+            </div>
+          </div>
+
+          <!-- Telegram -->
+          <div class="notify-ch-card" id="ntTelegram">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <label class="tog-wrap"><input type="checkbox" id="ntTelegramEn" onchange="notifyChannelToggle('telegram',this)"><span class="tog-sl"></span></label>
+              <span style="font-size:13px;font-weight:600;color:var(--t1)">✈ Telegram</span>
+            </div>
+            <div id="ntTelegramFields" style="display:none">
+              <div class="set-row"><div class="fc"><label style="font-size:11px;color:var(--t3)">Bot Token</label>
+                <input id="ntTgToken" class="set-fi" placeholder="1234567890:ABCdef..."></div></div>
+              <div class="set-row"><div class="fc"><label style="font-size:11px;color:var(--t3)">Chat ID</label>
+                <input id="ntTgChatId" class="set-fi" placeholder="-100123456789"></div></div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+            <button class="btn btn-blue" onclick="saveNotifyConfig()">💾 保存推送配置</button>
+            <button class="btn btn-gray btn-sm" onclick="testNotify()">🔔 测试推送</button>
+          </div>
+          <div id="ntSetMsg" style="margin-top:10px;font-size:12px"></div>
+        </div>
+
       </div>
     </div>
 
@@ -999,6 +1222,69 @@ tr:hover td{background:var(--card)}
 .tog-sl:before{position:absolute;content:"";height:16px;width:16px;left:2px;bottom:2px;background:var(--t3);border-radius:50%;transition:.2s}
 .tog-wrap input:checked+.tog-sl{background:#1a4731;border-color:var(--green)}
 .tog-wrap input:checked+.tog-sl:before{transform:translateX(18px);background:var(--gl)}
+/* 通知渠道卡片 */
+.notify-ch-card{background:var(--card);border:1px solid var(--b1);border-radius:8px;padding:12px;margin-bottom:8px}
+/* 搜索页 */
+.srch-mode-btn{font-size:11px;padding:3px 10px;border-radius:4px;border:1px solid var(--b1);background:transparent;color:var(--t3);cursor:pointer;transition:.15s}
+.srch-mode-btn.active,.srch-mode-btn:hover{border-color:var(--blue);color:var(--bl);background:rgba(88,166,255,.12)}
+.srch-result-item{padding:12px 16px;border-bottom:1px solid var(--b1);cursor:pointer;transition:.1s}
+.srch-result-item:hover{background:var(--hover)}
+.srch-result-item.active{background:rgba(88,166,255,.08);border-left:3px solid var(--blue)}
+.srch-badge{display:inline-block;font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(88,166,255,.15);color:var(--bl);margin-left:4px}
+.srch-badge.tavily{background:rgba(139,92,246,.15);color:#a78bfa}
+.srch-badge.serpapi{background:rgba(34,197,94,.15);color:#4ade80}
+.srch-badge.direct{background:rgba(100,100,100,.15);color:var(--t3)}
+.svc-badge{font-size:11px;padding:2px 8px;border-radius:4px;border:1px solid}
+.svc-badge.ok{border-color:#238636;color:#3fb950;background:#0d2016}
+.svc-badge.warn{border-color:#9e6a03;color:#e3b341;background:#1c1600}
+/* 日报页 */
+.daily-card{background:var(--card);border:1px solid var(--b1);border-radius:10px;padding:14px 16px;margin-bottom:12px}
+.daily-card-hd{display:flex;align-items:center;gap:10px;margin-bottom:10px;cursor:pointer}
+.daily-card-hd .dc-name{font-size:15px;font-weight:600}
+.daily-card-hd .dc-code{font-size:12px;color:var(--t3)}
+.daily-card-hd .dc-signal{font-size:12px;padding:2px 9px;border-radius:4px;font-weight:600}
+.daily-card-hd .dc-score{font-size:22px;font-weight:700;margin-left:auto}
+.daily-card-hd .dc-sent{font-size:12px;padding:2px 8px;border-radius:4px;background:rgba(88,166,255,.12);color:var(--bl)}
+.dc-detail{margin-top:10px;border-top:1px solid var(--b1);padding-top:10px;display:none}
+.dc-detail.open{display:block}
+.dc-section{margin-bottom:8px}
+.dc-section-title{font-size:12px;color:var(--t3);margin-bottom:4px;font-weight:600}
+.dc-section-body{font-size:13px;color:var(--t1);line-height:1.6}
+.dc-news-item{font-size:12px;color:var(--t2);padding:3px 0;border-bottom:1px solid var(--b1)}
+.dc-news-item:last-child{border-bottom:none}
+.mr-index-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--b1)}
+.mr-index-row:last-child{border-bottom:none}
+.mr-idx-name{font-size:14px;font-weight:600}
+.mr-idx-price{font-size:18px;font-weight:700}
+.mr-idx-chg{font-size:13px;padding:2px 8px;border-radius:4px}
+.mr-idx-chg.up{background:rgba(35,134,54,.15);color:#3fb950}
+.mr-idx-chg.dn{background:rgba(218,54,51,.15);color:#f85149}
+.mr-breadth{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}
+.mr-stat{background:var(--hover);border-radius:6px;padding:8px 10px;text-align:center}
+.mr-stat-val{font-size:20px;font-weight:700}
+.mr-stat-lbl{font-size:11px;color:var(--t3);margin-top:2px}
+.mr-sector-tag{display:inline-block;font-size:12px;padding:2px 9px;border-radius:12px;margin:2px}
+.mr-sector-tag.up{background:rgba(35,134,54,.2);color:#3fb950}
+.mr-sector-tag.dn{background:rgba(218,54,51,.2);color:#f85149}
+.dash-summary{background:var(--card);border:1px solid var(--b1);border-radius:10px;padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.dash-sum-item{text-align:center}
+.dash-sum-val{font-size:22px;font-weight:700}
+.dash-sum-lbl{font-size:11px;color:var(--t3)}
+.svc-badge.off{border-color:#30363d;color:var(--t4);background:transparent}
+.srch-news-card{background:var(--card);border:1px solid var(--b1);border-radius:8px;padding:14px;margin-bottom:10px}
+.srch-news-card .nc-title{font-size:14px;font-weight:700;color:var(--t1);margin-bottom:6px;line-height:1.4}
+.srch-news-card .nc-meta{font-size:11px;color:var(--t4);margin-bottom:8px}
+.srch-news-card .nc-body{font-size:12px;color:var(--t2);line-height:1.6}
+.usage-bar{height:6px;border-radius:3px;background:var(--inp);overflow:hidden;margin-top:4px}
+.usage-bar-fill{height:100%;border-radius:3px;transition:.3s}
+/* 策略模板卡片 */
+.tpl-card{background:var(--card);border:1px solid var(--b1);border-radius:6px;padding:7px 9px;cursor:pointer;transition:.15s;font-size:12px;line-height:1.4}
+.tpl-card:hover{border-color:var(--blue);background:#1a2744}
+.tpl-card.active{border-color:var(--blue);background:#1a2744;box-shadow:0 0 0 2px rgba(88,166,255,.25)}
+.tpl-card .tpl-name{font-weight:700;color:var(--t1);margin-bottom:2px}
+.tpl-card .tpl-tag{font-size:10px;color:var(--bl);background:rgba(88,166,255,.12);border-radius:3px;padding:1px 4px;display:inline-block}
+.tpl-cat-btn{font-size:11px;padding:2px 8px;border-radius:4px;border:1px solid var(--b1);background:transparent;color:var(--t3);cursor:pointer;transition:.15s}
+.tpl-cat-btn.active,.tpl-cat-btn:hover{border-color:var(--blue);color:var(--bl);background:rgba(88,166,255,.1)}
 </style>
 
 <script>
@@ -1023,7 +1309,7 @@ window.addEventListener('load', async ()=>{
   })
   editor.setSize('100%','100%')
   editor.on('change',()=>setEdSt('已修改（未保存）'))
-  loadStratList(); loadDbList(); startPoll(); initAI(); loadMarketContext()
+  loadStratList(); loadDbList(); startPoll(); initAI(); initBrokerConfig(); initNotifyConfig(); loadMarketContext()
 })
 
 function setEdSt(s){ document.getElementById('edSt').textContent=s }
@@ -1422,6 +1708,7 @@ async function _runFactorScreen(fn){
     const hitCnt = scResults.length
     const scanCnt = r.scanned||0
     scInfo.textContent=`因子 [${fn}] 命中 ${hitCnt} 只（扫描 ${scanCnt} 只）`
+    const _ob1=document.getElementById('optBtn'); if(_ob1) _ob1.style.display=hitCnt>=2?'':'none'
     if(hitCnt){
       document.getElementById('addAllBtn').style.display=''
       _renderScResults()
@@ -1587,6 +1874,7 @@ async function runScreen(){
   const scanned = r?.scanned || scResults.length
   scInfo.textContent=`扫描 ${scanned} 只，命中 ${scResults.length} 只`
   document.getElementById('addAllBtn').style.display=scResults.length?'':'none'
+  const _ob2=document.getElementById('optBtn'); if(_ob2) _ob2.style.display=scResults.length>=2?'':'none'
   const el=document.getElementById('scBody')
   if(!scResults.length){el.innerHTML='<div class="empty">未发现符合条件的标的（全市场已扫描）</div>';return}
   _renderScResults()
@@ -1802,6 +2090,125 @@ async function testAiConn(){
     msg.textContent=`❌ ${r.error||'AI接口调用失败'}`
   }
   setTimeout(()=>msg.textContent='',8000)
+}
+
+// ══════════════════════════════════════════════
+// 券商接口配置
+// ══════════════════════════════════════════════
+let _brokerCfg = { broker_type: 'paper', config: {} }
+
+const BROKER_LABELS = {
+  paper:      { icon: '🎯', name: '模拟盘',      desc: '内置虚拟账户，无需配置' },
+  easytrader: { icon: '🖥',  name: 'EasyTrader', desc: '同花顺/通达信客户端自动化' },
+  longbridge: { icon: '🌏', name: '长桥证券',    desc: '长桥 OpenAPI（REST）' },
+  custom:     { icon: '🔧', name: '自定义HTTP',  desc: '对接私有交易系统' },
+}
+
+const BROKER_FIELDS = {
+  paper: [],
+  easytrader: [
+    { id:'et_broker',  label:'客户端类型', type:'select',
+      options:[{v:'ths',l:'同花顺(THS)'},{v:'tdx',l:'通达信(TDX)'},{v:'gj',l:'国金证券'},{v:'yh',l:'银河证券'},{v:'ht',l:'华泰证券'}] },
+    { id:'et_account', label:'资金账号', type:'text',   ph:'请输入资金账号' },
+    { id:'et_pass',    label:'交易密码', type:'password', ph:'请输入交易密码' },
+  ],
+  longbridge: [
+    { id:'lb_key',    label:'App Key',      type:'text',     ph:'从长桥开发者中心获取' },
+    { id:'lb_secret', label:'App Secret',   type:'password', ph:'从长桥开发者中心获取' },
+    { id:'lb_token',  label:'Access Token', type:'password', ph:'从长桥开发者中心获取' },
+  ],
+  custom: [
+    { id:'cu_url',   label:'接口 Base URL', type:'text',     ph:'http://127.0.0.1:8080' },
+    { id:'cu_token', label:'Bearer Token',  type:'password', ph:'留空则不鉴权' },
+  ],
+}
+
+async function initBrokerConfig(){
+  const r = await api('/user/broker_config')
+  if(!r?.ok) return
+  _brokerCfg = { broker_type: r.broker_type || 'paper', config: r.config || {} }
+  renderBrokerTypeGrid()
+  renderBrokerFields(_brokerCfg.broker_type)
+}
+
+function renderBrokerTypeGrid(){
+  const cur = _brokerCfg.broker_type
+  const box = document.getElementById('brokerTypeGrid')
+  box.innerHTML = Object.entries(BROKER_LABELS).map(([k,v])=>`
+    <div onclick="selectBrokerType('${k}')" style="
+      padding:10px 12px;border-radius:8px;cursor:pointer;border:1px solid ${k===cur?'var(--blue)':'var(--b1)'};
+      background:${k===cur?'rgba(31,111,235,.12)':'var(--card)'};transition:.15s">
+      <div style="font-size:15px;margin-bottom:3px">${v.icon} <b style="font-size:13px;color:${k===cur?'var(--bl)':'var(--t1)'}">${v.name}</b></div>
+      <div style="font-size:10px;color:var(--t3)">${v.desc}</div>
+    </div>`).join('')
+}
+
+function selectBrokerType(t){
+  _brokerCfg.broker_type = t
+  renderBrokerTypeGrid()
+  renderBrokerFields(t)
+}
+
+function renderBrokerFields(t){
+  const box    = document.getElementById('brokerFieldsBox')
+  const fields = BROKER_FIELDS[t] || []
+  const cfg    = _brokerCfg.config || {}
+
+  if(t === 'paper'){
+    box.innerHTML = `<div style="padding:10px 12px;background:var(--card);border-radius:8px;font-size:12px;color:var(--gl);margin-bottom:12px">
+      ✅ 使用内置模拟盘，所有交易仅在本平台虚拟账户中执行，不会真实下单。
+    </div>`
+    return
+  }
+
+  const rows = fields.map(f => {
+    const val = cfg[f.id.split('_').slice(1).join('_')] || cfg[f.id] || ''
+    if(f.type === 'select'){
+      const opts = f.options.map(o=>`<option value="${o.v}" ${val===o.v?'selected':''}>${o.l}</option>`).join('')
+      return `<div class="fc" style="margin-bottom:10px">
+        <label style="font-size:11px;color:var(--t3)">${f.label}</label>
+        <select id="${f.id}" class="set-fi" style="padding:6px 8px">${opts}</select></div>`
+    }
+    return `<div class="fc" style="margin-bottom:10px">
+      <label style="font-size:11px;color:var(--t3)">${f.label}</label>
+      <input id="${f.id}" class="set-fi" type="${f.type}" placeholder="${f.ph}" value="${f.type==='password'?'':val}"></div>`
+  }).join('')
+
+  box.innerHTML = `<div style="margin-bottom:12px">${rows}</div>`
+}
+
+async function saveBrokerConfig(){
+  const msg = document.getElementById('brokerSetMsg')
+  const t   = _brokerCfg.broker_type
+  let cfg   = {}
+
+  if(t === 'easytrader'){
+    cfg = {
+      broker:   document.getElementById('et_broker')?.value  || 'ths',
+      account:  document.getElementById('et_account')?.value.trim() || '',
+      password: document.getElementById('et_pass')?.value    || '',
+    }
+  } else if(t === 'longbridge'){
+    cfg = {
+      app_key:      document.getElementById('lb_key')?.value.trim()    || '',
+      app_secret:   document.getElementById('lb_secret')?.value        || '',
+      access_token: document.getElementById('lb_token')?.value         || '',
+    }
+  } else if(t === 'custom'){
+    cfg = {
+      base_url: document.getElementById('cu_url')?.value.trim() || '',
+      token:    document.getElementById('cu_token')?.value      || '',
+    }
+  }
+
+  const r = await api('/user/broker_config','POST',{ broker_type: t, config: cfg })
+  if(r?.ok){
+    msg.style.color = 'var(--gl)'; msg.textContent = '✅ 券商配置已保存'
+    _brokerCfg.config = cfg
+  } else {
+    msg.style.color = 'var(--rl)'; msg.textContent = '❌ 保存失败'
+  }
+  setTimeout(()=>msg.textContent='', 3000)
 }
 
 function fillAiFromEditor(){
@@ -2044,6 +2451,43 @@ function renderAIResult(r){
       <div class="ai-conf-bar"><div class="ai-conf-fill" style="width:${conf}%"></div></div>
       ${s.summary?`<div style="font-size:13px;color:var(--t2);margin-top:8px;line-height:1.5">${esc(s.summary)}</div>`:''}
       ${s.checklist?.length?`<ul class="checklist">${s.checklist.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:''}
+    </div>`
+  }
+
+  // ══ 决策稳定性警告 ══════════════════════════════
+  if(r.stability && !r.stability.stable && r.stability.warn){
+    html += `<div style="margin:0 15px 10px;background:#1e1000;border:1px solid #d29922;border-radius:8px;padding:12px 14px;font-size:12px;color:#e3b341;line-height:1.6">
+      ${esc(r.stability.warn)}
+    </div>`
+  }
+
+  // ══ 新闻情绪面板 ════════════════════════════════
+  const newsArr = r.news||[]
+  const sent = r.news_sentiment||{}
+  if(newsArr.length){
+    const sentColor = sent.score>0.2?'#3fb950':sent.score<-0.2?'#f85149':'#8b949e'
+    const sentBg    = sent.score>0.2?'#0d2a1a':sent.score<-0.2?'#2d1a1e':'#161b22'
+    let newsHtml = newsArr.slice(0,5).map(n=>{
+      const meta = [n.source,n.time].filter(Boolean).join(' · ')
+      return `<div style="padding:5px 0;border-bottom:1px solid var(--b1);font-size:12px">
+        <div style="color:var(--t1);line-height:1.5">${esc(n.title)}</div>
+        ${meta?`<div style="font-size:11px;color:var(--t4);margin-top:2px">${esc(meta)}</div>`:''}
+      </div>`
+    }).join('')
+    const kwHtml = (sent.keywords||[]).length
+      ? `<div style="margin-top:6px;font-size:11px">${sent.keywords.map(k=>`<span style="display:inline-block;margin:1px 3px 1px 0;padding:1px 5px;border-radius:3px;background:${k.startsWith('+')?'rgba(63,185,80,.15)':'rgba(248,81,73,.15)'};color:${k.startsWith('+')?'#3fb950':'#f85149'}">${esc(k)}</span>`).join('')}</div>`
+      : ''
+    html += `<div style="padding:0 15px 10px">
+      <div style="font-size:11px;font-weight:700;color:var(--t2);letter-spacing:.6px;margin-bottom:7px">📰 近期新闻情绪</div>
+      <div style="background:${sentBg};border:1px solid var(--b1);border-radius:8px;padding:10px 12px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <span style="font-size:14px;font-weight:700;color:${sentColor}">${sent.label||'中性'}</span>
+          <span style="font-size:12px;color:var(--t3)">情绪得分：<b style="color:${sentColor}">${(sent.score||0)>0?'+':''}${(sent.score||0).toFixed(2)}</b></span>
+          <span style="font-size:11px;color:var(--t4)">${newsArr.length} 条新闻</span>
+        </div>
+        ${kwHtml}
+        <div style="margin-top:8px">${newsHtml}</div>
+      </div>
     </div>`
   }
 
@@ -3225,15 +3669,19 @@ async function resetPaper(){
         用自然语言描述你想要的选股逻辑，AI 将自动生成可运行的 Python 策略代码。
         生成后会直接填入编辑器，你可以再调整保存。
       </div>
-      <textarea id="aiGenDesc" rows="5" placeholder="例如：找出过去5日均线金叉20日均线，且成交量放大1.5倍以上的股票，排除ST股，优先选涨幅不超过5%的个股..."
+      <!-- 策略模板选择器 -->
+      <div id="aiTplSection" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span style="font-size:11px;font-weight:700;color:var(--t2)">📋 预设策略模板</span>
+          <span id="aiTplLoading" style="font-size:11px;color:var(--t4)">加载中...</span>
+          <div style="flex:1"></div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap" id="aiTplCategoryBtns"></div>
+        </div>
+        <div id="aiTplGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px;max-height:160px;overflow-y:auto;padding-right:4px"></div>
+      </div>
+      <textarea id="aiGenDesc" rows="4" placeholder="选择上方模板或自行描述选股需求..."
         style="width:100%;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:9px;color:var(--t1);font-size:13px;resize:vertical;font-family:inherit;line-height:1.6"></textarea>
-      <div id="aiGenQuickBtns" style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
-        <!-- 快捷描述（策略模式） -->
-        <span style="font-size:11px;color:var(--t4)">快捷：</span>
-        <button class="btn btn-gray btn-xs" onclick="fillAiGenDesc('均线金叉策略：MA5上穿MA20，量比>1.5，涨幅不超8%，排除ST')">MA金叉</button>
-        <button class="btn btn-gray btn-xs" onclick="fillAiGenDesc('MACD金叉策略：DIF上穿DEA，红柱放大，近3日涨幅不超5%')">MACD金叉</button>
-        <button class="btn btn-gray btn-xs" onclick="fillAiGenDesc('强势突破策略：突破60日最高点，成交量是5日均量的2倍以上，涨幅5-9%')">强势突破</button>
-        <button class="btn btn-gray btn-xs" onclick="fillAiGenDesc('低位反弹策略：RSI低于30超卖后回升，价格在布林下轨附近，近5日跌幅超10%')">低位反弹</button>
+      <div id="aiGenQuickBtns" style="display:none">
       </div>
       <div id="aiGenErr" style="font-size:12px;color:var(--rl);margin-top:8px;display:none"></div>
     </div>
@@ -3292,6 +3740,136 @@ function closeAiGen(){
 function fillAiGenDesc(txt){
   document.getElementById('aiGenDesc').value=txt
 }
+
+// ── 策略模板系统 ─────────────────────────────────
+let _stratTemplates = []
+let _tplCategory = 'all'
+let _selTplId = null
+
+async function loadStrategyTemplates(){
+  const loadEl = document.getElementById('aiTplLoading')
+  try {
+    const r = await api('/strategy_templates')
+    if(!r?.ok) throw new Error(r?.error||'加载失败')
+    _stratTemplates = r.templates||[]
+    if(loadEl) loadEl.textContent = `(${_stratTemplates.length}个)`
+    _renderTplCategories()
+    _renderTplGrid('all')
+  } catch(e){
+    if(loadEl) loadEl.textContent = '(加载失败)'
+  }
+}
+
+function _renderTplCategories(){
+  const cats = ['all', ...[...new Set(_stratTemplates.map(t=>t.category))]]
+  const el = document.getElementById('aiTplCategoryBtns')
+  if(!el) return
+  el.innerHTML = cats.map(c=>
+    `<button class="tpl-cat-btn ${c==='all'?'active':''}" onclick="_filterTpl('${c}',this)">${c==='all'?'全部':c}</button>`
+  ).join('')
+}
+
+function _filterTpl(cat, btn){
+  _tplCategory = cat
+  document.querySelectorAll('.tpl-cat-btn').forEach(b=>b.classList.remove('active'))
+  btn.classList.add('active')
+  _renderTplGrid(cat)
+}
+
+function _renderTplGrid(cat){
+  const grid = document.getElementById('aiTplGrid')
+  if(!grid) return
+  const list = cat==='all' ? _stratTemplates : _stratTemplates.filter(t=>t.category===cat)
+  grid.innerHTML = list.map(t=>`
+    <div class="tpl-card ${t.id===_selTplId?'active':''}" onclick="_selectTpl('${t.id}',\`${t.prompt.replace(/`/g,'\\`')}\`)">
+      <div class="tpl-name">${esc(t.name)}</div>
+      <span class="tpl-tag">${esc(t.category)}</span>
+      <div style="font-size:10px;color:var(--t4);margin-top:3px;line-height:1.3">${esc(t.desc.substring(0,30))}...</div>
+    </div>`).join('')
+}
+
+function _selectTpl(id, prompt){
+  _selTplId = id
+  _renderTplGrid(_tplCategory)
+  document.getElementById('aiGenDesc').value = prompt
+}
+
+// 在打开AI写策略弹窗时加载模板
+const _origOpenAiGen = openAiGen
+openAiGen = function(){
+  _origOpenAiGen()
+  if(_stratTemplates.length===0) loadStrategyTemplates()
+  document.getElementById('aiTplSection').style.display=''
+}
+const _origOpenAiFactorGen = openAiFactorGen
+openAiFactorGen = function(){
+  _origOpenAiFactorGen()
+  // 因子模式隐藏策略模板
+  document.getElementById('aiTplSection').style.display='none'
+}
+
+// ── 通知推送配置 ─────────────────────────────────
+let _notifyConfig = {}
+
+async function initNotifyConfig(){
+  const r = await api('/user/notify_config')
+  if(!r?.ok) return
+  _notifyConfig = r
+  // 渲染各渠道
+  _applyNotifyChannel('wecom',   ['ntWeComEn',   'ntWeComFields',   'ntWeComWh'])
+  _applyNotifyChannel('feishu',  ['ntFeiShuEn',  'ntFeiShuFields',  'ntFeiShuWh'])
+  _applyNotifyChannel('dingtalk',['ntDingTalkEn','ntDingTalkFields','ntDingTalkWh','ntDingTalkSec'])
+  _applyNotifyChannel('telegram',['ntTelegramEn','ntTelegramFields','ntTgToken','ntTgChatId'])
+}
+
+function _applyNotifyChannel(ch, ids){
+  const cfg = _notifyConfig[ch]||{}
+  const [enId, fieldsId, ...inputIds] = ids
+  const enEl = document.getElementById(enId)
+  const fieldsEl = document.getElementById(fieldsId)
+  if(enEl) enEl.checked = !!cfg.enabled
+  if(fieldsEl) fieldsEl.style.display = cfg.enabled ? '' : 'none'
+  const keys = ch==='telegram' ? ['token','chat_id'] : ch==='dingtalk' ? ['webhook','secret'] : ['webhook']
+  keys.forEach((k,i)=>{
+    const el = document.getElementById(inputIds[i])
+    if(el && cfg[k]) el.value = cfg[k]
+  })
+}
+
+function notifyChannelToggle(ch, el){
+  const fieldsId = {wecom:'ntWeComFields',feishu:'ntFeiShuFields',dingtalk:'ntDingTalkFields',telegram:'ntTelegramFields'}[ch]
+  const fieldsEl = document.getElementById(fieldsId)
+  if(fieldsEl) fieldsEl.style.display = el.checked ? '' : 'none'
+}
+
+async function saveNotifyConfig(){
+  const cfg = {
+    wecom:    { enabled: document.getElementById('ntWeComEn')?.checked||false,    webhook: document.getElementById('ntWeComWh')?.value||'' },
+    feishu:   { enabled: document.getElementById('ntFeiShuEn')?.checked||false,   webhook: document.getElementById('ntFeiShuWh')?.value||'' },
+    dingtalk: { enabled: document.getElementById('ntDingTalkEn')?.checked||false, webhook: document.getElementById('ntDingTalkWh')?.value||'', secret: document.getElementById('ntDingTalkSec')?.value||'' },
+    telegram: { enabled: document.getElementById('ntTelegramEn')?.checked||false, token: document.getElementById('ntTgToken')?.value||'', chat_id: document.getElementById('ntTgChatId')?.value||'' },
+  }
+  const r = await api('/user/notify_config','POST', cfg)
+  const msg = document.getElementById('ntSetMsg')
+  if(r?.ok){ msg.style.color='var(--gl)'; msg.textContent='✅ 推送配置已保存' }
+  else { msg.style.color='var(--rl)'; msg.textContent='❌ 保存失败: '+(r?.error||'') }
+}
+
+async function testNotify(){
+  const msg = document.getElementById('ntSetMsg')
+  msg.style.color='var(--t3)'; msg.textContent='发送中...'
+  const r = await api('/notify/test','POST',{})
+  if(r?.ok){
+    msg.style.color='var(--gl)'
+    const res = r.results||{}
+    const ok = Object.entries(res).filter(([,v])=>v.ok).map(([k])=>k)
+    const fail = Object.entries(res).filter(([,v])=>!v.ok).map(([k,v])=>`${k}(${v.error||'?'})`)
+    msg.textContent = `✅ 推送测试完成 成功:${ok.join(',')||'无'} ${fail.length?'失败:'+fail.join(','):''}`
+  } else {
+    msg.style.color='var(--rl)'
+    msg.textContent = '❌ 推送失败: '+(r?.error||'未启用任何渠道')
+  }
+}
 async function doAiGen(){
   const desc = document.getElementById('aiGenDesc').value.trim()
   if(!desc){ document.getElementById('aiGenErr').textContent='请描述需求'; document.getElementById('aiGenErr').style.display=''; return }
@@ -3299,21 +3877,36 @@ async function doAiGen(){
   const st  = document.getElementById('aiGenSt')
   const err = document.getElementById('aiGenErr')
   btn.disabled=true; btn.textContent='⟳ AI生成中...'
-  st.style.color='var(--bl)'; st.textContent='正在调用AI，约10-30秒...'
+  st.style.color='var(--bl)'; st.textContent='正在调用AI，通常需要 30～90 秒，请耐心等待...'
   err.style.display='none'
 
   const isFactor = _aiGenMode === 'factor'
   const endpoint = isFactor ? '/factors/ai_generate' : '/ai/generate_strategy'
+
+  // 倒计时提示
+  let secs = 0
+  const ticker = setInterval(()=>{
+    secs++
+    st.textContent = `AI生成中... 已等待 ${secs}s（通常 30～90s，请勿关闭）`
+  }, 1000)
+
   const r = await api(endpoint,'POST',{description:desc})
+  clearInterval(ticker)
 
   btn.disabled=false
   btn.textContent = isFactor ? '✨ 生成因子' : '✨ 生成策略'
 
-  if(!r||!r.ok){
-    err.textContent='❌ '+(r?.error||'生成失败，请检查AI设置')
-    err.style.display=''
-    st.textContent=''
-    return
+  if(!r){
+    err.textContent='❌ 请求超时或网络错误，请刷新页面后重试'
+    err.style.display=''; st.textContent=''; return
+  }
+  if(!r.ok){
+    err.textContent='❌ '+(r.error||'生成失败，请检查AI设置')
+    err.style.display=''; st.textContent=''; return
+  }
+  if(!r.code || r.code.length < 100){
+    err.textContent=`❌ AI返回代码过短(${r.code?.length||0}字符)，模型未生成完整代码，请重试`
+    err.style.display=''; st.textContent=''; return
   }
   // 填入编辑器
   editor.setValue(r.code||'')
@@ -3392,7 +3985,7 @@ async function doLogin(){
     _currentUser = r
     hideAuthOverlay()
     updateNavUser(r)
-    loadStratList(); loadDbList(); startPoll(); initAI(); loadMarketContext()
+    loadStratList(); loadDbList(); startPoll(); initAI(); initBrokerConfig(); initNotifyConfig(); loadMarketContext()
   } else {
     setAuthMsg(msg, r?.error || '登录失败', 'err')
   }
@@ -3417,7 +4010,7 @@ async function doRegister(){
       setTimeout(()=>{
         hideAuthOverlay()
         updateNavUser(lr)
-        loadStratList(); loadDbList(); startPoll(); initAI(); loadMarketContext()
+        loadStratList(); loadDbList(); startPoll(); initAI(); initBrokerConfig(); initNotifyConfig(); loadMarketContext()
       }, 800)
     }
   } else {
@@ -3492,5 +4085,606 @@ window.api = async function(path, method='GET', body=null){
     <div class="kl-info" id="klInfo"></div>
   </div>
 </div>
+
+<!-- ══ 组合优化弹窗 ════════════════════════════════════════════ -->
+<div class="kl-overlay" id="optOverlay" onclick="if(event.target===this)closeOpt()" style="z-index:2200">
+  <div class="kl-box" style="width:680px;max-width:96vw">
+    <div class="kl-hd">
+      <span class="kl-title">⚖ 投资组合优化</span>
+      <span class="kl-src" style="background:#0ea5e9;color:#fff;border:none">Markowitz</span>
+      <button class="kl-close" onclick="closeOpt()">✕</button>
+    </div>
+    <div style="padding:16px">
+      <!-- 优化模式 -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:14px" id="optModeGrid"></div>
+      <!-- 参数 -->
+      <div style="display:flex;gap:12px;margin-bottom:14px;align-items:flex-end">
+        <div class="fc" style="flex:1">
+          <label style="font-size:11px;color:var(--t3)">总资金（元）</label>
+          <input id="optCapital" class="set-fi" type="number" value="100000" min="10000" step="10000">
+        </div>
+        <button class="btn btn-blue" onclick="runPortfolioOpt()" style="flex-shrink:0">⚖ 开始优化</button>
+      </div>
+      <div id="optStatus" style="font-size:12px;color:var(--bl);margin-bottom:8px"></div>
+      <!-- 结果 -->
+      <div id="optResult" style="max-height:360px;overflow-y:auto"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══ 组合优化 ═════════════════════════════════════════════════
+const OPT_MODES = {
+  equal_weight: { label:'等权重', icon:'⚖', desc:'每只标的等额持仓，最简单直接' },
+  max_sharpe:   { label:'最大夏普', icon:'📈', desc:'历史数据最优风险收益比（需30日+数据）' },
+  min_variance: { label:'最小波动', icon:'🛡', desc:'最小化组合波动率，稳健型' },
+  risk_parity:  { label:'风险平价', icon:'⚡', desc:'各标的风险贡献相等（桥水风格）' },
+}
+let _optMode = 'equal_weight'
+
+function renderOptModeGrid(){
+  const box = document.getElementById('optModeGrid')
+  box.innerHTML = Object.entries(OPT_MODES).map(([k,v])=>`
+    <div onclick="selectOptMode('${k}')" style="
+      padding:9px 10px;border-radius:8px;cursor:pointer;border:1px solid ${k===_optMode?'var(--blue)':'var(--b1)'};
+      background:${k===_optMode?'rgba(31,111,235,.12)':'var(--card)'};transition:.15s">
+      <div style="font-size:13px;margin-bottom:2px">${v.icon} <b style="color:${k===_optMode?'var(--bl)':'var(--t1)'}">${v.label}</b></div>
+      <div style="font-size:10px;color:var(--t3)">${v.desc}</div>
+    </div>`).join('')
+}
+
+function selectOptMode(m){ _optMode=m; renderOptModeGrid() }
+
+function openPortfolioOpt(){
+  if(!scResults||!scResults.length){ alert('请先运行选股，获得结果后再优化'); return }
+  renderOptModeGrid()
+  document.getElementById('optResult').innerHTML=''
+  document.getElementById('optStatus').textContent=`待优化标的：${scResults.length} 只`
+  document.getElementById('optOverlay').classList.add('show')
+}
+function closeOpt(){ document.getElementById('optOverlay').classList.remove('show') }
+
+async function runPortfolioOpt(){
+  const codes = scResults.map(r=>r.code).filter(Boolean)
+  if(codes.length<2){ alert('至少需要2只股票'); return }
+  const capital = parseFloat(document.getElementById('optCapital').value)||100000
+  const st = document.getElementById('optStatus')
+  const res = document.getElementById('optResult')
+  st.style.color='var(--bl)'; st.textContent='⟳ 计算中，正在获取历史数据...'
+  res.innerHTML=''
+  const r = await api('/portfolio/optimize','POST',{codes, mode:_optMode, capital})
+  if(!r||!r.ok){
+    st.style.color='var(--rl)'; st.textContent='❌ '+(r?.error||'优化失败')
+    return
+  }
+  const weights = r.weights||{}
+  const positions = r.positions||{}
+  const info = `预期年化: ${((r.expected_return||0)*100).toFixed(1)}%  年化波动: ${((r.volatility||0)*100).toFixed(1)}%  夏普: ${(r.sharpe||0).toFixed(2)}`
+  st.style.color='var(--gl)'; st.textContent=`✅ 优化完成（${OPT_MODES[_optMode]?.label||_optMode}）  ${info}`
+
+  // 渲染持仓表格
+  const rows = Object.entries(positions)
+    .sort(([,a],[,b])=>b-a)
+    .map(([code,shares])=>{
+      const stk  = scResults.find(s=>s.code===code)||{}
+      const w    = ((weights[code]||0)*100).toFixed(1)
+      const price= stk.price||0
+      const val  = (price*shares).toFixed(0)
+      const name = stk.name||code
+      return `<tr>
+        <td style="font-family:monospace;font-weight:700;color:var(--t1)">${code}</td>
+        <td style="color:var(--t2)">${name}</td>
+        <td style="text-align:right;color:var(--bl)">${w}%</td>
+        <td style="text-align:right">${price.toFixed(2)}</td>
+        <td style="text-align:right;font-weight:700">${shares}</td>
+        <td style="text-align:right;color:var(--gl)">¥${Number(val).toLocaleString()}</td>
+      </tr>`
+    }).join('')
+
+  res.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr style="color:var(--t3);font-size:11px">
+      <th style="text-align:left;padding:5px 6px">代码</th>
+      <th style="text-align:left;padding:5px 6px">名称</th>
+      <th style="text-align:right;padding:5px 6px">权重</th>
+      <th style="text-align:right;padding:5px 6px">现价</th>
+      <th style="text-align:right;padding:5px 6px">股数</th>
+      <th style="text-align:right;padding:5px 6px">市值</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr style="border-top:1px solid var(--b1);font-size:11px;color:var(--t3)">
+      <td colspan="5" style="padding:5px 6px">总计投入</td>
+      <td style="text-align:right;padding:5px 6px;color:var(--t2);font-weight:700">
+        ¥${Object.entries(positions).reduce((s,[code,sh])=>{
+          const p=(scResults.find(r=>r.code===code)||{}).price||0; return s+p*sh
+        },0).toLocaleString('zh-CN',{maximumFractionDigits:0})}
+      </td>
+    </tr></tfoot>
+  </table>`
+}
+document.addEventListener('keydown', e=>{ if(e.key==='Escape'&&document.getElementById('optOverlay').classList.contains('show')) closeOpt() })
+</script>
+
+<script>
+// ══════════════════════════════════════════════════════
+// 智能搜索页
+// ══════════════════════════════════════════════════════
+let _srchMode = 'news'
+let _srchResults = []
+let _srchSelIdx = -1
+let _srchCurCode = ''
+let _srchStatsLoaded = false
+
+function setSrchMode(mode, btn){
+  _srchMode = mode
+  document.querySelectorAll('.srch-mode-btn').forEach(b=>b.classList.remove('active'))
+  btn.classList.add('active')
+}
+
+function quickSearch(q){
+  document.getElementById('srchInput').value = q
+  doSearch()
+}
+
+async function doSearch(){
+  const q = document.getElementById('srchInput').value.trim()
+  if(!q){ return }
+  const st = document.getElementById('srchStatus')
+  const resEl = document.getElementById('srchResults')
+  st.textContent = '🔍 搜索中...'
+  resEl.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--t3)"><span class="spin">⟳</span> 搜索中...</div>'
+
+  // 判断是否是股票代码（6位数字）
+  const isCode = /^\d{6}$/.test(q)
+
+  try {
+    let results = []
+    let endpoint = ''
+    let payload = {}
+
+    if(isCode && _srchMode === 'stock'){
+      // TwelveData 行情 + 综合信息
+      const r = await api(`/search/stock_info/${q}`)
+      if(r?.ok){
+        _srchCurCode = q
+        _renderStockDetail(r)
+        st.textContent = `代码 ${q} 信息已加载`
+        resEl.innerHTML = `<div style="padding:16px;font-size:13px;color:var(--t2)">✅ 已加载 ${q} 综合信息，查看右侧面板</div>`
+        return
+      }
+    } else if(isCode && _srchMode === 'news'){
+      // 个股新闻
+      const r = await api(`/search/news/${q}`)
+      if(r?.ok){
+        results = r.results || []
+        _srchCurCode = q
+      }
+    } else {
+      // 通用搜索
+      const r = await api('/search/web', 'POST', {
+        query: q,
+        topic: _srchMode,
+        limit: 12,
+      })
+      if(r?.ok) results = r.results || []
+    }
+
+    _srchResults = results
+    _srchSelIdx = -1
+    _renderSrchList(results)
+    st.textContent = results.length > 0
+      ? `找到 ${results.length} 条结果`
+      : '未找到结果，请尝试其他关键词'
+  } catch(e){
+    st.textContent = '搜索失败: ' + (e.message||e)
+    resEl.innerHTML = '<div style="padding:16px;color:var(--rl)">搜索失败，请稍后重试</div>'
+  }
+}
+
+function _renderSrchList(results){
+  const el = document.getElementById('srchResults')
+  if(!results.length){
+    el.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--t4)">无结果</div>'
+    return
+  }
+  el.innerHTML = results.map((r,i)=>{
+    const fromCls = r.from?.includes('tavily')?'tavily':r.from?.includes('serpapi')?'serpapi':'direct'
+    const fromLbl = r.from?.includes('tavily')?'Tavily':r.from?.includes('serpapi')?'SerpAPI':'直抓'
+    return `<div class="srch-result-item" onclick="_selectSrchItem(${i})" id="sri_${i}">
+      <div style="font-size:13px;font-weight:600;color:var(--t1);margin-bottom:4px;line-height:1.4">${esc(r.title||'')}</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span style="font-size:11px;color:var(--t4)">${esc(r.source||r.from||'')}</span>
+        ${r.time?`<span style="font-size:10px;color:var(--t4)">${esc(r.time)}</span>`:''}
+        <span class="srch-badge ${fromCls}">${fromLbl}</span>
+      </div>
+      ${r.content?`<div style="font-size:11px;color:var(--t3);margin-top:4px;line-height:1.5">${esc(r.content.substring(0,100))}...</div>`:''}
+    </div>`
+  }).join('')
+}
+
+function _selectSrchItem(idx){
+  _srchSelIdx = idx
+  document.querySelectorAll('.srch-result-item').forEach((el,i)=>el.classList.toggle('active',i===idx))
+  const item = _srchResults[idx]
+  if(!item) return
+
+  const titleEl = document.getElementById('srchDetailTitle')
+  const metaEl  = document.getElementById('srchDetailMeta')
+  const newsEl  = document.getElementById('srchNewsDetail')
+  titleEl.textContent = item.title || '搜索结果'
+  metaEl.textContent  = [item.source, item.time].filter(Boolean).join(' · ')
+
+  newsEl.innerHTML = `
+    <div class="srch-news-card">
+      <div class="nc-title">${esc(item.title||'')}</div>
+      <div class="nc-meta">
+        来源：${esc(item.source||item.from||'—')}
+        ${item.time?' · '+esc(item.time):''}
+        ${item.url?` · <a href="${esc(item.url)}" target="_blank" style="color:var(--bl);font-size:11px">原文链接 ↗</a>`:''}
+      </div>
+      <div class="nc-body">${esc(item.content||'（无摘要）')}</div>
+    </div>`
+
+  // 如果是股票代码，显示分析按钮
+  if(_srchCurCode){
+    document.getElementById('srchAnalyzeBtn').style.display=''
+    document.getElementById('srchAddQueueBtn').style.display=''
+  }
+}
+
+function _renderStockDetail(r){
+  const newsEl  = document.getElementById('srchNewsDetail')
+  const quoteEl = document.getElementById('srchQuoteCard')
+  const quoteCt = document.getElementById('srchQuoteContent')
+  const titleEl = document.getElementById('srchDetailTitle')
+  const metaEl  = document.getElementById('srchDetailMeta')
+
+  titleEl.textContent = `${r.name||r.code} (${r.code})`
+  metaEl.textContent  = `综合信息`
+  document.getElementById('srchAnalyzeBtn').style.display=''
+  document.getElementById('srchAddQueueBtn').style.display=''
+
+  // TwelveData 报价
+  const q = r.quote||{}
+  if(q.price){
+    quoteEl.style.display=''
+    const chgColor = (q.change_pct||0)>=0?'var(--gl)':'var(--rl)'
+    quoteCt.innerHTML = `
+      <div style="display:flex;gap:20px;flex-wrap:wrap">
+        <div><div style="font-size:24px;font-weight:700;color:var(--t1)">${q.price?.toFixed(2)||'—'}</div>
+          <div style="font-size:13px;color:${chgColor}">${(q.change_pct||0)>=0?'+':''}${(q.change_pct||0).toFixed(2)}%</div></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 20px;font-size:12px;color:var(--t2)">
+          <span>开盘：${q.open?.toFixed(2)||'—'}</span>
+          <span>最高：<b style="color:var(--rl)">${q.high?.toFixed(2)||'—'}</b></span>
+          <span>昨收：${q.prev_close?.toFixed(2)||'—'}</span>
+          <span>最低：<b style="color:var(--gl)">${q.low?.toFixed(2)||'—'}</b></span>
+        </div>
+        <div style="font-size:11px;color:var(--t4);align-self:flex-end">交易所：${q.exchange||'—'} · 来源：TwelveData</div>
+      </div>`
+  } else {
+    quoteEl.style.display='none'
+  }
+
+  // 新闻
+  const news = [...(r.news||[]), ...(r.web||[])]
+  if(news.length){
+    newsEl.innerHTML = `
+      <div style="font-size:11px;font-weight:700;color:var(--t2);margin-bottom:10px">📰 相关新闻（${news.length}条）</div>
+      ${news.map(n=>`<div class="srch-news-card">
+        <div class="nc-title">${esc(n.title||'')}</div>
+        <div class="nc-meta">${esc(n.source||n.from||'')}${n.time?' · '+esc(n.time):''}${n.url?` · <a href="${esc(n.url)}" target="_blank" style="color:var(--bl)">原文 ↗</a>`:''}</div>
+        ${n.content?`<div class="nc-body">${esc(n.content)}</div>`:''}
+      </div>`).join('')}`
+  } else {
+    newsEl.innerHTML = '<div style="color:var(--t4);font-size:13px;padding:16px 0">暂无相关新闻</div>'
+  }
+}
+
+async function analyzeFromSearch(){
+  if(!_srchCurCode) return
+  switchPage('monitor', document.querySelectorAll('.ntab')[0])
+  // 填入分析代码框并触发分析
+  await new Promise(r=>setTimeout(r,200))
+  const inp = document.getElementById('aiCode')
+  if(inp){ inp.value = _srchCurCode; doAnalysis() }
+}
+
+function addSearchToQueue(){
+  if(!_srchCurCode) return
+  api('/queue/add','POST',{code:_srchCurCode, name:_srchCurCode, price:0, reason:'从搜索页加入'})
+    .then(r=>{ if(r?.ok) alert(`✅ ${_srchCurCode} 已加入买入队列`); else alert(r?.msg||'操作失败') })
+}
+
+// ── 搜索服务状态 ──────────────────────────────────────
+let _srchStats = {}
+
+async function refreshSrchStats(){
+  const r = await api('/search/stats')
+  if(!r?.ok) return
+  _srchStats = r
+  _renderSrchServiceBadges(r)
+}
+
+function _renderSrchServiceBadges(stats){
+  const el = document.getElementById('srchServiceBadges')
+  if(!el) return
+  const services = [
+    { key:'tavily',     label:'Tavily',      color:'tavily' },
+    { key:'serpapi',    label:'SerpAPI',     color:'serpapi' },
+    { key:'twelvedata', label:'TwelveData',  color:'direct' },
+  ]
+  el.innerHTML = services.map(svc=>{
+    const st = stats[svc.key]||{}
+    const accs = (st.accounts||[])
+    const totalRem = accs.reduce((s,a)=>s+a.remaining,0)
+    const totalLim = accs.reduce((s,a)=>s+a.limit,0)
+    const pct = totalLim>0?Math.round(totalRem/totalLim*100):0
+    const cls = pct>30?'ok':pct>5?'warn':'off'
+    return `<span class="svc-badge ${cls}" title="${totalRem}/${totalLim} 剩余" onclick="_showStatsPanel()">${svc.label} ${totalRem}</span>`
+  }).join('')
+}
+
+function _showStatsPanel(){
+  const panel = document.getElementById('srchStatsPanel')
+  panel.style.display = panel.style.display==='none' ? '' : 'none'
+  if(panel.style.display === '' && _srchStats){
+    const ct = document.getElementById('srchStatsContent')
+    ct.innerHTML = ['tavily','serpapi','twelvedata'].map(svc=>{
+      const st = _srchStats[svc]||{}
+      const accs = st.accounts||[]
+      return `<div style="margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:var(--t1);margin-bottom:6px">${svc.charAt(0).toUpperCase()+svc.slice(1)}</div>
+        ${accs.map(a=>`
+          <div style="margin-bottom:6px">
+            <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--t2)">
+              <span>${esc(a.label)}</span>
+              <span>${a.used}/${a.limit} (${a.pct}%)</span>
+            </div>
+            <div class="usage-bar"><div class="usage-bar-fill" style="width:${a.pct}%;background:${a.pct>80?'var(--rl)':a.pct>50?'#e3b341':'var(--gl)'}"></div></div>
+          </div>`).join('')}
+      </div>`
+    }).join('')
+  }
+}
+
+async function initSearchPage(){
+  if(!_srchStatsLoaded){
+    _srchStatsLoaded = true
+    await refreshSrchStats()
+  }
+}
+</script>
+
+<script>
+// ══ 日报页 ══════════════════════════════════════════════════════
+
+let _dailyInited = false
+
+async function initDailyPage(){
+  if(_dailyInited) return
+  _dailyInited = true
+  loadMarketReview()
+}
+
+// ── 大盘复盘 ───────────────────────────────────────────────────
+async function loadMarketReview(){
+  const box = document.getElementById('market-review-body')
+  box.innerHTML = '<div class="empty-hint">加载中…（获取实时行情，请稍候）</div>'
+  try {
+    const ctrl = new AbortController()
+    const tid  = setTimeout(()=>ctrl.abort(), 25000)
+    const r    = await fetch('/api/market/review', {signal: ctrl.signal})
+    clearTimeout(tid)
+    const d    = await r.json()
+    if(!d.ok) throw new Error(d.error || '请求失败')
+    box.innerHTML = _renderMarketReview(d)
+  } catch(e) {
+    const msg = e.name==='AbortError' ? '请求超时（25s），请稍后重试' : e.message
+    box.innerHTML = `<div class="empty-hint" style="color:#f85149">获取失败：${msg}</div>`
+  }
+}
+
+function _renderMarketReview(d){
+  let html = `<div style="font-size:12px;color:var(--t3);margin-bottom:12px">${d.date} ${d.time} 更新</div>`
+
+  // 指数
+  const indices = d.indices || {}
+  if(Object.keys(indices).length){
+    html += `<div class="daily-card" style="margin-bottom:12px">`
+    html += `<div style="font-size:12px;color:var(--t3);margin-bottom:8px;font-weight:600">主要指数</div>`
+    for(const [name, idx] of Object.entries(indices)){
+      const up   = idx.change >= 0
+      const chgTxt = (up ? '+' : '') + idx.change + '%'
+      html += `<div class="mr-index-row">
+        <span class="mr-idx-name">${name}</span>
+        <span class="mr-idx-price">${idx.price}</span>
+        <span class="mr-idx-chg ${up?'up':'dn'}">${chgTxt}</span>
+      </div>`
+    }
+    html += `</div>`
+  }
+
+  // 市场宽度
+  const b = d.breadth || {}
+  if(b.total){
+    html += `<div class="daily-card" style="margin-bottom:12px">`
+    html += `<div style="font-size:12px;color:var(--t3);margin-bottom:8px;font-weight:600">市场概况</div>`
+    html += `<div class="mr-breadth">
+      <div class="mr-stat"><div class="mr-stat-val" style="color:#3fb950">${b.up||0}</div><div class="mr-stat-lbl">上涨</div></div>
+      <div class="mr-stat"><div class="mr-stat-val" style="color:#f85149">${b.down||0}</div><div class="mr-stat-lbl">下跌</div></div>
+      <div class="mr-stat"><div class="mr-stat-val" style="color:#3fb950">${b.limit_up||0}</div><div class="mr-stat-lbl">涨停</div></div>
+      <div class="mr-stat"><div class="mr-stat-val" style="color:#f85149">${b.limit_dn||0}</div><div class="mr-stat-lbl">跌停</div></div>
+    </div>
+    <div style="font-size:11px;color:var(--t3);text-align:right">共 ${b.total} 只</div>`
+    html += `</div>`
+  }
+
+  // 板块
+  const sec = d.sectors || {}
+  if((sec.top_gainers||[]).length || (sec.top_losers||[]).length){
+    html += `<div class="daily-card">`
+    html += `<div style="font-size:12px;color:var(--t3);margin-bottom:8px;font-weight:600">板块表现</div>`
+    if((sec.top_gainers||[]).length){
+      html += `<div style="margin-bottom:6px"><span style="font-size:12px;color:var(--t2)">领涨：</span>`
+      sec.top_gainers.forEach(s => html += `<span class="mr-sector-tag up">${s}</span>`)
+      html += `</div>`
+    }
+    if((sec.top_losers||[]).length){
+      html += `<div><span style="font-size:12px;color:var(--t2)">领跌：</span>`
+      sec.top_losers.forEach(s => html += `<span class="mr-sector-tag dn">${s}</span>`)
+      html += `</div>`
+    }
+    html += `</div>`
+  }
+
+  if(!Object.keys(indices).length && !b.total)
+    html += `<div class="empty-hint">暂无数据（TDX未连接且akshare请求失败）</div>`
+
+  return html
+}
+
+// ── 决策仪表盘 ─────────────────────────────────────────────────
+async function generateDashboard(){
+  const raw    = document.getElementById('dash-codes-input').value
+  const withAI = document.getElementById('dash-with-ai').checked
+  const codes  = raw.split(/[\s,，]+/).map(c=>c.trim()).filter(c=>c)
+  if(!codes.length){ alert('请输入股票代码'); return }
+  if(codes.length > 20){ alert('最多20只股票'); return }
+
+  const box = document.getElementById('dash-report-body')
+  box.innerHTML = `<div class="empty-hint">生成中，共 ${codes.length} 只股票…</div>`
+
+  try {
+    const r = await api('/dashboard/generate', 'POST', {codes, with_ai: withAI})
+    if(!r) throw new Error('请求失败（可能需要先登录）')
+    if(!r.ok) throw new Error(r.error || '生成失败')
+    box.innerHTML = _renderDashboard(r)
+  } catch(e) {
+    box.innerHTML = `<div class="empty-hint" style="color:#f85149">生成失败：${e.message}</div>`
+  }
+}
+
+function dashFromQueue(){
+  // 从策略扫描队列导入
+  const items = document.querySelectorAll('.queue-code, [data-code]')
+  const codes = []
+  items.forEach(el => {
+    const c = el.dataset.code || el.textContent.match(/\d{6}/)?.[0]
+    if(c && !codes.includes(c)) codes.push(c)
+  })
+  if(codes.length){
+    document.getElementById('dash-codes-input').value = codes.join(',')
+  } else {
+    // 也尝试从 STOCK_POOL 显示区读取
+    const poolEl = document.getElementById('poolDisplay')
+    if(poolEl){
+      const m = poolEl.textContent.match(/\d{6}/g) || []
+      document.getElementById('dash-codes-input').value = m.slice(0,20).join(',')
+    }
+  }
+}
+
+function _renderDashboard(d){
+  const sigColor = {'强烈买入':'#3fb950','买入':'#58a6ff','持有':'#e3b341','观望':'#bd561d','卖出':'#f85149'}
+  const sentColor = {'利好':'#3fb950','中性':'#e3b341','利空':'#f85149'}
+
+  let html = `<div style="font-size:12px;color:var(--t3);margin-bottom:12px">${d.date} ${d.time} 生成</div>`
+
+  // 汇总栏
+  html += `<div class="dash-summary">
+    <div class="dash-sum-item"><div class="dash-sum-val">${d.total}</div><div class="dash-sum-lbl">分析股票</div></div>
+    <div style="width:1px;background:var(--b1);align-self:stretch"></div>
+    <div class="dash-sum-item"><div class="dash-sum-val" style="color:#3fb950">${d.buy}</div><div class="dash-sum-lbl">买入</div></div>
+    <div class="dash-sum-item"><div class="dash-sum-val" style="color:#e3b341">${d.hold||0}</div><div class="dash-sum-lbl">持有</div></div>
+    <div class="dash-sum-item"><div class="dash-sum-val" style="color:#bd561d">${d.watch}</div><div class="dash-sum-lbl">观望</div></div>
+    <div class="dash-sum-item"><div class="dash-sum-val" style="color:#f85149">${d.sell}</div><div class="dash-sum-lbl">卖出</div></div>
+  </div>`
+
+  // 结果摘要列表
+  html += `<div class="daily-card" style="margin-bottom:14px">`
+  html += `<div style="font-size:12px;color:var(--t3);margin-bottom:10px;font-weight:600">分析结果摘要</div>`
+  ;(d.stocks||[]).forEach(s => {
+    const sc   = sigColor[s.signal] || '#888'
+    const sent = sentColor[s.sentiment] || '#888'
+    html += `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--b1)">
+      <span style="font-size:8px;color:${sc}">●</span>
+      <span style="font-size:14px;font-weight:600">${s.name}</span>
+      <span style="font-size:12px;color:var(--t3)">(${s.code})</span>
+      <span style="font-size:12px;color:${sc};margin-left:4px">${s.signal}</span>
+      <span style="font-size:12px;color:var(--t3)">|</span>
+      <span style="font-size:12px">评分 <b>${s.score||'N/A'}</b></span>
+      <span style="font-size:12px;color:var(--t3)">|</span>
+      <span style="font-size:12px;color:${sent}">${s.sentiment}</span>
+    </div>`
+  })
+  html += `</div>`
+
+  // 逐只详情卡片
+  ;(d.stocks||[]).forEach((s,i) => {
+    const sc   = sigColor[s.signal] || '#888'
+    const sent = sentColor[s.sentiment] || '#888'
+    html += `<div class="daily-card">
+      <div class="daily-card-hd" onclick="toggleDcDetail('dc-${i}')">
+        <span class="dc-name">${s.name}</span>
+        <span class="dc-code">${s.code}</span>
+        <span class="dc-signal" style="background:${sc}22;color:${sc}">${s.signal}</span>
+        <span class="dc-sent" style="background:${sent}22;color:${sent}">${s.sentiment}</span>
+        <span class="dc-score" style="color:${sc}">${s.score||'—'}</span>
+        <span style="color:var(--t3);font-size:13px;margin-left:6px">▾</span>
+      </div>`
+
+    if(s.latest){
+      html += `<div style="font-size:12px;color:var(--t3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        最新：${s.latest}</div>`
+    }
+
+    html += `<div class="dc-detail" id="dc-${i}">`
+
+    if(s.ai_summary){
+      html += `<div class="dc-section">
+        <div class="dc-section-title">舆情情绪</div>
+        <div class="dc-section-body">${s.ai_summary}</div>
+      </div>`
+    }
+    if(s.ai_outlook){
+      html += `<div class="dc-section">
+        <div class="dc-section-title">业绩预期</div>
+        <div class="dc-section-body">${s.ai_outlook}</div>
+      </div>`
+    }
+    if((s.risks||[]).length){
+      html += `<div class="dc-section">
+        <div class="dc-section-title">⚠ 风险警报</div>
+        <div class="dc-section-body">`
+      s.risks.forEach((r,ri) => html += `<div>风险点${ri+1}：${r}</div>`)
+      html += `</div></div>`
+    }
+    if((s.catalysts||[]).length){
+      html += `<div class="dc-section">
+        <div class="dc-section-title">✦ 利好催化</div>
+        <div class="dc-section-body">`
+      s.catalysts.forEach((c,ci) => html += `<div>利好${ci+1}：${c}</div>`)
+      html += `</div></div>`
+    }
+    if((s.news||[]).length){
+      html += `<div class="dc-section">
+        <div class="dc-section-title">最新动态</div>`
+      s.news.slice(0,4).forEach(n => {
+        const link = n.url ? `<a href="${n.url}" target="_blank" style="color:inherit;text-decoration:none">${n.title}</a>` : n.title
+        html += `<div class="dc-news-item">${link}
+          <span style="color:var(--t3);margin-left:4px">[${n.source||''} ${n.time||''}]</span></div>`
+      })
+      html += `</div>`
+    }
+    html += `</div></div>`  // .dc-detail + .daily-card
+  })
+
+  return html
+}
+
+function toggleDcDetail(id){
+  const el = document.getElementById(id)
+  if(el) el.classList.toggle('open')
+}
+</script>
 </body>
 </html>

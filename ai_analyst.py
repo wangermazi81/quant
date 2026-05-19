@@ -32,12 +32,98 @@ import logging
 import math
 import os
 import re
+import time as _time
 from pathlib import Path
 
 import pandas as pd
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+# ══════════════════════════════════════════════════════
+# 决策稳定性缓存（同一股票10分钟内重复分析时对比前次结论）
+# ══════════════════════════════════════════════════════
+_DECISION_CACHE: dict = {}   # code -> {"ts": float, "action": str, "confidence": int}
+_DECISION_TTL = 600           # 10分钟
+
+
+def _update_decision_cache(code: str, action: str, confidence: int):
+    _DECISION_CACHE[code] = {"ts": _time.time(), "action": action, "confidence": confidence}
+
+
+def _check_decision_stability(code: str, new_action: str, new_confidence: int) -> dict:
+    """
+    与缓存中的上次决策对比，检测不稳定性。
+    返回: {"stable": bool, "prev_action": str, "warn": str}
+    """
+    prev = _DECISION_CACHE.get(code)
+    if not prev or (_time.time() - prev["ts"]) > _DECISION_TTL:
+        return {"stable": True, "prev_action": None, "warn": ""}
+
+    pa = prev.get("action", "")
+    # 定义相反方向
+    bullish = {"强烈买入", "买入"}
+    bearish = {"卖出", "减仓"}
+    if pa and new_action:
+        pa_bull = pa in bullish
+        na_bull = new_action in bullish
+        pa_bear = pa in bearish
+        na_bear = new_action in bearish
+        if (pa_bull and na_bear) or (pa_bear and na_bull):
+            age = int(_time.time() - prev["ts"])
+            warn = (f"⚠ 决策稳定性警告：{age}秒前分析结论为【{pa}】，"
+                    f"本次为【{new_action}】，方向相反，请结合实际行情谨慎操作")
+            return {"stable": False, "prev_action": pa, "warn": warn}
+
+    return {"stable": True, "prev_action": pa, "warn": ""}
+
+
+# ══════════════════════════════════════════════════════
+# 健壮 JSON 解析（多种回退策略）
+# ══════════════════════════════════════════════════════
+def _safe_parse_json(text: str) -> dict:
+    """
+    从 LLM 输出文本中提取 JSON 对象，支持多种格式：
+    - ```json {...} ```
+    - { ... }（裸 JSON）
+    - 不完整 JSON（尝试自动修复）
+    """
+    if not text:
+        return {}
+
+    # 1. 尝试 ```json ... ``` 代码块
+    m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except Exception:
+            pass
+
+    # 2. 尝试任意 { ... } 块（贪婪，最长匹配）
+    m = re.search(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+
+    # 3. 宽松提取（允许尾部截断 — 补全缺失的 }）
+    start = text.find("{")
+    if start >= 0:
+        snippet = text[start:]
+        # 尝试逐步截短，找到可解析的前缀
+        for end in range(len(snippet), max(0, len(snippet)-50), -1):
+            try:
+                candidate = snippet[:end]
+                # 补充缺失的 }
+                opens  = candidate.count("{") - candidate.count("}")
+                if opens > 0:
+                    candidate += "}" * opens
+                return json.loads(candidate)
+            except Exception:
+                continue
+
+    return {}
 
 CONFIG_FILE = Path(__file__).parent / "data" / "ai_config.json"
 
@@ -56,7 +142,7 @@ PROVIDER_PRESETS = {
     "qwen":      {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen-plus"},
     "zhipu":     {"base_url": "https://open.bigmodel.cn/api/paas/v4",    "model": "glm-4-flash"},
     "nvidia":    {"base_url": "https://integrate.api.nvidia.com/v1",     "model": "nvidia/llama-3.1-nemotron-70b-instruct"},
-    "xiaomimimo":{"base_url": "https://token-plan-cn.xiaomimimo.com/v1", "model": "MiMo-V2.5-Pro"},
+    "xiaomimimo":{"base_url": "https://token-plan-cn.xiaomimimo.com/v1", "model": "mimo-v2.5-pro"},
     "custom":    {"base_url": "",                                         "model": ""},
 }
 
@@ -189,9 +275,13 @@ def _call_llm(cfg: dict, messages: list, temperature: float = 0.3,
             return _call_anthropic(cfg, messages, temperature, max_tokens, timeout)
 
         url  = f"{base_url}/chat/completions"
+        # 部分国产 API（小米MiMo等）不接受 temperature=0，强制最小值 0.01
+        safe_temp = max(0.01, float(temperature))
+        # 部分 API 要求 max_tokens 至少 16
+        safe_tokens = max(16, int(max_tokens))
         body = json.dumps({
             "model": model, "messages": messages,
-            "temperature": temperature, "max_tokens": max_tokens,
+            "temperature": safe_temp, "max_tokens": safe_tokens,
         }).encode("utf-8")
 
         req = urllib.request.Request(
@@ -207,12 +297,19 @@ def _call_llm(cfg: dict, messages: list, temperature: float = 0.3,
         except urllib.error.HTTPError as e:
             try:
                 err_body = e.read().decode("utf-8", errors="ignore")
-                err_obj  = json.loads(err_body)
-                api_msg  = err_obj.get("error", {})
-                if isinstance(api_msg, dict):
-                    api_msg = api_msg.get("message", str(api_msg))
+                try:
+                    err_obj = json.loads(err_body)
+                    api_msg = err_obj.get("error", {})
+                    if isinstance(api_msg, dict):
+                        api_msg = api_msg.get("message", str(api_msg))
+                    elif not api_msg:
+                        api_msg = err_body  # 直接显示原始body
+                except json.JSONDecodeError:
+                    api_msg = err_body or e.reason
                 raise RuntimeError(f"HTTP {e.code} — {api_msg}")
-            except (json.JSONDecodeError, AttributeError):
+            except RuntimeError:
+                raise
+            except Exception:
                 raise RuntimeError(f"HTTP {e.code} {e.reason}")
         except urllib.error.URLError as e:
             raise RuntimeError(f"网络错误: {e.reason}（请检查 Base URL 是否正确）")
@@ -331,11 +428,13 @@ SYSTEM_DECISION = """你是一位融合四大投资风格的首席交易决策�
 # ══════════════════════════════════════════════════════
 # 主分析函数
 # ══════════════════════════════════════════════════════
-def run_analysis(code: str, name: str, df: pd.DataFrame) -> dict:
+def run_analysis(code: str, name: str, df: pd.DataFrame,
+                 config_override: dict = None) -> dict:
     """
     运行六级多智能体分析流水线。
     Level 1 (量化评分) 始终运行，无需 LLM。
     Level 2-6 需要 AI 配置。
+    config_override: 传入则覆盖全局 AI 配置（用于用户自己的 API Key）。
     """
     # ── Level 1: 量化评分（始终运行）─────────────────
     from stock_scorer import score_stock
@@ -352,7 +451,7 @@ def run_analysis(code: str, name: str, df: pd.DataFrame) -> dict:
         pass
 
     # 无 LLM 时仅返回评分结果
-    cfg = load_config()
+    cfg = config_override if config_override else load_config()
     if not cfg.get("enabled") or not cfg.get("api_key"):
         return {
             "ok":             True,
@@ -402,6 +501,29 @@ RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']} 
 【近15日K线】
 {hist}
 ═══════════════════════════════════════"""
+
+        # ── 新闻情绪获取（优先 search_manager，含名称以提升搜索质量）──
+        news_data = {}
+        news_ctx_text = ""
+        try:
+            import news_fetcher as _nf
+            # 传入股票名称，让 Tavily/SerpAPI 搜索更精准
+            news_list = _nf.get_stock_news(code, limit=6, name=name)
+            sentiment = _nf._simple_sentiment(news_list)
+            context   = _nf.news_to_context_text(news_list, code)
+            news_data = {"news": news_list, "sentiment": sentiment, "context_text": context}
+            news_ctx_text = context
+            if news_ctx_text:
+                sent = sentiment
+                logger.info(f"[AI] 新闻情绪 {code}: {sent.get('label','?')} score={sent.get('score',0)} ({len(news_list)}条)")
+        except Exception as _ne:
+            logger.debug(f"[AI] 新闻获取跳过: {_ne}")
+
+        # 将新闻情绪注入 stock_ctx
+        if news_ctx_text:
+            sent = news_data.get("sentiment", {})
+            news_section = f"\n{news_ctx_text}\n【新闻情绪】{sent.get('label','中性')} (得分:{sent.get('score',0):+.2f})"
+            stock_ctx = stock_ctx.rstrip("═" * 39).rstrip() + news_section + "\n" + "═" * 39
 
         logs = []
 
@@ -459,14 +581,29 @@ RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']} 
         ], temperature=0.2, max_tokens=1000)
         logs[-1].update({"status": "done", "output": final_report})
 
-        # ── 解析 JSON 摘要 ───────────────────────────
-        summary = {}
-        try:
-            m = re.search(r"```json\s*(\{.*?\})\s*```", final_report, re.DOTALL)
-            if m:
-                summary = json.loads(m.group(1))
-        except Exception:
-            pass
+        # ── 健壮 JSON 解析（多回退策略）───────────────
+        summary = _safe_parse_json(final_report)
+
+        # JSON 校验：确保关键字段类型正确
+        if summary:
+            for num_field in ("confidence", "target1", "target2", "stop_loss"):
+                v = summary.get(num_field)
+                if v is not None:
+                    try:
+                        summary[num_field] = float(v)
+                    except (ValueError, TypeError):
+                        summary.pop(num_field, None)
+            # action 字段标准化
+            action_raw = str(summary.get("action", "")).strip()
+            valid_actions = {"强烈买入", "买入", "观望", "减仓", "卖出"}
+            if action_raw and action_raw not in valid_actions:
+                # 模糊匹配
+                for va in valid_actions:
+                    if va in action_raw or action_raw in va:
+                        summary["action"] = va
+                        break
+                else:
+                    logger.debug(f"[AI] 未识别的 action 值: {action_raw}")
 
         # 如果 summary 中有止损，更新评分结果
         if summary.get("stop_loss"):
@@ -475,6 +612,12 @@ RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']} 
             score_result["target1"] = summary["target1"]
         if summary.get("target2"):
             score_result["target2"] = summary["target2"]
+
+        # ── 决策稳定性检查 ───────────────────────────
+        final_action = summary.get("action", "")
+        final_conf   = int(summary.get("confidence", 50))
+        stability = _check_decision_stability(code, final_action, final_conf)
+        _update_decision_cache(code, final_action, final_conf)
 
         return {
             "ok":             True,
@@ -491,6 +634,9 @@ RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']} 
             "final_report":   final_report,
             "summary":        summary,
             "agents":         logs,
+            "news":           news_data.get("news", []),
+            "news_sentiment": news_data.get("sentiment", {}),
+            "stability":      stability,
         }
 
     except Exception as e:
@@ -513,87 +659,227 @@ RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']} 
 # AI 策略生成（原功能保留，提示词增强）
 # ══════════════════════════════════════════════════════
 
-SYSTEM_STRATEGY_GEN = """你是一位资深A股量化策略工程师，融合了以下三个框架的最佳实践：
-1. TradingAgents: 分层信号过滤，先大盘后个股
-2. AI-Hedge-Fund: 多因子综合，控制回撤
-3. Daily-Stock-Analysis: 六维评分纪律（趋势+偏离+量能+支撑+MACD+RSI）
+SYSTEM_STRATEGY_GEN = """你是一位资深A股量化策略工程师。请严格按照以下规范输出完整的 Python 策略文件。
 
-【代码规范】
-1. 文件第一行：# META: {"name": "策略名称", "desc": "描述", "author": "AI生成", "builtin": false}
-2. 必须实现 scan(codes, get_kline, get_quotes) → list[dict]
-   - codes: 股票代码列表
-   - get_kline(code, days) → DataFrame [date/open/close/high/low/volume]
-   - get_quotes(codes) → DataFrame [代码/名称/最新价/涨跌幅/昨收/量比]
-   - 返回每项：{code, name, price, change, score, reason}
-3. 只用 pandas/numpy，不引入外部库
-4. 代码清晰有注释，包含入场纪律（偏离MA5不超过5%）和风险控制
+【输出格式要求 - 极其重要】
+- 只输出纯 Python 代码，禁止加任何说明文字、禁止使用 markdown 代码块（不要写```python）
+- 第一行必须是 META 注释，之后紧跟完整的 scan() 函数实现
+- 不要写"好的"、"以下是代码"等任何自然语言
 
-直接输出 Python 代码，不加任何解释或 markdown 包裹。"""
+【完整代码模板 - 必须严格遵守此结构】
+
+# META: {"name": "策略名称", "desc": "策略描述", "author": "AI生成", "builtin": false}
+import pandas as pd
+import numpy as np
+
+def scan(codes: list, get_kline, get_quotes) -> list:
+    \"\"\"
+    策略扫描函数
+    codes: 股票代码列表
+    get_kline(code, days) -> DataFrame[date,open,close,high,low,volume]
+    get_quotes(codes) -> DataFrame[代码,名称,最新价,涨跌幅,昨收,成交量,量比]
+    返回: list of {code, name, price, change, score, reason}
+    \"\"\"
+    results = []
+    for code in codes:
+        try:
+            df = get_kline(code, 60)
+            if df is None or len(df) < 20:
+                continue
+            df = df.sort_values('date').reset_index(drop=True)
+            close = df['close']
+            volume = df['volume']
+
+            # === 在此实现策略逻辑 ===
+
+            # 示例：均线条件
+            ma5  = close.rolling(5).mean().iloc[-1]
+            ma20 = close.rolling(20).mean().iloc[-1]
+            cur_price = close.iloc[-1]
+
+            if cur_price <= 0 or ma5 <= 0 or ma20 <= 0:
+                continue
+
+            # 计算得分
+            score = round((cur_price / ma5 - 1) * 100, 2)
+            reason = f"MA5={ma5:.2f} MA20={ma20:.2f}"
+
+            results.append({
+                'code': code, 'name': code,
+                'price': cur_price,
+                'change': round((close.iloc[-1]/close.iloc[-2]-1)*100, 2) if len(close)>1 else 0,
+                'score': score, 'reason': reason
+            })
+        except Exception:
+            continue
+
+    # 按得分降序，最多返回 50 只
+    results.sort(key=lambda x: x.get('score', 0), reverse=True)
+    return results[:50]
+
+【策略规范】
+1. get_quotes 列名：代码/名称/最新价/涨跌幅/昨收/成交量/量比（用中文列名访问）
+2. get_kline 返回列：date/open/close/high/low/volume
+3. 昨收列：df_q['昨收'] 而不是 last_close
+4. 成交量列：df_q['成交量'] 而不是 vol
+5. 只用 pandas/numpy/math，禁止 import 其他库
+6. 必须有 try/except 防止单只股票报错中断整体扫描
+7. 返回列表按 score 降序，最多 50 项
+
+现在请根据用户需求输出完整代码（从 # META 行开始，直到 return results[:50] 结束）："""
 
 
-def generate_strategy(description: str) -> dict:
-    cfg = load_config()
+def _extract_code(raw: str, meta_key: str, default_meta: str) -> str:
+    """从 LLM 输出中提取干净的 Python 代码"""
+    text = raw.strip()
+    # 去除 markdown 代码块
+    text = re.sub(r"^```(?:python)?\s*\n?", "", text)
+    text = re.sub(r"\n?```\s*$", "", text.strip())
+    # 去除开头的自然语言（到第一个 # 或 import/def 之前）
+    lines = text.splitlines()
+    start = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('#') or stripped.startswith('import') or stripped.startswith('def '):
+            start = i
+            break
+    text = "\n".join(lines[start:]).strip()
+    # 补 META 注释
+    if meta_key not in text:
+        text = default_meta + "\n\n" + text
+    return text
+
+
+def generate_strategy(description: str, config_override: dict = None) -> dict:
+    """根据自然语言描述，用 AI 生成选股策略 Python 代码（含验证+重试）"""
+    cfg = config_override if config_override else load_config()
     if not cfg.get("enabled") or not cfg.get("api_key"):
         return {"ok": False, "error": "AI功能未启用，请在「AI设置」中填写API Key并启用"}
 
-    try:
-        code = _call_llm(cfg, [
-            {"role": "system", "content": SYSTEM_STRATEGY_GEN},
-            {"role": "user",   "content": f"请根据以下描述生成A股选股策略：\n\n{description}"},
-        ], temperature=0.4, max_tokens=2000)
+    messages = [
+        {"role": "system", "content": SYSTEM_STRATEGY_GEN},
+        {"role": "user",   "content":
+            f"请根据以下A股选股需求，生成完整的 Python 策略代码（从 # META 行开始，不要写任何解释）：\n\n{description}"},
+    ]
 
-        code = re.sub(r"^```(?:python)?\s*\n?", "", code.strip())
-        code = re.sub(r"\n?```\s*$", "", code.strip())
+    last_err = ""
+    for attempt in range(2):   # 最多重试 1 次
+        try:
+            raw = _call_llm(cfg, messages, temperature=0.2, max_tokens=3500, timeout=180)
+            meta_default = (
+                f'# META: {{"name": "AI策略", "desc": "{description[:40]}", '
+                f'"author": "AI生成", "builtin": false}}'
+            )
+            code = _extract_code(raw, "# META:", meta_default)
 
-        if "# META:" not in code:
-            code = ('# META: {"name": "AI策略", "desc": "' + description[:40]
-                    + '", "author": "AI生成", "builtin": false}\n\n' + code)
+            # 验证：必须包含 def scan
+            if "def scan" not in code:
+                last_err = f"第{attempt+1}次生成的代码缺少 scan() 函数（{len(code)} 字符），正在重试..."
+                logger.warning(f"[AI策略] {last_err}")
+                # 重试时在消息里加提示
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({"role": "user", "content":
+                    "你的输出缺少 def scan 函数，请重新输出完整代码，"
+                    "必须包含 def scan(codes, get_kline, get_quotes) 函数实现。"})
+                continue
 
-        return {"ok": True, "code": code}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+            return {"ok": True, "code": code, "length": len(code)}
+        except Exception as e:
+            last_err = str(e)
+            logger.error(f"[AI策略] 生成失败(尝试{attempt+1}): {e}")
 
-
-SYSTEM_FACTOR_GEN = """你是一位资深A股量化因子工程师，专注于 AlphaLens 风格的单因子研究。
-
-【因子文件规范】
-1. 文件第一行：# FACTOR: {"name": "因子名称", "desc": "描述", "category": "动量|反转|波动|量价|趋势|质量|综合", "period": N, "builtin": false}
-2. 必须实现 scan(codes, get_kline, get_quotes) → list[dict]
-   - codes: 股票代码列表
-   - get_kline(code, days) → DataFrame [date/open/close/high/low/volume]
-   - get_quotes(codes) → DataFrame [代码/名称/最新价/涨跌幅/昨收/成交量/量比]
-   - 返回每项：{code, name, price, change, score, reason}
-3. 设计原则：
-   - 因子逻辑清晰、单一（不要把多个因子混在一起）
-   - score 越高表示信号越强（做多方向）
-   - 合理使用 get_quotes(codes) 批量获取行情（性能关键：建议传入 [code] 单个查询，因子管理器已有缓存）
-   - 设置合理的过滤条件（价格>3元、流动性、非ST）
-   - 结果限制 top 50，按 score 降序
-4. 只用 pandas/numpy/math，不引入外部库
-5. 代码清晰有注释
-
-直接输出 Python 代码，不加任何解释或 markdown 包裹。"""
+    return {"ok": False, "error": f"策略生成失败：{last_err}"}
 
 
-def generate_factor(description: str) -> dict:
-    """根据自然语言描述，用 AI 生成因子 Python 代码"""
-    cfg = load_config()
+SYSTEM_FACTOR_GEN = """你是一位资深A股量化因子工程师。请严格按照以下规范输出完整的 Python 因子文件。
+
+【输出格式要求 - 极其重要】
+- 只输出纯 Python 代码，禁止加任何说明文字，禁止使用 markdown 代码块（不要写```python）
+- 第一行必须是 FACTOR 注释，之后紧跟完整的 scan() 函数实现
+
+【完整代码模板】
+
+# FACTOR: {"name": "因子名称", "desc": "描述", "category": "动量", "period": 20, "builtin": false}
+import pandas as pd
+import numpy as np
+
+def scan(codes: list, get_kline, get_quotes) -> list:
+    \"\"\"
+    因子扫描函数
+    get_kline(code, days) -> DataFrame[date,open,close,high,low,volume]
+    get_quotes(codes) -> DataFrame[代码,名称,最新价,涨跌幅,昨收,成交量,量比]
+    返回: list of {code, name, price, change, score, reason}  按 score 降序 top50
+    \"\"\"
+    results = []
+    for code in codes:
+        try:
+            df = get_kline(code, 30)
+            if df is None or len(df) < 20:
+                continue
+            df = df.sort_values('date').reset_index(drop=True)
+            close = df['close']
+            cur_price = close.iloc[-1]
+            if cur_price < 3:
+                continue  # 过滤低价股
+
+            # === 在此实现因子计算逻辑 ===
+            score = 0.0
+            reason = ""
+
+            results.append({
+                'code': code, 'name': code,
+                'price': cur_price,
+                'change': round((close.iloc[-1]/close.iloc[-2]-1)*100, 2) if len(close)>1 else 0,
+                'score': score, 'reason': reason
+            })
+        except Exception:
+            continue
+    results.sort(key=lambda x: x.get('score', 0), reverse=True)
+    return results[:50]
+
+【规范要点】
+1. get_quotes 列名用中文：代码/名称/最新价/涨跌幅/昨收/成交量/量比
+2. 只用 pandas/numpy/math，禁止引入其他库
+3. 每只股票必须 try/except 隔离
+4. category 取值：动量/反转/波动/量价/趋势/质量/综合
+
+现在请根据用户需求输出完整代码（从 # FACTOR 行开始）："""
+
+
+def generate_factor(description: str, config_override: dict = None) -> dict:
+    """根据自然语言描述，用 AI 生成因子 Python 代码（含验证+重试）"""
+    cfg = config_override if config_override else load_config()
     if not cfg.get("enabled") or not cfg.get("api_key"):
         return {"ok": False, "error": "AI功能未启用，请在「AI设置」中填写API Key并启用"}
 
-    try:
-        code = _call_llm(cfg, [
-            {"role": "system", "content": SYSTEM_FACTOR_GEN},
-            {"role": "user",   "content": f"请根据以下描述生成A股选股因子：\n\n{description}"},
-        ], temperature=0.4, max_tokens=2000)
+    messages = [
+        {"role": "system", "content": SYSTEM_FACTOR_GEN},
+        {"role": "user",   "content":
+            f"请根据以下需求生成完整的 Python 因子代码（从 # FACTOR 行开始，不要写任何解释）：\n\n{description}"},
+    ]
 
-        code = re.sub(r"^```(?:python)?\s*\n?", "", code.strip())
-        code = re.sub(r"\n?```\s*$", "", code.strip())
+    last_err = ""
+    for attempt in range(2):
+        try:
+            raw = _call_llm(cfg, messages, temperature=0.2, max_tokens=3500, timeout=180)
+            meta_default = (
+                f'# FACTOR: {{"name": "AI因子", "desc": "{description[:40]}", '
+                f'"category": "综合", "period": 20, "builtin": false}}'
+            )
+            code = _extract_code(raw, "# FACTOR:", meta_default)
 
-        if "# FACTOR:" not in code:
-            code = ('# FACTOR: {"name": "AI因子", "desc": "' + description[:40]
-                    + '", "category": "综合", "period": 20, "builtin": false}\n\n' + code)
+            if "def scan" not in code:
+                last_err = f"第{attempt+1}次生成的代码缺少 scan() 函数，正在重试..."
+                logger.warning(f"[AI因子] {last_err}")
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({"role": "user", "content":
+                    "你的输出缺少 def scan 函数，请重新输出完整代码，"
+                    "必须包含 def scan(codes, get_kline, get_quotes) 函数实现。"})
+                continue
 
-        return {"ok": True, "code": code}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+            return {"ok": True, "code": code, "length": len(code)}
+        except Exception as e:
+            last_err = str(e)
+            logger.error(f"[AI因子] 生成失败(尝试{attempt+1}): {e}")
+
+    return {"ok": False, "error": f"因子生成失败：{last_err}"}
