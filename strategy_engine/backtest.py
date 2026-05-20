@@ -33,7 +33,7 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 
-DATA_DIR = Path(__file__).parent / "data" / "daily"
+DATA_DIR = Path(__file__).parent.parent / "data" / "daily"
 logger   = logging.getLogger(__name__)
 
 # ── 异步回测任务注册表 ──────────────────────────────────
@@ -130,7 +130,11 @@ class BackBroker:
     SELL_COMMISSION = 0.0013   # 0.13%
     MIN_COMMISSION  = 5.0      # 最低 5 元
 
-    def __init__(self, cash: float):
+    def __init__(self, cash: float, slippage=None):
+        """
+        cash:     初始资金
+        slippage: 可选的 broker.slippage.SlippageModel 实例；None=不加滑点（默认）
+        """
         self.cash       = cash
         self.positions  = {}          # code -> Position
         self._pending   = []          # 待执行订单（下一个交易日开盘执行）
@@ -138,11 +142,22 @@ class BackBroker:
         self.trades     = []
         self._buy_commissions  = 0.0
         self._sell_commissions = 0.0
+        # 滑点模型（None = NoSlippage 等价；保留 None 完全还原旧行为）
+        self.slippage = slippage
 
     # ── 佣金计算 ──
     def _comm(self, value: float, action: str) -> float:
         rate = self.BUY_COMMISSION if action == "buy" else self.SELL_COMMISSION
         return max(value * rate, self.MIN_COMMISSION)
+
+    # ── 应用滑点（默认透传开盘价，零行为变更）──
+    def _exec_price(self, base_price: float, action: str, qty: int = 0) -> float:
+        if self.slippage is None:
+            return base_price
+        try:
+            return float(self.slippage.adjust(base_price, action, qty))
+        except Exception:
+            return base_price
 
     # ── 提交订单（当日信号，加入待执行队列）──
     def submit_buy(self, code: str, date, budget: float, reason="signal") -> Order:
@@ -177,8 +192,8 @@ class BackBroker:
                 o.status = OrderStatus.CANCELED
                 rejected.append(o)
                 continue
-            px  = open_prices[code]
             pos = self.positions.pop(code)
+            px  = self._exec_price(open_prices[code], "sell", pos.qty)
             comm = self._comm(px * pos.qty, "sell")
             self._sell_commissions += comm
             self.cash += px * pos.qty - comm
@@ -207,8 +222,10 @@ class BackBroker:
                 o.status = OrderStatus.CANCELED
                 rejected.append(o)
                 continue
-            px  = open_prices[code]
-            qty = int(o.budget / px / 100) * 100   # 整手
+            # 先按未加滑点的开盘价估算手数，再用加滑点价结算
+            _base_px = open_prices[code]
+            qty = int(o.budget / _base_px / 100) * 100   # 整手
+            px  = self._exec_price(_base_px, "buy", qty)
             if qty < 100:
                 o.status = OrderStatus.REJECTED
                 logs.append({"level": "WARNING",
@@ -384,12 +401,17 @@ class Cerebro:
     """
 
     def __init__(self, initial_cash=100_000, max_positions=5,
-                 stop_loss=-0.05, take_profit=0.10):
-        self.broker        = BackBroker(initial_cash)
+                 stop_loss=-0.05, take_profit=0.10, slippage=None):
+        """
+        slippage: broker.slippage.SlippageModel 实例；None=不加滑点（默认，行为同重构前）
+                  典型用法：Cerebro(slippage=PercentSlippage(0.002))
+        """
+        self.broker        = BackBroker(initial_cash, slippage=slippage)
         self.initial_cash  = initial_cash
         self.max_positions = max_positions
         self.stop_loss     = stop_loss
         self.take_profit   = take_profit
+        self.slippage      = slippage
 
         # Analyzers（参考 backtrader addanalyzer 接口）
         self._sharpe   = SharpeAnalyzer()
@@ -755,7 +777,8 @@ def _load_data(codes: list, start_date: str, end_date: str, logs: list) -> dict:
     _tdx_client = None
     try:
         import sys as _sys, os as _os
-        _sys.path.insert(0, _os.path.dirname(os.path.abspath(__file__)))
+        _app_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        _sys.path.insert(0, _os.path.join(_app_root, "market"))
         import ths_quote as tq
         c = tq.get_client()
         if c and c._ok:

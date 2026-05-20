@@ -34,7 +34,7 @@ def _get_index_data(code: str, n: int = 60) -> pd.DataFrame:
     # 本地 CSV 回退
     try:
         from pathlib import Path
-        csv = Path(__file__).parent / "data" / "daily" / f"{code}.csv"
+        csv = Path(__file__).parent.parent / "data" / "daily" / f"{code}.csv"
         if csv.exists():
             df = pd.read_csv(csv, parse_dates=["date"])
             return df.sort_values("date").tail(n).reset_index(drop=True)

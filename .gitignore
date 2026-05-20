@@ -54,3 +54,9 @@ logs/
 .coverage
 htmlcov/
 .pytest_cache/
+
+# ── 归档目录（历史备份，不提交）─────────────────────
+_archive/
+
+# ── 隐私文件打包产物 ──────────────────────────────
+_private_bundle_*.zip

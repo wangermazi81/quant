@@ -1,4 +1,5 @@
 import os as _os
+import _pathsetup  # noqa: F401  # 必须在其它项目模块 import 之前
 # ── 清除系统代理（akshare 走国内接口，代理反而导致连接失败）──────────
 for _k in ("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy",
            "ALL_PROXY","all_proxy","SOCKS_PROXY","socks_proxy"):

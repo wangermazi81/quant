@@ -10,7 +10,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-STRATEGIES_DIR = Path(__file__).parent / "strategies"
+STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"
 STRATEGIES_DIR.mkdir(exist_ok=True)
 
 TEMPLATE = '''\

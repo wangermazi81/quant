@@ -5,7 +5,7 @@
 import sqlite3, hashlib, os, threading
 from typing import Optional, Dict
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "data", "users.db")
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "users.db")
 
 # ── 积分消耗配置 ──────────────────────────────────────────
 POINT_COSTS = {

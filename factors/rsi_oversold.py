@@ -9,25 +9,10 @@ AlphaLens 研究：RSI<30 的超卖区域后续 1-4 周正收益概率较高
   3. KDJ 的 K 值上穿 D 值（底背离确认）
   4. 价格在 60 日低点以上 5%（有底部支撑）
 因子分 = RSI 回升速度 × 底部强度
+
+重构（abu 风格）：用统一 indicators 库替代内嵌 _rsi / _kdj 实现。
 """
-
-
-def _rsi(series, n=14):
-    delta  = series.diff()
-    gain   = delta.clip(lower=0).rolling(n).mean()
-    loss   = (-delta.clip(upper=0)).rolling(n).mean()
-    rs     = gain / loss.replace(0, float('inf'))
-    return 100 - 100 / (1 + rs)
-
-
-def _kdj(high, low, close, n=9):
-    """简化 KDJ：RSV → K → D"""
-    low_n  = low.rolling(n).min()
-    high_n = high.rolling(n).max()
-    rsv    = (close - low_n) / (high_n - low_n).replace(0, 1) * 100
-    K      = rsv.ewm(com=2, adjust=False).mean()
-    D      = K.ewm(com=2, adjust=False).mean()
-    return K, D
+from indicators import rsi as _rsi, kdj as _kdj, cross_up   # noqa: E402
 
 
 def scan(codes: list, get_kline, get_quotes) -> list:
@@ -39,49 +24,40 @@ def scan(codes: list, get_kline, get_quotes) -> list:
             if df.empty or len(df) < 30:
                 continue
 
-            close  = df['close']
-            high   = df['high']
-            low    = df['low']
-            volume = df['volume']
+            close, high, low, volume = df['close'], df['high'], df['low'], df['volume']
 
             price = float(close.iloc[-1])
             if price < 3:
                 continue
 
-            # RSI 计算
-            rsi = _rsi(close, 14)
-            rsi_now  = float(rsi.iloc[-1])
-            rsi_prev = float(rsi.iloc[-4])   # 3日前
-
-            # 必须从超卖区回升
+            # RSI 走势
+            r = _rsi(close, 14)
+            rsi_now  = float(r.iloc[-1])
+            rsi_prev = float(r.iloc[-4])
             if not (rsi_prev < 35 and rsi_now > 35):
                 continue
 
             # KDJ 底部金叉
-            K, D = _kdj(high, low, close)
-            k_now, d_now   = float(K.iloc[-1]), float(D.iloc[-1])
-            k_prev, d_prev = float(K.iloc[-2]), float(D.iloc[-2])
-            kdj_cross = (k_now > d_now) and (k_prev <= d_prev)   # K 上穿 D
+            k, d, _j = _kdj(high, low, close)
+            kdj_cross_today = bool(cross_up(k, d).iloc[-1])
+            k_now, d_now    = float(k.iloc[-1]), float(d.iloc[-1])
 
-            # 流动性过滤
-            avg_vol = volume.iloc[-20:].mean()
-            if avg_vol < 300:
+            # 流动性
+            if volume.iloc[-20:].mean() < 300:
                 continue
 
             # 底部支撑：不创 60 日新低
-            low_60 = low.iloc[-60:].min()
+            low_60 = float(low.iloc[-60:].min())
             if price < low_60 * 1.03:
                 continue
 
-            # 因子分
-            rsi_speed  = rsi_now - rsi_prev   # RSI 回升速度
-            kdj_bonus  = 20 if kdj_cross else 0
-            score      = round(rsi_speed + kdj_bonus, 2)
+            rsi_speed = rsi_now - rsi_prev
+            score     = round(rsi_speed + (20 if kdj_cross_today else 0), 2)
 
             quotes = get_quotes([code])
-            row   = quotes[quotes['代码'] == code] if not quotes.empty else None
-            name  = row.iloc[0]['名称']  if row is not None and not row.empty else ''
-            chg   = float(row.iloc[0]['涨跌幅']) if row is not None and not row.empty else 0
+            row    = quotes[quotes['代码'] == code] if not quotes.empty else None
+            name   = row.iloc[0]['名称']  if row is not None and not row.empty else ''
+            chg    = float(row.iloc[0]['涨跌幅']) if row is not None and not row.empty else 0
 
             results.append({
                 "code":   code,
@@ -90,7 +66,8 @@ def scan(codes: list, get_kline, get_quotes) -> list:
                 "change": round(chg, 2),
                 "score":  score,
                 "reason": (f"RSI金叉 | RSI {rsi_prev:.0f}→{rsi_now:.0f} | "
-                           f"{'KDJ金叉 ' if kdj_cross else ''}| K={k_now:.1f} D={d_now:.1f}"),
+                           f"{'KDJ金叉 ' if kdj_cross_today else ''}| "
+                           f"K={k_now:.1f} D={d_now:.1f}"),
             })
         except Exception:
             continue

@@ -12,7 +12,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-NOTIFY_CONFIG_FILE = Path(__file__).parent / "data" / "notify_config.json"
+NOTIFY_CONFIG_FILE = Path(__file__).parent.parent / "data" / "notify_config.json"
 
 DEFAULT_CONFIG = {
     "wecom":    {"enabled": False, "webhook": ""},

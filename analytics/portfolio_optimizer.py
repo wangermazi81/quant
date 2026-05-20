@@ -9,7 +9,7 @@ import pandas as pd
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-DATA_DIR = Path(__file__).parent / "data" / "daily"
+DATA_DIR = Path(__file__).parent.parent / "data" / "daily"
 
 
 def _load_returns(codes: list, lookback: int = 60) -> pd.DataFrame:

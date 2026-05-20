@@ -11,7 +11,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAPER_DB = os.path.join(BASE, "data", "paper_trading.db")
 USERS_DB  = os.path.join(BASE, "data", "users.db")
 

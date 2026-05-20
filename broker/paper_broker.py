@@ -15,7 +15,7 @@ from typing import Optional, Dict
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).parent / "data" / "paper_trading.db"
+DB_PATH = Path(__file__).parent.parent / "data" / "paper_trading.db"
 DB_PATH.parent.mkdir(exist_ok=True)
 
 DEFAULT_COMMISSION_RATE = 0.0003

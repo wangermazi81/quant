@@ -1,22 +1,14 @@
 # FACTOR: {"name": "趋势强度因子", "desc": "ADX趋势强度 + 布林带宽度，识别强趋势标的", "category": "趋势", "period": 14}
 """
-趋势强度因子 (Trend Strength / ADX-inspired)
+趋势强度因子 (Trend Strength) — abu 风格重写
 ────────────────────────────────────────
-参考 AlphaLens 趋势跟随因子研究，结合：
-  1. ADX 近似计算（True Range / N 日 ATR 的变化速率）
-  2. 布林带宽度（BBW = 上轨-下轨 / 中轨）
-  3. 价格位于均线上方
-因子逻辑：
-  - 趋势强度分 = BBW × (收盘在上轨占比)
-  - 配合 MA5 > MA10 > MA20 多头排列
-  - 过滤：成交额太小的标的（< 5000 万手×元估算）
+组合 3 个维度：
+  1. 布林带宽度 BBW = (上轨 - 下轨) / 中轨
+  2. 收盘价突破上轨的持续性（近 10 日）
+  3. ATR 反映的真实波动率
+配合 MA 多头排列过滤。
 """
-
-import math
-
-
-def _ema(series, n):
-    return series.ewm(span=n, adjust=False).mean()
+from indicators import sma, boll, atr   # noqa: E402
 
 
 def scan(codes: list, get_kline, get_quotes) -> list:
@@ -28,49 +20,35 @@ def scan(codes: list, get_kline, get_quotes) -> list:
             if df.empty or len(df) < 30:
                 continue
 
-            close  = df['close']
-            high   = df['high']
-            low    = df['low']
-            volume = df['volume']
-
+            close, high, low = df['close'], df['high'], df['low']
             price = float(close.iloc[-1])
             if price < 3:
                 continue
 
-            # 多头排列
-            ma5  = close.rolling(5).mean().iloc[-1]
-            ma10 = close.rolling(10).mean().iloc[-1]
-            ma20 = close.rolling(20).mean().iloc[-1]
+            ma5  = float(sma(close, 5).iloc[-1])
+            ma10 = float(sma(close, 10).iloc[-1])
+            ma20 = float(sma(close, 20).iloc[-1])
             if not (ma5 > ma10 > ma20):
                 continue
 
-            # 布林带（20日，2倍标准差）
-            sma20 = close.rolling(20).mean()
-            std20 = close.rolling(20).std()
-            upper = sma20 + 2 * std20
-            lower = sma20 - 2 * std20
-            bbw   = float((upper.iloc[-1] - lower.iloc[-1]) / sma20.iloc[-1])
+            upper, mid, lower = boll(close, 20, 2.0)
+            bbw = float((upper.iloc[-1] - lower.iloc[-1]) / mid.iloc[-1])
 
-            # 近 10 日收盘在上轨比例（反映持续强势）
-            above_upper = sum(1 for i in range(-10, 0)
-                              if close.iloc[i] > upper.iloc[i] * 0.98)
+            # 近 10 日收盘接近/突破上轨的占比
+            above_upper = int(((close.iloc[-10:] > upper.iloc[-10:] * 0.98)).sum())
             strength = above_upper / 10.0
 
-            # ATR（True Range 近似）
-            tr = (high - low).iloc[-14:].mean()
-            atr_pct = tr / price if price > 0 else 0
-
-            # 过滤极低波动（非死水）
+            atr_now = float(atr(high, low, close, 14).iloc[-1])
+            atr_pct = atr_now / price if price > 0 else 0
             if atr_pct < 0.005:
                 continue
 
-            # 趋势得分
             score = round((bbw * 100 + strength * 30) * (1 + atr_pct * 10), 2)
 
             quotes = get_quotes([code])
-            row   = quotes[quotes['代码'] == code] if not quotes.empty else None
-            name  = row.iloc[0]['名称']  if row is not None and not row.empty else ''
-            chg   = float(row.iloc[0]['涨跌幅']) if row is not None and not row.empty else 0
+            row    = quotes[quotes['代码'] == code] if not quotes.empty else None
+            name   = row.iloc[0]['名称']  if row is not None and not row.empty else ''
+            chg    = float(row.iloc[0]['涨跌幅']) if row is not None and not row.empty else 0
 
             results.append({
                 "code":   code,
@@ -80,7 +58,7 @@ def scan(codes: list, get_kline, get_quotes) -> list:
                 "score":  score,
                 "reason": (f"趋势强度 | BBW={bbw*100:.1f}% | "
                            f"强势占比{strength*100:.0f}% | "
-                           f"MA5>{ma10:.2f}>MA20"),
+                           f"MA5={ma5:.2f}>MA10={ma10:.2f}>MA20={ma20:.2f}"),
             })
         except Exception:
             continue

@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════
 # 配置加载
 # ══════════════════════════════════════════════════════
-_CONFIG_FILE = Path(__file__).parent / "data" / "search_config.json"
+_CONFIG_FILE = Path(__file__).parent.parent / "data" / "search_config.json"
 _config: dict = {}
 _config_lock = threading.Lock()
 

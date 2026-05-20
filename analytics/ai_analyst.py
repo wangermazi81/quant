@@ -125,7 +125,7 @@ def _safe_parse_json(text: str) -> dict:
 
     return {}
 
-CONFIG_FILE = Path(__file__).parent / "data" / "ai_config.json"
+CONFIG_FILE = Path(__file__).parent.parent / "data" / "ai_config.json"
 
 DEFAULT_CONFIG = {
     "provider": "deepseek",

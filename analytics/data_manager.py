@@ -33,9 +33,9 @@ _saved_proxies = {k: os.environ.pop(k) for k in _PROXY_KEYS if k in os.environ}
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR       = Path(__file__).parent / "data" / "daily"
-META_FILE      = Path(__file__).parent / "data" / "metadata.json"
-NAME_CACHE_FILE= Path(__file__).parent / "data" / "stock_names.json"
+DATA_DIR       = Path(__file__).parent.parent / "data" / "daily"
+META_FILE      = Path(__file__).parent.parent / "data" / "metadata.json"
+NAME_CACHE_FILE= Path(__file__).parent.parent / "data" / "stock_names.json"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 _progress: dict = {}

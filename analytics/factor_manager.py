@@ -21,7 +21,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-FACTORS_DIR = Path(__file__).parent / "factors"
+FACTORS_DIR = Path(__file__).parent.parent / "factors"
 FACTORS_DIR.mkdir(exist_ok=True)
 
 # 因子分类 → 颜色

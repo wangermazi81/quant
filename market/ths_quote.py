@@ -29,7 +29,7 @@ def get_scan_progress() -> Dict:
 def _load_name_cache():
     global _name_cache
     try:
-        f = Path(__file__).parent / "data" / "stock_names.json"
+        f = Path(__file__).parent.parent / "data" / "stock_names.json"
         if f.exists():
             _name_cache = json.loads(f.read_text(encoding="utf-8"))
             logger.debug(f"[TDX] 名称缓存已加载: {len(_name_cache)} 条")
@@ -163,7 +163,7 @@ class TDXQuoteClient:
         try:
             import json
             from pathlib import Path
-            cache_file = Path(__file__).parent / "data" / "stock_names.json"
+            cache_file = Path(__file__).parent.parent / "data" / "stock_names.json"
             if cache_file.exists():
                 data = json.loads(cache_file.read_text(encoding="utf-8"))
                 codes = [c for c in data.keys() if _is_valid_a_share(c, data[c])]

@@ -14,8 +14,9 @@ import tempfile
 import pytest
 from pathlib import Path
 
-# 把项目根目录加入 sys.path，使 import paper_broker 可以找到
+# 把项目根目录加入 sys.path，使 _pathsetup 可被 import
 sys.path.insert(0, str(Path(__file__).parent.parent))
+import _pathsetup  # noqa: F401  # 注入子包路径，使 paper_broker 等扁平名可被解析
 
 # 使用临时数据库，不污染正式数据
 @pytest.fixture

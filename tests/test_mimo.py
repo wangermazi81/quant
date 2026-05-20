@@ -14,7 +14,7 @@ import sys
 # ────────────────────────────────────────
 import pathlib
 
-cfg_path = pathlib.Path(__file__).parent / "data" / "ai_config.json"
+cfg_path = pathlib.Path(__file__).parent.parent / "data" / "ai_config.json"
 if not cfg_path.exists():
     print("❌ 找不到 data/ai_config.json，请先在网页保存一次AI配置")
     sys.exit(1)
