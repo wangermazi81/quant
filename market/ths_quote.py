@@ -87,6 +87,10 @@ class TDXQuoteClient:
         self._ok    = False
         self._connect()
 
+    # 全局连接失败缓存（避免每个请求都重试 5 个服务器）
+    _last_fail_ts = 0.0
+    _FAIL_COOLDOWN = 300.0   # 5 分钟内不再重试
+
     def _connect(self) -> bool:
         try:
             from pytdx.hq import TdxHq_API
@@ -94,19 +98,34 @@ class TDXQuoteClient:
             logger.error("pytdx 未安装，请运行: pip install pytdx")
             return False
 
-        for host, port in _SERVERS:
-            try:
-                api = TdxHq_API(raise_exception=False)
-                if api.connect(host, port):
-                    self._api  = api
-                    self._host = host
-                    self._port = port
-                    self._ok   = True
-                    logger.info(f"[TDX] 已连接行情服务器 {host}:{port}")
-                    return True
-            except Exception as e:
-                logger.debug(f"[TDX] 连接失败 {host}:{port}: {e}")
-        logger.error("[TDX] 所有服务器均连接失败")
+        # 失败冷却：如果近 5 分钟内已经全部连接失败过，直接返回（避免每次 AI 分析卡 30s）
+        now = time.time()
+        if now - type(self)._last_fail_ts < type(self)._FAIL_COOLDOWN:
+            return False
+
+        # 关键修复：限制每次 connect 最多 3 秒，避免云服务器 TCP 防火墙下挂死等 75 秒
+        # 旧逻辑在阿里云访问通达信失败时单次连接要等 ~75s，5 个服务器累计 375s 必触发 nginx 504
+        import socket as _socket
+        _old_timeout = _socket.getdefaulttimeout()
+        _socket.setdefaulttimeout(3.0)
+        try:
+            for host, port in _SERVERS:
+                try:
+                    api = TdxHq_API(raise_exception=False)
+                    if api.connect(host, port):
+                        self._api  = api
+                        self._host = host
+                        self._port = port
+                        self._ok   = True
+                        logger.info(f"[TDX] 已连接行情服务器 {host}:{port}")
+                        return True
+                except Exception as e:
+                    logger.debug(f"[TDX] 连接失败 {host}:{port}: {e}")
+            # 标记本轮全失败，进入冷却期
+            type(self)._last_fail_ts = time.time()
+            logger.error(f"[TDX] 所有服务器均连接失败，冷却 {type(self)._FAIL_COOLDOWN:.0f}s 不再重试")
+        finally:
+            _socket.setdefaulttimeout(_old_timeout)
         return False
 
     def _ensure(self) -> bool:
