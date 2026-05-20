@@ -60,3 +60,9 @@ _archive/
 
 # ── 隐私文件打包产物 ──────────────────────────────
 _private_bundle_*.zip
+
+# ── 场景 ⑤ 双向同步产生的本地备份（不进 git）─────────
+data/*.bak.*
+data/*.bak
+data/users_server.db
+data/users_merged.db

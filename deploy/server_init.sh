@@ -83,8 +83,11 @@ if [ ! -f .env ]; then
     # 自动生成 SECRET_KEY（32 字节 hex）
     SK=$(python3 -c "import secrets; print(secrets.token_hex(32))")
     sed -i "s|^SECRET_KEY=.*|SECRET_KEY=$SK|" .env
+    # 注释掉 AI_* 占位符行，避免覆盖网页 / ai_config.json 里的真实 key
+    # （网页设置 + scp 同步 ai_config.json 是更常见的工作流）
+    sed -i 's|^AI_API_KEY=|# AI_API_KEY=|; s|^AI_BASE_URL=|# AI_BASE_URL=|; s|^AI_MODEL=|# AI_MODEL=|' .env
     echo "  ✅ 已生成随机 SECRET_KEY"
-    echo "  ⚠️  请编辑 $APP_DIR/.env 填入 AI_API_KEY 等"
+    echo "  ✅ 已注释 AI_* 占位符（用网页配置 / 同步 ai_config.json 即可）"
 else
     echo "  .env 已存在，跳过"
 fi

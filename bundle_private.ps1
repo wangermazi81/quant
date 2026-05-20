@@ -1,17 +1,19 @@
-# -*- coding: utf-8 -*-
-# 一键打包项目隐私文件（用户库、AI 配置、模拟盘状态、推送配置）
-# 生成 _private_bundle_<时间戳>.zip 供手动上传云端
+# bundle_private.ps1
+# Pack sensitive files (user DB / AI config / paper trading state / .env) into a zip
+# for manual upload to cloud server.
 #
-# 用法（在 ths_auto_trader/ 目录下）：
+# Usage (in ths_auto_trader/ folder):
 #   powershell -ExecutionPolicy Bypass -File .\bundle_private.ps1
+#
+# Output: _private_bundle_YYYYMMDD-HHmm.zip in the same folder.
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = $PSScriptRoot
-$Stamp = Get-Date -Format "yyyyMMdd-HHmm"
-$ZipName = "_private_bundle_$Stamp.zip"
-$ZipPath = Join-Path $ScriptDir $ZipName
+$Stamp     = Get-Date -Format "yyyyMMdd-HHmm"
+$ZipName   = "_private_bundle_$Stamp.zip"
+$ZipPath   = Join-Path $ScriptDir $ZipName
 
-# 待打包的相对路径列表
+# Relative paths to include (only if they exist)
 $Targets = @(
     ".env",
     "data\ai_config.json",
@@ -27,7 +29,6 @@ $Targets = @(
     "api_keys.json"
 )
 
-# 实际存在的文件
 $Existing = @()
 foreach ($t in $Targets) {
     $p = Join-Path $ScriptDir $t
@@ -35,18 +36,16 @@ foreach ($t in $Targets) {
 }
 
 if ($Existing.Count -eq 0) {
-    Write-Host "未找到任何隐私文件，无需打包。" -ForegroundColor Yellow
+    Write-Host "[!] No sensitive files found, nothing to pack." -ForegroundColor Yellow
     exit 0
 }
 
-Write-Host "发现 $($Existing.Count) 个隐私文件，正在打包到 $ZipName ..." -ForegroundColor Cyan
+Write-Host "[*] Found $($Existing.Count) sensitive files, packing to $ZipName ..." -ForegroundColor Cyan
 foreach ($f in $Existing) {
     $rel = $f.Substring($ScriptDir.Length).TrimStart('\')
-    Write-Host "  + $rel"
+    Write-Host "    + $rel"
 }
 
-# 用 Compress-Archive，保留相对路径结构
-# 临时切到 ScriptDir，让 zip 内的路径以 data/... 开头
 Push-Location $ScriptDir
 try {
     if (Test-Path -LiteralPath $ZipPath) { Remove-Item -LiteralPath $ZipPath -Force }
@@ -57,7 +56,11 @@ finally {
     Pop-Location
 }
 
-$Size = (Get-Item -LiteralPath $ZipPath).Length
+$Size   = (Get-Item -LiteralPath $ZipPath).Length
 $SizeKB = [Math]::Round($Size / 1KB, 1)
-Write-Host "`n✅ 打包完成: $ZipName ($SizeKB KB)" -ForegroundColor Green
-Write-Host "上传到云端后，在目标 ths_auto_trader/ 目录解压即可恢复。" -ForegroundColor Green
+$KbStr  = "$SizeKB KB"
+Write-Host ""
+Write-Host "[OK] Pack complete: $ZipName ($KbStr)" -ForegroundColor Green
+Write-Host "[>>] Next steps:" -ForegroundColor Green
+Write-Host "       scp $ZipName root@<server-ip>:/tmp/"
+Write-Host "       ssh root@<server-ip> 'cd /opt/quant && unzip -o /tmp/$ZipName && rm /tmp/$ZipName && systemctl restart quant-platform'"

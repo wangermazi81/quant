@@ -162,6 +162,12 @@ def load_config() -> dict:
             pass
 
     # 环境变量覆盖（安全优先：env var > json file）
+    #
+    # 修复：跳过 .env.example 风格的占位符。
+    # 历史问题：server_init.sh 自动 `cp .env.example .env` 时会带入
+    #   AI_API_KEY=nvapi-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx 这种 placeholder，
+    # 旧逻辑见非空就覆盖，导致网页里配的真 key 被假 key 顶掉，调用 API 必失败。
+    # 现在：env 值含 'xxxxx' / 'your-' / '请替换' 等占位符标记时当未设置处理。
     env_key = (
         os.environ.get("AI_API_KEY") or
         os.environ.get("DEEPSEEK_API_KEY") or
@@ -169,16 +175,44 @@ def load_config() -> dict:
         os.environ.get("ANTHROPIC_API_KEY") or
         ""
     )
-    if env_key:
+    # 仅当 env_key 是真实有效值（非占位符）时，整套 env 配置才覆盖 json 配置
+    if env_key and not _is_env_placeholder(env_key):
         cfg["api_key"] = env_key
-    if os.environ.get("AI_BASE_URL"):
-        cfg["base_url"] = os.environ["AI_BASE_URL"]
-    if os.environ.get("AI_MODEL"):
-        cfg["model"] = os.environ["AI_MODEL"]
-    if os.environ.get("AI_PROVIDER"):
-        cfg["provider"] = os.environ["AI_PROVIDER"]
+        if os.environ.get("AI_BASE_URL") and not _is_env_placeholder(os.environ["AI_BASE_URL"]):
+            cfg["base_url"] = os.environ["AI_BASE_URL"]
+        if os.environ.get("AI_MODEL") and not _is_env_placeholder(os.environ["AI_MODEL"]):
+            cfg["model"] = os.environ["AI_MODEL"]
+        if os.environ.get("AI_PROVIDER") and not _is_env_placeholder(os.environ["AI_PROVIDER"]):
+            cfg["provider"] = os.environ["AI_PROVIDER"]
 
     return cfg
+
+
+def _is_env_placeholder(s: str) -> bool:
+    """
+    检测字符串是否为 .env.example 风格的占位符。
+    例如：
+      'nvapi-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'  → True（含连续 xxxxx）
+      'your-api-key-here'                       → True
+      '请替换为真实 key'                          → True
+      'sk-proj-abc123def456...'                  → False（看着像真 key）
+    """
+    if not isinstance(s, str):
+        return True
+    s_low = s.strip().lower()
+    if not s_low or len(s_low) < 8:
+        return True
+    markers = (
+        'xxxxx',          # 连续 5 个 x 是 example 文件常用占位
+        'your-', 'your_',
+        'placeholder',
+        '请替换', '请填',
+        '<your',
+        'example.com',
+        'changeme', 'change-me',
+        'todo', 'fixme',
+    )
+    return any(m in s_low for m in markers)
 
 
 def save_config(cfg: dict):
