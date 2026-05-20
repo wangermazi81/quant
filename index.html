@@ -929,7 +929,8 @@ tr:hover td{background:var(--card)}
       <input id="sfn" class="fn-input" placeholder="strategy_name">
       <div class="se-acts">
         <button class="btn btn-gray btn-sm"   onclick="saveStrat()">💾 保存</button>
-        <button class="btn btn-blue btn-sm"   onclick="runScreen()">🔍 选股</button>
+        <button class="btn btn-blue btn-sm"   onclick="runScreen(600)" title="按成交量取前 600 只活跃股扫描，约 15 秒">🔍 快扫</button>
+        <button class="btn btn-blue btn-sm"   onclick="runScreen(0)"   title="扫描全市场约 5000 只票，约 2-3 分钟">🌐 全市场</button>
         <button class="btn btn-purple btn-sm" onclick="goBacktest()">📈 回测</button>
         <button class="btn btn-orange btn-sm" onclick="activateStrat()" id="actBtn" title="激活此策略为自动交易策略：激活后系统定时扫描并将信号自动加入执行队列（打板策略每5秒/其他策略每30秒）">⚡ 激活</button>
         <button class="btn btn-sm" onclick="openAiGen()" id="aiGenBtn" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff" title="用AI自动生成选股策略代码（需先在AI设置中配置API Key）">✨ AI写策略</button>
@@ -1828,7 +1829,7 @@ async function activateStrat(){
 }
 
 // ── 选股 ──
-async function runScreen(){
+async function runScreen(maxCodes = 0){
   // 因子模式：转发到因子选股
   if(_curMode==='factor'){
     if(!curFactor){alert('请先选择或保存因子');return}
@@ -1861,7 +1862,7 @@ async function runScreen(){
     }
   }, 800)
 
-  const r = await api('/strategies/run','POST',{filename:curStrat})
+  const r = await api('/strategies/run','POST',{filename:curStrat, max_codes: maxCodes})
   screenDone = true
   clearInterval(progTimer)
   scProg.style.display='none'

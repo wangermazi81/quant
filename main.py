@@ -1185,8 +1185,19 @@ def api_run():
     d   = request.json
     fn  = d.get("filename", "")
     cs  = d.get("codes") or []
-    _add_log(uid, f"执行选股: [{fn}] {'全市场' if not cs else f'{len(cs)}只'}...")
-    r       = sm.run(fn, cs)
+    # 前端可传 max_codes 控制扫描范围：
+    #   0       = 全市场（约 5000 只，2-3 分钟）
+    #   600     = 快速扫描（按成交量取前 600 只，约 15 秒）
+    #   不传    = 默认全市场
+    try:
+        mc = int(d.get("max_codes", 0))
+    except (TypeError, ValueError):
+        mc = 0
+    scope_label = "全市场" if not cs else f"{len(cs)}只"
+    if not cs and mc > 0:
+        scope_label = f"活跃前{mc}只"
+    _add_log(uid, f"执行选股: [{fn}] {scope_label}...")
+    r       = sm.run(fn, cs, max_codes=mc)
     scanned = r.get("scanned", r.get("count", 0))
     _add_log(uid, f"选股完成，扫描 {scanned} 只，命中 {r.get('count',0)} 只")
     return jsonify(r)

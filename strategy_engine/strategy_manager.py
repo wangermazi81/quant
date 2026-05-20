@@ -421,8 +421,49 @@ def _refresh_market_cache() -> list:
     except Exception as e:
         logger.warning(f"[SM] efinance 全市场行情获取失败: {e}")
 
+    # ── 路径 5：磁盘持久化兜底（盘后/全部源挂时仍可跑策略）──────────
+    # 行情源全挂时（如夜间 TDX/akshare 等都不响应），读上一次成功保存的票池
+    try:
+        from pathlib import Path
+        cache_file = Path(__file__).parent.parent / "data" / "market_universe.json"
+        if cache_file.exists():
+            import json as _json
+            data = _json.loads(cache_file.read_text(encoding="utf-8"))
+            active = data.get("quotes", [])
+            saved_ts = data.get("ts", 0)
+            age_h = (_time.time() - saved_ts) / 3600
+            if active:
+                logger.warning(f"[SM] 实时源全挂，启用磁盘兜底 universe（{age_h:.1f}h 前保存，{len(active)} 只）")
+                _mkt_cache["sorted_quotes"] = active
+                _mkt_cache["ts"] = _time.time()
+                return active
+    except Exception as e:
+        logger.warning(f"[SM] 磁盘兜底 universe 读取失败: {e}")
+
     logger.error("[SM] 全部数据源均不可用，无法获取全市场行情")
     return []
+
+
+def _persist_universe_to_disk(quotes: list) -> None:
+    """
+    把成功拿到的全市场票池持久化到磁盘，作为下次行情源全挂时的兜底。
+    在 _refresh_market_cache 各个成功分支调用即可。
+    """
+    if not quotes:
+        return
+    try:
+        from pathlib import Path
+        import json as _json
+        cache_file = Path(__file__).parent.parent / "data" / "market_universe.json"
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(
+            _json.dumps({"ts": _time.time(), "quotes": quotes},
+                        ensure_ascii=False),
+            encoding="utf-8"
+        )
+        logger.debug(f"[SM] universe 已持久化到 {cache_file.name} ({len(quotes)} 只)")
+    except Exception as e:
+        logger.debug(f"[SM] universe 持久化失败（不致命）: {e}")
 
 
 def _get_market_quotes_cached(force_refresh: bool = False) -> list:
@@ -435,21 +476,30 @@ def _get_market_quotes_cached(force_refresh: bool = False) -> list:
         age = int(now - _mkt_cache["ts"])
         logger.info(f"[SM] 复用全市场行情缓存（{age}s前，{len(_mkt_cache['sorted_quotes'])}只）")
         return _mkt_cache["sorted_quotes"]
-    return _refresh_market_cache()
+    quotes = _refresh_market_cache()
+    # 拿到数据就顺手持久化一份，下次全挂时有兜底
+    _persist_universe_to_disk(quotes)
+    return quotes
 
 
-def _full_market_universe(max_codes: int = 600, force_refresh: bool = False) -> list:
+def _full_market_universe(max_codes: int = 0, force_refresh: bool = False) -> list:
     """
     两阶段全市场选股宇宙（带5分钟缓存）：
       阶段1：TDX 批量行情获取所有 A 股实时数据（首次~60s，缓存命中<1s）
-      阶段2：按成交量排序取前 max_codes 只
-    返回：预筛选后的股票代码列表
+      阶段2：按成交量排序后裁剪
+    参数：
+      max_codes: 上限。<=0 表示不裁剪（真·全市场，约 5000 只，扫描耗时 2-3 分钟）
+                 > 0 取前 N 只（快速扫描）
     """
     active = _get_market_quotes_cached(force_refresh)
     if not active:
         return []
-    result = [q["code"] for q in active[:max_codes]]
-    logger.info(f"[SM] 预筛选后：{len(result)} 只进入策略扫描")
+    if max_codes and max_codes > 0:
+        result = [q["code"] for q in active[:max_codes]]
+        logger.info(f"[SM] 预筛选后：{len(result)} 只进入策略扫描（上限 {max_codes}）")
+    else:
+        result = [q["code"] for q in active]
+        logger.info(f"[SM] 全市场扫描：{len(result)} 只进入策略扫描（无上限）")
     return result
 
 
@@ -471,11 +521,14 @@ def _full_market_universe_with_quotes(max_codes: int = 600,
     return universe, quote_cache
 
 
-def run(filename: str, codes: list) -> dict:
+def run(filename: str, codes: list, max_codes: int = 0) -> dict:
     """
     执行策略选股。
     - codes 为空 → 全市场扫描（两阶段：行情预筛选 → kline策略过滤）
     - codes 非空 → 指定股票池扫描
+    - max_codes: 全市场模式下的扫描上限
+        0  → 不裁剪（真·全市场约 5000 只，扫描 2-3 分钟）
+        N  → 取按成交量排序的前 N 只活跃股（快速扫描）
     """
     path = STRATEGIES_DIR / f"{filename}.py"
     if not path.exists():
@@ -496,8 +549,8 @@ def run(filename: str, codes: list) -> dict:
 
         # ── 确定扫描宇宙 ────────────────────────────────────────
         if not codes:
-            # 全市场模式：构建预筛选宇宙（最活跃 600 只）
-            universe = _full_market_universe(max_codes=600)
+            # 全市场模式：max_codes 由调用方控制（0=全市场无上限，>0=取活跃前 N 只）
+            universe = _full_market_universe(max_codes=max_codes or 0)
             if not universe:
                 # TDX 不可用时降级到配置的股票池
                 from config import STOCK_POOL
