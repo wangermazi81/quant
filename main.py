@@ -1705,7 +1705,9 @@ def ai_analyze():
         _add_log(uid, f"AI分析完成: {code} {name} → {action}（评分{score_val}）")
     else:
         _add_log(uid, f"AI分析失败: {code} — {result.get('error','')}", "error")
-    return jsonify(result)
+    # 修复：递归把 NaN/Inf 换成 None，否则 Python jsonify 输出字面量 NaN，
+    # 浏览器 JSON.parse 拒收（SyntaxError），前端误显示"分析失败"
+    return jsonify(ai._json_safe(result))
 
 
 @app.route("/api/ai/test", methods=["POST"])

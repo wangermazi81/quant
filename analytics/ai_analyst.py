@@ -38,6 +38,34 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
+
+def _json_safe(obj):
+    """递归把 dict / list 中的 NaN / Inf 替换为 None。
+
+    背景：pandas rolling/ewm 在数据不足时返回 NaN（如 close.rolling(252) 对 120 行数据
+    返回 NaN）。Python json.dumps 默认输出字面量 NaN，但浏览器 JSON.parse 不允许
+    （SyntaxError: Unexpected token 'N'），导致前端 fetch 抛错、UI 显示"分析失败"。
+
+    所有对外返回的 dict 都应过这个函数。
+    """
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    # numpy 浮点也要处理（np.float64 不是 Python float 的子类）
+    if isinstance(obj, np.floating):
+        v = float(obj)
+        if math.isnan(v) or math.isinf(v):
+            return None
+        return v
+    if isinstance(obj, np.integer):
+        return int(obj)
+    return obj
+
 logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════
