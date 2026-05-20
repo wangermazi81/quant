@@ -1637,7 +1637,9 @@ def ai_analyze():
         return jsonify({"ok": False, "error": "请输入股票代码"})
     name = dm.get_stock_name(code) or code
     df   = dm.get_local(code)
-    if df is None or df.empty:
+    # 修复：本地 CSV 不存在 / 为空 / 行数 < 30（"半残"）都触发 pytdx 补抓
+    # 原逻辑只在 None 或 empty 时补抓，半残 CSV 会绕过 pytdx 让 ai_analyst 直接报"数据不足"
+    if df is None or df.empty or len(df) < 30:
         try:
             import ths_quote as tq
             import pandas as pd
@@ -1647,6 +1649,16 @@ def ai_analyze():
                 if bars:
                     df = pd.DataFrame(bars)
                     df["date"] = pd.to_datetime(df["date"])
+                    # 拉到数据后保存到本地 CSV 作为缓存
+                    # 下次同一只票分析时秒读，不必每次都打 TDX 服务器
+                    try:
+                        from pathlib import Path
+                        daily_dir = Path(__file__).parent / "data" / "daily"
+                        daily_dir.mkdir(parents=True, exist_ok=True)
+                        df.to_csv(daily_dir / f"{code}.csv", index=False, encoding="utf-8")
+                        logger.info(f"[ai_analyze] 已缓存 {code} K 线到 data/daily/{code}.csv ({len(df)} 行)")
+                    except Exception as _e:
+                        logger.debug(f"[ai_analyze] 缓存 {code} CSV 失败（不致命）: {_e}")
         except Exception:
             pass
 
