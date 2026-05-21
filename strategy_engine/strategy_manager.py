@@ -196,14 +196,37 @@ def rename(old_filename: str, new_filename: str) -> dict:
     return {"ok": True, "file": safe}
 
 
+# ─── 策略扫描进度（策略 scan 阶段，区别于 ths_quote 的 universe 拉行情阶段）───
+# 用法：sm.get_scan_progress() 返回 {"running","stage","current","total","code"}
+# 前端轮询 /api/status 可拿到，universe 阶段后接力显示这个，避免"进度卡在100%"
+_strat_prog: dict = {
+    "running": False,
+    "stage":   "",          # "策略扫描" / ""
+    "current": 0,           # 已处理票数
+    "total":   0,           # 总票数
+    "code":    "",          # 当前处理的票号（可选展示）
+}
+
+
+def get_scan_progress() -> dict:
+    """对外暴露策略 scan 阶段进度（main.py /api/status 合并显示）"""
+    return dict(_strat_prog)
+
+
 def _build_data_fns(universe: list):
     """
     构建策略数据访问函数（TDX优先，支持全市场）。
     universe: 已预筛选的股票代码列表
+
+    包装 get_kline，每次调用时上报策略 scan 阶段进度，让前端能看到实时
+    "策略扫描 1234/5000" 而不是卡在 universe 拉完后的 "100%"。
     """
     import pandas as pd
 
     def _get_kline(code: str, days: int = 60) -> pd.DataFrame:
+        # 进度计数（每只票被处理时 +1）
+        _strat_prog["current"] += 1
+        _strat_prog["code"] = code
         # 1. 本地 CSV
         try:
             import data_manager as _dm
@@ -562,7 +585,22 @@ def run(filename: str, codes: list, max_codes: int = 0) -> dict:
         get_kline, get_quotes = _build_data_fns(universe)
         # 打板策略传空列表触发其全市场TDX实时路径
         scan_codes = [] if filename == "da_ban" else universe
-        results = mod.scan(scan_codes, get_kline, get_quotes)
+
+        # ─── 策略 scan 阶段：初始化进度 ───
+        # universe 阶段（ths_quote._scan_prog）完成后接力上报进度，让前端
+        # 看到"策略扫描 1234/5018"而不是卡在 universe 阶段的 100%
+        _strat_prog.update({
+            "running": True,
+            "stage":   "策略扫描",
+            "current": 0,
+            "total":   len(scan_codes) if scan_codes else len(universe),
+            "code":    "",
+        })
+        try:
+            results = mod.scan(scan_codes, get_kline, get_quotes)
+        finally:
+            _strat_prog["running"] = False
+
         return {
             "ok":      True,
             "results": results,
@@ -572,4 +610,5 @@ def run(filename: str, codes: list, max_codes: int = 0) -> dict:
     except Exception as e:
         tb = traceback.format_exc()
         logger.error(f"策略执行出错: {e}\n{tb}")
+        _strat_prog["running"] = False
         return {"ok": False, "msg": str(e), "traceback": tb, "results": []}

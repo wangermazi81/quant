@@ -1858,7 +1858,10 @@ async function runScreen(maxCodes = 0){
       const pct = Math.min(100, Math.round(prog.current/prog.total*100))
       scBar.className = 'scan-prog-bar'
       scBar.style.width = pct+'%'
-      scInfo.innerHTML = `<span class="spin">⟳</span> 行情扫描 ${prog.current}/${prog.total} (${pct}%)...`
+      // 后端 prog.stage = "行情扫描" / "策略扫描"，UI 跟着切换文案 + 显示当前票号
+      const stage = prog.stage || '扫描'
+      const codeTxt = prog.code ? ` <span style="opacity:.6">[${prog.code}]</span>` : ''
+      scInfo.innerHTML = `<span class="spin">⟳</span> ${stage} ${prog.current}/${prog.total} (${pct}%)${codeTxt}...`
     }
   }, 800)
 

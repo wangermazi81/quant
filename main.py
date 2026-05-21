@@ -735,13 +735,27 @@ def get_status():
         return jsonify({"running": False, "logged_in": False})
     s   = get_user_state(uid)
     try:
+        # 两阶段进度合并显示：
+        #   阶段 A: ths_quote 全市场批量拉行情（universe 构建，30秒）
+        #   阶段 B: strategy_manager 策略扫描（逐只 get_kline，2-25 分钟）
+        # 哪个 running 就显示哪个，避免阶段 A 结束后卡在 100% 的体验问题
         import ths_quote as tq
-        tdx_prog = tq.get_scan_progress()
+        tdx_prog   = tq.get_scan_progress()
+        strat_prog = sm.get_scan_progress()
         if tdx_prog.get("running"):
             s["scan_progress"].update({
                 "running": True,
+                "stage":   "行情扫描",
                 "current": tdx_prog.get("current", 0),
                 "total":   tdx_prog.get("total",   0),
+            })
+        elif strat_prog.get("running"):
+            s["scan_progress"].update({
+                "running": True,
+                "stage":   "策略扫描",
+                "current": strat_prog.get("current", 0),
+                "total":   strat_prog.get("total",   0),
+                "code":    strat_prog.get("code",    ""),
             })
     except Exception:
         pass
