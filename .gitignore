@@ -20,6 +20,8 @@ data/ai_config.json
 data/users.db
 data/users.db-wal
 data/users.db-shm
+data/search_config.json
+data/notify_config.json
 .env
 secrets.json
 api_keys.json
