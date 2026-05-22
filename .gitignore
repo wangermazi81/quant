@@ -68,3 +68,10 @@ data/*.bak.*
 data/*.bak
 data/users_server.db
 data/users_merged.db
+
+# ── 所有目录下的临时备份文件（修改前自动留底，不进 git）──
+*.bak
+*.bak.*
+
+# ── 行情缓存（每次运行会更新，不进 git）────────────────
+data/market_universe.json

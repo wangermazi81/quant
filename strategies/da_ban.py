@@ -15,6 +15,26 @@
 """
 
 
+def _market_priority(code: str) -> int:
+    """市场优先级（数字越小越靠前）：
+        0: 主板 60/00（含沪主、深主、中小板）
+        1: 创业板 300/301
+        2: 科创板 688/689
+        3: 北交所 4/8
+        9: 其他/未知
+    自动执行时资金会先打到优先级 0 的主板，剩余再买后面的板块。
+    """
+    if code.startswith("60") or code.startswith("00"):
+        return 0
+    if code.startswith("300") or code.startswith("301"):
+        return 1
+    if code.startswith("688") or code.startswith("689"):
+        return 2
+    if code.startswith("4") or code.startswith("8"):
+        return 3
+    return 9
+
+
 def _count_consec_limit_up(client, code: str, limit_rate: float) -> int:
     """
     统计连续涨停天数（含今日）。
@@ -47,21 +67,29 @@ def _from_tdx(results_out: list) -> bool:
     返回 True 表示成功，False 表示降级。
     """
     try:
-        import sys, os
+        import sys, os, time as _time
         sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
         import ths_quote as tq
+        try:
+            from analytics.seal_tracker import get_tracker
+            _tracker = get_tracker()
+        except Exception:
+            _tracker = None
 
         client = tq.get_client()
         if not client or not client._ok:
             return False
 
         quotes = client.get_full_market_quotes()
+        _now_ts = _time.time()
         if not quotes:
             return False
 
         for q in quotes:
             try:
                 code       = q["code"]
+                # 全市场扫描，不过滤板块。后面 results 整体按"主板优先 + 涨幅降序"
+                # 排序，自动买入按 results 顺序处理 → 资金先打到主板，剩余再买其他板。
                 price      = q["price"]
                 last_close = q["last_close"]
                 limit_up   = q["limit_up"]
@@ -73,10 +101,10 @@ def _from_tdx(results_out: list) -> bool:
                 if price <= 0 or last_close <= 0 or limit_up <= 0:
                     continue
 
-                one_tick = round(limit_up - 0.01, 2)
+                two_ticks = round(limit_up - 0.02, 2)
 
-                # ── 核心条件：差一档（未封板）────────────────
-                if not (one_tick <= price < limit_up):
+                # ── 核心条件：差两档以内（未封板）────────────
+                if not (two_ticks <= price < limit_up):
                     continue
 
                 # ── 过滤 ST / 成交稀少 ────────────────────────
@@ -102,8 +130,8 @@ def _from_tdx(results_out: list) -> bool:
                 if vol > 500:
                     seal_score += 10    # 活跃成交
 
-                # 封板强度 >= 50 才考虑介入
-                if seal_score < 50:
+                # 封板强度 >= 30 才考虑介入
+                if seal_score < 30:
                     continue
 
                 # 统计连续涨停天数
@@ -136,16 +164,27 @@ def _from_tdx(results_out: list) -> bool:
         for q in quotes:
             try:
                 code      = q["code"]
+                # 全市场，不过滤板块（同上）
                 price     = q["price"]
                 limit_up  = q["limit_up"]
                 change_pct = q["change_pct"]
                 limit_rate = q["limit_rate"]
                 if price <= 0 or limit_up <= 0:
                     continue
+                # ── 喂 SealTracker：只 track 接近涨停（≥ limit_rate × 0.9）的股 ──
+                # 包含已封板 + 即将封板 + 曾经封板今天又跌下来开板的，全部记入时间线
+                if _tracker is not None and change_pct >= limit_rate * 0.9:
+                    bids = q.get("bids") or []
+                    bid1_vol = bids[0].get("vol", 0) if bids else 0
+                    seal_amt = bid1_vol * 100 * limit_up
+                    is_sealed = price >= limit_up - 0.001
+                    try:
+                        _tracker.update(code, seal_amt, price, limit_up, is_sealed, ts=_now_ts)
+                    except Exception:
+                        pass
                 # 已封板：price >= limit_up
                 if price >= limit_up - 0.001 and change_pct >= limit_rate * 0.98:
                     name = q.get("name") or _names.get(code, "")
-                    # 已封板仅显示参考，不做额外kline请求（避免拖慢全市场扫描）
                     already_sealed.append({
                         "code":   code,
                         "name":   name,
@@ -155,12 +194,48 @@ def _from_tdx(results_out: list) -> bool:
                         "consec_limit": 0,
                         "consec_label": "",
                         "reason": f"已封板 | 涨停={limit_up:.2f} | 涨幅={change_pct:.2f}%",
+                        "_limit_rate": limit_rate,
+                        "_limit_up":   limit_up,
                     })
             except Exception:
                 continue
-        # 只追加前20只已封板（避免刷屏）
-        already_sealed.sort(key=lambda x: x.get("change", 0), reverse=True)
-        results_out.extend(already_sealed[:20])
+        # 已封板按"市场优先（主板在前）+ 涨幅降序"排序，前 20 只入结果
+        # 为了让主板和非主板都能露出，按板块各取 N 只：主板 14、非主板 6
+        already_sealed.sort(key=lambda x: (_market_priority(x["code"]), -x.get("change", 0)))
+        mainboard = [x for x in already_sealed if _market_priority(x["code"]) == 0]
+        others    = [x for x in already_sealed if _market_priority(x["code"]) >  0]
+        top_sealed = mainboard[:14] + others[:6]
+        # 对前20只补查连板数：首板（consec<=1）标记 signal=True 入队，让 broker
+        # 按封单金额分级（弱封板可买、强封板拒），实现"排板"模拟。
+        # 连板（≥2）保持 signal=False 仅作参考（首板能上车、连板风险高跳过）。
+        for item in top_sealed:
+            try:
+                consec = _count_consec_limit_up(client, item["code"], item["_limit_rate"])
+            except Exception:
+                consec = 0
+            item["consec_limit"] = consec
+            item["consec_label"] = "首板" if consec <= 1 else f"{consec}连板"
+            # 把连板天数补喂到 tracker（之前 update 时 consec_limit=0，这里补一笔）
+            if _tracker is not None and consec > 0:
+                try:
+                    # 用 0 金额触发的 update 不会污染 max_seal，但会刷新 consec_limit
+                    cur_status = _tracker.status(item["code"])
+                    if cur_status.get("current_sealed"):
+                        _tracker.update(item["code"],
+                                        cur_status.get("current_seal", 0),
+                                        item["price"], item["_limit_up"],
+                                        is_sealed=True, consec_limit=consec, ts=_now_ts)
+                except Exception:
+                    pass
+            if consec <= 1:
+                item["signal"] = True
+                item["reason"] = (
+                    f"已封板首板(试排板) | 涨停={item['_limit_up']:.2f} "
+                    f"| 涨幅={item['change']:.2f}% | broker将按封单金额判定能否成交"
+                )
+            item.pop("_limit_rate", None)
+            item.pop("_limit_up",   None)
+        results_out.extend(top_sealed)
 
         return True
 
@@ -179,7 +254,10 @@ def scan(codes: list, get_kline, get_quotes) -> list:
     # ── 监控模式（codes 为空）：pytdx 全市场实时扫描 ────────
     if not codes:
         if _from_tdx(results):
-            results.sort(key=lambda x: x.get("change", 0), reverse=True)
+            # 主板优先：(market_priority, -change)
+            #   主板 60/00 排在前面（auto_execute 资金先打这里），
+            #   组内按涨幅降序。非主板（创业板/科创板/北交所）显示但排后面。
+            results.sort(key=lambda x: (_market_priority(x["code"]), -x.get("change", 0)))
             return results
 
     # ── 回测/降级路径：使用提供的历史数据 ────────────────────

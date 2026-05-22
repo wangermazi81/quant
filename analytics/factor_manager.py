@@ -376,13 +376,19 @@ def _make_cached_get_quotes(quote_cache: dict, fallback_fn):
 # ══════════════════════════════════════════════════════════
 # 因子执行入口
 # ══════════════════════════════════════════════════════════
-def run(filename: str, codes: list) -> dict:
+def run(filename: str, codes: list, max_codes: int = 0) -> dict:
     """
     执行因子选股（全市场覆盖 + 三重加速）。
 
+    参数：
+      codes:     指定股票池（非空时直接扫这些 code）
+      max_codes: 全市场模式下的扫描上限
+                 0  → 不裁剪（真·全市场约 5000 只）
+                 N  → 取按成交量排序的前 N 只活跃股（快速扫描）
+
     全市场模式流程：
       1. 共享行情缓存（5分钟TTL）→ 5000+只一次批量，命中缓存几乎零耗时
-      2. 行情过滤 → 保留价格>3元、有成交量的活跃标的（~600只）
+      2. 行情过滤 → 保留价格>3元、有成交量的活跃标的
       3. 多连接并行 K 线 → 4个独立TDX连接，真正无锁并行，时间从30s→8s
       4. 因子扫描 → get_kline/get_quotes 均从缓存命中，近零请求
 
@@ -406,7 +412,8 @@ def run(filename: str, codes: list) -> dict:
         if not codes:
             # 全市场：_full_market_universe_with_quotes 返回代码+行情，
             # 复用5分钟行情缓存，避免二次全市场扫描
-            universe, _quote_cache = sm._full_market_universe_with_quotes(max_codes=600)
+            # max_codes 由调用方控制（0=真·全市场无上限，>0=取活跃前 N 只）
+            universe, _quote_cache = sm._full_market_universe_with_quotes(max_codes=max_codes or 0)
             if not universe:
                 try:
                     from config import STOCK_POOL

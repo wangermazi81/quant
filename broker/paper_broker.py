@@ -26,6 +26,13 @@ DEFAULT_STOP_LOSS       = -0.05
 DEFAULT_TAKE_PROFIT     = 0.10
 DEFAULT_MAX_HOLD_DAYS   = 10
 DEFAULT_INITIAL_CAPITAL = 500_000.0
+# 封板/跌停封单金额阈值（元）：仅在 SealTracker 不可用时作回退兜底使用。
+# 主路径走综合强弱评分（见 analytics/seal_tracker.py）。
+DEFAULT_SEAL_BAN_THRESHOLD = 50_000_000.0
+# 综合强度评分阈值：score > 阈值视为强封拒买，≤ 阈值允许"试排板"成交（按涨停价）
+# 实测分布参考：103 只追踪 → 0-30 占 12 只 / 31-50 占 89 只 / 51+ 占 2 只
+# 阈值 45 = 中等严：约 1 亿+封单的会被拒，5000 万以下能上
+DEFAULT_SEAL_SCORE_THRESHOLD = 45
 
 
 def init_paper_db():
@@ -252,6 +259,78 @@ class PaperBroker:
             shares = (shares // 100) * 100
         if shares <= 0:
             return {"ok": False, "msg": "手数不足100股"}
+        # 防御：如果 name 是空 / 含问号（PowerShell GBK 转码丢失中文等场景）
+        # 从 stock_names.json 重新查正确名称
+        if not name or "?" in name or "??" in name or name == code or len(name.strip()) < 2:
+            try:
+                from pathlib import Path
+                import json as _json
+                f = Path(__file__).parent.parent / "data" / "stock_names.json"
+                if f.exists():
+                    names = _json.loads(f.read_text(encoding="utf-8"))
+                    name = names.get(code, name) or code
+            except Exception:
+                name = name or code
+
+        # ── 封板成交检查（综合强弱评分）─────────────────────────
+        # 现实规则：能不能排板买到，要看封单金额 + 趋势 + 开板次数 + 连板 + 封板时间，
+        # 综合评分 0–100，**分越高越强势（越买不到）**。
+        # 阈值默认 60：score > 60 拒买，≤ 60 允许（按涨停价成交模拟"试排板"）。
+        try:
+            import sys, os
+            _mkt = os.path.join(os.path.dirname(os.path.dirname(__file__)), "market")
+            if _mkt not in sys.path:
+                sys.path.insert(0, _mkt)
+            import ths_quote as _tq
+            _cli = _tq.get_client()
+            if _cli and getattr(_cli, "_ok", False):
+                _qs = _cli.get_quotes([code])
+                if _qs:
+                    _q = _qs[0]
+                    _lu = float(_q.get("limit_up", 0) or 0)
+                    _bids = _q.get("bids") or []
+                    _bid1_vol = float(_bids[0].get("vol", 0)) if _bids else 0
+                    _cur_price = float(_q.get("price", 0) or 0)
+                    seal_amount = _bid1_vol * 100 * _lu
+                    is_sealed = _lu > 0 and _cur_price >= _lu - 0.001
+                    # 接近涨停（封板 或 价 ≥ 涨停-0.02）才走综合评分逻辑
+                    near_or_at_limit = _lu > 0 and _cur_price >= _lu - 0.02
+                    if near_or_at_limit:
+                        # 喂一笔最新样本（同时累计历史）
+                        try:
+                            from analytics.seal_tracker import get_tracker
+                            tracker = get_tracker()
+                            tracker.update(code, seal_amount, _cur_price, _lu, is_sealed)
+                            score = tracker.score(code)
+                            threshold = int(self._cfg("seal_score_threshold")
+                                            or DEFAULT_SEAL_SCORE_THRESHOLD)
+                            status = tracker.status(code)
+                            if is_sealed and score > threshold:
+                                return {
+                                    "ok": False,
+                                    "msg": (f"强封拒买: {code} 综合强度 {score}/100 > 阈值 {threshold}"
+                                            f"（封单¥{seal_amount/10000:,.0f}万、"
+                                            f"开板{status.get('open_count',0)}次、"
+                                            f"{status.get('consec_limit',0)}连板）"),
+                                }
+                            # 通过：若当前封板，成交价 = 涨停价（扫货式）
+                            if is_sealed:
+                                signal_price = _lu
+                                logger.info(
+                                    f"[PB] {code} 强度评分 {score}≤{threshold}，按涨停 {_lu:.2f} 试排板成交"
+                                    f"（开板{status.get('open_count',0)}次、封单¥{seal_amount/10000:,.0f}万）"
+                                )
+                        except Exception as _e:
+                            logger.debug(f"[PB] 综合评分异常，回退单点判定: {_e}")
+                            # 回退到原来的"5000 万单点阈值"
+                            if is_sealed:
+                                fallback = self._cfg("seal_ban_threshold") or DEFAULT_SEAL_BAN_THRESHOLD
+                                if seal_amount >= fallback:
+                                    return {"ok": False,
+                                            "msg": f"封板拒买（回退）: {code} 封单¥{seal_amount/10000:,.0f}万 ≥ ¥{fallback/10000:,.0f}万"}
+                                signal_price = _lu
+        except Exception as _e:
+            logger.debug(f"[PB] 封板检查异常（跳过）: {_e}")
 
         exec_price, amount, commission, slippage_cost = self._calc_buy_cost(signal_price, shares)
         total_cost = amount + commission
@@ -329,6 +408,53 @@ class PaperBroker:
             if not pos:
                 con.close()
                 return {"ok": False, "msg": f"无持仓: {code}"}
+
+            # ── T+1 拒卖（A 股真实规则：当天买入不可当天卖出）──
+            try:
+                _buy_dt = datetime.strptime(pos["buy_time"][:10], "%Y-%m-%d").date()
+                if _buy_dt == datetime.now().date():
+                    con.close()
+                    return {"ok": False,
+                            "msg": f"T+1 拒卖: {code} 当天买入（{pos['buy_time']}）不可当天卖出，请明日再试"}
+            except Exception as _e:
+                logger.debug(f"[PB] T+1 检查异常（放行）: {_e}")
+
+            # ── 跌停封单检查（已跌停时，看卖出封单是否砸得出去）──
+            # 卖出封单金额 = ask1 卖盘手数 × 100 × 跌停价
+            #   封单 ≥ 阈值（默认 5000 万）：跌停封死，砸不出去，拒卖
+            #   封单 < 阈值                ：弱跌停，允许成交（按跌停价）
+            try:
+                import sys, os
+                _mkt = os.path.join(os.path.dirname(os.path.dirname(__file__)), "market")
+                if _mkt not in sys.path:
+                    sys.path.insert(0, _mkt)
+                import ths_quote as _tq
+                _cli = _tq.get_client()
+                if _cli and getattr(_cli, "_ok", False):
+                    _qs = _cli.get_quotes([code])
+                    if _qs:
+                        _q = _qs[0]
+                        _ld = float(_q.get("limit_down", 0) or 0)
+                        _asks = _q.get("asks") or []
+                        _ask1_vol = float(_asks[0].get("vol", 0)) if _asks else 0
+                        if _ld > 0 and signal_price <= _ld + 0.001:
+                            seal_amount = _ask1_vol * 100 * _ld
+                            threshold   = self._cfg("seal_ban_threshold") or DEFAULT_SEAL_BAN_THRESHOLD
+                            if seal_amount >= threshold:
+                                con.close()
+                                return {
+                                    "ok": False,
+                                    "msg": (f"跌停拒卖: {code} 跌停={_ld:.2f} 卖出封单¥{seal_amount/10000:,.0f}万"
+                                            f"（≥¥{threshold/10000:,.0f}万阈值），砸不出去"),
+                                }
+                            else:
+                                signal_price = _ld   # 实际成交价 = 跌停价
+                                logger.info(
+                                    f"[PB] 弱跌停成交 {code} 卖出封单¥{seal_amount/10000:,.0f}万 "
+                                    f"< 阈值¥{threshold/10000:,.0f}万，按跌停 {_ld:.2f} 成交"
+                                )
+            except Exception as _e:
+                logger.debug(f"[PB] 跌停检查异常（放行）: {_e}")
 
             shares = pos["shares"]
             name   = pos["name"]
@@ -478,7 +604,19 @@ class PaperBroker:
             "SELECT * FROM paper_positions WHERE user_id=?", (self._uid,)
         ).fetchall()
         con.close()
+        # 防御：构造名称查询表（处理历史脏数据中的 "????" / 空名 / 与 code 相同等情况）
+        _names_map = {}
+        try:
+            from pathlib import Path as _P
+            import json as _json
+            _f = _P(__file__).parent.parent / "data" / "stock_names.json"
+            if _f.exists():
+                _names_map = _json.loads(_f.read_text(encoding="utf-8"))
+        except Exception:
+            _names_map = {}
+
         result = []
+        rewrite_needed = []  # 收集需要回写修复的脏记录
         for r in rows:
             code       = r["code"]
             cost_price = r["cost_price"]
@@ -487,9 +625,18 @@ class PaperBroker:
             pnl_pct    = round((cur_price - cost_price) / cost_price * 100, 2) if cost_price else 0
             pnl_amt    = round((cur_price - cost_price) * shares, 2)
             hold_days  = (datetime.now() - datetime.strptime(r["buy_time"][:10], "%Y-%m-%d")).days
+            # 防御：名称含 ? / 空 / 与 code 相同 / 长度 <2，则从 stock_names.json 重新查询
+            nm = r["name"]
+            if (not nm) or ("?" in nm) or (nm == code) or (len(nm.strip()) < 2):
+                fixed = _names_map.get(code)
+                if fixed:
+                    nm = fixed
+                    rewrite_needed.append((fixed, self._uid, code))
+                else:
+                    nm = code
             result.append({
                 "code":         code,
-                "name":         r["name"],
+                "name":         nm,
                 "shares":       shares,
                 "cost_price":   round(cost_price, 4),
                 "cur_price":    round(cur_price, 2),
@@ -499,6 +646,20 @@ class PaperBroker:
                 "hold_days":    hold_days,
                 "buy_time":     r["buy_time"],
             })
+
+        # 一次性回写脏数据（仅在确实找到正确名称时）
+        if rewrite_needed:
+            try:
+                con = self._conn()
+                con.executemany(
+                    "UPDATE paper_positions SET name=? WHERE user_id=? AND code=?",
+                    rewrite_needed,
+                )
+                con.commit()
+                con.close()
+                logger.info(f"[PB uid={self._uid}] 修复持仓名称: {len(rewrite_needed)} 条")
+            except Exception as e:
+                logger.warning(f"[PB uid={self._uid}] 修复持仓名称失败: {e}")
         return result
 
     def get_trades(self, limit: int = 100) -> list:

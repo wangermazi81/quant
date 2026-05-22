@@ -526,18 +526,23 @@ def _full_market_universe(max_codes: int = 0, force_refresh: bool = False) -> li
     return result
 
 
-def _full_market_universe_with_quotes(max_codes: int = 600,
+def _full_market_universe_with_quotes(max_codes: int = 0,
                                       force_refresh: bool = False) -> tuple:
     """
     同 _full_market_universe，但同时返回行情缓存字典。
     供因子库使用，避免二次批量行情请求。
 
+    参数：
+      max_codes: <=0 不裁剪（真·全市场），>0 取前 N 只活跃股
     返回：(universe: list[str], quote_cache: dict[code -> quote_dict])
     """
     active = _get_market_quotes_cached(force_refresh)
     if not active:
         return [], {}
-    top = active[:max_codes]
+    if max_codes and max_codes > 0:
+        top = active[:max_codes]
+    else:
+        top = active
     universe = [q["code"] for q in top]
     quote_cache = {q["code"]: q for q in top}
     logger.info(f"[SM] 预筛选后：{len(universe)} 只（含行情缓存，因子免二次拉取）")

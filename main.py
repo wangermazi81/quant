@@ -522,8 +522,8 @@ def _reset_daily_if_needed(uid: int):
 
 
 def execute_buy(uid: int, code: str, name: str, price: float, shares: int,
-                reason: str = "") -> bool:
-    """统一买入入口（模拟盘 / 实盘）。"""
+                reason: str = "") -> dict:
+    """统一买入入口（模拟盘 / 实盘）。返回 {"ok": bool, "msg": str, ...}"""
     s = get_user_state(uid)
     if DRY_RUN:
         broker = pb.get_broker(uid)
@@ -538,10 +538,12 @@ def execute_buy(uid: int, code: str, name: str, price: float, shares: int,
             _add_log(uid,
                 f"✅ [模拟] 买入 {code} {name} {shares}股 @{result['exec_price']:.2f} "
                 f"花费¥{result['total_cost']:,.0f} 佣金¥{result['commission']:.1f}", "buy")
-            return True
+            return {"ok": True, "exec_price": result["exec_price"],
+                    "total_cost": result["total_cost"]}
         else:
-            _add_log(uid, f"❌ [模拟] 买入拒绝 {code}: {result.get('msg','')}", "error")
-            return False
+            msg = result.get("msg", "")
+            _add_log(uid, f"❌ [模拟] 买入拒绝 {code}: {msg}", "error")
+            return {"ok": False, "msg": msg}
     else:
         ok = operator.buy(code, price, shares)
         if ok:
@@ -551,7 +553,7 @@ def execute_buy(uid: int, code: str, name: str, price: float, shares: int,
                 "name": name, "shares": shares, "cost": price,
                 "date": datetime.now().strftime("%Y-%m-%d"),
             }
-        return ok
+        return {"ok": bool(ok), "msg": "" if ok else "实盘 operator.buy 失败"}
 
 
 def execute_sell(uid: int, code: str, price: float, sell_reason: str = "手动卖出") -> dict:
@@ -590,8 +592,10 @@ def _auto_buy(uid: int, item: dict):
     shares = item.get("shares", 100)
     try:
         _add_log(uid, f"🤖 自动买入触发: {code} {name} {shares}股 @{price}", "buy")
-        ok = execute_buy(uid, code, name, price, shares, reason="自动买入")
-        item["status"] = "done" if ok else "error"
+        res = execute_buy(uid, code, name, price, shares, reason="自动买入")
+        item["status"] = "done" if res.get("ok") else "error"
+        if not res.get("ok"):
+            item["error_msg"] = res.get("msg", "")
     except Exception as e:
         item["status"] = "error"
         _add_log(uid, f"❌ 自动买入异常: {code} — {e}", "error")
@@ -650,7 +654,8 @@ def do_scan(uid: int):
     }
 
     if active:
-        ret     = sm.run(active, [])
+        # max_codes=0 触发真·全市场扫描（不再裁剪 600 只）
+        ret     = sm.run(active, [], max_codes=0)
         results = [{
             "code":        r.get("code", ""),
             "name":        r.get("name", ""),
@@ -949,12 +954,27 @@ def sell_position():
         bp = broker_positions.get(code)
         if not bp:
             return jsonify({"ok": False, "msg": "模拟盘持仓不存在"})
-        price = float(d.get("price", bp["cur_price"] or bp["cost_price"]))
+        # 优先拉 ths_quote 实时价（避免前端 cur_price fallback 到 cost_price 导致
+        # 卖出价≈买入价、盈亏只剩费用的假象）
+        price = 0.0
+        try:
+            import ths_quote as tq
+            client = tq.get_client()
+            if client and client._ok:
+                qs = client.get_quotes([code])
+                if qs:
+                    price = float(qs[0].get("price", 0))
+        except Exception:
+            pass
+        if not price:
+            price = float(d.get("price", 0)) or float(bp["cur_price"] or bp["cost_price"])
     else:
         pos = s["positions"].get(code)
         if not pos:
             return jsonify({"ok": False, "msg": "持仓不存在"})
         price = float(d.get("price", pos.get("cost", 0)))
+    if not price:
+        return jsonify({"ok": False, "msg": "无法获取实时价格，请稍后重试"})
     return jsonify(execute_sell(uid, code, price, sell_reason="手动卖出"))
 
 
@@ -1017,6 +1037,42 @@ def paper_orders():
     limit  = int(request.args.get("limit", 100))
     broker = pb.get_broker(uid)
     return jsonify(broker.get_orders(limit=limit))
+
+
+@app.route("/api/seal_tracker")
+@require_auth
+def seal_tracker_dump():
+    """SealTracker 状态查询（调试/前端展示用）。
+    /api/seal_tracker          → 列出所有被追踪股的强度评分（按 score 降序）
+    /api/seal_tracker?code=XXX → 单只详情（含 samples 时间线）
+    """
+    try:
+        from analytics.seal_tracker import get_tracker
+        tr = get_tracker()
+    except Exception as e:
+        return jsonify({"ok": False, "msg": f"tracker 不可用: {e}"})
+    code = request.args.get("code", "").strip()
+    if code:
+        st = tr.status(code)
+        if not st:
+            return jsonify({"ok": False, "msg": f"{code} 无 tracker 记录"})
+        # 加 samples 时间线
+        with tr._lock:
+            d = tr._data.get(code, {})
+            st["samples"] = [
+                {"ts": s["ts"], "seal": s["seal"], "price": s["price"],
+                 "lu": s["lu"], "sealed": s["sealed"]}
+                for s in list(d.get("samples", []))
+            ]
+        return jsonify({"ok": True, "code": code, "status": st})
+    # 全量列表
+    out = []
+    for c in tr.all_tracked():
+        s = tr.status(c)
+        s["code"] = c
+        out.append(s)
+    out.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return jsonify({"ok": True, "count": len(out), "items": out})
 
 
 @app.route("/api/paper/stats")
@@ -1084,19 +1140,41 @@ def paper_manual_buy():
     name   = d.get("name", code)
     price  = float(d.get("price", 0))
     shares = int(d.get("shares", 0))
+    # 防御：name 含 "?" / 乱码 / 为空，从本地 stock_names.json 查
+    if not name or "?" in name or "??" in name or name == code or len(name.strip()) < 2:
+        try:
+            from pathlib import Path
+            import json as _json
+            f = Path(__file__).parent / "data" / "stock_names.json"
+            if f.exists():
+                _names = _json.loads(f.read_text(encoding="utf-8"))
+                name = _names.get(code, name) or code
+        except Exception:
+            name = name or code
     if not code:
         return jsonify({"ok": False, "msg": "请输入股票代码"})
     if price <= 0:
         return jsonify({"ok": False, "msg": "价格必须大于0"})
+    # 非交易时段提示但仍允许（方便用户测试 + 复盘）
+    # 严格模式：取消注释下面 4 行让非交易时段拒单
+    # from market_data import is_trading_time
+    # if not is_trading_time():
+    #     return jsonify({"ok": False, "msg": "非交易时段，无法下单（仅交易日 9:30-11:30 / 13:00-15:00）"})
+    try:
+        from market_data import is_trading_time
+        if not is_trading_time():
+            _add_log(uid, f"⚠️ 非交易时段手动下单: {code} ({name}) — 已按上次收盘价模拟成交", "warning")
+    except Exception:
+        pass
     if shares <= 0:
         broker = pb.get_broker(uid)
         acct   = broker.get_account()
         budget = acct["cash"] * s.get("position_ratio", 0.20)
         shares = max(int(budget / price / 100) * 100, 100)
-    ok = execute_buy(uid, code, name, price, shares, reason="模拟盘手动买入")
-    if ok:
+    res = execute_buy(uid, code, name, price, shares, reason="模拟盘手动买入")
+    if res.get("ok"):
         return jsonify({"ok": True, "shares": shares, "msg": f"已买入 {code} {shares}股 @{price}"})
-    return jsonify({"ok": False, "msg": "买入失败，请检查资金或持仓（详见日志）"})
+    return jsonify({"ok": False, "msg": res.get("msg") or "买入失败，请检查资金或持仓（详见日志）"})
 
 
 @app.route("/api/paper/sell", methods=["POST"])
@@ -1105,19 +1183,23 @@ def paper_manual_sell():
     uid   = session["user_id"]
     d     = request.json
     code  = d.get("code", "")
-    price = float(d.get("price", 0))
+    # 优先拉 ths_quote 实时价（前端传的 price 可能是 cur_price fallback 到 cost_price
+    # 的脏值，会导致卖出价≈买入价、盈亏只剩费用 -0.22% 的假象）
+    price = 0.0
+    try:
+        import ths_quote as tq
+        client = tq.get_client()
+        if client and client._ok:
+            qs = client.get_quotes([code])
+            if qs:
+                price = float(qs[0].get("price", 0))
+    except Exception:
+        pass
+    # 实时价拉不到时，再用前端传的 price 作 fallback
     if not price:
-        try:
-            import ths_quote as tq
-            client = tq.get_client()
-            if client and client._ok:
-                qs = client.get_quotes([code])
-                if qs:
-                    price = float(qs[0].get("price", 0))
-        except Exception:
-            pass
+        price = float(d.get("price", 0))
     if not price:
-        return jsonify({"ok": False, "msg": "无法获取实时价格，请手动输入价格"})
+        return jsonify({"ok": False, "msg": "无法获取实时价格，请稍后重试"})
     return jsonify(execute_sell(uid, code, price, sell_reason="手动卖出"))
 
 
@@ -1265,8 +1347,15 @@ def api_factor_run():
     d   = request.json
     fn  = d.get("filename", "")
     cs  = d.get("codes") or []
-    _add_log(uid, f"执行因子选股: [{fn}] {'全市场' if not cs else f'{len(cs)}只'}...")
-    r       = fm.run(fn, cs)
+    try:
+        mc = int(d.get("max_codes", 0))
+    except (TypeError, ValueError):
+        mc = 0
+    scope_label = "全市场" if not cs else f"{len(cs)}只"
+    if not cs and mc > 0:
+        scope_label = f"活跃前{mc}只"
+    _add_log(uid, f"执行因子选股: [{fn}] {scope_label}...")
+    r       = fm.run(fn, cs, max_codes=mc)
     scanned = r.get("scanned", r.get("count", 0))
     _add_log(uid, f"因子选股完成，扫描 {scanned} 只，命中 {r.get('count', 0)} 只")
     return jsonify(r)

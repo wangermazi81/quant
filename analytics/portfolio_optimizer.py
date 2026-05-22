@@ -131,11 +131,12 @@ def optimize_portfolio(codes: list, mode: str = "equal_weight",
     if not codes:
         return {"ok": False, "error": "codes 不能为空"}
 
+    # 不管哪种模式都尝试加载历史收益率，以便统一计算预期收益/波动率
+    ret = _load_returns(codes, lookback=lookback)
+
     if mode == "equal_weight":
         weights = _equal_weight(codes)
-        ret     = pd.DataFrame()
     else:
-        ret = _load_returns(codes, lookback=lookback)
         valid_codes = list(ret.columns) if not ret.empty else []
         if len(valid_codes) < 2:
             # 数据不足，降级为等权

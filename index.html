@@ -1525,14 +1525,16 @@ function renderPool(pool){
     const tagHtml = isSignal
       ? `<span style="font-size:9px;background:#1a4731;color:#3fb950;border-radius:3px;padding:1px 5px;margin-left:4px">打板</span>${consecBadge}`
       : `<span style="font-size:9px;background:#2a2a2a;color:#666;border-radius:3px;padding:1px 5px;margin-left:4px">封板</span>${consecBadge}`
-    // 操作按钮
+    // 操作按钮（"+队"加入待执行，"🛒"立即模拟买入）
     let actionHtml
     if(!isSignal){
       actionHtml='<span style="font-size:11px;color:var(--t4)">参考</span>'
     } else if(isQueued){
       actionHtml='<button class="btn btn-queued btn-xs" disabled>✓ 已入队</button>'
+      + ` <button class="btn btn-orange btn-xs" onclick="event.stopPropagation();manualBuy(${JSON.stringify({code:r.code,name:r.name,price:r.price})})" title="立即按当前价模拟盘买入（按仓位%计算手数）">🛒 买入</button>`
     } else {
       actionHtml=`<button class="btn btn-green btn-xs" onclick="event.stopPropagation();addOneQ(${JSON.stringify({code:r.code,name:r.name,price:r.price,reason:r.reason||''})})">+队</button>`
+      + ` <button class="btn btn-orange btn-xs" onclick="event.stopPropagation();manualBuy(${JSON.stringify({code:r.code,name:r.name,price:r.price})})" title="跳过队列直接按当前价模拟盘买入（按仓位%计算手数）">🛒 买入</button>`
     }
     const isTdx = r.reason?.includes('TDX')||r.reason?.includes('封板')
     return `<tr style="${rowStyle}" onclick="showKLine('${r.code}','${(r.name||r.code).replace(/'/g,"\\'")}')">
@@ -1699,7 +1701,7 @@ async function _runFactorScreen(fn){
   </div>`
 
   try{
-    const r = await api('/factors/run','POST',{filename:fn, codes:scanCodes})
+    const r = await api('/factors/run','POST',{filename:fn, codes:scanCodes, max_codes:0})
     scProg.style.display='none'
     document.getElementById('addAllBtn').style.display='none'
 
@@ -1891,9 +1893,12 @@ function _renderScResults(){
   el.innerHTML=scResults.map(r=>{
     const chg=parseFloat(r.change||0)
     const isQueued=_queuedCodes.has(r.code)
-    const btn = isQueued
+    const btnPayload = JSON.stringify({code:r.code,name:r.name,price:r.price,reason:r.reason||""})
+    const queueBtn = isQueued
       ? '<button class="btn btn-queued btn-xs" disabled>✓ 已入队</button>'
-      : `<button class="btn btn-green btn-xs" onclick='event.stopPropagation();addOneQ(${JSON.stringify({code:r.code,name:r.name,price:r.price,reason:r.reason||""})})'>+队</button>`
+      : `<button class="btn btn-green btn-xs" onclick='event.stopPropagation();addOneQ(${btnPayload})'>+队</button>`
+    const buyBtn = `<button class="btn btn-orange btn-xs" onclick='event.stopPropagation();manualBuy(${btnPayload})' title="立即按当前价模拟盘买入">🛒 买入</button>`
+    const btn = queueBtn + ' ' + buyBtn
     // 六维评分徽章（当因子/选股有返回score时显示信号）
     let sigBadge = ''
     if(r.signal && r.signal_color){
@@ -1921,6 +1926,25 @@ async function addOneQ(r){
     if(scResults.length) _renderScResults()  // 刷新策略选股按钮
     fetchSt(); setTimeout(fetchPositions,800)
   } else if(res?.msg) alert(res.msg)
+}
+
+// ── 监控中心 / 选股结果 行内"🛒 立即买入" — 跳过队列直接调模拟盘下单
+//    shares=0 让后端按 position_ratio 自动计算手数
+async function manualBuy(r){
+  if(!confirm(`立即按 ¥${(+r.price||0).toFixed(2)} 模拟买入 ${r.code} ${r.name||''} ？`)) return
+  const res = await api('/paper/buy','POST',{
+    code:r.code, name:r.name||r.code, price:r.price, shares:0
+  })
+  if(res?.ok){
+    // 提示成功，刷新持仓 + 状态条
+    if(typeof showToast === 'function') showToast(res.msg || '✅ 已模拟买入', 'success')
+    else alert(res.msg || `✅ 已模拟买入 ${r.code}`)
+    fetchSt()
+    setTimeout(fetchPositions, 500)
+    if(typeof loadPaperPage === 'function') setTimeout(loadPaperPage, 800)
+  } else {
+    alert('❌ ' + (res?.msg || '模拟买入失败'))
+  }
 }
 let _lastPool = []
 async function addAllQ(){
@@ -2251,9 +2275,20 @@ function fillAiFromEditor(){
 // ── 大盘市场环境（含实时指数行情）──
 let _mktRefreshTimer = null
 async function loadMarketContext(force=false){
+  // 用户点 ⟳ 时给可见反馈
+  if(force){
+    document.querySelectorAll('[onclick*="loadMarketContext(true)"]').forEach(b=>{
+      b.dataset._oldText = b.innerHTML
+      b.innerHTML = '刷新中...'
+      b.disabled = true
+    })
+  }
   try{
     const r = await api('/market/context'+(force?'?refresh=1':''))
-    if(!r?.ok) return
+    if(!r?.ok){
+      if(force) console.warn('[市场环境] 接口返回 ok=false', r)
+      return
+    }
     const strength = r.strength ?? 50
     const trend    = r.trend || '—'
     const trendCls = strength>=70?'mkt-bull':strength>=45?'mkt-neutral':'mkt-bear'
@@ -2294,6 +2329,14 @@ async function loadMarketContext(force=false){
     if(idxElM) idxElM.innerHTML=idxHtml
 
   }catch(e){ console.warn('市场环境加载失败:',e) }
+  finally{
+    if(force){
+      document.querySelectorAll('[onclick*="loadMarketContext(true)"]').forEach(b=>{
+        if(b.dataset._oldText){ b.innerHTML = b.dataset._oldText; delete b.dataset._oldText }
+        b.disabled = false
+      })
+    }
+  }
 
   // 启动定时刷新（每60秒，只启动一次）
   if(!_mktRefreshTimer){
@@ -3537,7 +3580,9 @@ async function loadPaperPositions(){
       </tr></thead>
       <tbody>${rows.map(r=>{
         const up = r.pnl_pct>=0
-        return `<tr>
+        const nm = (r.name||r.code).replace(/'/g,"\\'")
+        // 整行可点击查看 K 线图（除操作列）
+        return `<tr style="cursor:pointer" onclick="showKLine('${r.code}','${nm}')">
           <td><b>${r.code}</b></td>
           <td style="color:var(--t2)">${r.name||r.code}</td>
           <td>${r.shares}</td>
@@ -3545,7 +3590,7 @@ async function loadPaperPositions(){
           <td><b>${(+r.cur_price).toFixed(2)}</b></td>
           <td style="color:${up?'var(--rl)':'var(--gl)'};font-weight:700">${up?'+':''}${(+r.pnl_pct).toFixed(2)}%</td>
           <td style="color:var(--t3)">${r.hold_days||0}天</td>
-          <td><button class="btn btn-red btn-xs" onclick="paperSell('${r.code}','${r.name||r.code}',${r.cur_price})">卖出</button></td>
+          <td onclick="event.stopPropagation()"><button class="btn btn-red btn-xs" onclick="paperSell('${r.code}','${nm}',${r.cur_price})">卖出</button></td>
         </tr>`}).join('')}
       </tbody>
     </table>`
@@ -4164,27 +4209,42 @@ async function runPortfolioOpt(){
     st.style.color='var(--rl)'; st.textContent='❌ '+(r?.error||'优化失败')
     return
   }
-  const weights = r.weights||{}
-  const positions = r.positions||{}
-  const info = `预期年化: ${((r.expected_return||0)*100).toFixed(1)}%  年化波动: ${((r.volatility||0)*100).toFixed(1)}%  夏普: ${(r.sharpe||0).toFixed(2)}`
+  const weights   = r.weights || {}
+  // 兼容两种后端格式：list of {code,weight,price,shares,budget} 或 dict {code: shares}
+  let positions = []
+  if (Array.isArray(r.positions)) {
+    positions = r.positions
+  } else if (r.positions && typeof r.positions === 'object') {
+    positions = Object.entries(r.positions).map(([code, shares])=>({code, shares}))
+  }
+  // 后端字段：expected_return / expected_volatility 已经是百分数（× 100 round 过的）
+  const expRet = r.expected_return
+  const expVol = r.expected_volatility
+  const sharpe = (expVol && expVol > 0 && expRet != null) ? (expRet / expVol) : 0
+  const info = `预期年化: ${expRet != null ? expRet.toFixed(2)+'%' : '—'}  年化波动: ${expVol != null ? expVol.toFixed(2)+'%' : '—'}  夏普: ${sharpe.toFixed(2)}`
   st.style.color='var(--gl)'; st.textContent=`✅ 优化完成（${OPT_MODES[_optMode]?.label||_optMode}）  ${info}`
 
-  // 渲染持仓表格
-  const rows = Object.entries(positions)
-    .sort(([,a],[,b])=>b-a)
-    .map(([code,shares])=>{
-      const stk  = scResults.find(s=>s.code===code)||{}
-      const w    = ((weights[code]||0)*100).toFixed(1)
-      const price= stk.price||0
-      const val  = (price*shares).toFixed(0)
-      const name = stk.name||code
+  // 渲染持仓表格 — 按权重降序
+  const rows = positions
+    .slice()
+    .sort((a,b)=>(b.weight||0)-(a.weight||0))
+    .map(p=>{
+      const code   = p.code
+      const stk    = scResults.find(s=>s.code===code) || {}
+      // weight: 后端是小数(0~1)，× 100 显示百分比
+      const w      = ((p.weight != null ? p.weight : weights[code] || 0)*100).toFixed(1)
+      // price 优先取后端，没有就用实时选股价
+      const price  = (+p.price > 0 ? +p.price : +stk.price) || 0
+      const shares = +p.shares || 0
+      const val    = price * shares
+      const name   = stk.name || p.name || code
       return `<tr>
         <td style="font-family:monospace;font-weight:700;color:var(--t1)">${code}</td>
         <td style="color:var(--t2)">${name}</td>
         <td style="text-align:right;color:var(--bl)">${w}%</td>
         <td style="text-align:right">${price.toFixed(2)}</td>
         <td style="text-align:right;font-weight:700">${shares}</td>
-        <td style="text-align:right;color:var(--gl)">¥${Number(val).toLocaleString()}</td>
+        <td style="text-align:right;color:var(--gl)">¥${Number(val.toFixed(0)).toLocaleString()}</td>
       </tr>`
     }).join('')
 
@@ -4201,8 +4261,9 @@ async function runPortfolioOpt(){
     <tfoot><tr style="border-top:1px solid var(--b1);font-size:11px;color:var(--t3)">
       <td colspan="5" style="padding:5px 6px">总计投入</td>
       <td style="text-align:right;padding:5px 6px;color:var(--t2);font-weight:700">
-        ¥${Object.entries(positions).reduce((s,[code,sh])=>{
-          const p=(scResults.find(r=>r.code===code)||{}).price||0; return s+p*sh
+        ¥${positions.reduce((s,p)=>{
+          const price = (+p.price > 0 ? +p.price : +(scResults.find(r=>r.code===p.code)||{}).price) || 0
+          return s + price * (+p.shares||0)
         },0).toLocaleString('zh-CN',{maximumFractionDigits:0})}
       </td>
     </tr></tfoot>
