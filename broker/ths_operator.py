@@ -110,38 +110,84 @@ class THSOperator:
                         "msg": "xiadan 未启动或窗口标题不匹配 — 桥接器无法激活到前台",
                     }
 
-            # ── 三重激活 xiadan 窗口（pywinauto + win32api 双保险）──
-            # pywinauto 64bit Python 自动化 32bit app set_focus 不稳定，
-            # 加 win32api SetForegroundWindow / ShowWindow 强制激活
+            # ── 强制激活 xiadan 到前台（绕过 Windows 焦点保护）──
+            # Windows 10/11 默认禁止非前台进程调用 SetForegroundWindow,
+            # 静默忽略只让任务栏闪 → pyautogui 按键按到错误窗口。
+            # 解决：用 AttachThreadInput 把桥接器线程「附加」到 xiadan
+            # 所属线程的输入队列, 让 Windows 以为是同一个前台用户在切换。
             activated = False
+            actual_fg_hwnd = None
             try:
-                self.main_win.set_focus()
-                activated = True
-            except Exception as _se:
-                logger.debug(f"pywinauto.set_focus 失败: {_se}")
-            try:
-                import win32gui, win32con
+                import win32gui, win32con, win32process
+                import ctypes
+                from ctypes import wintypes
                 hwnd = self.main_win.handle
-                # 检测窗口是否仍存在（xiadan 可能已被关闭）
                 if not win32gui.IsWindow(hwnd):
-                    logger.warning("xiadan 窗口 handle 失效（可能已关闭），重连...")
+                    logger.warning("xiadan 窗口 handle 失效，重连...")
                     self._connect()
                     if self.main_win is None:
-                        return {
-                            "status": "failed",
-                            "msg": "xiadan 窗口已关闭，无法下单",
-                        }
+                        return {"status": "failed",
+                                "msg": "xiadan 窗口已关闭，无法下单"}
                     hwnd = self.main_win.handle
+
+                # 1. 还原窗口（若最小化）
                 if win32gui.IsIconic(hwnd):
                     win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                win32gui.SetForegroundWindow(hwnd)
-                win32gui.BringWindowToTop(hwnd)
-                activated = True
+
+                # 2. AttachThreadInput 绕过 Windows 焦点保护
+                target_thread_id, _ = win32process.GetWindowThreadProcessId(hwnd)
+                current_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
+                user32 = ctypes.windll.user32
+                if target_thread_id and target_thread_id != current_thread_id:
+                    user32.AttachThreadInput(current_thread_id, target_thread_id, True)
+                    try:
+                        win32gui.BringWindowToTop(hwnd)
+                        win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+                        win32gui.SetForegroundWindow(hwnd)
+                    finally:
+                        user32.AttachThreadInput(current_thread_id, target_thread_id, False)
+                else:
+                    win32gui.SetForegroundWindow(hwnd)
+
+                # 3. 再确认一次真前台
+                time.sleep(0.2)
+                actual_fg_hwnd = win32gui.GetForegroundWindow()
+                if actual_fg_hwnd == hwnd:
+                    activated = True
+                else:
+                    # 4. 兜底：模拟一次 Alt 键骗系统重置焦点锁定
+                    user32.keybd_event(0x12, 0, 0, 0)        # Alt down
+                    user32.keybd_event(0x12, 0, 0x0002, 0)   # Alt up
+                    time.sleep(0.1)
+                    win32gui.SetForegroundWindow(hwnd)
+                    time.sleep(0.2)
+                    actual_fg_hwnd = win32gui.GetForegroundWindow()
+                    activated = (actual_fg_hwnd == hwnd)
             except Exception as _we:
-                logger.debug(f"win32 SetForegroundWindow 失败: {_we}")
+                logger.warning(f"激活 xiadan 异常: {_we}")
+
+            # pywinauto.set_focus 备用
+            if not activated:
+                try:
+                    self.main_win.set_focus()
+                    time.sleep(0.2)
+                    import win32gui as _w
+                    activated = (_w.GetForegroundWindow() == self.main_win.handle)
+                except Exception:
+                    pass
+
             time.sleep(0.3)
             if not activated:
-                logger.warning("main_win 激活失败，依赖前台焦点是否在交易客户端")
+                # 真没激活成功——拒绝下单避免按错窗口
+                logger.error(
+                    f"❌ xiadan 激活失败！当前前台 hwnd={actual_fg_hwnd}, "
+                    f"目标 hwnd={self.main_win.handle}. 拒绝按键, 避免误操作其他窗口"
+                )
+                return {
+                    "status": "failed",
+                    "msg": "xiadan 未能拉到前台（Windows 焦点保护）, "
+                           "请手动点 xiadan 后再插信号, 或保持 xiadan 在最前",
+                }
 
             pyautogui.press(hotkey)              # 调起买入/卖出页（焦点应自动到"代码"字段）
             time.sleep(0.5)                      # 等 xiadan 渲染下单界面
