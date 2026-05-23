@@ -97,27 +97,49 @@ class THSOperator:
                 # 输入新值
                 pyautogui.typewrite(text, interval=0.03)
 
+            # ── 自动重连：main_win=None 说明启动时 xiadan 没开，现在重试 ──
+            if self.main_win is None:
+                logger.info("main_win 为空，尝试重新连接 xiadan...")
+                try:
+                    self._connect()
+                except Exception as _re:
+                    logger.error(f"重连 xiadan 失败: {_re}")
+                if self.main_win is None:
+                    return {
+                        "status": "failed",
+                        "msg": "xiadan 未启动或窗口标题不匹配 — 桥接器无法激活到前台",
+                    }
+
             # ── 三重激活 xiadan 窗口（pywinauto + win32api 双保险）──
             # pywinauto 64bit Python 自动化 32bit app set_focus 不稳定，
             # 加 win32api SetForegroundWindow / ShowWindow 强制激活
             activated = False
-            if self.main_win is not None:
-                try:
-                    self.main_win.set_focus()
-                    activated = True
-                except Exception as _se:
-                    logger.debug(f"pywinauto.set_focus 失败: {_se}")
-                try:
-                    import win32gui, win32con
+            try:
+                self.main_win.set_focus()
+                activated = True
+            except Exception as _se:
+                logger.debug(f"pywinauto.set_focus 失败: {_se}")
+            try:
+                import win32gui, win32con
+                hwnd = self.main_win.handle
+                # 检测窗口是否仍存在（xiadan 可能已被关闭）
+                if not win32gui.IsWindow(hwnd):
+                    logger.warning("xiadan 窗口 handle 失效（可能已关闭），重连...")
+                    self._connect()
+                    if self.main_win is None:
+                        return {
+                            "status": "failed",
+                            "msg": "xiadan 窗口已关闭，无法下单",
+                        }
                     hwnd = self.main_win.handle
-                    if win32gui.IsIconic(hwnd):                      # 若最小化先还原
-                        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                    win32gui.SetForegroundWindow(hwnd)               # 强制拉到前台
-                    win32gui.BringWindowToTop(hwnd)
-                    activated = True
-                except Exception as _we:
-                    logger.debug(f"win32 SetForegroundWindow 失败: {_we}")
-                time.sleep(0.3)                                       # 给窗口激活时间
+                if win32gui.IsIconic(hwnd):
+                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.SetForegroundWindow(hwnd)
+                win32gui.BringWindowToTop(hwnd)
+                activated = True
+            except Exception as _we:
+                logger.debug(f"win32 SetForegroundWindow 失败: {_we}")
+            time.sleep(0.3)
             if not activated:
                 logger.warning("main_win 激活失败，依赖前台焦点是否在交易客户端")
 
