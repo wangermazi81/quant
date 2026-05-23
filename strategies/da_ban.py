@@ -184,6 +184,10 @@ def _from_tdx(results_out: list) -> bool:
                         pass
                 # 已封板：price >= limit_up
                 if price >= limit_up - 0.001 and change_pct >= limit_rate * 0.98:
+                    # 过滤一字板（开盘即封死且全天未开板，最低价等于涨停价）
+                    # 一字板散户根本买不到，留着只会让选股结果失真
+                    if q.get("low", 0) >= limit_up - 0.005:
+                        continue
                     name = q.get("name") or _names.get(code, "")
                     already_sealed.append({
                         "code":   code,
@@ -199,26 +203,66 @@ def _from_tdx(results_out: list) -> bool:
                     })
             except Exception:
                 continue
-        # 已封板按"市场优先（主板在前）+ 涨幅降序"排序，前 20 只入结果
+        # ── 行业/板块热度统计 ──────────────────────────────────
+        # 同一行业有多只股票涨停 = 板块炒作，行业热度越高 → 更值得介入
+        # （行业信息来自 data_manager.get_stock_sector，本地 meta 缓存，无外网压力）
+        from collections import Counter
+        try:
+            import data_manager as dm
+        except ImportError:
+            dm = None
+
+        industry_counts = Counter()
+        for item in already_sealed:
+            if dm:
+                try:
+                    item["industry"] = dm.get_stock_sector(item["code"]).get("industry") or "其他"
+                except Exception:
+                    item["industry"] = "其他"
+            else:
+                item["industry"] = "其他"
+            industry_counts[item["industry"]] += 1
+        # 给"差两档"候选股也标行业（不进 counter，他们还没真封板）
+        for item in results_out:
+            if dm:
+                try:
+                    item["industry"] = dm.get_stock_sector(item["code"]).get("industry") or "其他"
+                except Exception:
+                    item["industry"] = "其他"
+            else:
+                item["industry"] = "其他"
+            item["industry_heat"] = industry_counts.get(item["industry"], 0)
+        for item in already_sealed:
+            item["industry_heat"] = industry_counts.get(item["industry"], 0)
+
+        # 已封板按"市场优先 + 行业热度降序 + 涨幅降序"排序，前 20 只入结果
         # 为了让主板和非主板都能露出，按板块各取 N 只：主板 14、非主板 6
-        already_sealed.sort(key=lambda x: (_market_priority(x["code"]), -x.get("change", 0)))
+        already_sealed.sort(key=lambda x: (_market_priority(x["code"]),
+                                            -x.get("industry_heat", 0),
+                                            -x.get("change", 0)))
         mainboard = [x for x in already_sealed if _market_priority(x["code"]) == 0]
         others    = [x for x in already_sealed if _market_priority(x["code"]) >  0]
         top_sealed = mainboard[:14] + others[:6]
+
+        # ── 并行查询前 20 只的连板天数（8 线程并发，比串行省 5-8 秒）──
+        from concurrent.futures import ThreadPoolExecutor
+        def _fetch_consec(item):
+            try:
+                return _count_consec_limit_up(client, item["code"], item["_limit_rate"])
+            except Exception:
+                return 0
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            consec_list = list(ex.map(_fetch_consec, top_sealed))
+
         # 对前20只补查连板数：首板（consec<=1）标记 signal=True 入队，让 broker
         # 按封单金额分级（弱封板可买、强封板拒），实现"排板"模拟。
         # 连板（≥2）保持 signal=False 仅作参考（首板能上车、连板风险高跳过）。
-        for item in top_sealed:
-            try:
-                consec = _count_consec_limit_up(client, item["code"], item["_limit_rate"])
-            except Exception:
-                consec = 0
+        for item, consec in zip(top_sealed, consec_list):
             item["consec_limit"] = consec
             item["consec_label"] = "首板" if consec <= 1 else f"{consec}连板"
             # 把连板天数补喂到 tracker（之前 update 时 consec_limit=0，这里补一笔）
             if _tracker is not None and consec > 0:
                 try:
-                    # 用 0 金额触发的 update 不会污染 max_seal，但会刷新 consec_limit
                     cur_status = _tracker.status(item["code"])
                     if cur_status.get("current_sealed"):
                         _tracker.update(item["code"],
@@ -230,8 +274,8 @@ def _from_tdx(results_out: list) -> bool:
             if consec <= 1:
                 item["signal"] = True
                 item["reason"] = (
-                    f"已封板首板(试排板) | 涨停={item['_limit_up']:.2f} "
-                    f"| 涨幅={item['change']:.2f}% | broker将按封单金额判定能否成交"
+                    f"已封板首板(试排板) | 行业={item.get('industry','其他')}(板内共{item.get('industry_heat',0)}只) "
+                    f"| 涨停={item['_limit_up']:.2f} | 涨幅={item['change']:.2f}% | broker将按封单金额判定能否成交"
                 )
             item.pop("_limit_rate", None)
             item.pop("_limit_up",   None)
@@ -254,10 +298,13 @@ def scan(codes: list, get_kline, get_quotes) -> list:
     # ── 监控模式（codes 为空）：pytdx 全市场实时扫描 ────────
     if not codes:
         if _from_tdx(results):
-            # 主板优先：(market_priority, -change)
-            #   主板 60/00 排在前面（auto_execute 资金先打这里），
-            #   组内按涨幅降序。非主板（创业板/科创板/北交所）显示但排后面。
-            results.sort(key=lambda x: (_market_priority(x["code"]), -x.get("change", 0)))
+            # 排序键：(市场优先级, -行业热度, -涨幅)
+            #   主板 60/00 排前面（auto_execute 资金先打这里）
+            #   组内行业热度高的优先（板块炒作时优选龙头）
+            #   涨幅高的优先
+            results.sort(key=lambda x: (_market_priority(x["code"]),
+                                         -x.get("industry_heat", 0),
+                                         -x.get("change", 0)))
             return results
 
     # ── 回测/降级路径：使用提供的历史数据 ────────────────────

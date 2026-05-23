@@ -291,6 +291,17 @@ def _calc_indicators(df: pd.DataFrame) -> dict:
     chg5d  = (close.iloc[-1] / close.iloc[-6]  - 1) * 100 if n >= 6  else 0
     chg20d = (close.iloc[-1] / close.iloc[-21] - 1) * 100 if n >= 21 else 0
 
+    # ── ATR (Average True Range) 14 日真实波幅，用于动态自适应止损 ──
+    high = df["high"]
+    low  = df["low"]
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean()
+
     return {
         "price": sv(close), "ma5": sv(ma5), "ma10": sv(ma10),
         "ma20": sv(ma20), "ma60": sv(ma60),
@@ -303,6 +314,7 @@ def _calc_indicators(df: pd.DataFrame) -> dict:
         "chg_20d_pct": round(chg20d, 2),
         "high_52w": round(float(close.rolling(252).max().iloc[-1]), 2) if n >= 60 else None,
         "low_52w":  round(float(close.rolling(252).min().iloc[-1]), 2) if n >= 60 else None,
+        "atr": sv(atr),
     }
 
 
@@ -532,6 +544,14 @@ def run_analysis(code: str, name: str, df: pd.DataFrame,
         ind  = _calc_indicators(df)
         hist = _price_history_text(df, days=15)
 
+        # ── ATR 自适应止损：当前价 - 2.5×ATR 作为动态止损位 ──
+        # 比固定百分比止损更适应不同波动率的股票
+        cur_price = ind.get("price")
+        atr_val   = ind.get("atr")
+        atr_stop_loss = round(cur_price - 2.5 * atr_val, 2) if (cur_price and atr_val) else None
+        atr_info_line = (f"\nATR(14)={atr_val} | 动态自适应止损参考(2.5×ATR)={atr_stop_loss}"
+                         if atr_stop_loss else "")
+
         # ── 构建股票上下文（含六维评分）───────────────
         score_text = ""
         if score_result.get("ok"):
@@ -557,7 +577,7 @@ def run_analysis(code: str, name: str, df: pd.DataFrame,
 MACD：DIF={ind['macd_dif']}  DEA={ind['macd_dea']}  柱={ind['macd_hist']}
 RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']}  下={ind['bb_lower']}
 成交量比：{ind['vol_ratio']}x（相对20日均量）
-52周高低：最高={ind['high_52w']}  最低={ind['low_52w']}
+52周高低：最高={ind['high_52w']}  最低={ind['low_52w']}{atr_info_line}
 {score_text}
 {market_ctx_text}
 【近15日K线】
