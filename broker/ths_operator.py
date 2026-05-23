@@ -53,31 +53,54 @@ class THSOperator:
 
     def _gui_submit(self, action: str, hotkey: str,
                     code: str, price: float, amount: int) -> bool:
-        """共用 GUI 按键序列：focus → 按快捷键 → 填代码/价/量 → Enter 提交"""
+        """共用 GUI 按键序列：focus → 按快捷键 → 填代码/价/量 → Enter 提交
+
+        关键点（基于 xiadan.exe 实测经验）：
+        - 价格必须 2 位小数字符串（如 1.00 不是 1.0），否则 xiadan 弹
+          "委托价格的小数部分应为 2 位" 对话框打断流程
+        - 数量必须整数字符串（10000 不是 10000.0）
+        - Ctrl+A 在某些控件不全选，用 Home+Shift+End 更可靠
+        """
         try:
             import pyautogui
+
+            # 价格/数量格式化（xiadan 严格要求）
+            price_str  = f"{float(price):.2f}"   # 强制 2 位小数：1.0 → "1.00"
+            amount_str = str(int(amount))        # 强制整数：100.0 → "100"
+
+            def _clear_and_type(text: str):
+                """清空当前输入框并输入新值（比 Ctrl+A 更兼容）"""
+                pyautogui.press('home')                  # 光标到行首
+                pyautogui.hotkey('shift', 'end')         # Shift+End 选中到行尾
+                pyautogui.press('delete')                # 删除选中
+                time.sleep(0.1)
+                pyautogui.typewrite(text, interval=0.05)
+
             if self.main_win is not None:
                 self.main_win.set_focus()
                 time.sleep(0.3)
             else:
                 logger.warning("main_win 为 None，依赖前台焦点是否在交易客户端")
-            pyautogui.press(hotkey)             # 调起买入/卖出页
-            time.sleep(0.8)
-            # 股票代码
-            pyautogui.hotkey('ctrl', 'a')
-            pyautogui.typewrite(code, interval=0.05)
+
+            pyautogui.press(hotkey)              # 调起买入/卖出页（焦点应自动到"代码"字段）
+            time.sleep(1.0)                      # 给 xiadan 更多时间渲染下单界面
+
+            _clear_and_type(code)                # 股票代码
             time.sleep(0.5)
-            # 价格
-            pyautogui.press('tab')
-            pyautogui.hotkey('ctrl', 'a')
-            pyautogui.typewrite(str(price), interval=0.05)
-            # 数量
-            pyautogui.press('tab')
-            pyautogui.hotkey('ctrl', 'a')
-            pyautogui.typewrite(str(amount), interval=0.05)
+            pyautogui.press('tab')               # → 价格字段
+
+            _clear_and_type(price_str)           # 价格（2 位小数格式）
             time.sleep(0.3)
-            pyautogui.press('enter')            # 确认
-            logger.info(f"已提交 {action} {code} @ {price} x {amount}股 (hotkey={hotkey.upper()})")
+            pyautogui.press('tab')               # → 数量字段
+
+            _clear_and_type(amount_str)          # 数量
+            time.sleep(0.3)
+            pyautogui.press('enter')             # 触发"委托确认"对话框（用户/桥接器再 Y/N）
+
+            logger.info(
+                f"已提交 {action} {code} @ {price_str} x {amount_str}股 "
+                f"(hotkey={hotkey.upper()}) — xiadan 会弹委托确认框，需另行确认"
+            )
             return True
         except Exception as e:
             logger.error(f"{action} 操作失败: {e}")
