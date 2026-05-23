@@ -69,12 +69,29 @@ class THSOperator:
             amount_str = str(int(amount))        # 强制整数：100.0 → "100"
 
             def _clear_and_type(text: str):
-                """清空当前输入框并输入新值（比 Ctrl+A 更兼容）"""
-                pyautogui.press('home')                  # 光标到行首
-                pyautogui.hotkey('shift', 'end')         # Shift+End 选中到行尾
-                pyautogui.press('delete')                # 删除选中
-                time.sleep(0.1)
-                pyautogui.typewrite(text, interval=0.05)
+                """清空当前输入框并输入新值（多重清空保险，针对 xiadan 老 Win32 控件）
+
+                xiadan 价格字段对 Ctrl+A、Home/Shift+End/Delete 都不可靠，
+                需要叠加多种方法 + Backspace 连发暴力清场。
+                """
+                # 第 1 层：选中并删除（兼容现代控件）
+                pyautogui.hotkey('ctrl', 'a')
+                time.sleep(0.05)
+                pyautogui.press('delete')
+                time.sleep(0.05)
+                # 第 2 层：Home + Shift+End + Delete（兼容多数控件）
+                pyautogui.press('home')
+                pyautogui.hotkey('shift', 'end')
+                pyautogui.press('delete')
+                time.sleep(0.05)
+                # 第 3 层：暴力 Backspace 连发 20 次（兜底，确保字段被清空）
+                # 即使前两层都没生效，光标至少在某个位置，连续 backspace 删除字符
+                pyautogui.press('end')                  # 光标先跳到行尾
+                for _ in range(20):
+                    pyautogui.press('backspace')
+                time.sleep(0.15)
+                # 输入新值
+                pyautogui.typewrite(text, interval=0.06)
 
             if self.main_win is not None:
                 self.main_win.set_focus()
