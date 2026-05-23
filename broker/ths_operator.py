@@ -64,6 +64,9 @@ class THSOperator:
         try:
             import pyautogui
 
+            # 全局调速：pyautogui 默认每次按键后 sleep 100ms 太慢，改 20ms
+            pyautogui.PAUSE = 0.02
+
             # 价格/数量格式化（xiadan 严格要求）
             price_str  = f"{float(price):.2f}"   # 强制 2 位小数：1.0 → "1.00"
             amount_str = str(int(amount))        # 强制整数：100.0 → "100"
@@ -74,44 +77,36 @@ class THSOperator:
                 xiadan 价格字段对 Ctrl+A、Home/Shift+End/Delete 都不可靠，
                 需要叠加多种方法 + Backspace 连发暴力清场。
                 """
-                # 第 1 层：选中并删除（兼容现代控件）
+                # 第 1 层：Ctrl+A 全选 + Delete（兼容现代控件）
                 pyautogui.hotkey('ctrl', 'a')
-                time.sleep(0.05)
                 pyautogui.press('delete')
-                time.sleep(0.05)
                 # 第 2 层：Home + Shift+End + Delete（兼容多数控件）
                 pyautogui.press('home')
                 pyautogui.hotkey('shift', 'end')
                 pyautogui.press('delete')
-                time.sleep(0.05)
-                # 第 3 层：暴力 Backspace 连发 20 次（兜底，确保字段被清空）
-                # 即使前两层都没生效，光标至少在某个位置，连续 backspace 删除字符
-                pyautogui.press('end')                  # 光标先跳到行尾
-                for _ in range(20):
-                    pyautogui.press('backspace')
-                time.sleep(0.15)
+                # 第 3 层：Backspace 连击 10 次兜底（一次 API 比 for 循环快）
+                pyautogui.press('end')
+                pyautogui.press('backspace', presses=10, interval=0.01)
                 # 输入新值
-                pyautogui.typewrite(text, interval=0.06)
+                pyautogui.typewrite(text, interval=0.03)
 
             if self.main_win is not None:
                 self.main_win.set_focus()
-                time.sleep(0.3)
+                time.sleep(0.2)
             else:
                 logger.warning("main_win 为 None，依赖前台焦点是否在交易客户端")
 
             pyautogui.press(hotkey)              # 调起买入/卖出页（焦点应自动到"代码"字段）
-            time.sleep(1.0)                      # 给 xiadan 更多时间渲染下单界面
+            time.sleep(0.5)                      # 等 xiadan 渲染下单界面
 
             _clear_and_type(code)                # 股票代码
-            time.sleep(0.5)
             pyautogui.press('tab')               # → 价格字段
 
             _clear_and_type(price_str)           # 价格（2 位小数格式）
-            time.sleep(0.3)
             pyautogui.press('tab')               # → 数量字段
 
             _clear_and_type(amount_str)          # 数量
-            time.sleep(0.3)
+            time.sleep(0.15)
             pyautogui.press('enter')             # 触发"委托确认"对话框（用户/桥接器再 Y/N）
 
             logger.info(
