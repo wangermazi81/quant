@@ -90,11 +90,29 @@ class THSOperator:
                 # 输入新值
                 pyautogui.typewrite(text, interval=0.03)
 
+            # ── 三重激活 xiadan 窗口（pywinauto + win32api 双保险）──
+            # pywinauto 64bit Python 自动化 32bit app set_focus 不稳定，
+            # 加 win32api SetForegroundWindow / ShowWindow 强制激活
+            activated = False
             if self.main_win is not None:
-                self.main_win.set_focus()
-                time.sleep(0.2)
-            else:
-                logger.warning("main_win 为 None，依赖前台焦点是否在交易客户端")
+                try:
+                    self.main_win.set_focus()
+                    activated = True
+                except Exception as _se:
+                    logger.debug(f"pywinauto.set_focus 失败: {_se}")
+                try:
+                    import win32gui, win32con
+                    hwnd = self.main_win.handle
+                    if win32gui.IsIconic(hwnd):                      # 若最小化先还原
+                        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                    win32gui.SetForegroundWindow(hwnd)               # 强制拉到前台
+                    win32gui.BringWindowToTop(hwnd)
+                    activated = True
+                except Exception as _we:
+                    logger.debug(f"win32 SetForegroundWindow 失败: {_we}")
+                time.sleep(0.3)                                       # 给窗口激活时间
+            if not activated:
+                logger.warning("main_win 激活失败，依赖前台焦点是否在交易客户端")
 
             pyautogui.press(hotkey)              # 调起买入/卖出页（焦点应自动到"代码"字段）
             time.sleep(0.5)                      # 等 xiadan 渲染下单界面
