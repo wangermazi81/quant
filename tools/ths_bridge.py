@@ -13,6 +13,12 @@ import logging
 import requests
 from pathlib import Path
 
+# ── 清除系统代理（避免 v2ray/clash 等本地代理拦截到云端服务器的请求）──
+# 本地往云端 5000 端口走直连，不需要也不应该走代理
+for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+           "ALL_PROXY", "all_proxy", "SOCKS_PROXY", "socks_proxy"):
+    os.environ.pop(_k, None)
+
 # ── 自动设置系统路径，使其能够导入 ths_operator ────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
