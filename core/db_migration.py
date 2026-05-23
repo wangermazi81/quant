@@ -18,6 +18,10 @@ USERS_DB  = os.path.join(BASE, "data", "users.db")
 
 def _conn(path: str) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    c = sqlite3.connect(path, timeout=10)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    return c
 
 
 def _safe_add_column(conn, table: str, column: str, definition: str):
@@ -28,10 +32,6 @@ def _safe_add_column(conn, table: str, column: str, definition: str):
         logger.info(f"[migration] {table}.{column} 列已添加")
     except Exception:
         pass  # 列已存在，忽略
-    c = sqlite3.connect(path, timeout=10)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA journal_mode=WAL")
-    return c
 
 
 def _col_exists(c, table, col):
@@ -175,11 +175,29 @@ def migrate_users_db():
             read_at         TEXT DEFAULT (datetime('now','localtime')),
             PRIMARY KEY (user_id, announcement_id)
         );
+
+        -- 实盘交易信号同步队列（云端派发 -> 本地桥接拉取与执行）
+        CREATE TABLE IF NOT EXISTS trade_signals (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id        INTEGER NOT NULL,
+            code           TEXT NOT NULL,
+            name           TEXT DEFAULT '',
+            action         TEXT NOT NULL,         -- 'BUY' 或 'SELL'
+            price          REAL NOT NULL,
+            shares         INTEGER NOT NULL,
+            status         TEXT DEFAULT 'pending', -- 'pending', 'sent', 'executed', 'failed'
+            msg            TEXT DEFAULT '',       -- 执行日志或成交反馈
+            created_at     TEXT DEFAULT (datetime('now','localtime')),
+            updated_at     TEXT DEFAULT (datetime('now','localtime')),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ts_uid ON trade_signals(user_id);
+        CREATE INDEX IF NOT EXISTS idx_ts_status ON trade_signals(status);
         """)
         c.commit()
         # 补列迁移（对已存在的旧库）
         _safe_add_column(c, "announcements", "expires_at", "TEXT DEFAULT NULL")
-        logger.info("[users.db] 新表创建完成 ✓")
+        logger.info("[users.db] 新表创建/迁移完成 ✓")
     finally:
         c.close()
 

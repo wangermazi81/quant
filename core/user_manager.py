@@ -599,3 +599,61 @@ def list_all_announcements(page: int = 1, per_page: int = 100) -> list:
             (per_page, (page - 1) * per_page),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── 实盘信号同步队列 ──────────────────────────────────────────────
+
+def add_trade_signal(user_id: int, code: str, name: str, action: str,
+                     price: float, shares: int, status: str = "pending",
+                     msg: str = "") -> int:
+    """写入一条新的交易信号，返回其自增 ID"""
+    with _lock, _conn() as c:
+        cur = c.execute(
+            "INSERT INTO trade_signals(user_id,code,name,action,price,shares,status,msg)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (user_id, code, name, action.upper(), price, shares, status, msg),
+        )
+        c.commit()
+        return cur.lastrowid
+
+
+def get_pending_signals(user_id: int) -> list:
+    """拉取用户所有处于 pending 状态的实盘信号，并原子性地标记为 sent 防止重复拉取"""
+    with _lock, _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM trade_signals WHERE user_id=? AND status='pending' ORDER BY id",
+            (user_id,),
+        ).fetchall()
+        res = [dict(r) for r in rows]
+        if res:
+            ids = [r["id"] for r in res]
+            placeholders = ", ".join("?" for _ in ids)
+            c.execute(
+                f"UPDATE trade_signals SET status='sent', updated_at=datetime('now','localtime') "
+                f"WHERE id IN ({placeholders})",
+                ids
+            )
+            c.commit()
+        return res
+
+
+def report_trade_signal(signal_id: int, status: str, msg: str = "") -> dict:
+    """本地交易机上报交易执行结果，更新信号状态与反馈消息"""
+    with _lock, _conn() as c:
+        row = c.execute("SELECT * FROM trade_signals WHERE id=?", (signal_id,)).fetchone()
+        if not row:
+            return {"ok": False, "error": "信号不存在"}
+        c.execute(
+            "UPDATE trade_signals SET status=?, msg=?, updated_at=datetime('now','localtime') WHERE id=?",
+            (status, msg, signal_id),
+        )
+        c.commit()
+        return {
+            "ok": True,
+            "user_id": row["user_id"],
+            "code": row["code"],
+            "name": row["name"],
+            "action": row["action"],
+            "price": row["price"],
+            "shares": row["shares"],
+        }

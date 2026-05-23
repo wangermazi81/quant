@@ -65,7 +65,16 @@ except Exception as _e:
     logger.warning(f"[db_migration] {_e}")
 pb.init_paper_db()
 
-operator = THSOperator()
+import platform
+if platform.system() == "Windows":
+    try:
+        operator = THSOperator()
+    except Exception as _ope:
+        logger.warning(f"本地同花顺操作器初始化失败: {_ope}")
+        operator = None
+else:
+    logger.info("云端 Linux 环境，跳过同花顺 GUI 操作器初始化")
+    operator = None
 
 # ══════════════════════════════════════════════════════════════
 # 多用户状态管理
@@ -525,7 +534,13 @@ def execute_buy(uid: int, code: str, name: str, price: float, shares: int,
                 reason: str = "") -> dict:
     """统一买入入口（模拟盘 / 实盘）。返回 {"ok": bool, "msg": str, ...}"""
     s = get_user_state(uid)
-    if DRY_RUN:
+    
+    # 获取用户当前的券商配置
+    broker_cfg = um.get_user_broker_config(uid)
+    broker_type = broker_cfg.get("broker_type", "paper")
+    
+    if DRY_RUN or broker_type == "paper":
+        # ── 模拟盘逻辑 ──
         broker = pb.get_broker(uid)
         result = broker.submit_buy(code, name, price, shares, reason=reason)
         if result.get("ok"):
@@ -545,22 +560,23 @@ def execute_buy(uid: int, code: str, name: str, price: float, shares: int,
             _add_log(uid, f"❌ [模拟] 买入拒绝 {code}: {msg}", "error")
             return {"ok": False, "msg": msg}
     else:
-        ok = operator.buy(code, price, shares)
-        if ok:
-            s["executed"]    += 1
-            s["today_trades"] = s.get("today_trades", 0) + 1
-            s["positions"][code] = {
-                "name": name, "shares": shares, "cost": price,
-                "date": datetime.now().strftime("%Y-%m-%d"),
-            }
-        return {"ok": bool(ok), "msg": "" if ok else "实盘 operator.buy 失败"}
+        # ── 实盘逻辑：写入信号队列 ──
+        signal_id = um.add_trade_signal(uid, code, name, "BUY", price, shares)
+        _add_log(uid, f"⏳ 实盘买入信号已发送队列: {code} {name} {shares}股 @{price:.2f}", "info")
+        return {"ok": True, "msg": "已生成实盘买入信号，等待本地执行...", "signal_id": signal_id}
 
 
 def execute_sell(uid: int, code: str, price: float, sell_reason: str = "手动卖出") -> dict:
     """统一卖出入口。"""
     s   = get_user_state(uid)
     pos = s["positions"].get(code)
-    if DRY_RUN:
+    
+    # 获取用户当前的券商配置
+    broker_cfg = um.get_user_broker_config(uid)
+    broker_type = broker_cfg.get("broker_type", "paper")
+    
+    if DRY_RUN or broker_type == "paper":
+        # ── 模拟盘逻辑 ──
         broker = pb.get_broker(uid)
         result = broker.submit_sell(code, price, sell_reason=sell_reason)
         if result.get("ok"):
@@ -574,14 +590,14 @@ def execute_sell(uid: int, code: str, price: float, sell_reason: str = "手动�
                 "buy" if pnl >= 0 else "error")
         return result
     else:
+        # ── 实盘逻辑：写入信号队列 ──
         shares = pos["shares"] if pos else 0
-        ok     = operator.sell(code, price, shares)
-        if ok:
-            pnl = round((price - pos["cost"]) * shares, 2) if pos else 0
-            s["executed"] += 1
-            s["positions"].pop(code, None)
-            return {"ok": True, "pnl": pnl}
-        return {"ok": False, "msg": "实盘卖出失败"}
+        name = pos["name"] if pos else ""
+        if shares <= 0:
+            return {"ok": False, "msg": "无持仓"}
+        signal_id = um.add_trade_signal(uid, code, name, "SELL", price, shares)
+        _add_log(uid, f"⏳ 实盘卖出信号已发送队列: {code} {name} {shares}股 @{price:.2f}", "info")
+        return {"ok": True, "msg": "已生成实盘卖出信号，等待本地执行...", "signal_id": signal_id}
 
 
 def _auto_buy(uid: int, item: dict):
@@ -801,6 +817,56 @@ def set_auto_execute():
     _add_log(uid,
         f"🤖 自动执行已{mode} — {'信号触发即自动下单' if enabled else '手动确认模式'}", "WARN")
     return jsonify({"ok": True, "auto_execute": s["auto_execute"]})
+
+
+# ══════════════════════════════════════════════════════════════
+# 本地同花顺交易桥接 API (Cloud-Local Bridge)
+# ══════════════════════════════════════════════════════════════
+
+@app.route("/api/bridge/signals", methods=["GET"])
+@require_auth
+def bridge_get_signals():
+    uid = session["user_id"]
+    signals = um.get_pending_signals(uid)
+    return jsonify({"ok": True, "signals": signals})
+
+
+@app.route("/api/bridge/signals/<int:signal_id>/report", methods=["POST"])
+@require_auth
+def bridge_report_signal(signal_id):
+    uid = session["user_id"]
+    data = request.json or {}
+    status = data.get("status")
+    msg = data.get("msg", "")
+    
+    # 校验并更新状态
+    res = um.report_trade_signal(signal_id, status, msg)
+    if not res.get("ok"):
+        return jsonify(res)
+        
+    action_label = "买入" if res["action"] == "BUY" else "卖出"
+    sign = "✅" if status == "executed" else "❌"
+    log_msg = f"{action_label} {res['code']} {res['name'] or ''} {res['shares']}股 @{res['price']:.2f} — 执行完毕: {msg}"
+    _add_log(uid, f"{sign} [实盘回传] {log_msg}", "buy" if status == "executed" else "error")
+    
+    # 同步更新云端的仓位视图缓存
+    s = get_user_state(uid)
+    code = res["code"]
+    if status == "executed":
+        if res["action"] == "BUY":
+            s["executed"] += 1
+            s["today_trades"] = s.get("today_trades", 0) + 1
+            s["positions"][code] = {
+                "name": res["name"],
+                "shares": res["shares"],
+                "cost": res["price"],
+                "date": datetime.now().strftime("%Y-%m-%d"),
+            }
+        elif res["action"] == "SELL":
+            s["executed"] += 1
+            s["positions"].pop(code, None)
+            
+    return jsonify({"ok": True})
 
 
 @app.route("/api/execute", methods=["POST"])

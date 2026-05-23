@@ -8,10 +8,16 @@ class THSOperator:
     def __init__(self):
         self.app = None
         self.main_win = None
-        if not DRY_RUN:
+        import os
+        if os.name == 'nt' and not DRY_RUN:
             self._connect()
+        else:
+            logger.info("非 Windows 系统或处于演练模式，跳过同花顺窗口连接")
 
     def _connect(self):
+        import os
+        if os.name != 'nt':
+            return
         try:
             from pywinauto import Application, Desktop
             wins = Desktop(backend="uia").windows()
@@ -29,6 +35,10 @@ class THSOperator:
         if DRY_RUN:
             logger.info(f"[模拟] 买入 {code} 价格:{price} 数量:{amount}")
             return True
+        import os
+        if os.name != 'nt':
+            logger.warning(f"非 Windows 系统，无法执行实盘 GUI 买入: {code}")
+            return False
         try:
             import pyautogui
             self.main_win.set_focus()
@@ -59,6 +69,10 @@ class THSOperator:
         if DRY_RUN:
             logger.info(f"[模拟] 卖出 {code} 价格:{price} 数量:{amount}")
             return True
+        import os
+        if os.name != 'nt':
+            logger.warning(f"非 Windows 系统，无法执行实盘 GUI 卖出: {code}")
+            return False
         try:
             import pyautogui
             self.main_win.set_focus()
