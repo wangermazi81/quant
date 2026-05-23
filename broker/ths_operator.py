@@ -140,24 +140,139 @@ class THSOperator:
                 time.sleep(AUTO_CONFIRM_DELAY)        # 等委托确认对话框弹出
                 pyautogui.press('y')                  # 按 Y =「是(Y)」=确认提交
                 logger.info(
-                    f"✅ 已自动确认 {action} {code} @ {price_str} x {amount_str}股 "
-                    f"(hotkey={hotkey.upper()}, AUTO_CONFIRM_ORDER=True) → 真成交"
+                    f"已按自动确认 Y: {action} {code} @ {price_str} x {amount_str}股 "
+                    f"(hotkey={hotkey.upper()}) — 正在检测 xiadan 后续反馈..."
                 )
+                # ── 关键：按 Y 之后检测 xiadan 反馈（错误对话框 / 委托成功）──
+                result = self._check_post_submit_result(action, code, price_str, amount_str)
+                return result
             else:
                 logger.info(
                     f"已提交 {action} {code} @ {price_str} x {amount_str}股 "
                     f"(hotkey={hotkey.upper()}) — xiadan 弹委托确认框，"
                     f"AUTO_CONFIRM_ORDER=False 需用户手动按 Y/N"
                 )
-            return True
+                return {
+                    "status": "submitted",
+                    "msg": f"已提交 {action} {code} @ {price_str} x {amount_str}股, 等待用户手动按 Y/N",
+                    "exec_price": float(price_str),
+                    "exec_shares": int(amount_str),
+                }
         except Exception as e:
             logger.error(f"{action} 操作失败: {e}")
-            return False
+            return {
+                "status": "failed",
+                "msg": f"{action} GUI 操作异常: {e}",
+            }
 
-    def _amount_guard(self, action: str, code: str, price: float, amount: int) -> bool:
+    def _check_post_submit_result(self, action: str, code: str,
+                                  price_str: str, amount_str: str) -> dict:
+        """按 Y 之后检测 xiadan 弹出的对话框，识别错误原因或确认成功。
+
+        返回 dict:
+          {"status": "executed"|"submitted"|"failed", "msg": str,
+           "exec_price": float, "exec_shares": int, "dialog_title": str (可选)}
+
+        识别的错误类型：
+          - 资金不足
+          - 可卖余额不足（T+1 / 无持仓）
+          - 价格偏离涨跌停
+          - 证券代码错误
+          - 其他对话框文字（保留原文）
+        """
+        import time
+        import pyautogui
+        time.sleep(1.5)   # 等 xiadan 处理 + 弹对话框（如有）
+
+        meta = {
+            "exec_price": float(price_str),
+            "exec_shares": int(amount_str),
+        }
+
+        try:
+            from pywinauto import Desktop
+            # Win32 标准对话框类是 #32770
+            dialogs = Desktop(backend='win32').windows(class_name='#32770', visible_only=True)
+        except Exception as _de:
+            logger.warning(f"对话框检测异常（跳过）: {_de}")
+            return {"status": "submitted",
+                    "msg": f"已提交（对话框检测异常: {_de}）",
+                    **meta}
+
+        # 标题白名单（xiadan 常见对话框标题）
+        relevant_titles = ("提示信息", "委托提示", "提示", "错误", "警告", "委托确认")
+
+        for d in dialogs:
+            try:
+                title = d.window_text() or ""
+            except Exception:
+                continue
+            if not any(k in title for k in relevant_titles):
+                continue
+            # 提取对话框内所有可见文字
+            texts = []
+            try:
+                for ctl in d.descendants():
+                    t = ctl.window_text() if hasattr(ctl, "window_text") else ""
+                    if t and t.strip() and t not in ("是(Y)", "否(N)", "确定", "取消"):
+                        texts.append(t.strip())
+            except Exception:
+                pass
+            body = " | ".join(texts) if texts else title
+            logger.info(f"📋 检测到对话框 [{title}]: {body[:120]}")
+
+            status, parsed_msg = self._parse_dialog_text(body, title)
+
+            # 关闭对话框（用 Esc 安全，避免重复触发动作）
+            try:
+                pyautogui.press('escape')
+                time.sleep(0.3)
+            except Exception:
+                pass
+
+            return {"status": status,
+                    "msg": parsed_msg,
+                    "dialog_title": title,
+                    "dialog_body": body[:200],
+                    **meta}
+
+        # 没找到任何错误对话框 = 委托可能已成功提交券商队列
+        # 真实成交状态需阶段 2「查当日委托」才能确认
+        return {"status": "submitted",
+                "msg": f"已提交至券商, 未弹错误框 (精确状态待查当日委托) {action} {code} {amount_str}股 @{price_str}",
+                **meta}
+
+    @staticmethod
+    def _parse_dialog_text(text: str, title: str) -> tuple:
+        """根据对话框文字识别错误类型, 返回 (status, msg)"""
+        # 资金不足
+        if any(k in text for k in ("资金不足", "可用资金", "余额不足", "现金不足")):
+            return "failed", "资金不足"
+        # 持仓不足/T+1锁定
+        if any(k in text for k in ("可卖余额", "无可卖", "持仓不足", "可卖股份", "可卖数量")):
+            return "failed", "持仓不足或 T+1 锁定 (今日买入次日才可卖)"
+        # 价格偏离
+        if ("价格" in text or "委托价" in text) and \
+           any(k in text for k in ("偏离", "超出", "涨跌停", "限制", "异常")):
+            return "failed", "价格偏离涨跌停限制"
+        # 证券代码错误
+        if any(k in text for k in ("代码错误", "无效证券", "证券不存在", "无此代码")):
+            return "failed", "证券代码错误"
+        # 委托号 / 委托成功 标志
+        if "委托" in text and ("成功" in text or "已发" in text or "受理" in text):
+            return "executed", "委托已被券商受理"
+        # 是否继续 类提示（小数位错误等）
+        if "是否继续" in text or "是否确定" in text:
+            return "submitted", f"待确认提示框: {text[:100]}"
+        # 错误/警告类对话框 → failed
+        if "错误" in title or "警告" in title:
+            return "failed", text[:120] if text else f"未识别的{title}"
+        # 默认（含"提示信息"标题但内容未知）
+        return "submitted", text[:120] if text else f"未识别的{title}"
+
+    def _amount_guard(self, action: str, code: str, price: float, amount: int):
         """金额上限护栏：单笔预估金额超过 MAX_ORDER_AMOUNT 直接拒单。
-        买入用 price × amount，卖出同样按 price × amount 估算（卖出限价单理论上限风险更可控）。
-        返回 True = 通过, False = 拒绝（已记 error 日志）
+        返回 None = 通过, 否则返回 dict (failed) 给上层
         """
         est_amount = float(price) * int(amount)
         if est_amount > MAX_ORDER_AMOUNT:
@@ -165,29 +280,38 @@ class THSOperator:
                 f"❌ 金额护栏拒单: {action} {code} 预估 ¥{est_amount:,.0f} "
                 f"> 上限 ¥{MAX_ORDER_AMOUNT:,.0f} (MAX_ORDER_AMOUNT)"
             )
-            return False
-        return True
+            return {
+                "status": "failed",
+                "msg": f"金额护栏拒单: 预估 ¥{est_amount:,.0f} > 上限 ¥{MAX_ORDER_AMOUNT:,.0f}",
+            }
+        return None
 
-    def buy(self, code: str, price: float, amount: int) -> bool:
+    def buy(self, code: str, price: float, amount: int) -> dict:
+        """返回 dict: {status, msg, exec_price, exec_shares, dialog_title?, dialog_body?}"""
         if DRY_RUN:
             logger.info(f"[模拟] 买入 {code} 价格:{price} 数量:{amount}")
-            return True
+            return {"status": "executed", "msg": "DRY_RUN 模拟成交",
+                    "exec_price": float(price), "exec_shares": int(amount)}
         import os
         if os.name != 'nt':
             logger.warning(f"非 Windows 系统，无法执行实盘 GUI 买入: {code}")
-            return False
-        if not self._amount_guard("买入", code, price, amount):
-            return False
+            return {"status": "failed", "msg": "非 Windows 系统无法 GUI 自动化"}
+        guard = self._amount_guard("买入", code, price, amount)
+        if guard is not None:
+            return guard
         return self._gui_submit("买入", THS_BUY_KEY, code, price, amount)
 
-    def sell(self, code: str, price: float, amount: int) -> bool:
+    def sell(self, code: str, price: float, amount: int) -> dict:
+        """返回 dict: {status, msg, exec_price, exec_shares, dialog_title?, dialog_body?}"""
         if DRY_RUN:
             logger.info(f"[模拟] 卖出 {code} 价格:{price} 数量:{amount}")
-            return True
+            return {"status": "executed", "msg": "DRY_RUN 模拟成交",
+                    "exec_price": float(price), "exec_shares": int(amount)}
         import os
         if os.name != 'nt':
             logger.warning(f"非 Windows 系统，无法执行实盘 GUI 卖出: {code}")
-            return False
-        if not self._amount_guard("卖出", code, price, amount):
-            return False
+            return {"status": "failed", "msg": "非 Windows 系统无法 GUI 自动化"}
+        guard = self._amount_guard("卖出", code, price, amount)
+        if guard is not None:
+            return guard
         return self._gui_submit("卖出", THS_SELL_KEY, code, price, amount)

@@ -168,23 +168,32 @@ class CloudLocalBridge:
                 self.report_result(sig_id, "failed", "本地未启动或无法连接同花顺客户端")
                 return
 
-        # 执行下单
+        # 执行下单 — operator.buy/sell 现在返回 dict 而非 bool
         logger.info(f"🛠 正在唤起同花顺界面执行 {action} 操作...")
         try:
             if action == "BUY":
-                success = self.operator.buy(code, price, shares)
+                result = self.operator.buy(code, price, shares)
             elif action == "SELL":
-                success = self.operator.sell(code, price, shares)
+                result = self.operator.sell(code, price, shares)
             else:
-                success = False
+                result = {"status": "failed", "msg": f"未知交易动作 action={action}"}
                 logger.error(f"未知交易动作 action={action}")
-            
-            if success:
-                logger.info(f"🌟 实盘 {action} 下单提交成功: {code}")
-                self.report_result(sig_id, "executed", "本地同花顺下单已提交完毕")
-            else:
-                logger.error(f"❌ 实盘 {action} 下单提交失败")
-                self.report_result(sig_id, "failed", "同花顺客户端下单接口/GUI调用失败")
+
+            # 兼容旧版返回 bool 的情况
+            if isinstance(result, bool):
+                result = ({"status": "executed", "msg": "GUI 提交成功 (legacy bool 返回值)"}
+                          if result else
+                          {"status": "failed",   "msg": "GUI 提交失败 (legacy bool 返回值)"})
+
+            status = result.get("status", "failed")
+            msg    = result.get("msg", "未知")
+            # 富信息日志：让本地网页运行日志能看到对话框具体内容
+            if result.get("dialog_title"):
+                msg = f"{msg} | 对话框=[{result['dialog_title']}] {result.get('dialog_body','')}"
+
+            icon = {"executed": "🌟", "submitted": "📤", "failed": "❌"}.get(status, "❓")
+            logger.info(f"{icon} 实盘 {action} 结果: status={status} | {msg}")
+            self.report_result(sig_id, status, msg)
         except Exception as e:
             logger.error(f"❌ 本地执行下单发生异常: {e}")
             self.report_result(sig_id, "failed", f"本地发生执行异常: {str(e)}")
