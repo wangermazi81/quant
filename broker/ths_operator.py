@@ -84,9 +84,9 @@ class THSOperator:
                 pyautogui.press('home')
                 pyautogui.hotkey('shift', 'end')
                 pyautogui.press('delete')
-                # 第 3 层：Backspace 连击 10 次兜底（一次 API 比 for 循环快）
+                # 第 3 层：Backspace 连击 20 次兜底（10 次有时不够清掉 xiadan 自动填的市价）
                 pyautogui.press('end')
-                pyautogui.press('backspace', presses=10, interval=0.01)
+                pyautogui.press('backspace', presses=20, interval=0.01)
                 # 输入新值
                 pyautogui.typewrite(text, interval=0.03)
 
@@ -119,10 +119,11 @@ class THSOperator:
 
             _clear_and_type(code)                # 股票代码
             pyautogui.press('tab')               # → 价格字段
-
+            time.sleep(0.4)                      # ★ 关键：等 xiadan 自动填市价到价格字段
+                                                 #   不等会和 Backspace 抢节奏 → 残留导致 typewrite 追加
             _clear_and_type(price_str)           # 价格（2 位小数格式）
             pyautogui.press('tab')               # → 数量字段
-
+            time.sleep(0.2)                      # 等数量字段渲染
             _clear_and_type(amount_str)          # 数量
             time.sleep(0.15)
             pyautogui.press('enter')             # 触发"委托确认"对话框（用户/桥接器再 Y/N）
