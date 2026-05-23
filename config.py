@@ -37,7 +37,21 @@ POSITION_RATIO   = 0.20       # 单次建仓比例 20%
 
 SCAN_INTERVAL = 30            # 扫描间隔秒
 DRY_RUN = True                # True=模拟盘/paper trading，False=实盘
-THS_WINDOW_TITLE = "同花顺"
+# ⚠️ 切 False 前必须先校验本机交易客户端的买入/卖出快捷键
+
+# ── 交易客户端 GUI 自动化配置（仅 DRY_RUN=False 时生效）──────────
+# 不同券商客户端的快捷键和窗口标题不一样，必须先校准：
+#   场景 A — 同花顺独立委托 (各家券商发的"同花顺"分支):
+#     THS_WINDOW_TITLE = "同花顺"  THS_BUY_KEY="F2"  THS_SELL_KEY="F3"
+#   场景 B — 通用"网上股票交易系统5.0" (xiadan.exe，金证/恒生底层):
+#     THS_WINDOW_TITLE = "网上股票交易系统"  THS_BUY_KEY="F1"  THS_SELL_KEY="F2"
+#   pywinauto backend:
+#     "uia"   = 标准现代 UI 自动化，多数 64 位新软件 OK
+#     "win32" = Win32 经典 API，32 位老 GUI（xiadan、同花顺独立委托）更稳
+THS_WINDOW_TITLE = "网上股票交易系统"  # xiadan.exe 主窗口标题含此字串
+THS_BUY_KEY      = "f1"               # xiadan 标准：F1=买入
+THS_SELL_KEY     = "f2"               # xiadan 标准：F2=卖出
+THS_BACKEND      = "win32"            # xiadan 是 32 位老程序，win32 比 uia 稳
 
 # ── 模拟盘（Paper Trading）配置 ─────────────────────
 PAPER_COMMISSION_RATE = 0.0003   # 佣金率万3（买卖双向）
