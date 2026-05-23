@@ -10,6 +10,13 @@ except ImportError:
     THS_SELL_KEY = "f3"
     THS_BACKEND  = "uia"
 
+try:
+    from config import AUTO_CONFIRM_ORDER, AUTO_CONFIRM_DELAY, MAX_ORDER_AMOUNT
+except ImportError:
+    AUTO_CONFIRM_ORDER = False   # 安全默认：不自动按 Y
+    AUTO_CONFIRM_DELAY = 0.8
+    MAX_ORDER_AMOUNT   = 50000.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -126,16 +133,40 @@ class THSOperator:
             time.sleep(0.2)                      # 等数量字段渲染
             _clear_and_type(amount_str)          # 数量
             time.sleep(0.15)
-            pyautogui.press('enter')             # 触发"委托确认"对话框（用户/桥接器再 Y/N）
+            pyautogui.press('enter')             # 触发"委托确认"对话框
 
-            logger.info(
-                f"已提交 {action} {code} @ {price_str} x {amount_str}股 "
-                f"(hotkey={hotkey.upper()}) — xiadan 会弹委托确认框，需另行确认"
-            )
+            # ── 自动确认委托（AUTO_CONFIRM_ORDER 开关）──
+            if AUTO_CONFIRM_ORDER:
+                time.sleep(AUTO_CONFIRM_DELAY)        # 等委托确认对话框弹出
+                pyautogui.press('y')                  # 按 Y =「是(Y)」=确认提交
+                logger.info(
+                    f"✅ 已自动确认 {action} {code} @ {price_str} x {amount_str}股 "
+                    f"(hotkey={hotkey.upper()}, AUTO_CONFIRM_ORDER=True) → 真成交"
+                )
+            else:
+                logger.info(
+                    f"已提交 {action} {code} @ {price_str} x {amount_str}股 "
+                    f"(hotkey={hotkey.upper()}) — xiadan 弹委托确认框，"
+                    f"AUTO_CONFIRM_ORDER=False 需用户手动按 Y/N"
+                )
             return True
         except Exception as e:
             logger.error(f"{action} 操作失败: {e}")
             return False
+
+    def _amount_guard(self, action: str, code: str, price: float, amount: int) -> bool:
+        """金额上限护栏：单笔预估金额超过 MAX_ORDER_AMOUNT 直接拒单。
+        买入用 price × amount，卖出同样按 price × amount 估算（卖出限价单理论上限风险更可控）。
+        返回 True = 通过, False = 拒绝（已记 error 日志）
+        """
+        est_amount = float(price) * int(amount)
+        if est_amount > MAX_ORDER_AMOUNT:
+            logger.error(
+                f"❌ 金额护栏拒单: {action} {code} 预估 ¥{est_amount:,.0f} "
+                f"> 上限 ¥{MAX_ORDER_AMOUNT:,.0f} (MAX_ORDER_AMOUNT)"
+            )
+            return False
+        return True
 
     def buy(self, code: str, price: float, amount: int) -> bool:
         if DRY_RUN:
@@ -144,6 +175,8 @@ class THSOperator:
         import os
         if os.name != 'nt':
             logger.warning(f"非 Windows 系统，无法执行实盘 GUI 买入: {code}")
+            return False
+        if not self._amount_guard("买入", code, price, amount):
             return False
         return self._gui_submit("买入", THS_BUY_KEY, code, price, amount)
 
@@ -154,5 +187,7 @@ class THSOperator:
         import os
         if os.name != 'nt':
             logger.warning(f"非 Windows 系统，无法执行实盘 GUI 卖出: {code}")
+            return False
+        if not self._amount_guard("卖出", code, price, amount):
             return False
         return self._gui_submit("卖出", THS_SELL_KEY, code, price, amount)

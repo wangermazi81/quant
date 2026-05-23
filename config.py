@@ -36,8 +36,8 @@ POSITION_RATIO   = 0.20       # 单次建仓比例 20%
 # MAX_DAILY_TRADES 已移除 —— 由资金管理自然控制开仓数量
 
 SCAN_INTERVAL = 30            # 扫描间隔秒
-DRY_RUN = True                # True=模拟盘/paper trading，False=实盘
-# ⚠️ 切 False 前必须先校验本机交易客户端的买入/卖出快捷键
+DRY_RUN = False               # True=模拟盘/paper trading，False=实盘（让桥接器真按键操作 xiadan）
+# 用户已校准 xiadan 快捷键 F1=买 F2=卖；ths_operator 已修复 2 位小数 bug
 
 # ── 交易客户端 GUI 自动化配置（仅 DRY_RUN=False 时生效）──────────
 # 不同券商客户端的快捷键和窗口标题不一样，必须先校准：
@@ -52,6 +52,13 @@ THS_WINDOW_TITLE = "网上股票交易系统"  # xiadan.exe 主窗口标题含�
 THS_BUY_KEY      = "f1"               # xiadan 标准：F1=买入
 THS_SELL_KEY     = "f2"               # xiadan 标准：F2=卖出
 THS_BACKEND      = "win32"            # xiadan 是 32 位老程序，win32 比 uia 稳
+
+# ── 全自动下单（含委托确认）配置 ──
+# ⚠️ AUTO_CONFIRM_ORDER=True 后桥接器会自动按 Y 确认委托对话框 → 真成交！
+# 启用前务必确认 (1) 账户余额、(2) MAX_ORDER_AMOUNT 足够低、(3) 已校准策略不会出错单
+AUTO_CONFIRM_ORDER = False            # True=Enter 后自动按 Y 提交 / False=等用户手动按 Y
+AUTO_CONFIRM_DELAY = 0.8              # Enter 后等委托确认框弹出的秒数
+MAX_ORDER_AMOUNT   = 50000.0          # 单笔买入金额上限（元）, broker 层硬拒过大订单
 
 # ── 模拟盘（Paper Trading）配置 ─────────────────────
 PAPER_COMMISSION_RATE = 0.0003   # 佣金率万3（买卖双向）
