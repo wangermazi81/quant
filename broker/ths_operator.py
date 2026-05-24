@@ -193,14 +193,17 @@ class THSOperator:
             time.sleep(0.5)                      # 等 xiadan 渲染下单界面
 
             _clear_and_type(code)                # 股票代码
+            time.sleep(0.3)                      # 等 xiadan 接受代码 + 渲染股名
             pyautogui.press('tab')               # → 价格字段
-            time.sleep(0.4)                      # ★ 关键：等 xiadan 自动填市价到价格字段
+            time.sleep(0.5)                      # ★ 关键：等 xiadan 自动填市价到价格字段
                                                  #   不等会和 Backspace 抢节奏 → 残留导致 typewrite 追加
             _clear_and_type(price_str)           # 价格（2 位小数格式）
+            time.sleep(0.2)                      # 等价格输入完成被 xiadan 接受
             pyautogui.press('tab')               # → 数量字段
-            time.sleep(0.2)                      # 等数量字段渲染
+            time.sleep(0.5)                      # ★ Tab 后等更久, 避免快速 Tab 被吃掉导致
+                                                 #   后续 typewrite 又写回价格字段 → "10.50100"
             _clear_and_type(amount_str)          # 数量
-            time.sleep(0.15)
+            time.sleep(0.2)
             pyautogui.press('enter')             # 触发"委托确认"对话框
 
             # ── 自动确认委托（AUTO_CONFIRM_ORDER 开关）──
