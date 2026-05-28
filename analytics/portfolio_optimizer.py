@@ -128,8 +128,26 @@ def optimize_portfolio(codes: list, mode: str = "equal_weight",
     投资组合优化入口。
     返回: {ok, weights, positions, mode, expected_return, expected_volatility}
     """
+    # Run Card 快照：每次调用产出 logs/runs/<时间戳>-portfolio_optimization/
+    try:
+        from run_card import RunCard
+        _card = RunCard.start("portfolio_optimization", inputs={
+            "codes": codes, "mode": mode, "capital": capital, "lookback": lookback,
+        })
+    except Exception:
+        _card = None
+
+    def _emit(result: dict) -> dict:
+        if _card is not None:
+            try:
+                _card.finish(outputs=result,
+                             status="ok" if result.get("ok") else "error")
+            except Exception:
+                pass
+        return result
+
     if not codes:
-        return {"ok": False, "error": "codes 不能为空"}
+        return _emit({"ok": False, "error": "codes 不能为空"})
 
     # 不管哪种模式都尝试加载历史收益率，以便统一计算预期收益/波动率
     ret = _load_returns(codes, lookback=lookback)
@@ -183,11 +201,11 @@ def optimize_portfolio(codes: list, mode: str = "equal_weight",
         exp_ret = round(float(w_arr @ mu) * 100, 2)
         exp_vol = round(float(np.sqrt(w_arr @ cov @ w_arr)) * 100, 2)
 
-    return {
+    return _emit({
         "ok":                 True,
         "mode":               mode,
         "weights":            weights,
         "positions":          positions,
         "expected_return":    exp_ret,
         "expected_volatility": exp_vol,
-    }
+    })
