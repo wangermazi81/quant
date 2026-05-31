@@ -524,7 +524,12 @@ tr:hover td{background:var(--card)}
   <div class="ntab" onclick="switchPage('daily',this);initDailyPage()">📋 日报</div>
   <div class="nav-r">
     <span id="runBadge" class="badge stop">已停止</span>
-    <span class="badge dry">模拟</span>
+    <!-- 实盘/模拟总开关：点击切换，切到实盘需二次确认 -->
+    <span id="tradeModeBadge" class="badge dry" style="cursor:pointer;user-select:none" onclick="toggleTradeMode()" title="点击切换实盘/模拟（实盘需二次确认）">🛡️ 模拟</span>
+    <!-- 查 xiadan 当日委托真实成交状态 -->
+    <span id="todayOrdersBtn" class="badge" style="cursor:pointer;user-select:none;background:rgba(14,165,233,.18);color:#0ea5e9;border:1px solid #0ea5e9" onclick="openTodayOrders()" title="桥接器按 F4 截图 xiadan 查询页 + 本地 OCR：看可用资金 / 持仓 / 当日委托真实状态">📊 查实盘账户</span>
+    <!-- 实盘自动化状态标签：一眼看现在下单/撤单是自动还是手动，点击打开设置 -->
+    <span id="autoModeBadge" class="badge" style="display:none;cursor:pointer;user-select:none;border:1px solid" onclick="openTodayOrders()" title="实盘自动化设置（点击调整）">⚙️</span>
     <span class="pill">扫描 <b id="nScanned">0</b></span>
     <span class="pill">执行 <b id="nExecuted">0</b></span>
     <span class="pill" title="今日已开仓/日内上限">今日 <b id="nToday">0</b>/<b id="nLimit">3</b></span>
@@ -899,11 +904,11 @@ tr:hover td{background:var(--card)}
       <span style="font-size:11px;color:var(--t3)">自定义策略</span>
       <button class="btn btn-blue btn-sm" style="margin-left:auto" onclick="newStrat()">+ 新建</button>
     </div>
-    <!-- 因子库操作栏 -->
+    <!-- 因子库操作栏：仅"列表管理"按钮（新建空文件 + 浏览 Vibe 因子库） -->
     <div class="sl-hd hidden" id="sl-hd-factor">
       <span style="font-size:11px;color:var(--t3)">因子库</span>
-      <button class="btn btn-blue btn-sm" style="margin-left:auto" onclick="newFactor()">+ 新建</button>
-      <button class="btn btn-sm" onclick="openAiFactorGen()" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff" title="AI生成因子策略">✨ AI写因子</button>
+      <button class="btn btn-blue btn-sm" style="margin-left:auto" onclick="newFactor()" title="新建一个空白因子文件">+ 新建</button>
+      <button class="btn btn-sm" onclick="openVibeFactors()" style="background:linear-gradient(135deg,#0ea5e9,#06b6d4);color:#fff;white-space:nowrap" title="见微 Alpha 内置因子库 - 量价/反转/动量/波动多主题">📚 Alpha</button>
     </div>
     <!-- 策略列表 -->
     <div class="sl-body" id="stratList"><div class="empty">加载中...</div></div>
@@ -923,18 +928,280 @@ tr:hover td{background:var(--card)}
     </div>
   </div>
 
+  <!-- Vibe 因子激活配置 Modal -->
+  <div class="rename-modal" id="vibeActivateModal" onclick="closeVibeActivate(event)">
+    <div class="rename-box" style="width:520px;max-height:88vh;overflow-y:auto" onclick="event.stopPropagation()">
+      <h4 style="display:flex;align-items:center;gap:8px">
+        ⚡ 激活 Alpha 因子到自动交易
+        <span id="vibeActFactorIdLabel" style="font-size:11px;color:#f59e0b;font-family:monospace"></span>
+      </h4>
+      <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:10px;font-size:12px;color:var(--t1);line-height:1.7;margin-bottom:14px">
+        激活后按下方<b>扫描频率</b>（仅交易时段）自动：扫描 → 算分 → 取 top → 风险过滤 → 下单<br>
+        买卖路径由 <b>顶部「🛡️ 模拟 / 🔴 实盘」总开关</b>决定，开关在实盘时走桥接器真下单
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+        <div>
+          <label style="font-size:11px;color:var(--t3);display:block;margin-bottom:3px">每日开仓上限</label>
+          <input id="vactDailyLimit" type="number" min="1" max="10" value="3" style="width:100%;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:6px 8px;color:var(--t1)">
+          <div style="font-size:10px;color:var(--t3);margin-top:2px">默认 3 只 / 天</div>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--t3);display:block;margin-bottom:3px">单只仓位 %</label>
+          <input id="vactPositionPct" type="number" min="1" max="50" step="5" value="20" style="width:100%;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:6px 8px;color:var(--t1)">
+          <div style="font-size:10px;color:var(--t3);margin-top:2px">默认 20%（500k 资金 = 100k/只）</div>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--t3);display:block;margin-bottom:3px">分数阈值（截面 top %）</label>
+          <select id="vactScorePct" style="width:100%;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:7px 8px;color:var(--t1);font-size:13px">
+            <option value="0.7">Top 30% (宽松)</option>
+            <option value="0.8" selected>Top 20% (推荐 ~z>0.84)</option>
+            <option value="0.9">Top 10% (严格 ~z>1.28)</option>
+            <option value="0.95">Top 5% (极强 ~z>1.64)</option>
+          </select>
+          <div style="font-size:10px;color:var(--t3);margin-top:2px">百分位排名阈值</div>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--t3);display:block;margin-bottom:3px">单日亏损熔断 %</label>
+          <input id="vactStopLoss" type="number" min="-20" max="-0.5" step="0.5" value="-3" style="width:100%;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:6px 8px;color:var(--t1)">
+          <div style="font-size:10px;color:var(--t3);margin-top:2px">触发后当日不再开仓</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+        <div>
+          <label style="font-size:11px;color:var(--t3);display:block;margin-bottom:3px">扫描股票池</label>
+          <select id="vactMaxCodes" style="width:100%;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:7px 8px;color:var(--t1);font-size:13px">
+            <option value="500">活跃前 500 只（快）</option>
+            <option value="1000">活跃前 1000 只</option>
+            <option value="2000">活跃前 2000 只</option>
+            <option value="5500" selected>全市场约 5000 只</option>
+          </select>
+          <div style="font-size:10px;color:var(--t3);margin-top:2px">越大覆盖越广，扫描越慢</div>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--t3);display:block;margin-bottom:3px">扫描频率</label>
+          <select id="vactIntervalSec" style="width:100%;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:7px 8px;color:var(--t1);font-size:13px">
+            <option value="60">每 1 分钟（最快）</option>
+            <option value="120" selected>每 2 分钟（推荐）</option>
+            <option value="180">每 3 分钟</option>
+            <option value="300">每 5 分钟</option>
+            <option value="600">每 10 分钟（最慢）</option>
+          </select>
+          <div style="font-size:10px;color:var(--t3);margin-top:2px">越快机会越多，接口压力也大</div>
+        </div>
+      </div>
+
+      <!-- 当前实盘开关提示 -->
+      <div id="vactModeWarn" style="background:rgba(239,68,68,.1);border:1px solid #ef4444;border-radius:6px;padding:8px 10px;font-size:11px;color:#ef4444;margin-bottom:14px;display:none">
+        ⚠️ 当前顶部开关 = <b>🔴 实盘</b>，激活后下的单将<b>真扣钱真买卖</b>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn btn-gray btn-sm" onclick="closeVibeActivate()">取消</button>
+        <button class="btn btn-orange btn-sm" onclick="confirmVibeActivate()">⚡ 确认激活</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 实盘账户（资金 + 持仓 + 当日委托）Modal -->
+  <div class="rename-modal" id="todayOrdersModal" onclick="closeTodayOrders(event)">
+    <div class="rename-box" style="width:90vw;max-width:1400px;max-height:92vh;overflow:auto" onclick="event.stopPropagation()">
+      <h4 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        📊 xiadan 实盘账户
+        <span style="font-size:11px;color:var(--t3);font-weight:400">F4 截图 + 本地 OCR → 可用资金 / 持仓 / 当日委托</span>
+        <span style="margin-left:auto;display:flex;gap:8px">
+          <button class="btn btn-blue btn-sm" onclick="refreshAccountSnapshot()" id="acctSnapRefresh" title="读 F4「资金股票」页：可用资金/总资产已验证可靠，持仓代码可靠（名称本地纠正）">🔄 刷新资金+持仓</button>
+          <button class="btn btn-gray btn-sm" onclick="refreshTodayOrders()" id="todayOrdersRefresh" title="F4 进查询页后自动点击左侧「当日委托」，OCR 解析委托时间/代码/名称/买卖/成交状态/委托量/成交量/价格">📋 查当日委托</button>
+        </span>
+      </h4>
+      <div id="acctSnapshotBody" style="padding:6px 0">
+        <div class="empty-hint" style="color:var(--t3);padding:16px;text-align:center">点击"🔄 刷新资金+持仓"读取当前账户（实盘约 2-3 秒）...</div>
+      </div>
+      <div id="acctOrdersBody" style="padding:6px 0"></div>
+
+      <!-- ⚙️ 实盘自动化设置（随时调整，即时生效、重启仍记得）-->
+      <details id="tradeSettingsBox" style="border-top:1px solid var(--b1);padding-top:8px">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--t1)">⚙️ 实盘自动化设置（下单确认 / 自动撤单）</summary>
+        <div style="padding:10px 4px;font-size:12px;color:var(--t1)">
+          <div style="margin-bottom:10px">
+            <div style="color:var(--t3);margin-bottom:5px">① 下单确认方式</div>
+            <label style="display:block;margin-bottom:4px;cursor:pointer"><input type="radio" name="tsConfirm" value="auto"> 自动下单 + <b>自动确定</b>（自动按 Y 提交，全自动）</label>
+            <label style="display:block;cursor:pointer"><input type="radio" name="tsConfirm" value="manual"> 自动下单 + <b>手动确定</b>（下单后等你按 Y）</label>
+          </div>
+          <div style="margin-bottom:10px">
+            <div style="color:var(--t3);margin-bottom:5px">② 未成交撤单方式</div>
+            <label style="display:block;margin-bottom:4px;cursor:pointer"><input type="radio" name="tsCancel" value="auto"> <b>自动撤单</b>：下单后 <input id="tsCancelDelay" type="number" min="1" max="600" value="15" style="width:50px;background:var(--inp);border:1px solid var(--b1);border-radius:4px;padding:2px 4px;color:var(--t1)"> 秒未成交则自动撤</label>
+            <label style="display:block;cursor:pointer"><input type="radio" name="tsCancel" value="manual"> <b>手动撤单</b>（系统不自动撤）</label>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <button class="btn btn-blue btn-sm" onclick="saveTradeSettingsPanel()">💾 保存设置</button>
+            <span id="tsSaveHint" style="font-size:11px;color:var(--t3)"></span>
+          </div>
+        </div>
+      </details>
+
+      <div style="font-size:11px;color:var(--t3);padding:10px;line-height:1.6;border-top:1px solid var(--b1)">
+        ℹ️ xiadan 资金/持仓/委托表是自绘控件无法直接读取，走「F4 截图 + 本地 OCR」识别成上面的结构化表格，并保留原始截图供核对。<br>
+        F4 默认进入「资金股票」页：<b>可用资金/总资产已验证可靠，持仓代码可靠</b>（名称用本地名称库纠正），数字列 OCR 仅供参考。<br>
+        「当日委托」是另一子页，点「查当日委托」会自动导航过去并解析成交状态（已对真实委托行校准）；模拟盘下「资金+持仓」读本地账本（实时可靠，无需截图）。<br>
+        刷新时桥接器按 F4 切到查询页 → 截屏 → OCR → 按 F1 切回买入页（约 2-3 秒，实盘需 <code>pip install winocr</code>）。请勿在截图过程中操作鼠标键盘。
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:10px">
+        <button class="btn btn-gray btn-sm" onclick="closeTodayOrders()">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 实盘总开关 二次确认 Modal -->
+  <div class="rename-modal" id="liveModeModal" onclick="closeLiveModeModal(event)">
+    <div class="rename-box" style="width:520px;border:2px solid #ef4444" onclick="event.stopPropagation()">
+      <h4 style="color:#ef4444">⚠️ 切换到实盘交易模式</h4>
+      <div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:10px;font-size:12px;color:var(--t1);line-height:1.7;margin-bottom:12px">
+        切换到 <b style="color:#ef4444">实盘</b> 后：<br>
+        • 所有买卖单 → 通过桥接器按键到 xiadan.exe <b>真实下单到券商</b><br>
+        • 桥接器 <b>必须在运行</b><br>
+        • 单笔预估金额 > MAX_ORDER_AMOUNT (50,000) 会被桥接器拒<br>
+        • 切换不会影响已有持仓
+      </div>
+
+      <!-- xiadan 真账户余额输入（必填） -->
+      <div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.5);border-radius:6px;padding:10px;margin-bottom:14px">
+        <label style="font-size:12px;color:var(--t1);display:block;margin-bottom:6px">
+          💰 xiadan 当前真账户可用余额（元） <span style="color:#ef4444">*必填</span>
+        </label>
+        <input id="liveCashInput" type="number" min="1000" max="100000000" step="1000" value="200000"
+               style="width:100%;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:8px 10px;color:var(--t1);font-size:14px;font-family:monospace">
+        <div style="font-size:11px;color:var(--t3);margin-top:4px">
+          📌 系统按此余额 × 仓位% 计算单笔下单金额。<br>
+          打开 xiadan → 查看左上"可用金额"→ 填入此处。仓位变化后需更新。
+        </div>
+      </div>
+
+      <!-- 实盘自动化选项（即时生效、重启仍记得；切到实盘后也可在「📊查实盘账户」里随时改）-->
+      <div style="background:rgba(14,165,233,.08);border:1px solid rgba(14,165,233,.35);border-radius:6px;padding:10px;margin-bottom:14px">
+        <div style="font-size:12px;color:var(--t1);font-weight:600;margin-bottom:8px">⚙️ 实盘自动化（可随时调整）</div>
+        <div style="font-size:12px;color:var(--t1);margin-bottom:10px">
+          <div style="color:var(--t3);margin-bottom:5px">① 下单确认方式</div>
+          <label style="display:block;margin-bottom:4px;cursor:pointer"><input type="radio" name="optConfirm" value="auto" checked> 自动下单 + <b>自动确定</b>（系统自动按 Y 提交，全自动）</label>
+          <label style="display:block;cursor:pointer"><input type="radio" name="optConfirm" value="manual"> 自动下单 + <b>手动确定</b>（下单后弹确认框，等你按 Y）</label>
+        </div>
+        <div style="font-size:12px;color:var(--t1)">
+          <div style="color:var(--t3);margin-bottom:5px">② 未成交撤单方式</div>
+          <label style="display:block;margin-bottom:4px;cursor:pointer"><input type="radio" name="optCancel" value="auto"> <b>自动撤单</b>：下单后 <input id="optCancelDelay" type="number" min="1" max="600" value="15" style="width:50px;background:var(--inp);border:1px solid var(--b1);border-radius:4px;padding:2px 4px;color:var(--t1)"> 秒未成交则自动撤</label>
+          <label style="display:block;cursor:pointer"><input type="radio" name="optCancel" value="manual" checked> <b>手动撤单</b>（系统不自动撤，由你处理）</label>
+        </div>
+      </div>
+
+      <div style="background:rgba(239,68,68,.08);padding:8px 10px;border-radius:4px;margin-bottom:14px;font-size:11px;color:#ef4444">
+        <b>这是真钱操作。</b>确认要切到实盘吗？
+      </div>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-gray btn-sm" onclick="closeLiveModeModal()">取消（保持模拟）</button>
+        <button class="btn btn-sm" onclick="confirmSwitchToLive()" style="background:#ef4444;color:#fff">⚠️ 我已确认 → 切到实盘</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Vibe Alpha 因子库 Modal -->
+  <div class="rename-modal" id="vibeModal" onclick="closeVibeFactors(event)">
+    <div class="rename-box" style="width:760px;max-width:92vw;max-height:88vh;overflow-y:auto" onclick="event.stopPropagation()">
+      <h4 style="display:flex;align-items:center;gap:8px">
+        📚 见微 Alpha 因子库
+        <span style="font-size:10px;color:var(--t3);font-weight:400">见微 Alpha 内置因子库 · 量价 / 反转 / 动量 / 波动 多主题</span>
+      </h4>
+
+      <!-- 因子选择 + 元数据 -->
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <label style="font-size:11px;color:var(--t3);white-space:nowrap">选择因子</label>
+        <select id="vibeFactorSel" style="flex:1;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:6px 8px;color:var(--t1);font-size:13px" onchange="renderVibeFactorMeta()">
+          <option value="">加载中...</option>
+        </select>
+        <span id="vibeFactorCount" style="font-size:10px;color:var(--t3)"></span>
+      </div>
+      <div id="vibeFactorMeta" style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:10px 12px;font-size:11px;color:var(--t2);margin-bottom:14px;display:none">
+        <div id="vfm-desc" style="color:var(--t1);font-size:13px;line-height:1.5;margin-bottom:6px;padding-bottom:6px;border-bottom:1px dashed var(--b1)"></div>
+        <div id="vfm-formula" style="font-family:monospace;font-size:10px;color:var(--t3);margin-bottom:4px;word-break:break-all"></div>
+        <div id="vfm-tags"></div>
+      </div>
+
+      <!-- 股票池选择 -->
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <button class="btn btn-sm" id="vibeModeManual" onclick="setVibeMode('manual')" style="flex:1">✏️ 手动输入</button>
+        <button class="btn btn-sm" id="vibeModeMarket" onclick="setVibeMode('market_top')" style="flex:1">🌐 全市场活跃</button>
+      </div>
+
+      <!-- 手动输入 -->
+      <div id="vibePanelManual" style="margin-bottom:10px">
+        <label style="font-size:11px;color:var(--t3)">股票代码（逗号分隔）</label>
+        <input id="vibeCodes" style="width:100%;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:7px 10px;color:var(--t1);font-size:13px;margin-top:4px" placeholder="600519,000001,000065,002031" value="600519,000001,000065,002031">
+        <div style="font-size:10px;color:var(--t3);margin-top:3px">最多 1000 只，留空切换到「全市场」模式</div>
+      </div>
+
+      <!-- 全市场 top N（异步任务 + 进度条）-->
+      <div id="vibePanelMarket" style="margin-bottom:10px;display:none">
+        <label style="font-size:11px;color:var(--t3)">活跃前 N 只（0 = 整个市场 ~5000+ 只）</label>
+        <div style="display:flex;gap:6px;margin-top:4px">
+          <input id="vibeMaxCodes" type="number" min="0" max="10000" step="100" value="500" style="flex:1;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:7px 10px;color:var(--t1);font-size:13px">
+          <button class="btn btn-sm" onclick="document.getElementById('vibeMaxCodes').value=100">100</button>
+          <button class="btn btn-sm" onclick="document.getElementById('vibeMaxCodes').value=500">500</button>
+          <button class="btn btn-sm" onclick="document.getElementById('vibeMaxCodes').value=0" title="0 = 整个市场">全市场</button>
+        </div>
+        <div style="font-size:10px;color:var(--t3);margin-top:4px">📊 100 只 ~1 分钟 / 500 只 ~3 分钟 / 全市场 ~15-25 分钟 (TDX 池+本地缓存)</div>
+      </div>
+
+      <!-- 回看天数 + 计算按钮 + 回测按钮 -->
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+        <label style="font-size:11px;color:var(--t3)">回看天数</label>
+        <input id="vibeDays" type="number" min="30" max="250" value="60" style="width:80px;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:6px 8px;color:var(--t1);font-size:13px">
+        <button class="btn btn-blue btn-sm" onclick="runVibeFactor()" id="vibeRunBtn" style="margin-left:auto">▶ 计算分数</button>
+        <button class="btn btn-purple btn-sm" onclick="runVibeBacktest()" id="vibeBtBtn" title="对当前因子做历史回测">📈 回测</button>
+      </div>
+
+      <!-- 结果区 -->
+      <div id="vibeResult" style="min-height:80px">
+        <div class="empty-hint" style="text-align:center;padding:30px 0;color:var(--t3);font-size:12px">点击「计算分数」开始</div>
+      </div>
+
+      <!-- 底部：加入选股池 + 激活到自动交易 + 关闭 -->
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;gap:8px;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap" id="vibeAddPool" hidden>
+          <label style="font-size:11px;color:var(--t3)">取前</label>
+          <input id="vibeAddTopN" type="number" min="1" max="200" value="20" style="width:60px;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:5px 8px;color:var(--t1);font-size:12px">
+          <label style="font-size:11px;color:var(--t3)">名</label>
+          <button class="btn btn-blue btn-sm" onclick="vibeAddToScreenPool()">📋 加入选股池</button>
+          <button class="btn btn-orange btn-sm" onclick="openVibeActivateModal()" title="激活后每 5 分钟自动扫描下单（受顶部实盘开关 + 风险护栏控制）">⚡ 激活到自动交易</button>
+        </div>
+        <button class="btn btn-gray btn-sm" style="margin-left:auto" onclick="closeVibeFactors()">关闭</button>
+      </div>
+
+      <!-- 当前激活状态展示（modal 打开时拉取）-->
+      <div id="vibeCurActivation" style="display:none;margin-top:14px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:10px;font-size:11px"></div>
+    </div>
+  </div>
+
   <div class="se">
     <div class="se-hd">
       <span style="font-size:11px;color:var(--t3)">文件名</span>
       <input id="sfn" class="fn-input" placeholder="strategy_name">
       <div class="se-acts">
-        <button class="btn btn-gray btn-sm"   onclick="saveStrat()">💾 保存</button>
-        <button class="btn btn-blue btn-sm"   onclick="runScreen(600)" title="按成交量取前 600 只活跃股扫描，约 15 秒">🔍 快扫</button>
-        <button class="btn btn-blue btn-sm"   onclick="runScreen(0)"   title="扫描全市场约 5000 只票，约 2-3 分钟">🌐 全市场</button>
-        <button class="btn btn-purple btn-sm" onclick="goBacktest()">📈 回测</button>
-        <button class="btn btn-orange btn-sm" onclick="activateStrat()" id="actBtn" title="激活此策略为自动交易策略：激活后系统定时扫描并将信号自动加入执行队列（打板策略每5秒/其他策略每30秒）">⚡ 激活</button>
-        <button class="btn btn-sm" onclick="openAiGen()" id="aiGenBtn" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff" title="用AI自动生成选股策略代码（需先在AI设置中配置API Key）">✨ AI写策略</button>
-        <button class="btn btn-red btn-xs"    onclick="delStrat()">🗑</button>
+        <!-- 共用按钮 -->
+        <button class="btn btn-gray btn-sm" onclick="saveStrat()" data-mode="both">💾 保存</button>
+
+        <!-- 策略库专属按钮 -->
+        <button class="btn btn-blue btn-sm"   onclick="runScreen(600)" data-mode="strat" title="按成交量取前 600 只活跃股扫描，约 15 秒">🔍 快扫</button>
+        <button class="btn btn-blue btn-sm"   onclick="runScreen(0)"   data-mode="strat" title="扫描全市场约 5000 只票，约 2-3 分钟">🌐 全市场</button>
+        <button class="btn btn-purple btn-sm" onclick="goBacktest()"   data-mode="strat">📈 回测</button>
+        <button class="btn btn-orange btn-sm" onclick="activateStrat()" id="actBtn" data-mode="strat" title="激活此策略为自动交易策略：激活后系统定时扫描并将信号自动加入执行队列">⚡ 激活</button>
+        <button class="btn btn-sm" onclick="openAiGen()" id="aiGenBtn" data-mode="strat" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff" title="用AI自动生成选股策略代码">✨ AI写策略</button>
+
+        <!-- 因子库专属按钮（对当前编辑器中的因子文件操作）-->
+        <button class="btn btn-blue btn-sm" onclick="runScreen(600)" data-mode="factor" title="按当前因子代码扫描活跃前 600 只">🔍 扫描</button>
+        <button class="btn btn-sm" onclick="openAiFactorGen()" data-mode="factor" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff" title="用AI自动生成因子代码">✨ AI写因子</button>
+
+        <!-- 共用删除按钮 -->
+        <button class="btn btn-red btn-xs" onclick="delStrat()" data-mode="both">🗑</button>
       </div>
     </div>
     <div class="se-wrap"><textarea id="codeArea"></textarea></div>
@@ -1313,7 +1580,7 @@ window.addEventListener('load', async ()=>{
   })
   editor.setSize('100%','100%')
   editor.on('change',()=>setEdSt('已修改（未保存）'))
-  loadStratList(); loadDbList(); startPoll(); initAI(); initBrokerConfig(); initNotifyConfig(); loadMarketContext()
+  loadStratList(); loadDbList(); startPoll(); initAI(); initBrokerConfig(); initNotifyConfig(); loadMarketContext(); loadTradeMode()
 })
 
 function setEdSt(s){ document.getElementById('edSt').textContent=s }
@@ -1336,7 +1603,34 @@ function switchRTab(name,el){
 function startPoll(){
   setInterval(fetchSt, 3000)
   setInterval(fetchPositions, 5000)   // 持仓每5秒刷新一次实时价格
-  fetchSt(); fetchPositions()
+  // 资金每 10 秒刷新：实盘已改「事件驱动 + 只读缓存」——这个接口只读缓存、绝不激活
+  // 交易窗口，所以轮询安全、不再弹窗。缓存由「下单成功后」「手动查实盘账户」更新。
+  setInterval(fetchFunds, 10000)
+  fetchSt(); fetchPositions(); fetchFunds()
+  refreshAutoModeBadge()   // 顶部实盘自动化状态标签
+}
+
+// 实时可用资金：模拟盘读账本现金、实盘读 xiadan。更新顶部「可用资金」药丸，
+// 并作为下单手数计算(pbCalcShares)的资金基数。失败则回退 fetchSt 的配置资金。
+let _availFunds = null
+let _fundsMode  = null   // 记录上次资金来源；'real' 时停止自动轮询（避免抢焦点）
+async function fetchFunds(){
+  try{
+    const d = await api('/account/funds')
+    if(!d) return
+    if(d.mode) _fundsMode = d.mode
+    if(!d.ok || d.available==null) return   // 实盘暂无缓存时 available 为 null，保留药丸原值
+    _availFunds = +d.available
+    const capEl = document.getElementById('nCapital')
+    if(capEl){
+      capEl.textContent = '¥'+_availFunds.toLocaleString('zh-CN',{maximumFractionDigits:0})
+      const tip = d.mode==='paper'
+        ? `模拟盘可用现金（权益 ¥${(+(d.equity||0)).toLocaleString('zh-CN',{maximumFractionDigits:0})}）`
+        : `xiadan 实盘可用资金${d.total_asset!=null?`（总资产 ¥${(+d.total_asset).toLocaleString('zh-CN',{maximumFractionDigits:0})}）`:''}`
+          + `｜事件驱动：下单成功后自动更新${d.age_sec!=null?`（${d.age_sec}秒前）`:''}，也可点「📊 查实盘账户」手动刷新`
+      capEl.parentElement?.setAttribute('title', tip)
+    }
+  }catch(e){}
 }
 async function fetchSt(){
   const d=await api('/status'); if(!d) return
@@ -1351,7 +1645,8 @@ async function fetchSt(){
   const capEl  =document.getElementById('nCapital')
   if(todayEl) todayEl.textContent=d.today_trades||0
   if(limitEl) limitEl.textContent=d.max_daily_trades||3
-  if(capEl)   capEl.textContent  ='¥'+(+(d.capital||0)).toLocaleString('zh-CN',{maximumFractionDigits:0})
+  // 可用资金优先用 fetchFunds 拉到的实时值；未就绪时回退配置资金
+  if(capEl && _availFunds==null) capEl.textContent='¥'+(+(d.capital||0)).toLocaleString('zh-CN',{maximumFractionDigits:0})
   // 同步账户设置框
   const ci=document.getElementById('cfgCapital')
   const ri=document.getElementById('cfgRatio')
@@ -1478,7 +1773,7 @@ function renderPositions(positions){
 async function sellPos(code, price){
   if(!confirm(`确认卖出 ${code} @ ${price}？\n模拟模式下仅记录日志。`)) return
   const r = await api('/positions/sell','POST',{code, price})
-  if(r?.ok){ fetchSt(); fetchPositions() }
+  if(r?.ok){ fetchSt(); fetchPositions(); fetchFunds() }
   else alert('卖出失败: '+(r?.msg||''))
 }
 
@@ -1551,9 +1846,19 @@ function renderQueue(q){
   document.getElementById('qLen').textContent=(q?.length||0)+'只'
   const el=document.getElementById('qBody')
   if(!q?.length){el.innerHTML='<div class="empty">无待处理</div>';return}
-  const sm_={pending:'<span class="sbadge s-pending">待确认</span>',done:'<span class="sbadge s-done">已买</span>',skip:'<span class="sbadge s-skip">跳过</span>',error:'<span class="sbadge s-error">失败</span>'}
+  const sm_={
+    pending:  '<span class="sbadge s-pending">待确认</span>',
+    done:     '<span class="sbadge s-done">已买(模拟)</span>',
+    executed: '<span class="sbadge s-done" style="background:#22c55e">✅ 已成交</span>',
+    submitted:'<span class="sbadge s-pending" style="background:#f59e0b">⏳ 已提交</span>',
+    sent:     '<span class="sbadge s-pending" style="background:#3b82f6">📤 桥接器处理中</span>',
+    skip:     '<span class="sbadge s-skip">跳过</span>',
+    error:    '<span class="sbadge s-error">失败</span>',
+    failed:   '<span class="sbadge s-error">❌ 实盘失败</span>',
+  }
   el.innerHTML=q.map(it=>{
     const nm=(it.name||it.code).replace(/'/g,"\\'")
+    const failMsg = it.fail_msg ? `<div style="font-size:10px;color:#ef4444;padding-left:2px">⚠️ ${(it.fail_msg||'').substring(0,80)}</div>` : ''
     return `<div class="q-item" style="flex-direction:column;gap:4px;padding:8px 10px;cursor:pointer" onclick="showKLine('${it.code}','${nm}')">
     <div style="display:flex;align-items:center;gap:6px">
       <span style="font-weight:700;width:60px">${it.code}</span>
@@ -1561,13 +1866,14 @@ function renderQueue(q){
       <span style="color:#f59e0b;font-size:12px">¥${(+it.price||0).toFixed(2)}</span>
       <span onclick="event.stopPropagation()">${it.status==='pending'
         ?`<button class="btn btn-green btn-sm" onclick="execQ('${it.code}','buy')">买入</button><button class="btn btn-gray btn-sm" onclick="execQ('${it.code}','skip')">跳过</button>`
-        :sm_[it.status]||''}</span>
+        :sm_[it.status]||`<span class="sbadge s-pending">${it.status||''}</span>`}</span>
     </div>
     ${it.shares?`<div style="font-size:11px;color:var(--t3);padding-left:2px">
       计划买入 <b style="color:var(--t2)">${it.shares}</b> 股
       · 预算 <b style="color:var(--gl)">¥${(+(it.budget||0)).toLocaleString('zh-CN',{maximumFractionDigits:0})}</b>
       ${it.reason?'· <span style="color:var(--t4)">'+it.reason.substring(0,40)+'</span>':''}
     </div>`:''}
+    ${failMsg}
   </div>`
   }).join('')
 }
@@ -1586,8 +1892,30 @@ function switchLibTab(tab){
   document.getElementById('sl-hd-factor').classList.toggle('hidden', tab!=='factor')
   document.getElementById('stratList').classList.toggle('hidden', tab!=='strat')
   document.getElementById('factorList').classList.toggle('hidden', tab!=='factor')
+  // 同步中间编辑区工具栏：按 data-mode 显示/隐藏按钮
+  document.querySelectorAll('.se-hd .se-acts [data-mode]').forEach(btn => {
+    const m = btn.dataset.mode
+    btn.style.display = (m === 'both' || m === tab) ? '' : 'none'
+  })
   if(tab==='factor') loadFactorList()
 }
+// 页面初次加载时也跑一次切换（按 _libTab 默认 strat 渲染）
+document.addEventListener('DOMContentLoaded', () => {
+  try { switchLibTab(_libTab) } catch(e) { console.warn('libtab init', e) }
+  // 把所有 Modal 提升到 body 直接子元素，避免被父 .page.hidden 隐藏
+  // 修复 bug：实盘切换 Modal 等只在策略中心可见、切到其他页消失
+  try {
+    ['renameModal','vibeActivateModal','liveModeModal','vibeModal',
+     'aiGenModal','aiFactorGenModal','klOverlay','vibeBacktestModal',
+     'todayOrdersModal'
+    ].forEach(id => {
+      const el = document.getElementById(id)
+      if(el && el.parentNode !== document.body){
+        document.body.appendChild(el)
+      }
+    })
+  } catch(e) { console.warn('modal hoist', e) }
+})
 
 // ── 策略库 ──
 async function loadStratList(){
@@ -1756,6 +2084,926 @@ async function doRename(){
     alert(r?.msg||'重命名失败')
   }
 }
+
+// ══════════════════════════════════════════════════
+//  实盘/模拟总开关
+// ══════════════════════════════════════════════════
+let _tradeMode = 'paper'  // 'paper' | 'live'
+
+async function loadTradeMode(){
+  const r = await api('/user/broker_config')
+  if(r?.ok){
+    _tradeMode = (r.broker_type === 'live' || r.broker_type === 'real') ? 'live' : 'paper'
+    _renderTradeModeBadge()
+  }
+}
+
+function _renderTradeModeBadge(){
+  const el = document.getElementById('tradeModeBadge')
+  if(!el) return
+  if(_tradeMode === 'live'){
+    el.textContent = '🔴 实盘'
+    el.className = 'badge'
+    el.style.background = '#ef4444'
+    el.style.color = '#fff'
+    el.style.boxShadow = '0 0 8px rgba(239,68,68,.5)'
+    el.style.animation = 'pulse 2s infinite'
+  } else {
+    el.textContent = '🛡️ 模拟'
+    el.className = 'badge dry'
+    el.style.background = ''
+    el.style.color = ''
+    el.style.boxShadow = ''
+    el.style.animation = ''
+  }
+}
+
+function toggleTradeMode(){
+  if(_tradeMode === 'live'){
+    // 实盘 → 模拟 不需要确认（变安全方向）
+    _switchTradeMode('paper')
+  } else {
+    // 模拟 → 实盘 必须二次确认 + 必填 live_cash
+    document.getElementById('liveModeModal').classList.add('open')
+    // 回填已有 live_cash（用户切回再切去时省事）+ 回填当前自动化设置
+    openLiveModeModalEnsureCash()
+    loadTradeSettings('opt')
+  }
+}
+
+function closeLiveModeModal(ev){
+  if(ev && ev.target !== document.getElementById('liveModeModal')) return
+  document.getElementById('liveModeModal').classList.remove('open')
+}
+
+// ── 实盘自动化设置（下单确认 / 未成交自动撤单），运行时切换、后端持久化 ──
+// 两处共用：实盘切换弹窗(prefix='opt') 与 查实盘账户面板(prefix='ts')
+async function _fetchTradeSettings(){
+  try{ const d = await api('/account/trade_settings'); return (d && d.ok) ? d : null }catch(e){ return null }
+}
+function _fillTradeRadios(prefix, s){
+  if(!s) return
+  document.querySelectorAll(`input[name="${prefix}Confirm"]`).forEach(r=>{ r.checked = (r.value === (s.auto_confirm_order?'auto':'manual')) })
+  document.querySelectorAll(`input[name="${prefix}Cancel"]`).forEach(r=>{ r.checked = (r.value === (s.auto_cancel_unfilled?'auto':'manual')) })
+  const dEl = document.getElementById(prefix+'CancelDelay'); if(dEl) dEl.value = Math.round(s.auto_cancel_delay||15)
+}
+function _readTradeRadios(prefix){
+  const conf = (document.querySelector(`input[name="${prefix}Confirm"]:checked`)||{}).value
+  const canc = (document.querySelector(`input[name="${prefix}Cancel"]:checked`)||{}).value
+  const dEl = document.getElementById(prefix+'CancelDelay')
+  return { auto_confirm_order: conf==='auto', auto_cancel_unfilled: canc==='auto',
+           auto_cancel_delay: dEl ? (parseFloat(dEl.value)||15) : 15 }
+}
+async function loadTradeSettings(prefix){
+  const s = await _fetchTradeSettings()
+  _fillTradeRadios(prefix, s)
+  _renderAutoModeBadge(s)
+  return s
+}
+// 顶部「实盘自动化状态」小标签：一眼看现在下单/撤单是自动还是手动
+function _renderAutoModeBadge(s){
+  const el = document.getElementById('autoModeBadge'); if(!el) return
+  if(!s){ el.style.display = 'none'; return }   // 操作员未就绪(paper-only) → 不显示
+  const conf = s.auto_confirm_order ? '下单自动' : '下单手动'
+  const canc = s.auto_cancel_unfilled ? `撤单自动${Math.round(s.auto_cancel_delay||15)}s` : '撤单手动'
+  const full = s.auto_confirm_order && s.auto_cancel_unfilled
+  el.textContent = `⚙️ ${conf}·${canc}`
+  el.title = `实盘自动化（点击调整）：下单${s.auto_confirm_order?'自动确认':'手动确认'} / `
+           + (s.auto_cancel_unfilled ? `未成交${Math.round(s.auto_cancel_delay||15)}秒自动撤` : '手动撤单')
+  const c = full ? '#ef4444' : '#0ea5e9'   // 全自动=红(激进)，含手动=蓝
+  el.style.color = c; el.style.borderColor = c
+  el.style.background = full ? 'rgba(239,68,68,.12)' : 'rgba(14,165,233,.12)'
+  el.style.display = ''
+}
+async function refreshAutoModeBadge(){ _renderAutoModeBadge(await _fetchTradeSettings()) }
+async function saveTradeSettingsPanel(){
+  const hint = document.getElementById('tsSaveHint')
+  if(hint){ hint.textContent='保存中...'; hint.style.color='var(--t3)' }
+  const r = await api('/account/trade_settings','POST', _readTradeRadios('ts'))
+  if(r && r.ok){
+    _renderAutoModeBadge(r)   // 顶部状态标签同步更新
+    if(hint){ hint.textContent = `✅ 已保存：下单${r.auto_confirm_order?'自动确认':'手动确认'} · ${r.auto_cancel_unfilled?`自动撤单(${Math.round(r.auto_cancel_delay)}秒)`:'手动撤单'}`; hint.style.color='#22c55e' }
+  }else if(hint){
+    hint.textContent = '⚠️ '+((r&&r.msg)||'保存失败（实盘操作员未就绪？仅实盘可设）'); hint.style.color='#ef4444'
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  查 xiadan 实盘账户（F4 截图：资金 + 持仓 + 当日委托）
+// ══════════════════════════════════════════════════
+function openTodayOrders(){
+  document.getElementById('todayOrdersModal').classList.add('open')
+  // 打开时不自动截图（实盘 F4 会抢焦点 2-3 秒，须用户主动点刷新）。
+  // 清掉上次的「当日委托」残留，避免误读旧数据。
+  const ob = document.getElementById('acctOrdersBody')
+  if(ob) ob.innerHTML = ''
+  loadTradeSettings('ts')   // 回填当前实盘自动化设置（下单确认/自动撤单）
+}
+function closeTodayOrders(ev){
+  if(ev && ev.target !== document.getElementById('todayOrdersModal')) return
+  document.getElementById('todayOrdersModal').classList.remove('open')
+}
+async function refreshTodayOrders(){
+  const body = document.getElementById('acctOrdersBody')
+  const btn = document.getElementById('todayOrdersRefresh')
+  btn.disabled = true
+  const oldTxt = btn.textContent
+  btn.textContent = '⏳ 截图中...'
+  body.innerHTML = '<div style="padding:24px;color:var(--t3);font-size:13px;border-top:1px dashed var(--b1)">⏳ 桥接器正按 F4 截图 xiadan 当日委托页...<br>预计 2-3 秒，期间请勿操作鼠标键盘</div>'
+
+  // navigate=1：让桥接器在 F4 后自校准点击左侧「当日委托」再截图（拿真实成交状态）
+  const r = await api('/bridge/today_orders?navigate=1')
+  btn.disabled = false
+  btn.textContent = oldTxt
+
+  if(!r){ body.innerHTML = '<div style="color:#ef4444;padding:16px;border-top:1px dashed var(--b1)">⚠️ 网络错误</div>'; return }
+  if(!r.ok){
+    body.innerHTML = `<div style="color:#ef4444;padding:16px;border-top:1px dashed var(--b1)">⚠️ ${r.msg||'获取失败'}</div>`
+    return
+  }
+  // 截图路径：logs/screenshots/today_orders_xxx.png → /logs/screenshots/xxx.png
+  const url = '/' + r.screenshot + '?t=' + Date.now()
+  const tabsHint = (r.tabs && r.tabs.length)
+    ? `<div style="font-size:11px;color:var(--t3);padding:2px 0">检出查询页签：${r.tabs.join(' · ')}${r.tabs.indexOf('当日委托')<0?'（⚠️ 未检出「当日委托」，可能未导航成功，请看截图核对）':''}</div>`
+    : ''
+  body.innerHTML = `
+    <div style="border-top:1px dashed var(--b1);margin-top:8px;padding-top:8px">
+      <div style="font-size:13px;font-weight:600;color:var(--t1);margin:2px 0">📋 当日委托</div>
+      <div style="font-size:11px;color:var(--t3);padding:4px 0">${r.msg||''}</div>
+      ${tabsHint}
+      ${renderOrdersTable(r.orders)}
+      <details ${(r.orders&&r.orders.length)?'':'open'} style="margin-top:10px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--t3)">📷 原始截图（OCR 难免误差，可对照核对）</summary>
+        <img src="${url}" style="max-width:100%;border:1px solid var(--b1);border-radius:6px;margin-top:8px" alt="当日委托截图">
+      </details>
+    </div>
+  `
+}
+
+// ── 实盘资金 + 持仓面板（F4「资金股票」页 OCR；模拟盘读本地账本）──
+async function refreshAccountSnapshot(){
+  const body = document.getElementById('acctSnapshotBody')
+  const btn  = document.getElementById('acctSnapRefresh')
+  btn.disabled = true
+  const oldTxt = btn.textContent
+  btn.textContent = '⏳ 读取中...'
+  body.innerHTML = '<div style="padding:24px;color:var(--t3);font-size:13px;text-align:center">⏳ 正在读取账户资金 + 持仓...<br><span style="font-size:11px">实盘会按 F4 截图（约 2-3 秒），期间请勿操作鼠标键盘</span></div>'
+
+  const r = await api('/account/snapshot')
+  btn.disabled = false
+  btn.textContent = oldTxt
+
+  if(!r){ body.innerHTML = '<div style="color:#ef4444;padding:16px">⚠️ 网络错误</div>'; return }
+  if(!r.ok){ body.innerHTML = `<div style="color:#ef4444;padding:16px">⚠️ ${r.msg||'获取失败'}</div>`; return }
+
+  let html = renderFundsCard(r) + renderPositionsTable(r.positions, r.mode)
+  if(r.screenshot){
+    const url = '/' + r.screenshot + '?t=' + Date.now()
+    html += `<details style="margin-top:10px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--t3)">📷 原始截图（OCR 难免误差，可对照核对）</summary>
+      <img src="${url}" style="max-width:100%;border:1px solid var(--b1);border-radius:6px;margin-top:8px" alt="账户截图">
+    </details>`
+  }
+  if(r.msg) html += `<div style="font-size:11px;color:var(--t3);padding:6px 0">${r.msg}</div>`
+  body.innerHTML = html
+}
+
+// 资金概览卡片：可用资金 / 总资产 / 持仓市值
+function renderFundsCard(d){
+  const fmt = v => (v==null||isNaN(+v)) ? '—' : '¥'+(+v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})
+  const modeBadge = d.mode==='paper'
+    ? '<span style="font-size:10px;color:#0ea5e9;border:1px solid #0ea5e9;border-radius:4px;padding:1px 6px">模拟盘（本地账本）</span>'
+    : '<span style="font-size:10px;color:#ef4444;border:1px solid #ef4444;border-radius:4px;padding:1px 6px">实盘（OCR 识别）</span>'
+  const cards = [['可用资金', fmt(d.available), '#22c55e'], ['总资产', fmt(d.total_asset), 'var(--t1)']]
+  if(d.market_value!=null) cards.push(['持仓市值', fmt(d.market_value), 'var(--t2)'])
+  const cardHtml = cards.map(([k,v,c])=>`
+    <div style="flex:1;min-width:120px;background:rgba(255,255,255,.03);border:1px solid var(--b1);border-radius:8px;padding:10px 12px">
+      <div style="font-size:11px;color:var(--t3)">${k}</div>
+      <div style="font-size:18px;font-weight:700;color:${c};font-family:monospace">${v}</div>
+    </div>`).join('')
+  return `<div style="margin:2px 0 8px">${modeBadge}</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">${cardHtml}</div>`
+}
+
+// 持仓表：模拟盘结构化字段齐全；实盘 OCR 仅 code/name 可靠 + numbers/raw 供参考
+function renderPositionsTable(positions, mode){
+  if(!positions || !positions.length){
+    return '<div style="font-size:12px;color:var(--t3);padding:8px 0">（无持仓，或 OCR 未解析出持仓行——请看下方截图）</div>'
+  }
+  const isPaper = mode==='paper' || positions[0].cost_price!=null
+  if(isPaper){
+    const rows = positions.map(p=>{
+      const pnl = +p.pnl_amount||0
+      const pc  = pnl>0?'#ef4444':(pnl<0?'#22c55e':'var(--t2)')   // A股红涨绿跌
+      const pct = ((p.pnl_pct>0?'+':'')+(p.pnl_pct||0))+'%'
+      return `<tr>
+        <td style="padding:4px 8px;font-family:monospace">${p.code}</td>
+        <td style="padding:4px 8px">${p.name||'-'}</td>
+        <td style="padding:4px 8px;text-align:right">${p.shares||0}</td>
+        <td style="padding:4px 8px;text-align:right">${(+p.cost_price||0).toFixed(3)}</td>
+        <td style="padding:4px 8px;text-align:right">${(+p.cur_price||0).toFixed(2)}</td>
+        <td style="padding:4px 8px;text-align:right;color:${pc};font-weight:600">${pnl.toFixed(2)}<br><span style="font-size:10px">${pct}</span></td>
+        <td style="padding:4px 8px;text-align:right">${(+p.market_value||0).toFixed(0)}</td>
+      </tr>`
+    }).join('')
+    return `<table style="width:100%;border-collapse:collapse;font-size:12px;margin:6px 0">
+      <thead><tr style="border-bottom:1px solid var(--b1);color:var(--t3)">
+        <th style="padding:4px 8px;text-align:left">代码</th><th style="padding:4px 8px;text-align:left">名称</th>
+        <th style="padding:4px 8px;text-align:right">股数</th><th style="padding:4px 8px;text-align:right">成本</th>
+        <th style="padding:4px 8px;text-align:right">现价</th><th style="padding:4px 8px;text-align:right">盈亏</th>
+        <th style="padding:4px 8px;text-align:right">市值</th>
+      </tr></thead><tbody>${rows}</tbody></table>`
+  }
+  // 实盘 OCR：代码/名称可靠，数字列仅供参考
+  const rows = positions.map(p=>{
+    const nums = (p.numbers||[]).join(' / ')
+    return `<tr>
+      <td style="padding:4px 8px;font-family:monospace">${p.code||'-'}</td>
+      <td style="padding:4px 8px">${p.name||'-'}</td>
+      <td style="padding:4px 8px;font-size:11px;color:var(--t2)">${nums||'-'}</td>
+      <td style="padding:4px 8px;font-size:11px;color:var(--t3)" title="${(p.raw||'').replace(/"/g,'&quot;')}">${p.raw||''}</td>
+    </tr>`
+  }).join('')
+  return `<div style="font-size:11px;color:#f59e0b;padding:2px 0">⚠️ 实盘持仓数字列由 OCR 识别，仅供参考，请以截图为准</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;margin:6px 0">
+    <thead><tr style="border-bottom:1px solid var(--b1);color:var(--t3)">
+      <th style="padding:4px 8px;text-align:left">代码</th><th style="padding:4px 8px;text-align:left">名称</th>
+      <th style="padding:4px 8px;text-align:left">OCR数字</th><th style="padding:4px 8px;text-align:left">OCR原文</th>
+    </tr></thead><tbody>${rows}</tbody></table>`
+}
+// 委托状态 → 颜色
+function _orderStatusColor(s){
+  if(!s) return 'var(--t3)'
+  if(s.indexOf('全部成交')>=0 || s==='已成交' || s==='已成') return '#22c55e'
+  if(s.indexOf('部')>=0) return '#0ea5e9'
+  if(s.indexOf('撤')>=0 || s.indexOf('废')>=0) return '#ef4444'
+  if(s.indexOf('报')>=0 || s.indexOf('未')>=0) return '#f59e0b'
+  return 'var(--t2)'
+}
+// 把 OCR 解析出的结构化委托渲染成表格
+function renderOrdersTable(orders){
+  if(!orders || !orders.length){
+    return '<div style="font-size:12px;color:var(--t3);padding:8px 0">（本地 OCR 未解析出委托行，请看下方截图。如未安装 OCR 请在桥接器机器上 <code>pip install winocr</code> 后重试）</div>'
+  }
+  const _n = v => (v==null||isNaN(+v)) ? '-' : (+v).toLocaleString('zh-CN')
+  let rows = orders.map(o=>{
+    const c = _orderStatusColor(o.status)
+    const act = o.action==='买入' ? '<span style="color:#ef4444">买入</span>'
+              : o.action==='卖出' ? '<span style="color:#22c55e">卖出</span>'
+              : (o.action||'-')
+    return `<tr>
+      <td style="padding:4px 8px;font-family:monospace">${o.code||'-'}</td>
+      <td style="padding:4px 8px">${o.name||'-'}</td>
+      <td style="padding:4px 8px;text-align:center">${act}</td>
+      <td style="padding:4px 8px;text-align:center;color:${c};font-weight:600">${o.status||'-'}</td>
+      <td style="padding:4px 8px;text-align:right">${_n(o.order_qty)}</td>
+      <td style="padding:4px 8px;text-align:right">${_n(o.filled_qty)}</td>
+      <td style="padding:4px 8px;text-align:right">${o.order_price==null?'-':(+o.order_price).toFixed(3)}</td>
+      <td style="padding:4px 8px;font-size:11px;color:var(--t3)" title="${(o.raw||'').replace(/"/g,'&quot;')}">${(o.raw||'').slice(0,40)}${(o.raw||'').length>40?'…':''}</td>
+    </tr>`
+  }).join('')
+  return `<table style="width:100%;border-collapse:collapse;font-size:12px;margin:6px 0">
+    <thead><tr style="border-bottom:1px solid var(--b1);color:var(--t3)">
+      <th style="padding:4px 8px;text-align:left">代码</th>
+      <th style="padding:4px 8px;text-align:left">名称</th>
+      <th style="padding:4px 8px">买卖</th>
+      <th style="padding:4px 8px">状态</th>
+      <th style="padding:4px 8px;text-align:right">委托量</th>
+      <th style="padding:4px 8px;text-align:right">成交量</th>
+      <th style="padding:4px 8px;text-align:right">委托价</th>
+      <th style="padding:4px 8px;text-align:left">OCR原文</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`
+}
+
+async function confirmSwitchToLive(){
+  // 读取 live_cash 输入框（必填）
+  const liveCashEl = document.getElementById('liveCashInput')
+  const liveCash = parseFloat(liveCashEl?.value || 0)
+  if(!liveCash || liveCash < 1000){
+    alert('⚠️ 请填入 xiadan 真账户可用余额（至少 1000 元）\n\n这个值用来计算单笔仓位 = 余额 × 仓位%。\n如果填错，预估金额会超过 MAX_ORDER_AMOUNT 被桥接器拒。')
+    liveCashEl?.focus()
+    return
+  }
+  document.getElementById('liveModeModal').classList.remove('open')
+  // 先把弹窗里选的自动化设置存下来（实盘下单/撤单会按这个走）
+  try{ const sr = await api('/account/trade_settings', 'POST', _readTradeRadios('opt')); if(sr&&sr.ok) _renderAutoModeBadge(sr) }catch(e){}
+  await _switchTradeMode('live', { live_cash: liveCash })
+}
+
+async function _switchTradeMode(newMode, extraConfig){
+  // 切到实盘要带 live_cash 进 config；切回模拟保留旧 config（不清空 live_cash 历史值）
+  let postBody
+  if(newMode === 'live'){
+    postBody = { broker_type: 'live', config: extraConfig || {} }
+  } else {
+    // 切回模拟时也保留已有 live_cash（用户切回来再切去时不必重新输）
+    let existing = {}
+    try {
+      const cur = await api('/user/broker_config')
+      existing = cur?.config || {}
+    } catch(e){}
+    postBody = { broker_type: 'paper', config: existing }
+  }
+  const r = await api('/user/broker_config', 'POST', postBody)
+  if(r?.ok){
+    _tradeMode = newMode
+    _renderTradeModeBadge()
+    const msg = newMode === 'live'
+      ? `⚠️ 已切到实盘模式 — 真余额 ¥${(extraConfig?.live_cash || 0).toLocaleString()}，仓位按此 × 20% 算。请确认桥接器在运行`
+      : '✅ 已切回模拟模式 — 后续所有买卖单走 paper_broker'
+    if(typeof setEdSt === 'function') setEdSt(msg)
+    else alert(msg)
+  } else {
+    alert('切换失败: ' + (r?.error || '未知错误'))
+  }
+}
+
+// 打开 Modal 时回填已有 live_cash
+async function openLiveModeModalEnsureCash(){
+  try {
+    const cur = await api('/user/broker_config')
+    const cash = parseFloat((cur?.config || {}).live_cash || 0)
+    const inp = document.getElementById('liveCashInput')
+    if(inp && cash > 0) inp.value = cash
+  } catch(e){}
+}
+
+// ══════════════════════════════════════════════════
+//  见微 Alpha 内置因子库
+// ══════════════════════════════════════════════════
+let _vibeFactors = []  // 缓存：[{id, theme, formula, universe, ...}]
+let _vibeMode = 'manual'  // 'manual' | 'market_top'
+
+async function openVibeFactors(){
+  document.getElementById('vibeModal').classList.add('open')
+  if(_vibeFactors.length === 0){
+    // 首次打开拉因子列表
+    const sel = document.getElementById('vibeFactorSel')
+    sel.innerHTML = '<option value="">加载中...</option>'
+    const r = await api('/factors_zoo/list')
+    if(!r?.ok){
+      sel.innerHTML = '<option value="">加载失败</option>'
+      document.getElementById('vibeFactorCount').textContent = ''
+      return
+    }
+    _vibeFactors = r.factors || []
+    // 按 zoo 分组（<optgroup>）便于浏览 4 大因子库
+    const zooMap = {}
+    _vibeFactors.forEach(f => {
+      (zooMap[f.zoo] = zooMap[f.zoo] || []).push(f)
+    })
+    const zooLabels = {
+      gtja191:  '见微 A 股增强因子集 (A股微观结构优化)',
+      qlib158:  '见微 量价工程因子集 (滚动均值/动量/波动率)',
+      alpha101: '见微 短线公式因子集 (高频量价)',
+      academic: '见微 经典风格因子集 (Size/Value/Momentum)',
+    }
+    sel.innerHTML = Object.keys(zooMap).sort().map(zoo => {
+      const opts = zooMap[zoo].map(f =>
+        `<option value="${f.id}" title="${(f.description_cn||'').replace(/"/g,'&quot;')}">${f.id}${f.theme && f.theme.length ? ' · ' + f.theme.join('/') : ''}</option>`
+      ).join('')
+      return `<optgroup label="📚 ${zooLabels[zoo] || zoo}">${opts}</optgroup>`
+    }).join('') || '<option value="">（空）</option>'
+    document.getElementById('vibeFactorCount').textContent =
+      `共 ${_vibeFactors.length} 个 · ${Object.keys(zooMap).length} 个库`
+    renderVibeFactorMeta()
+  }
+}
+
+function closeVibeFactors(ev){
+  if(ev && ev.target !== document.getElementById('vibeModal')) return
+  document.getElementById('vibeModal').classList.remove('open')
+}
+
+function renderVibeFactorMeta(){
+  const id = document.getElementById('vibeFactorSel').value
+  const meta = _vibeFactors.find(f => f.id === id)
+  const box = document.getElementById('vibeFactorMeta')
+  if(!meta){ box.style.display = 'none'; return }
+  box.style.display = 'block'
+  // 中文描述（最显眼）
+  const desc = meta.description_cn || ''
+  document.getElementById('vfm-desc').textContent = desc
+  document.getElementById('vfm-desc').style.display = desc ? '' : 'none'
+  // 数学公式
+  document.getElementById('vfm-formula').textContent = meta.formula || '(无公式)'
+  // 标签
+  const tags = []
+  if(meta.zoo) tags.push(`<span style="background:rgba(14,165,233,.15);color:#0ea5e9;padding:1px 6px;border-radius:3px;margin-right:4px">${meta.zoo}</span>`)
+  if(meta.universe) meta.universe.forEach(u => tags.push(`<span style="background:rgba(34,197,94,.15);color:#22c55e;padding:1px 6px;border-radius:3px;margin-right:4px">${u}</span>`))
+  if(meta.theme) meta.theme.forEach(t => tags.push(`<span style="background:rgba(168,85,247,.15);color:#a855f7;padding:1px 6px;border-radius:3px;margin-right:4px">${t}</span>`))
+  if(meta.min_warmup_bars) tags.push(`<span style="color:var(--t3)">预热 ${meta.min_warmup_bars} 天</span>`)
+  document.getElementById('vfm-tags').innerHTML = tags.join('')
+
+  // 自动调整 days 输入框：≥ min_warmup_bars + 20
+  const daysInp = document.getElementById('vibeDays')
+  if(daysInp && meta.min_warmup_bars){
+    const need = meta.min_warmup_bars + 20
+    const cur = parseInt(daysInp.value) || 60
+    if(cur < need){
+      daysInp.value = need
+      daysInp.style.background = 'rgba(245,158,11,.15)'
+      daysInp.title = `因子需要至少 ${meta.min_warmup_bars} 天预热，已自动调整为 ${need} 天`
+      setTimeout(() => { daysInp.style.background = '' }, 2000)
+    }
+  }
+}
+
+function setVibeMode(mode){
+  _vibeMode = mode
+  document.getElementById('vibeModeManual').classList.toggle('btn-blue', mode === 'manual')
+  document.getElementById('vibeModeMarket').classList.toggle('btn-blue', mode === 'market_top')
+  document.getElementById('vibePanelManual').style.display = mode === 'manual' ? 'block' : 'none'
+  document.getElementById('vibePanelMarket').style.display = mode === 'market_top' ? 'block' : 'none'
+}
+
+async function runVibeFactor(){
+  const factorId = document.getElementById('vibeFactorSel').value
+  if(!factorId){ alert('请选择因子'); return }
+  const days = parseInt(document.getElementById('vibeDays').value) || 60
+  const btn = document.getElementById('vibeRunBtn')
+  const resBox = document.getElementById('vibeResult')
+  btn.disabled = true
+  const oldTxt = btn.textContent
+  btn.textContent = '⏳ 计算中...'
+  resBox.innerHTML = '<div class="empty-hint" style="text-align:center;padding:20px 0;color:var(--t3);font-size:12px">⏳ 准备计算...</div>'
+
+  const body = { factor_id: factorId, mode: _vibeMode, days }
+  let expectedCount = 0
+  if(_vibeMode === 'manual'){
+    body.codes = document.getElementById('vibeCodes').value.trim()
+    if(!body.codes){ alert('请输入股票代码'); btn.disabled = false; btn.textContent = oldTxt; return }
+    expectedCount = body.codes.split(/[,，]/).filter(x=>x.trim()).length
+  } else {
+    body.max_codes = parseInt(document.getElementById('vibeMaxCodes').value)
+    if(isNaN(body.max_codes)) body.max_codes = 500
+    expectedCount = body.max_codes === 0 ? 5000 : body.max_codes
+  }
+
+  const t0 = Date.now()
+  // 超过 200 只走异步任务（避免 HTTP 长连接超时 + 显示进度条）
+  let r
+  if(expectedCount > 200){
+    r = await _runVibeFactorAsync(body, factorId, resBox, t0)
+  } else {
+    resBox.innerHTML = '<div class="empty-hint" style="text-align:center;padding:20px 0;color:var(--t3);font-size:12px">⏳ 计算中...</div>'
+    r = await api('/factors_zoo/compute', 'POST', body)
+  }
+  btn.disabled = false
+  btn.textContent = oldTxt
+
+  // 隐藏"加入选股池"按钮（结果出来才显）
+  document.getElementById('vibeAddPool').hidden = true
+  if(!r){ resBox.innerHTML = '<div style="color:#ef4444;padding:14px">⚠️ 网络错误或请求超时</div>'; return }
+  if(!r.ok){ resBox.innerHTML = `<div style="color:#ef4444;padding:14px">⚠️ ${r.error||'计算失败'}</div>`; return }
+
+  const ranked = r.ranked || []
+  const validCount = ranked.filter(x => x.score !== null).length
+  const elapsed = ((Date.now() - t0)/1000).toFixed(1)
+  const covMsg = r.scanned < r.requested
+    ? `<span style="color:#f59e0b">扫描成功 ${r.scanned}/${r.requested} 只（数据源限制，建议手动输入有缓存的代码）</span>`
+    : `<span style="color:#22c55e">扫描 ${r.scanned} 只全部成功</span>`
+
+  let html = `<div style="font-size:11px;color:var(--t3);margin-bottom:6px">
+    ${covMsg} · 有效分数 ${validCount} 只 · 耗时 ${elapsed}s（服务端 ${r.took_ms}ms）
+  </div>`
+
+  if(ranked.length === 0){
+    html += '<div class="empty-hint" style="text-align:center;padding:20px 0;color:var(--t3)">无结果</div>'
+  } else {
+    html += `<table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="background:var(--inp);color:var(--t3)">
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--b1)">排名</th>
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--b1)">代码</th>
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--b1)">名称</th>
+        <th style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--b1)">现价</th>
+        <th style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--b1)">分数</th>
+        <th style="padding:6px 8px;text-align:center;border-bottom:1px solid var(--b1)">操作</th>
+      </tr></thead><tbody>`
+    ranked.slice(0, 50).forEach((row, i) => {
+      const medal = row.rank === 1 ? '🥇' : (row.rank === 2 ? '🥈' : (row.rank === 3 ? '🥉' : `#${row.rank}`))
+      const scoreStr = row.score === null ? '<span style="color:var(--t3)">—</span>' :
+        `<span style="color:${row.score >= 0 ? '#22c55e' : '#ef4444'};font-family:monospace">${row.score.toFixed(4)}</span>`
+      const priceStr = (row.price && row.price > 0)
+        ? `<span style="font-family:monospace">¥${row.price.toFixed(2)}</span>`
+        : '<span style="color:var(--t3)">—</span>'
+      // 操作列：买入按钮（无价或分数为 null 时禁用）
+      const canBuy = (row.price && row.price > 0) && (row.score !== null)
+      const btnHtml = canBuy
+        ? `<button class="btn btn-xs" style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;padding:2px 8px;font-size:11px" onclick="vibeQuickBuy(${i})" title="按顶部「模拟/实盘」总开关下单">🛒 买入</button>`
+        : `<button class="btn btn-xs btn-gray" style="padding:2px 8px;font-size:11px" disabled title="无现价 / 分数无效">—</button>`
+      html += `<tr style="border-bottom:1px solid var(--b1)">
+        <td style="padding:5px 8px">${medal}</td>
+        <td style="padding:5px 8px;font-family:monospace">${row.code}</td>
+        <td style="padding:5px 8px">${row.name||''}</td>
+        <td style="padding:5px 8px;text-align:right">${priceStr}</td>
+        <td style="padding:5px 8px;text-align:right">${scoreStr}</td>
+        <td style="padding:5px 8px;text-align:center">${btnHtml}</td>
+      </tr>`
+    })
+    html += '</tbody></table>'
+    if(ranked.length > 50){
+      html += `<div style="font-size:10px;color:var(--t3);text-align:center;padding:6px 0">仅展示前 50 行（共 ${ranked.length} 只）</div>`
+    }
+    // 有结果 → 显示"加入选股池"按钮
+    _vibeLastResult = { factor_id: factorId, ranked, factor_meta: r.factor_meta }
+    document.getElementById('vibeAddPool').hidden = false
+    document.getElementById('vibeAddTopN').max = Math.max(1, validCount)
+    document.getElementById('vibeAddTopN').value = Math.min(20, Math.max(1, validCount))
+  }
+  resBox.innerHTML = html
+}
+
+// Vibe 结果表 行内"🛒 买入"  —— 顶部「模拟/实盘」开关决定路径
+//   - 模拟模式: broker_type=paper → paper_broker.submit_buy 立即成交
+//   - 实盘模式: broker_type≠paper → 写 trade_signals 给桥接器拉走按 F1
+//   后端 /api/paper/buy 是统一入口，会根据 broker_type 自动选路径
+async function vibeQuickBuy(rowIdx){
+  if(!_vibeLastResult || !_vibeLastResult.ranked) return
+  const row = _vibeLastResult.ranked[rowIdx]
+  if(!row){ alert('行号越界'); return }
+  if(!row.price || row.price <= 0){ alert('无现价无法下单'); return }
+
+  const isLive = (typeof _tradeMode !== 'undefined' && _tradeMode === 'live')
+  const modeLabel = isLive ? '🔴 实盘' : '🛡️ 模拟'
+  const factorLabel = _vibeLastResult.factor_id || '因子'
+
+  // 实盘模式：先拿 broker_config 看 live_cash 是否设置，并显示给用户
+  let liveCash = 0
+  if(isLive){
+    try {
+      const cfgResp = await api('/user/broker_config')
+      liveCash = parseFloat((cfgResp?.config || {}).live_cash || 0)
+    } catch(e){}
+    if(!liveCash || liveCash <= 0){
+      alert('⚠️ 实盘下单前必须先配置 xiadan 真账户余额\n\n请回到顶部 🔴 实盘 开关 → 点开二次确认 Modal → 在余额栏填入 200000（或你 xiadan 上的真实可用金额）\n\n这样系统才能按 20% 仓位 × 真余额 算出正确手数（而不是用模拟盘 500000 的虚假基数导致超限被金额护栏拒）')
+      return
+    }
+  }
+
+  // 二次确认
+  const positionRatio = 0.20  // 显示用，后端实际从 user_state.position_ratio 取
+  const targetBudget = isLive ? (liveCash * positionRatio) : null
+  const estShares = isLive
+    ? Math.max(Math.floor(targetBudget / row.price / 100) * 100, 100)
+    : null
+
+  const msg = `${modeLabel} · 立即买入\n\n`
+    + `股票: ${row.code} ${row.name||''}\n`
+    + `现价: ¥${row.price.toFixed(2)}\n`
+    + `分数: ${row.score === null ? '—' : row.score.toFixed(4)} (来自 ${factorLabel})\n\n`
+    + (isLive
+        ? `📊 仓位计算（基于 xiadan 真账户）:\n`
+          + `   真余额: ¥${liveCash.toLocaleString()}\n`
+          + `   仓位比: ${(positionRatio*100).toFixed(0)}%\n`
+          + `   预算: ¥${targetBudget.toLocaleString()}\n`
+          + `   预估手数: ${estShares} 股\n`
+          + `   预估金额: ¥${(estShares * row.price).toFixed(0)}\n\n`
+          + '⚠️ 实盘模式：信号 → 桥接器 → xiadan 按 F1 真下单'
+        : '✅ 模拟模式：仅动 paper_trading.db，无任何资金风险。')
+  if(!confirm(msg)) return
+
+  try {
+    const res = await api('/paper/buy', 'POST', {
+      code:   row.code,
+      name:   row.name || row.code,
+      price:  row.price,
+      shares: 0,   // 后端按 broker_type 自动算
+    })
+    if(!res){ alert('网络错误'); return }
+    if(!res.ok){
+      alert('❌ ' + (res.msg || '下单失败'))
+      return
+    }
+
+    // 模拟模式：res 已是终态，直接显示
+    if(!isLive){
+      const detail = res.msg || `已模拟买入 ${row.code} ${res.shares || ''}股`
+      if(typeof showToast === 'function') showToast('✅ ' + detail, 'success')
+      else alert('✅ ' + detail)
+      if(typeof fetchSt === 'function') fetchSt()
+      if(typeof fetchPositions === 'function') setTimeout(fetchPositions, 500)
+      return
+    }
+
+    // 实盘模式：res.signal_id 是异步的，要轮询桥接器回传结果
+    const signalId = res.signal_id
+    if(!signalId){
+      alert('⏳ ' + (res.msg || '实盘信号已下发')+ '\n\n但未拿到 signal_id，无法跟踪执行结果。\n请在监控中心日志查看实际状态。')
+      return
+    }
+    if(typeof showToast === 'function') showToast(`⏳ 信号 ${signalId} 已下发，等待桥接器执行...`, 'info')
+
+    // 轮询 8 次 × 2 秒 = 最长等 16 秒（含弹委托框 + AUTO_CONFIRM=False 等手动按 Y 的时间）
+    let finalStatus = null
+    for(let i = 0; i < 8; i++){
+      await new Promise(r => setTimeout(r, 2000))
+      try {
+        const st = await api('/bridge/signals/' + signalId + '/status')
+        if(st?.ok && st.signal){
+          const s = st.signal.status
+          // executed/failed/cancelled = 终态；submitted = 已按 F1 提交但未确认；sent = 桥接器收到尚未按 F1
+          if(s === 'executed' || s === 'failed' || s === 'cancelled' || s === 'submitted'){
+            finalStatus = st.signal
+            break
+          }
+        }
+      } catch(e){}
+    }
+
+    if(finalStatus){
+      const s = finalStatus.status
+      // submitted = 已提交到券商但桥接器没等到确认弹框（多半已成交，但需要查当日委托）
+      // executed  = 桥接器明确看到"委托成功"
+      // failed    = 资金不足/价格偏离/封板等
+      // cancelled = 用户/系统取消
+      let icon, head
+      if(s === 'executed'){ icon = '✅'; head = '实盘买入成功' }
+      else if(s === 'submitted'){ icon = '⏳'; head = '已提交到券商，请在 xiadan「当日委托」核对' }
+      else if(s === 'failed'){ icon = '❌'; head = '实盘买入失败' }
+      else if(s === 'cancelled'){ icon = '🚫'; head = '已取消' }
+      else { icon = '⏳'; head = `状态 ${s}` }
+      alert(`${icon} ${head}\n\n股票: ${row.code} ${row.name||''}\n状态: ${s}\n消息: ${finalStatus.report_msg || '-'}\n${finalStatus.exec_price ? '成交价: ¥'+finalStatus.exec_price : ''}`)
+    } else {
+      alert(`⏳ 信号 ${signalId} 已下发到桥接器，16 秒内未拿到回传\n\n可能原因:\n• xiadan 未在线 / 桥接器卡住\n• AUTO_CONFIRM_ORDER=False 时你还没在 xiadan 上按 Y 提交\n• 委托正在排队\n\n请查 xiadan「当日委托」+ 监控中心日志 + bridge.log`)
+    }
+    if(typeof fetchSt === 'function') fetchSt()
+    if(typeof fetchPositions === 'function') setTimeout(fetchPositions, 500)
+  } catch(e){
+    alert('异常: ' + e.message)
+  }
+}
+
+// 异步任务模式：启动 → 轮询进度 → 取结果（适合 > 200 只）
+async function _runVibeFactorAsync(body, factorId, resBox, t0){
+  const startResp = await api('/factors_zoo/compute_async', 'POST', body)
+  if(!startResp?.ok){
+    return startResp  // 让外层错误处理走
+  }
+  const taskId = startResp.task_id
+  const totalCodes = startResp.total || 0
+  resBox.innerHTML = `
+    <div style="padding:14px">
+      <div id="vibeProgPhase" style="font-size:12px;color:var(--t2);margin-bottom:8px">⏳ 启动中... (task=${taskId})</div>
+      <div style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;height:8px;overflow:hidden">
+        <div id="vibeProgBar" style="height:100%;width:0%;background:linear-gradient(90deg,#0ea5e9,#06b6d4);transition:width 0.5s"></div>
+      </div>
+      <div id="vibeProgInfo" style="font-size:10px;color:var(--t3);margin-top:6px;font-family:monospace"></div>
+    </div>
+  `
+  // 轮询进度
+  for(let i = 0; i < 1800; i++){  // 最多 30 分钟（1800 × 1s）
+    await new Promise(r => setTimeout(r, 1000))
+    const prog = await api(`/factors_zoo/progress/${taskId}`)
+    if(!prog?.ok){ return { ok: false, error: prog?.error || '进度查询失败' } }
+    const phaseEl = document.getElementById('vibeProgPhase')
+    const barEl   = document.getElementById('vibeProgBar')
+    const infoEl  = document.getElementById('vibeProgInfo')
+    if(!phaseEl) return { ok: false, error: '用户取消' }   // Modal 被关掉了
+    phaseEl.textContent = `⏳ ${prog.phase || '处理中'}（任务 ${taskId}）`
+    if(prog.scan_total > 0){
+      const pct = Math.min(99, Math.round(prog.scan_current / prog.scan_total * 100))
+      barEl.style.width = pct + '%'
+      infoEl.textContent = `K线扫描 ${prog.scan_current}/${prog.scan_total} (${pct}%) [${prog.scan_code||''}] · 已用 ${((Date.now()-t0)/1000).toFixed(0)}s`
+    } else {
+      infoEl.textContent = `已用 ${((Date.now()-t0)/1000).toFixed(0)}s`
+    }
+    if(prog.status === 'done'){
+      barEl.style.width = '100%'
+      // 拉结果
+      const resp = await api(`/factors_zoo/result/${taskId}`)
+      return resp
+    }
+    if(prog.status === 'error'){
+      return { ok: false, error: prog.error || '后台任务失败' }
+    }
+  }
+  return { ok: false, error: '任务超时（30 分钟）' }
+}
+
+// 因子回测：用当前 Modal 配置（手动 codes 或 market_top）+ 默认参数跑历史
+async function runVibeBacktest(){
+  const factorId = document.getElementById('vibeFactorSel').value
+  if(!factorId){ alert('请选择因子'); return }
+  const btn = document.getElementById('vibeBtBtn')
+  const resBox = document.getElementById('vibeResult')
+  btn.disabled = true
+  const oldTxt = btn.textContent
+  btn.textContent = '⏳ 回测中...'
+
+  const body = {
+    factor_id: factorId,
+    mode: _vibeMode,
+    days: 200,           // 历史天数
+    top_k: 10,
+    rebalance_days: 5,
+    hold_days: 5,
+    fee_rate: 0.0,
+  }
+  if(_vibeMode === 'manual'){
+    body.codes = document.getElementById('vibeCodes').value.trim()
+    if(!body.codes){ alert('请输入股票代码'); btn.disabled=false; btn.textContent=oldTxt; return }
+  } else {
+    body.max_codes = Math.min(parseInt(document.getElementById('vibeMaxCodes').value) || 100, 500)
+  }
+  resBox.innerHTML = '<div class="empty-hint" style="text-align:center;padding:20px 0;color:var(--t3);font-size:12px">⏳ 回测计算中（可能需要 30-90 秒）...</div>'
+  const t0 = Date.now()
+  const r = await api('/factors_zoo/backtest', 'POST', body)
+  btn.disabled = false
+  btn.textContent = oldTxt
+
+  if(!r){ resBox.innerHTML = '<div style="color:#ef4444;padding:14px">⚠️ 网络错误或超时</div>'; return }
+  if(!r.ok){ resBox.innerHTML = `<div style="color:#ef4444;padding:14px">⚠️ ${r.error||'回测失败'}</div>`; return }
+
+  const s = r.stats || {}
+  const ec = r.equity_curve || []
+  // 渲染统计 + 净值曲线 + 最近交易
+  const colorByVal = (v, good='#22c55e', bad='#ef4444', neutral='var(--t3)') =>
+    v > 0 ? good : (v < 0 ? bad : neutral)
+  const fmtPct = v => v == null ? '—' : (v*100).toFixed(2) + '%'
+  const fmt = v => v == null ? '—' : (typeof v === 'number' ? v.toFixed(3) : v)
+  let html = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px">
+      ${[
+        ['总收益',   fmtPct(s.total_return),   colorByVal(s.total_return)],
+        ['年化',     fmtPct(s.annual_return),  colorByVal(s.annual_return)],
+        ['最大回撤', fmtPct(s.max_drawdown),   '#ef4444'],
+        ['夏普',     fmt(s.sharpe),            colorByVal(s.sharpe)],
+        ['胜率',     fmtPct(s.win_rate),       colorByVal(s.win_rate-0.5)],
+        ['交易笔数', s.trade_count,            'var(--t1)'],
+        ['IC 均值',  fmt(s.ic_mean),           colorByVal(s.ic_mean)],
+        ['IC IR',    fmt(s.ic_ir),             colorByVal(s.ic_ir)],
+      ].map(([k,v,c]) => `
+        <div style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:8px 10px;text-align:center">
+          <div style="font-size:10px;color:var(--t3)">${k}</div>
+          <div style="font-size:14px;font-weight:700;color:${c}">${v}</div>
+        </div>
+      `).join('')}
+    </div>
+  `
+  // 净值曲线 SVG sparkline（自绘，避免依赖外部图库 — 现在 ECharts 已经在用，但简单 SVG 也够看）
+  if(ec.length >= 2){
+    const navs = ec.map(p => p.nav)
+    const minN = Math.min(...navs), maxN = Math.max(...navs)
+    const span = (maxN - minN) || 1
+    const w = 700, h = 100, pad = 4
+    const pts = ec.map((p, i) => {
+      const x = pad + (w - 2*pad) * i / (ec.length - 1)
+      const y = pad + (h - 2*pad) * (1 - (p.nav - minN) / span)
+      return `${x.toFixed(1)},${y.toFixed(1)}`
+    }).join(' ')
+    const lineColor = navs[navs.length-1] > navs[0] ? '#22c55e' : '#ef4444'
+    html += `
+      <div style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:8px;margin-bottom:10px">
+        <div style="font-size:10px;color:var(--t3);margin-bottom:4px">净值曲线（${ec[0].date} → ${ec[ec.length-1].date}, 起始 1.00 → ${navs[navs.length-1].toFixed(4)}）</div>
+        <svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+          <polyline points="${pts}" fill="none" stroke="${lineColor}" stroke-width="1.5"/>
+          <line x1="0" y1="${h-pad}" x2="${w}" y2="${h-pad}" stroke="var(--b1)" stroke-width="0.5"/>
+        </svg>
+      </div>
+    `
+  }
+  // 最近 5 笔交易
+  const tr = (r.trades || []).slice(-5).reverse()
+  if(tr.length){
+    html += `<div style="font-size:11px;color:var(--t3);margin-bottom:4px">最近 ${tr.length} 笔交易</div>`
+    html += '<table style="width:100%;border-collapse:collapse;font-size:11px">'
+    html += '<thead><tr style="color:var(--t3);background:var(--inp)"><th style="padding:4px 6px;text-align:left">建仓</th><th style="padding:4px 6px;text-align:left">平仓</th><th style="padding:4px 6px;text-align:right">收益</th><th style="padding:4px 6px;text-align:left">持仓</th></tr></thead><tbody>'
+    tr.forEach(t => {
+      const pcol = t.pnl_pct > 0 ? '#22c55e' : (t.pnl_pct < 0 ? '#ef4444' : 'var(--t3)')
+      html += `<tr style="border-bottom:1px solid var(--b1)">
+        <td style="padding:4px 6px;font-family:monospace">${t.open_date}</td>
+        <td style="padding:4px 6px;font-family:monospace">${t.close_date}</td>
+        <td style="padding:4px 6px;text-align:right;color:${pcol};font-family:monospace">${(t.pnl_pct >= 0 ? '+' : '')+t.pnl_pct.toFixed(2)}%</td>
+        <td style="padding:4px 6px;color:var(--t2);font-size:10px">${(t.codes||[]).slice(0,5).join(',')}${t.codes&&t.codes.length>5?'...':''}</td>
+      </tr>`
+    })
+    html += '</tbody></table>'
+  }
+  html += `<div style="font-size:10px;color:var(--t3);margin-top:8px">回测配置: top_k=${r.config.top_k} · rebalance=${r.config.rebalance_days}d · hold=${r.config.hold_days}d · 共扫描 ${s.scanned}/${r.config.n_codes} 只 · 用时 ${((Date.now()-t0)/1000).toFixed(1)}s</div>`
+  resBox.innerHTML = html
+  document.getElementById('vibeAddPool').hidden = true  // 回测不支持加入选股池
+}
+
+// ── Vibe 激活到自动交易 ──
+function openVibeActivateModal(){
+  const factorId = document.getElementById('vibeFactorSel').value
+  if(!factorId){ alert('请先选择因子'); return }
+  document.getElementById('vibeActFactorIdLabel').textContent = factorId
+  // 实时显示当前实盘开关状态
+  document.getElementById('vactModeWarn').style.display = _tradeMode === 'live' ? '' : 'none'
+  document.getElementById('vibeActivateModal').classList.add('open')
+}
+
+function closeVibeActivate(ev){
+  if(ev && ev.target !== document.getElementById('vibeActivateModal')) return
+  document.getElementById('vibeActivateModal').classList.remove('open')
+}
+
+async function confirmVibeActivate(){
+  const factorId = document.getElementById('vibeActFactorIdLabel').textContent
+  const intervalSec = parseInt(document.getElementById('vactIntervalSec').value) || 120
+  const body = {
+    factor_id: factorId,
+    mode: 'market_top',
+    max_codes: parseInt(document.getElementById('vactMaxCodes').value) || 500,
+    daily_limit: parseInt(document.getElementById('vactDailyLimit').value) || 3,
+    position_pct: (parseFloat(document.getElementById('vactPositionPct').value) || 20) / 100,
+    score_percentile: parseFloat(document.getElementById('vactScorePct').value) || 0.8,
+    stop_loss_pct: (parseFloat(document.getElementById('vactStopLoss').value) || -3) / 100,
+    interval_sec: intervalSec,
+  }
+  const r = await api('/vibe_activations/activate', 'POST', body)
+  if(r?.ok){
+    closeVibeActivate()
+    const mins = intervalSec >= 60 ? `${Math.floor(intervalSec/60)} 分钟` : `${intervalSec} 秒`
+    alert(`⚡ 因子 ${factorId} 已激活！\n\n下次扫描会在 ${mins} 内自动触发（仅交易时段）。\n顶部开关 = ${_tradeMode==='live'?'实盘':'模拟'} 决定下单路径。`)
+    renderVibeActivationCard()
+  } else {
+    alert('激活失败: ' + (r?.error || '未知错误'))
+  }
+}
+
+async function renderVibeActivationCard(){
+  const box = document.getElementById('vibeCurActivation')
+  if(!box) return
+  const r = await api('/vibe_activations/me')
+  if(!r?.ok || !r.activation){
+    box.style.display = 'none'
+    return
+  }
+  const a = r.activation
+  if(!a.enabled){
+    box.style.display = 'none'
+    return
+  }
+  const halted = a.halted ? `<span style="color:#ef4444;font-weight:700">🛑 已熔断: ${a.halt_reason||''}</span>` : '<span style="color:#22c55e">✓ 运行中</span>'
+  box.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <b>⚡ 当前已激活: ${a.factor_id}</b>
+      <button class="btn btn-red btn-xs" onclick="deactivateVibe()">停用</button>
+    </div>
+    <div style="color:var(--t2);line-height:1.6">
+      状态: ${halted} · 今日 ${a.daily_count}/${a.daily_limit} 笔 · 浮盈 ${(a.daily_pnl_pct*100).toFixed(2)}%<br>
+      仓位 ${(a.position_pct*100).toFixed(0)}% · 分数阈值 top ${((1-a.score_percentile)*100).toFixed(0)}% · 止损 ${(a.stop_loss_pct*100).toFixed(1)}% · 池 ${a.max_codes} 只
+    </div>
+  `
+  box.style.display = ''
+}
+
+async function deactivateVibe(){
+  if(!confirm('停用当前激活的 Alpha 因子？\n已开仓位不影响，仅停止后续自动扫描。')) return
+  const r = await api('/vibe_activations/deactivate', 'POST', {})
+  if(r?.ok){
+    document.getElementById('vibeCurActivation').style.display = 'none'
+  }
+}
+
+// openVibeFactors 末尾追加：自动拉激活状态
+const _originalOpenVibeFactors = openVibeFactors
+openVibeFactors = async function(){
+  await _originalOpenVibeFactors.apply(this, arguments)
+  renderVibeActivationCard()
+}
+
+// 把最后一次 Vibe 因子计算结果注入右侧选股结果区
+let _vibeLastResult = null
+function vibeAddToScreenPool(){
+  if(!_vibeLastResult){ alert('请先计算因子分数'); return }
+  const topN = Math.max(1, parseInt(document.getElementById('vibeAddTopN').value) || 20)
+  const validRanked = _vibeLastResult.ranked.filter(x => x.score !== null && !isNaN(x.score))
+  const slice = validRanked.slice(0, topN)
+  if(slice.length === 0){ alert('没有有效因子分数可加入'); return }
+
+  const fid = _vibeLastResult.factor_id
+  // 转 scResults 格式（注意：score 需要从 -1~+1 缩放到 0~100 给 UI 评分用）
+  const minScore = Math.min(...slice.map(x => x.score))
+  const maxScore = Math.max(...slice.map(x => x.score))
+  const span = (maxScore - minScore) || 1
+  scResults = slice.map((x, i) => ({
+    code:   x.code,
+    name:   x.name || x.code,
+    price:  x.price || 0,
+    change: x.change || 0,
+    // 归一化到 0~100 给徽章用
+    score:  Math.round((x.score - minScore) / span * 100),
+    reason: `📚 ${fid} #${i+1} (raw=${x.score.toFixed(4)})`,
+  }))
+  // 让"加入持仓队列"等按钮可见
+  const _btn = document.getElementById('addAllBtn'); if(_btn) _btn.style.display = scResults.length ? '' : 'none'
+  const _ob  = document.getElementById('optBtn');   if(_ob)  _ob.style.display  = scResults.length >= 2 ? '' : 'none'
+
+  // 渲染
+  document.getElementById('scInfo').textContent =
+    `📚 Alpha 因子[${fid}] · 前 ${slice.length} 名（共 ${_vibeLastResult.ranked.length} 只参与排名）`
+  _renderScResults()
+  // 切到选股 tab + 关闭 Modal
+  switchRTab('screen', document.querySelectorAll('.rtab')[1])
+  closeVibeFactors()
+}
+
 async function loadStrat(fn){
   curStrat=fn; _curMode='strat'
   const d=await api('/strategies/'+fn); if(!d) return
@@ -3303,7 +4551,12 @@ async function showKLine(code, name){
       '<span style="color:var(--rl)">⚠ 暂无数据 — 请先在「策略中心 → 数据管理」下载该股历史数据</span>'
     return
   }
-  document.getElementById('klSrc').textContent = resp.source==='local' ? '本地数据' : 'TDX实时'
+  const _klSrc = document.getElementById('klSrc')
+  if(resp.stale){
+    _klSrc.innerHTML = '<span style="color:var(--rl)" title="'+(resp.msg||'本地缓存可能过期').replace(/"/g,'')+'">⚠ 本地缓存·可能过期</span>'
+  } else {
+    _klSrc.textContent = resp.source==='tdx' ? 'TDX实时' : '本地数据'
+  }
   drawKLine(cvs, resp.data)
 }
 
@@ -3527,7 +4780,7 @@ async function doPaperBuy(){
   if(r?.ok){
     closePaperBuy()
     alert(`✅ 模拟买入成功！\n${code} ${name}\n${r.shares}股 @ ¥${price}`)
-    loadPaperPage()
+    loadPaperPage(); fetchFunds()
   } else {
     alert('❌ 买入失败：' + (r?.msg || '未知错误'))
   }
@@ -4037,7 +5290,7 @@ async function doLogin(){
     _currentUser = r
     hideAuthOverlay()
     updateNavUser(r)
-    loadStratList(); loadDbList(); startPoll(); initAI(); initBrokerConfig(); initNotifyConfig(); loadMarketContext()
+    loadStratList(); loadDbList(); startPoll(); initAI(); initBrokerConfig(); initNotifyConfig(); loadMarketContext(); loadTradeMode()
   } else {
     setAuthMsg(msg, r?.error || '登录失败', 'err')
   }
@@ -4062,7 +5315,7 @@ async function doRegister(){
       setTimeout(()=>{
         hideAuthOverlay()
         updateNavUser(lr)
-        loadStratList(); loadDbList(); startPoll(); initAI(); initBrokerConfig(); initNotifyConfig(); loadMarketContext()
+        loadStratList(); loadDbList(); startPoll(); initAI(); initBrokerConfig(); initNotifyConfig(); loadMarketContext(); loadTradeMode()
       }, 800)
     }
   } else {

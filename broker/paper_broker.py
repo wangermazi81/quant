@@ -527,11 +527,17 @@ class PaperBroker:
             pass
 
     # ── 风控检查 ─────────────────────────────────────
-    def check_risk_rules(self, cur_prices: dict) -> list:
+    def check_risk_rules(self, cur_prices: dict,
+                         stop_loss=None, take_profit=None, max_hold=None) -> list:
+        """止损/止盈/超期检查。stop_loss/take_profit/max_hold 显式传入时覆盖账户默认配置，
+        供策略级风控用（如打板 S6：止损-8% 锁利+1.5% 持有3天）。"""
         triggered = []
-        stop_loss   = self._cfg("stop_loss")   or DEFAULT_STOP_LOSS
-        take_profit = self._cfg("take_profit") or DEFAULT_TAKE_PROFIT
-        max_hold    = int(self._cfg("max_hold_days") or DEFAULT_MAX_HOLD_DAYS)
+        if stop_loss is None:
+            stop_loss = self._cfg("stop_loss") or DEFAULT_STOP_LOSS
+        if take_profit is None:
+            take_profit = self._cfg("take_profit") or DEFAULT_TAKE_PROFIT
+        if max_hold is None:
+            max_hold = int(self._cfg("max_hold_days") or DEFAULT_MAX_HOLD_DAYS)
 
         con = self._conn()
         positions = con.execute(
@@ -551,9 +557,9 @@ class PaperBroker:
 
             reason = None
             if pnl_pct <= stop_loss:
-                reason = f"止损({pnl_pct*100:.1f}%≤{stop_loss*100:.0f}%)"
+                reason = f"止损({pnl_pct*100:.1f}%≤{stop_loss*100:.1f}%)"
             elif pnl_pct >= take_profit:
-                reason = f"止盈({pnl_pct*100:.1f}%≥{take_profit*100:.0f}%)"
+                reason = f"止盈({pnl_pct*100:.1f}%≥{take_profit*100:.1f}%)"
             elif hold >= max_hold:
                 reason = f"超期({hold}天≥{max_hold}天)"
 
@@ -567,7 +573,7 @@ class PaperBroker:
         return triggered
 
     # ── 账户信息 ─────────────────────────────────────
-    def get_account(self) -> dict:
+    def get_account(self, cur_prices: Optional[Dict] = None) -> dict:
         con = self._conn()
         cash_row = con.execute(
             "SELECT value FROM paper_config WHERE user_id=? AND key='cash'", (self._uid,)
@@ -586,7 +592,10 @@ class PaperBroker:
         cash    = float(cash_row["value"])    if cash_row else DEFAULT_INITIAL_CAPITAL
         initial = float(init_row["value"])    if init_row else DEFAULT_INITIAL_CAPITAL
         peak    = float(peak_row["value"])    if peak_row else cash
-        mval    = sum(p["cost_price"] * p["shares"] for p in positions)
+        # 市值优先用实时价（传入 cur_prices 时），否则退回成本价。
+        # 这样账户权益/收益率能体现浮动盈亏，实现实时收益跟踪。
+        cur_prices = cur_prices or {}
+        mval    = sum((cur_prices.get(p["code"]) or p["cost_price"]) * p["shares"] for p in positions)
         equity  = round(cash + mval, 2)
         return {
             "initial_capital": initial,

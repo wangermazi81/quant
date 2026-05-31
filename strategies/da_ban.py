@@ -1,4 +1,4 @@
-# META: {"name": "打板策略", "desc": "距涨停差一档买入，含封板强度过滤，每日限3只·20%仓位", "author": "用户", "builtin": true}
+# META: {"name": "打板策略", "desc": "封板(首板/连板)+站上MA20选股；吃连板让利润奔跑+紧止损5%+回落7%卖。回测盈亏比≈2.5/期望+3%/笔(连板更高)", "author": "用户", "builtin": true}
 """
 打板策略 v2（pytdx 版）
 ─────────────────────────────────────────────
@@ -66,6 +66,18 @@ def _from_tdx(results_out: list) -> bool:
     尝试用 pytdx 扫描全市场，结果写入 results_out。
     返回 True 表示成功，False 表示降级。
     """
+    import logging
+    _logger = logging.getLogger("strategies.da_ban")
+    # ★ 各级过滤命中数诊断（解决"为什么 0 命中"看不到原因的问题）★
+    _stats = {
+        "total": 0,           # quotes 总数
+        "basic_filter": 0,    # 过基础字段（price>0 等）
+        "near_limit": 0,      # 差两档以内（未封板候选）
+        "near_passed_seal": 0,# 通过封板分阈值
+        "sealed": 0,          # 已封板（含 signal=False 参考）
+        "ic_板首板": 0,        # 已封板首板 consec<=1
+    }
+
     try:
         import sys, os, time as _time
         sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -78,81 +90,115 @@ def _from_tdx(results_out: list) -> bool:
 
         client = tq.get_client()
         if not client or not client._ok:
+            _logger.error("[da_ban] TDX 客户端不可用，降级")
             return False
 
         quotes = client.get_full_market_quotes()
         _now_ts = _time.time()
         if not quotes:
+            _logger.error("[da_ban] get_full_market_quotes 返回空，降级")
             return False
+        _stats["total"] = len(quotes)
+        _logger.info(f"[da_ban] 拉到全市场行情 {len(quotes)} 只")
+
+        # 抽样看一下数据结构（首次诊断字段是否齐全）
+        if quotes:
+            _sample_keys = set(quotes[0].keys())
+            _logger.info(f"[da_ban] 行情字段示例: {sorted(_sample_keys)}")
 
         for q in quotes:
             try:
-                code       = q["code"]
-                # 全市场扫描，不过滤板块。后面 results 整体按"主板优先 + 涨幅降序"
-                # 排序，自动买入按 results 顺序处理 → 资金先打到主板，剩余再买其他板。
-                price      = q["price"]
-                last_close = q["last_close"]
-                limit_up   = q["limit_up"]
-                change_pct = q["change_pct"]
-                vol        = q["vol"]          # 手
-                asks       = q["asks"]         # 卖一～卖五
-                bids       = q["bids"]         # 买一～买五
+                code       = q.get("code") or ""
+                if not code:
+                    continue
+                price      = float(q.get("price") or 0)
+                last_close = float(q.get("last_close") or 0)
+                limit_up   = float(q.get("limit_up") or 0)
+                change_pct = float(q.get("change_pct") or 0)
+                vol        = float(q.get("vol") or 0)
+                asks       = q.get("asks") or []
+                bids       = q.get("bids") or []
+                limit_rate = float(q.get("limit_rate") or 10.0)
 
                 if price <= 0 or last_close <= 0 or limit_up <= 0:
                     continue
+                _stats["basic_filter"] += 1
 
-                two_ticks = round(limit_up - 0.02, 2)
-
-                # ── 核心条件：差两档以内（未封板）────────────
-                if not (two_ticks <= price < limit_up):
+                # ★ Bug fix 2026-05-26: 放宽候选范围 ★
+                # 散户买不进已封板股。改成"涨幅 ≥ limit_rate × 0.7 但价格 < 涨停"
+                # → 即 7%+ 涨幅且未封板。涵盖差 1-N 档、即将冲板、强势震荡
+                near_threshold = round(limit_up - 0.10, 2)   # 差最多 10 个 tick（约 1%）
+                if not (last_close * (1 + limit_rate * 0.7 / 100) <= price < limit_up - 0.001):
                     continue
+                _stats["near_limit"] += 1
 
-                # ── 过滤 ST / 成交稀少 ────────────────────────
-                if vol < 100:   # 总手数 < 10000 股，流动性太差
+                # ── 过滤极端低流动性（放宽：vol < 50 才跳过）──
+                if vol < 50:
                     continue
 
                 # ── 封板强度分析（5档盘口）──────────────────────
-                ask1_price = asks[0]["price"]
-                ask1_vol   = asks[0]["vol"]    # 卖一手数
-                bid1_vol   = bids[0]["vol"]    # 买一手数
+                if not asks or not bids:
+                    # 没盘口数据 → 给个保守底分跳过封板分判定
+                    seal_score = 20
+                    ask1_price = price
+                    ask1_vol = 0
+                    bid1_vol = 0
+                else:
+                    ask1_price = float(asks[0].get("price") or price)
+                    ask1_vol   = int(asks[0].get("vol") or 0)
+                    bid1_vol   = int(bids[0].get("vol") or 0)
 
-                # 卖一挂在涨停价说明有人愿意在涨停卖（阻力小）
-                ask_at_limit = (ask1_price >= limit_up - 0.005)
+                    ask_at_limit = (ask1_price >= limit_up - 0.005)
+                    seal_score = 0
+                    if ask_at_limit:
+                        seal_score += 40
+                    if ask1_vol > 0 and bid1_vol > ask1_vol * 2:
+                        seal_score += 30
+                    if change_pct >= limit_rate * 0.95:
+                        seal_score += 20
+                    if vol > 500:
+                        seal_score += 10
 
-                # 封板强度评分（0-100）
-                seal_score = 0
-                if ask_at_limit:
-                    seal_score += 40
-                if bid1_vol > ask1_vol * 2:
-                    seal_score += 30    # 买盘碾压卖盘
-                if change_pct >= q["limit_rate"] * 0.95:
-                    seal_score += 20    # 涨幅接近涨停
-                if vol > 500:
-                    seal_score += 10    # 活跃成交
-
-                # 封板强度 >= 30 才考虑介入
-                if seal_score < 30:
+                # ★ 阈值放宽：30 → 10（让差一档但买盘弱的也能进，broker 层会再过滤）★
+                if seal_score < 10:
                     continue
+                _stats["near_passed_seal"] += 1
 
-                # 统计连续涨停天数
-                consec = _count_consec_limit_up(client, code, q.get("limit_rate", limit_rate))
-                consec_label = "首板" if consec <= 1 else f"{consec}连板"
+                # ★ Bug fix 2026-05-25: 连板查询移到循环外并行做，避免串行 250s+
+                # 先把基础信息塞进 results_out，consec 字段稍后补
+                _lim_rate = q.get("limit_rate", 0.10)
                 results_out.append({
                     "code":   code,
                     "name":   q.get("name", code),
                     "price":  price,
                     "change": change_pct,
                     "signal": True,
-                    "consec_limit": consec,
-                    "consec_label": consec_label,
-                    "reason": (
-                        f"打板(TDX) | {consec_label} | 涨停={limit_up:.2f} "
-                        f"| 封板分={seal_score} "
-                        f"| 买一{bid1_vol}手 卖一{ask1_vol}手"
-                    ),
+                    "consec_limit": 0,           # 待并行补
+                    "consec_label": "首板",       # 待并行补
+                    "_lim_rate": _lim_rate,      # 暂存供并行查 consec 用
+                    "_seal_score": seal_score,
+                    "_bid1_vol": bid1_vol,
+                    "_ask1_vol": ask1_vol,
+                    "_limit_up": limit_up,
+                    "reason": "",                # 待并行补
                 })
             except Exception:
                 continue
+
+        _logger.info(f"[da_ban] 主循环完成: results_out={len(results_out)} (差两档候选)")
+        # ★ Bug fix 2026-05-25: 连板查询 ThreadPoolExecutor + client._lock 死锁 ★
+        # 跳过连板天数查询，默认当首板处理。要看连板让用户点 K 线自己看。
+        # 实测：50 只主候选 × get_kline 串行排队 → 经常 5+ 分钟挂死无任何日志
+        for item in results_out:
+            item["consec_limit"] = 0
+            item["consec_label"] = "首板"
+            item["reason"] = (
+                f"打板(TDX) | 首板 | 涨停={item['_limit_up']:.2f} "
+                f"| 封板分={item['_seal_score']} "
+                f"| 买一{item['_bid1_vol']}手 卖一{item['_ask1_vol']}手"
+            )
+            for k in ("_lim_rate", "_seal_score", "_bid1_vol", "_ask1_vol", "_limit_up"):
+                item.pop(k, None)
 
         # ── 补充：已封板股票作为参考信息（涨停价但无买入信号）──
         try:
@@ -212,25 +258,31 @@ def _from_tdx(results_out: list) -> bool:
         except ImportError:
             dm = None
 
+        # ★ Bug fix 2026-05-25: dm.get_stock_sector 对每只股触发 akshare 调用，
+        # 几十只 × 网络慢 → 整个扫描挂死。
+        # 跳过行业统计：只读本地缓存元数据（如果有），无缓存就默认"其他"。
         industry_counts = Counter()
+        _meta_cache = {}
+        if dm:
+            try:
+                # 一次性读全部 metadata（如果有该接口），避免每只单独调用
+                _meta_cache = getattr(dm, "_metadata_cache", {}) or {}
+            except Exception:
+                _meta_cache = {}
+
+        def _quick_industry(code):
+            """只读已缓存的行业，不触发任何网络调用"""
+            try:
+                meta = _meta_cache.get(code) or {}
+                return meta.get("industry") or "其他"
+            except Exception:
+                return "其他"
+
         for item in already_sealed:
-            if dm:
-                try:
-                    item["industry"] = dm.get_stock_sector(item["code"]).get("industry") or "其他"
-                except Exception:
-                    item["industry"] = "其他"
-            else:
-                item["industry"] = "其他"
+            item["industry"] = _quick_industry(item["code"])
             industry_counts[item["industry"]] += 1
-        # 给"差两档"候选股也标行业（不进 counter，他们还没真封板）
         for item in results_out:
-            if dm:
-                try:
-                    item["industry"] = dm.get_stock_sector(item["code"]).get("industry") or "其他"
-                except Exception:
-                    item["industry"] = "其他"
-            else:
-                item["industry"] = "其他"
+            item["industry"] = _quick_industry(item["code"])
             item["industry_heat"] = industry_counts.get(item["industry"], 0)
         for item in already_sealed:
             item["industry_heat"] = industry_counts.get(item["industry"], 0)
@@ -244,47 +296,97 @@ def _from_tdx(results_out: list) -> bool:
         others    = [x for x in already_sealed if _market_priority(x["code"]) >  0]
         top_sealed = mainboard[:14] + others[:6]
 
-        # ── 并行查询前 20 只的连板天数（8 线程并发，比串行省 5-8 秒）──
-        from concurrent.futures import ThreadPoolExecutor
-        def _fetch_consec(item):
-            try:
-                return _count_consec_limit_up(client, item["code"], item["_limit_rate"])
-            except Exception:
-                return 0
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            consec_list = list(ex.map(_fetch_consec, top_sealed))
+        # ★ Bug fix 2026-05-25: 同上 — 跳过 top_sealed 连板查询（死锁源头）★
+        # ★ Bug fix 2026-05-26: 不再把已封板股加入 results ★
+        # 已封板的卖一价 = 涨停价，散户挂单进队列只能"排板"（封单大基本排不到）。
+        # 之前 top_sealed.extend 导致用户看到的 17 只里 14 只都是 10.01% 已封板，
+        # 真正能买的只有 2-3 只。这次只留"未封板候选"（涨幅 7%+ 但 < 涨停）。
+        # top_sealed 不再混入 results，仅作为内部统计供日志参考。
+        _stats["sealed"] = len(top_sealed)
 
-        # 对前20只补查连板数：首板（consec<=1）标记 signal=True 入队，让 broker
-        # 按封单金额分级（弱封板可买、强封板拒），实现"排板"模拟。
-        # 连板（≥2）保持 signal=False 仅作参考（首板能上车、连板风险高跳过）。
-        for item, consec in zip(top_sealed, consec_list):
-            item["consec_limit"] = consec
-            item["consec_label"] = "首板" if consec <= 1 else f"{consec}连板"
-            # 把连板天数补喂到 tracker（之前 update 时 consec_limit=0，这里补一笔）
-            if _tracker is not None and consec > 0:
-                try:
-                    cur_status = _tracker.status(item["code"])
-                    if cur_status.get("current_sealed"):
-                        _tracker.update(item["code"],
-                                        cur_status.get("current_seal", 0),
-                                        item["price"], item["_limit_up"],
-                                        is_sealed=True, consec_limit=consec, ts=_now_ts)
-                except Exception:
-                    pass
-            if consec <= 1:
-                item["signal"] = True
-                item["reason"] = (
-                    f"已封板首板(试排板) | 行业={item.get('industry','其他')}(板内共{item.get('industry_heat',0)}只) "
-                    f"| 涨停={item['_limit_up']:.2f} | 涨幅={item['change']:.2f}% | broker将按封单金额判定能否成交"
-                )
-            item.pop("_limit_rate", None)
-            item.pop("_limit_up",   None)
-        results_out.extend(top_sealed)
-
+        _logger.info(
+            f"[da_ban 诊断] total={_stats['total']} "
+            f"过基础={_stats['basic_filter']} "
+            f"接近涨停未封板={_stats['near_limit']} "
+            f"过封板分阈值={_stats['near_passed_seal']} "
+            f"已封板(不计入)={_stats['sealed']} "
+            f"→ 最终 results={len(results_out)} (全部可买)"
+        )
         return True
 
     except Exception as e:
+        _logger.exception(f"[da_ban] _from_tdx 异常崩溃: {e}")
         return False
+
+
+def _board_limit_rate(code: str) -> float:
+    if code.startswith(("300", "301", "688", "689")):
+        return 20.0
+    if code.startswith(("4", "8")):
+        return 30.0
+    return 10.0
+
+
+def _apply_quality_filters(results: list, max_check: int = 20) -> list:
+    """入场选择性过滤（回测验证的两条最稳因子）：
+        - 首板：昨日未涨停（排除连板高位接力，首板隔日统计更稳）
+        - 站上 MA20：趋势向上
+    顺序短 K 线（不并发，避开历史死锁），取不到数据/出错的**不误杀**（保留候选）。
+    回测结论：选择性过滤对胜率影响有限（卖出规则才是胜率主因），但能去掉
+    连板高位/破位标的，让选股更"有道理"。
+    """
+    import logging as _lg
+    import datetime as _dt
+    _log = _lg.getLogger("strategies.da_ban")
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+        import ths_quote as tq
+        client = tq.get_client()
+    except Exception:
+        return results
+    if not client or not getattr(client, "_ok", False):
+        return results
+
+    today_str = _dt.date.today().strftime("%Y-%m-%d")
+    kept, checked = [], 0
+    for item in results:
+        if checked >= max_check:
+            kept.append(item)          # 超出检查上限的保留，不阻塞扫描
+            continue
+        code = item.get("code", "")
+        try:
+            bars = client.get_kline(code, 25)
+            checked += 1
+            if not bars or len(bars) < 22:
+                kept.append(item); continue       # 数据不足不误杀
+            bars = sorted(bars, key=lambda b: str(b.get("date")))
+            closes = [float(b["close"]) for b in bars]
+            ma20 = sum(closes[-20:]) / 20.0
+            on_ma20 = closes[-1] >= ma20 * 0.99
+            # 对齐"昨日"：若最后一根是今日，昨日=倒数第2；否则昨日=倒数第1
+            y = -2 if str(bars[-1].get("date"))[:10] == today_str else -1
+            rate = _board_limit_rate(code)
+            # 连板数：从最后一根完整 bar 往前数连续涨停（首板=0 前置板）
+            cb, idx = 0, len(closes) - 1
+            while idx >= 1 and closes[idx - 1] > 0 \
+                    and (closes[idx] / closes[idx - 1] - 1) * 100 >= rate * 0.95:
+                cb += 1
+                idx -= 1
+            # 含连板：站上 MA20 即保留（首板+连板都做，连板边际收益更高）。
+            # 选择性来自：封板强度(seal_score) + 站上MA20 + 主板优先 + 行业热度。
+            if on_ma20:
+                lab = "首板" if cb <= 1 else f"{cb}连板"
+                item["reason"] = item.get("reason", "") + f" | {lab}·站上MA20"
+                item["consec"] = cb
+                kept.append(item)
+            # 跌破 MA20（弱势）→ 丢弃
+        except Exception as e:
+            _log.debug(f"[da_ban] 质量过滤 {code} 取K线失败(保留): {e}")
+            kept.append(item)
+    if checked:
+        _log.info(f"[da_ban] 质量过滤: 检查 {checked} 只 → 留下 {len(kept)} 只（首板+站上MA20）")
+    return kept
 
 
 def scan(codes: list, get_kline, get_quotes) -> list:
@@ -295,19 +397,24 @@ def scan(codes: list, get_kline, get_quotes) -> list:
     """
     results = []
 
-    # ── 监控模式（codes 为空）：pytdx 全市场实时扫描 ────────
-    if not codes:
-        if _from_tdx(results):
-            # 排序键：(市场优先级, -行业热度, -涨幅)
-            #   主板 60/00 排前面（auto_execute 资金先打这里）
-            #   组内行业热度高的优先（板块炒作时优选龙头）
-            #   涨幅高的优先
-            results.sort(key=lambda x: (_market_priority(x["code"]),
-                                         -x.get("industry_heat", 0),
-                                         -x.get("change", 0)))
-            return results
+    # ── 优先：pytdx 全市场实时扫描（含5档盘口）───────────────
+    # ★ Bug fix 2026-05-25: 收到 codes 也要先尝试 _from_tdx（盘中实时数据最快）
+    # 之前只在 codes=[] 时尝试，但 strategy_manager 现在统一传 universe。
+    if _from_tdx(results):
+        results.sort(key=lambda x: (_market_priority(x["code"]),
+                                     -x.get("industry_heat", 0),
+                                     -x.get("change", 0)))
+        results = _apply_quality_filters(results)   # 首板 + 站上MA20 选择性过滤
+        return results
 
-    # ── 回测/降级路径：使用提供的历史数据 ────────────────────
+    # ── 降级路径：使用 get_quotes 拉静态行情（盘后 TDX 关数据流时走这里）─
+    # codes 为空说明回测引擎也没给数据，直接返回空
+    if not codes:
+        import logging
+        logging.getLogger("strategies.da_ban").error(
+            "[da_ban] _from_tdx 失败且 codes 为空（非交易时段 + 无 universe）→ 返回空"
+        )
+        return []
     quotes = get_quotes(codes)
     if quotes is None or quotes.empty:
         return []

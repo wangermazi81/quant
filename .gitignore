@@ -25,6 +25,7 @@ data/notify_config.json
 .env
 secrets.json
 api_keys.json
+data/.secret_key
 
 # ── 模拟盘数据库（本地运行状态）────────────────────
 data/paper_trading.db

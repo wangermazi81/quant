@@ -5,7 +5,7 @@ for _k in ("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy",
            "ALL_PROXY","all_proxy","SOCKS_PROXY","socks_proxy"):
     _os.environ.pop(_k, None)
 
-from flask import Flask, jsonify, request, send_from_directory, session, Response
+from flask import Flask, jsonify, request, session, Response
 from flask_cors import CORS
 from functools import wraps
 import threading, schedule, time, logging, uuid, secrets, json, queue as _queue
@@ -15,25 +15,65 @@ from market_data import is_trading_time
 from strategy import scan_all
 from ths_operator import THSOperator
 from config import STOCK_POOL, SCAN_INTERVAL, DRY_RUN, INITIAL_CAPITAL, POSITION_RATIO
+try:
+    from config import DABAN_STOP_LOSS, DABAN_TRAIL, DABAN_MAX_HOLD, DABAN_HOLD_LIMITUP
+except ImportError:
+    DABAN_STOP_LOSS, DABAN_TRAIL, DABAN_MAX_HOLD, DABAN_HOLD_LIMITUP = -0.05, 0.07, 10, True
 import strategy_manager as sm
 import data_manager as dm
 import ai_analyst as ai
 import factor_manager as fm
-import stock_scorer as scorer
-import market_context as mctx
 import paper_broker as pb
 import user_manager as um
 import notification_manager as nm
-import search_manager as search_mgr
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent
+
+
+def _load_or_create_secret_key() -> str:
+    """SECRET_KEY 解析顺序：环境变量 → data/.secret_key → 新建并持久化。
+
+    之前未设环境变量时每次启动都随机生成，导致重启后所有 session 失效。
+    """
+    env = _os.environ.get("SECRET_KEY")
+    if env:
+        return env
+    key_file = BASE_DIR / "data" / ".secret_key"
+    try:
+        if key_file.exists():
+            k = key_file.read_text(encoding="utf-8").strip()
+            if k:
+                return k
+        key_file.parent.mkdir(parents=True, exist_ok=True)
+        k = secrets.token_hex(32)
+        key_file.write_text(k, encoding="utf-8")
+        try:
+            _os.chmod(key_file, 0o600)
+        except Exception:
+            pass
+        logger.info("已生成并持久化 SECRET_KEY 到 data/.secret_key")
+        return k
+    except Exception as e:
+        logger.warning(f"SECRET_KEY 持久化失败，回退到内存随机值（重启会使 session 失效）: {e}")
+        return secrets.token_hex(32)
+
+
 app = Flask(__name__, static_folder=str(BASE_DIR / "static"), static_url_path="/static")
-app.secret_key = _os.environ.get("SECRET_KEY") or secrets.token_hex(32)
-CORS(app, supports_credentials=True)
+app.secret_key = _load_or_create_secret_key()
+
+# CORS：携带凭证时不能用通配来源。配置 CORS_ORIGINS（逗号分隔）才允许跨域；
+# 不配置则仅同源（同源请求不受 CORS 限制，内置前端正常工作）。
+_cors_origins = [o.strip() for o in _os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    CORS(app, supports_credentials=True, origins=_cors_origins)
+    logger.info(f"CORS 允许跨域来源: {_cors_origins}")
+else:
+    CORS(app, supports_credentials=True, origins=[])
+    logger.info("CORS 未配置跨域来源，仅允许同源访问（设 CORS_ORIGINS 可放行指定来源）")
 
 # ── Swagger / flasgger ────────────────────────────────────────
 try:
@@ -76,445 +116,34 @@ else:
     logger.info("云端 Linux 环境，跳过同花顺 GUI 操作器初始化")
     operator = None
 
-# ══════════════════════════════════════════════════════════════
-# 多用户状态管理
-# ══════════════════════════════════════════════════════════════
-user_states: dict[int, dict] = {}
-_user_state_lock = threading.Lock()
+# ── 共享运行态/通用辅助（见 app_state.py，与各 web 蓝图共用同一份内存状态）──
+from app_state import (
+    user_states, _user_state_lock, _sse_subscribers, _sse_lock,
+    _default_user_state, get_user_state, _persist_state, _add_log,
+    _sse_push, _restore_all_user_states, require_auth, require_admin, _deduct,
+)
+
+# ── 注册 web 蓝图（非交易 API 已从本文件抽出到 web/）──
+from web.auth import bp as _auth_bp
+from web.user import bp as _user_bp
+from web.admin import bp as _admin_bp
+from web.pages import bp as _pages_bp
+from web.market import bp as _market_bp
+from web.data import bp as _data_bp
+from web.ai import bp as _ai_bp
+from web.search import bp as _search_bp
+from web.notify import bp as _notify_bp
+app.register_blueprint(_auth_bp)
+app.register_blueprint(_user_bp)
+app.register_blueprint(_admin_bp)
+app.register_blueprint(_pages_bp)
+app.register_blueprint(_market_bp)
+app.register_blueprint(_data_bp)
+app.register_blueprint(_ai_bp)
+app.register_blueprint(_search_bp)
+app.register_blueprint(_notify_bp)
 
-# SSE 订阅者: uid -> list of queue.Queue
-_sse_subscribers: dict[int, list] = {}
-_sse_lock = threading.Lock()
 
-
-def _default_user_state() -> dict:
-    return {
-        "running":        False,
-        "pool":           [],
-        "queue":          [],
-        "logs":           [],
-        "scanned":        0,
-        "executed":       0,
-        "active_strategy": None,
-        "capital":        INITIAL_CAPITAL,
-        "position_ratio": POSITION_RATIO,
-        "today_trades":   0,
-        "today_date":     "",
-        "positions":      {},
-        "auto_execute":   False,
-        "scan_progress":  {"running": False, "stage": "", "current": 0, "total": 0},
-    }
-
-
-def get_user_state(uid: int) -> dict:
-    """获取或初始化用户运行状态，首次访问时从数据库加载持久化设置。"""
-    with _user_state_lock:
-        if uid not in user_states:
-            s = _default_user_state()
-            try:
-                settings = um.get_user_settings(uid)
-                s["running"]          = bool(settings.get("running", 0))
-                s["auto_execute"]     = bool(settings.get("auto_execute", 0))
-                s["capital"]          = float(settings.get("capital", INITIAL_CAPITAL))
-                s["position_ratio"]   = float(settings.get("position_ratio", POSITION_RATIO))
-                s["active_strategy"]  = settings.get("active_strategy") or None
-            except Exception:
-                pass
-            user_states[uid] = s
-        return user_states[uid]
-
-
-def _persist_state(uid: int, **fields):
-    """将指定字段保存到 user_settings 表。"""
-    try:
-        um.save_user_settings(uid, **fields)
-    except Exception as e:
-        logger.warning(f"[persist_state uid={uid}] {e}")
-
-
-def _add_log(uid: int, msg: str, level: str = "INFO"):
-    """用户日志：写内存 + 写数据库 + 推 SSE。"""
-    t = datetime.now().strftime("%H:%M:%S")
-    entry = {"time": t, "msg": msg, "level": level.lower()}
-    s = get_user_state(uid)
-    s["logs"].insert(0, entry)
-    s["logs"] = s["logs"][:200]
-    logger.info(f"[uid={uid}] {msg}")
-    try:
-        um.add_user_log(uid, msg, level)
-    except Exception:
-        pass
-    _sse_push(uid, "log", entry)
-
-
-def _sse_push(uid: int, event: str, data: dict):
-    """向该用户所有 SSE 连接推送事件。"""
-    with _sse_lock:
-        subscribers = _sse_subscribers.get(uid, [])
-        dead = []
-        for q in subscribers:
-            try:
-                q.put_nowait({"event": event, "data": data})
-            except Exception:
-                dead.append(q)
-        for q in dead:
-            subscribers.remove(q)
-
-
-def _restore_all_user_states():
-    """服务启动时恢复所有 running=1 的用户运行状态。"""
-    try:
-        running_users = um.get_running_users()
-        for uid in running_users:
-            s = get_user_state(uid)
-            s["running"] = True
-            _add_log(uid, "服务重启，自动恢复运行状态", "WARN")
-            logger.info(f"[startup] 恢复用户 uid={uid} 运行状态")
-    except Exception as e:
-        logger.warning(f"[restore_states] {e}")
-
-
-# ── 认证装饰器 ────────────────────────────────────────────────
-def require_auth(f):
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        if not session.get("user_id"):
-            return jsonify({"ok": False, "error": "请先登录", "code": 401}), 401
-        return f(*args, **kwargs)
-    return wrapper
-
-
-def require_admin(f):
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        if not session.get("user_id"):
-            return jsonify({"ok": False, "error": "请先登录", "code": 401}), 401
-        if not session.get("is_admin"):
-            return jsonify({"ok": False, "error": "无管理员权限", "code": 403}), 403
-        return f(*args, **kwargs)
-    return wrapper
-
-
-def _deduct(action: str, desc: str = "") -> Optional[dict]:
-    """扣积分，返回 None 表示成功，返回 dict 表示失败。"""
-    uid = session.get("user_id")
-    if not uid:
-        return {"ok": False, "error": "请先登录", "code": 401}
-    r = um.deduct_points(uid, action, desc)
-    if not r["ok"]:
-        return r
-    return None
-
-
-# ══════════════════════════════════════════════════════════════
-# 静态页面
-# ══════════════════════════════════════════════════════════════
-@app.route("/")
-def index():
-    resp = send_from_directory(str(BASE_DIR), "index.html")
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    resp.headers["Pragma"] = "no-cache"
-    resp.headers["Expires"] = "0"
-    return resp
-
-
-@app.route("/admin")
-def admin_page():
-    resp = send_from_directory(str(BASE_DIR), "admin.html")
-    resp.headers["Cache-Control"] = "no-store"
-    return resp
-
-
-# ══════════════════════════════════════════════════════════════
-# 认证 API
-# ══════════════════════════════════════════════════════════════
-@app.route("/api/auth/register", methods=["POST"])
-def auth_register():
-    d = request.json or {}
-    r = um.register(d.get("username", ""), d.get("email", ""), d.get("password", ""))
-    return jsonify(r)
-
-
-@app.route("/api/auth/login", methods=["POST"])
-def auth_login():
-    d = request.json or {}
-    r = um.login(d.get("username", ""), d.get("password", ""))
-    if r["ok"]:
-        session["user_id"]  = r["user_id"]
-        session["username"] = r["username"]
-        session["is_admin"] = r["is_admin"]
-        session.permanent   = True
-    return jsonify(r)
-
-
-@app.route("/api/auth/logout", methods=["POST"])
-def auth_logout():
-    session.clear()
-    return jsonify({"ok": True})
-
-
-@app.route("/api/auth/me")
-def auth_me():
-    uid = session.get("user_id")
-    if not uid:
-        return jsonify({"ok": False, "logged_in": False})
-    user = um.get_user(uid)
-    if not user:
-        session.clear()
-        return jsonify({"ok": False, "logged_in": False})
-    return jsonify({
-        "ok":        True,
-        "logged_in": True,
-        "user_id":   user["id"],
-        "username":  user["username"],
-        "points":    user["points"],
-        "is_admin":  bool(user["is_admin"]),
-    })
-
-
-# ══════════════════════════════════════════════════════════════
-# 用户自助 API
-# ══════════════════════════════════════════════════════════════
-@app.route("/api/user/points")
-@require_auth
-def user_points():
-    uid = session["user_id"]
-    return jsonify({"ok": True, "points": um.get_points(uid)})
-
-
-@app.route("/api/user/points/history")
-@require_auth
-def user_points_history():
-    uid = session["user_id"]
-    return jsonify({"ok": True, "history": um.get_point_history(uid, 50)})
-
-
-@app.route("/api/user/change_password", methods=["POST"])
-@require_auth
-def user_change_password():
-    d = request.json or {}
-    return jsonify(um.change_password(
-        session["user_id"],
-        d.get("old_password", ""),
-        d.get("new_password", ""),
-    ))
-
-
-@app.route("/api/user/settings", methods=["GET"])
-@require_auth
-def user_get_settings():
-    uid = session["user_id"]
-    s   = get_user_state(uid)
-    return jsonify({
-        "ok":             True,
-        "running":        s["running"],
-        "auto_execute":   s["auto_execute"],
-        "capital":        s["capital"],
-        "position_ratio": s["position_ratio"],
-        "active_strategy": s["active_strategy"],
-    })
-
-
-@app.route("/api/user/settings", methods=["POST"])
-@require_auth
-def user_save_settings():
-    uid = session["user_id"]
-    d   = request.json or {}
-    s   = get_user_state(uid)
-    if "capital" in d:
-        s["capital"]        = float(d["capital"])
-    if "position_ratio" in d:
-        s["position_ratio"] = float(d["position_ratio"])
-    if "auto_execute" in d:
-        s["auto_execute"]   = bool(d["auto_execute"])
-    _persist_state(uid,
-        capital        = s["capital"],
-        position_ratio = s["position_ratio"],
-        auto_execute   = int(s["auto_execute"]),
-    )
-    _add_log(uid, f"账户设置更新: 资金¥{s['capital']:,.0f} "
-             f"仓位{s['position_ratio']*100:.0f}%")
-    return jsonify({"ok": True})
-
-
-@app.route("/api/user/logs")
-@require_auth
-def user_get_logs():
-    uid   = session["user_id"]
-    limit = int(request.args.get("limit", 200))
-    logs  = um.get_user_logs(uid, limit=limit)
-    return jsonify({"ok": True, "logs": logs})
-
-
-@app.route("/api/user/ai_config", methods=["GET"])
-@require_auth
-def user_get_ai_config():
-    uid = session["user_id"]
-    cfg = um.get_user_ai_config(uid) or {}
-    key = cfg.get("api_key", "")
-    if len(key) > 8:
-        cfg["api_key_masked"] = key[:4] + "****" + key[-4:]
-    else:
-        cfg["api_key_masked"] = "****" if key else ""
-    return jsonify({"ok": True, **cfg})
-
-
-@app.route("/api/user/ai_config", methods=["POST"])
-@require_auth
-def user_save_ai_config():
-    uid = session["user_id"]
-    d   = request.json or {}
-    um.save_user_ai_config(uid, **{k: v for k, v in d.items()
-                                   if k in ("api_key", "base_url", "model", "provider", "enabled")})
-    _add_log(uid, f"AI配置已更新: provider={d.get('provider','')}")
-    return jsonify({"ok": True})
-
-
-@app.route("/api/user/broker_config", methods=["GET"])
-@require_auth
-def user_get_broker_config():
-    uid = session["user_id"]
-    cfg = um.get_user_broker_config(uid)
-    # 隐藏密码/token
-    inner = cfg.get("config", {})
-    if "password" in inner:
-        inner = {**inner, "password": "****"}
-    if "access_token" in inner:
-        inner = {**inner, "access_token": inner["access_token"][:8] + "****" if inner["access_token"] else ""}
-    return jsonify({"ok": True, "broker_type": cfg.get("broker_type", "paper"), "config": inner})
-
-
-@app.route("/api/user/broker_config", methods=["POST"])
-@require_auth
-def user_save_broker_config():
-    uid = session["user_id"]
-    d   = request.json or {}
-    um.save_user_broker_config(uid, d.get("broker_type", "paper"), d.get("config", {}))
-    _add_log(uid, f"券商配置已更新: {d.get('broker_type', 'paper')}")
-    return jsonify({"ok": True})
-
-
-# ══════════════════════════════════════════════════════════════
-# 公告 API
-# ══════════════════════════════════════════════════════════════
-@app.route("/api/announcements")
-def get_announcements():
-    uid  = session.get("user_id")
-    items = um.get_active_announcements()
-    if uid:
-        for item in items:
-            item["read"] = um.is_announcement_read(uid, item["id"])
-    return jsonify({"ok": True, "announcements": items})
-
-
-@app.route("/api/announcements/<int:ann_id>/read", methods=["POST"])
-@require_auth
-def mark_announcement_read(ann_id):
-    uid = session["user_id"]
-    um.mark_announcement_read(uid, ann_id)
-    return jsonify({"ok": True})
-
-
-@app.route("/api/admin/announcements", methods=["GET"])
-@require_admin
-def admin_list_announcements():
-    items = um.list_all_announcements()
-    return jsonify({"ok": True, "announcements": items})
-
-
-@app.route("/api/admin/announcements", methods=["POST"])
-@require_admin
-def admin_create_announcement():
-    d = request.json or {}
-    r = um.create_announcement(
-        title      = d.get("title", ""),
-        content    = d.get("content", ""),
-        ann_type   = d.get("type", "info"),
-        created_by = session.get("user_id", 0),
-        expires_at = d.get("expires_at"),
-    )
-    return jsonify(r)
-
-
-@app.route("/api/admin/announcements/<int:ann_id>", methods=["PUT"])
-@require_admin
-def admin_update_announcement(ann_id):
-    d = request.json or {}
-    r = um.update_announcement(ann_id, **{k: v for k, v in d.items()
-                                          if k in ("title", "content", "type", "active", "expires_at")})
-    return jsonify(r)
-
-
-@app.route("/api/admin/announcements/<int:ann_id>", methods=["DELETE"])
-@require_admin
-def admin_delete_announcement(ann_id):
-    return jsonify(um.delete_announcement(ann_id))
-
-
-@app.route("/api/admin/logs")
-@require_admin
-def admin_get_logs():
-    uid_filter = request.args.get("uid")
-    limit      = int(request.args.get("limit", 500))
-    logs = um.get_all_logs(uid=int(uid_filter) if uid_filter else None, limit=limit)
-    return jsonify({"ok": True, "logs": logs})
-
-
-# ══════════════════════════════════════════════════════════════
-# 管理员 API
-# ══════════════════════════════════════════════════════════════
-@app.route("/api/admin/stats")
-@require_admin
-def admin_stats():
-    return jsonify({"ok": True, **um.stats()})
-
-
-@app.route("/api/admin/users")
-@require_admin
-def admin_users():
-    page   = int(request.args.get("page", 1))
-    search = request.args.get("search", "")
-    return jsonify({"ok": True, **um.list_users(page, 20, search)})
-
-
-@app.route("/api/admin/users/<int:uid>/points", methods=["POST"])
-@require_admin
-def admin_add_points(uid):
-    d      = request.json or {}
-    amount = int(d.get("amount", 0))
-    desc   = d.get("description", "管理员充值")
-    r = um.add_points(uid, amount, desc)
-    return jsonify(r)
-
-
-@app.route("/api/admin/users/<int:uid>/active", methods=["POST"])
-@require_admin
-def admin_set_active(uid):
-    active = request.json.get("active", True)
-    if uid == session.get("user_id") and not active:
-        return jsonify({"ok": False, "error": "不能禁用自己的账号"})
-    return jsonify(um.set_active(uid, active))
-
-
-@app.route("/api/admin/users/<int:uid>/admin", methods=["POST"])
-@require_admin
-def admin_set_admin(uid):
-    is_admin = request.json.get("is_admin", False)
-    return jsonify(um.set_admin(uid, is_admin))
-
-
-@app.route("/api/admin/transactions")
-@require_admin
-def admin_transactions():
-    page = int(request.args.get("page", 1))
-    return jsonify({"ok": True, **um.all_point_transactions(page, 30)})
-
-
-@app.route("/api/admin/users/<int:uid>/reset_password", methods=["POST"])
-@require_admin
-def admin_reset_password(uid):
-    new_pw = (request.json or {}).get("new_password", "")
-    return jsonify(um.admin_reset_password(uid, new_pw))
 
 
 # ══════════════════════════════════════════════════════════════
@@ -613,31 +242,196 @@ def _auto_buy(uid: int, item: dict):
         if not res.get("ok"):
             item["error_msg"] = res.get("msg", "")
     except Exception as e:
-        item["status"] = "error"
+        item["status"]    = "error"
+        item["error_msg"] = str(e)
+        logger.exception(f"[uid={uid}] 自动买入异常: {code}")
         _add_log(uid, f"❌ 自动买入异常: {code} — {e}", "error")
 
 
+_DABAN_PEAKS: dict = {}   # (uid, code) -> 持仓期最高价（Ride 追踪止盈用）
+
+
+def _daban_board_rate(code: str) -> float:
+    if code.startswith(("300", "301", "688", "689")):
+        return 0.20
+    if code.startswith(("4", "8")):
+        return 0.30
+    return 0.10
+
+
+_LIVE_SELL_PENDING: set = set()   # (uid, code) 已生成卖出信号、等成交确认，避免每轮重复发
+
+
+def _daban_ride_decision(code: str, cost: float, cur: float, last_close: float,
+                         hold_days: int, peak: float):
+    """打板 Ride 卖出决策（纯函数，模拟盘/实盘共用）。
+    返回 (should_sell: bool, reason: str|None, new_peak: float)。
+      - 当日仍封板(连板) → 持有，让利润奔跑；
+      - 跌破成本 DABAN_STOP_LOSS → 止损；
+      - 从持仓期最高回落 ≥ DABAN_TRAIL → 卖；
+      - 持有 ≥ DABAN_MAX_HOLD 天 → 卖。
+    """
+    new_peak = max(peak or cost, cur)
+    if cost <= 0 or cur <= 0:
+        return False, None, new_peak
+    limit_up = round(last_close * (1 + _daban_board_rate(code)), 2) if last_close > 0 else 0
+    if DABAN_HOLD_LIMITUP and limit_up > 0 and cur >= limit_up - 0.001:
+        return False, None, new_peak          # 连板，持有
+    pnl = (cur - cost) / cost
+    ddp = (new_peak - cur) / new_peak if new_peak > 0 else 0.0
+    if pnl <= DABAN_STOP_LOSS:
+        return True, f"打板止损({pnl*100:.1f}%≤{DABAN_STOP_LOSS*100:.0f}%)", new_peak
+    if ddp >= DABAN_TRAIL:
+        return True, f"高位回落({ddp*100:.1f}%≥{DABAN_TRAIL*100:.0f}%,峰¥{new_peak:.2f})", new_peak
+    if hold_days >= DABAN_MAX_HOLD:
+        return True, f"超期({hold_days}天≥{DABAN_MAX_HOLD}天)", new_peak
+    return False, None, new_peak
+
+
+def _check_live_daban_ride(uid: int):
+    """实盘打板 Ride 自动卖出：对 live_positions 里 da_ban 买入的持仓套 Ride 规则，
+    触发则生成 SELL 信号（桥接器在 xiadan 执行）。这是真钱账户打板买卖闭环的卖出端。
+
+    仅实盘模式 + 交易时段调用。遵守 T+1（buy_date=今天则跳过）。已发卖出信号但未成交的
+    持仓不重复发（_LIVE_SELL_PENDING 去重，卖出成交/失败时在 report 处清除）。
+    """
+    try:
+        positions = um.get_live_positions(uid)
+    except Exception as e:
+        logger.warning(f"[实盘Ride uid={uid}] 读台账失败: {e}")
+        return
+    positions = [p for p in positions if (p.get("strategy") or "") == "da_ban"]
+    if not positions:
+        return
+    codes = [p["code"] for p in positions]
+    qmap = {}
+    try:
+        import ths_quote as tq
+        client = tq.get_client()
+        if client and client._ok:
+            for q in client.get_quotes(codes):
+                if q.get("code"):
+                    qmap[q["code"]] = q
+    except Exception as e:
+        logger.debug(f"[实盘Ride uid={uid}] 行情获取失败: {e}")
+        return
+    import datetime as _dt
+    today = _dt.date.today()
+    for p in positions:
+        code = p["code"]
+        if (uid, code) in _LIVE_SELL_PENDING:        # 已发卖出信号、等成交
+            continue
+        q = qmap.get(code)
+        if not q:
+            continue
+        cur = float(q.get("price") or 0)
+        last_close = float(q.get("last_close") or 0)
+        cost = float(p.get("buy_price", 0) or 0)
+        try:
+            bd = _dt.datetime.strptime(str(p.get("buy_date"))[:10], "%Y-%m-%d").date()
+            hold = (today - bd).days
+        except Exception:
+            hold = 1
+        if hold < 1:                                  # T+1：当天买入不卖
+            continue
+        sell, reason, new_peak = _daban_ride_decision(
+            code, cost, cur, last_close, hold, float(p.get("peak") or cost))
+        if new_peak > float(p.get("peak") or 0):
+            try:
+                um.update_live_peak(uid, code, new_peak)
+            except Exception:
+                pass
+        if not sell:
+            continue
+        shares = int(p.get("shares", 0) or 0)
+        if shares <= 0:
+            continue
+        try:
+            sid = um.add_trade_signal(uid, code, p.get("name", ""), "SELL", cur, shares)
+            _LIVE_SELL_PENDING.add((uid, code))
+            _add_log(uid, f"📤 [实盘Ride] {code} {p.get('name','')} {reason} → 生成卖出信号"
+                          f"(#{sid}, {shares}股 @{cur:.2f})，等桥接器执行", "info")
+        except Exception as e:
+            logger.warning(f"[实盘Ride uid={uid}] 生成卖出信号失败 {code}: {e}")
+
+
+def _check_daban_ride(uid: int, broker, positions: list, qmap: dict):
+    """打板 Ride 卖出：吃连板（当日仍封板则持有，让利润奔跑）+ 初始止损 + 从最高回落卖。
+
+    这才是打板正确的非对称盈亏比卖法（回测盈亏比≈2.5、期望+3%/笔）：
+      - 当日仍封板(连板继续) → 持有，让利润奔跑（不卖）；
+      - 跌破成本 DABAN_STOP_LOSS(-5%) → 止损（砍得快）；
+      - 从持仓期最高价回落 ≥ DABAN_TRAIL(7%) → 卖（吃完连板后保护利润）；
+      - 持有满 DABAN_MAX_HOLD 天 → 卖（backstop）。
+    遵守 T+1（当天买入不卖，submit_sell 也会兜底拒绝）。
+    """
+    s = get_user_state(uid)
+    for p in positions:
+        code = p.get("code", "")
+        cost = float(p.get("cost_price", 0) or 0)
+        q    = qmap.get(code)
+        if not q or cost <= 0:
+            continue
+        cur = float(q.get("price") or 0)
+        last_close = float(q.get("last_close") or 0)
+        if cur <= 0:
+            continue
+        hold = int(p.get("hold_days", 0) or 0)
+        if hold < 1:                       # T+1：当天买入不卖
+            continue
+        key  = (uid, code)
+        sell, reason, new_peak = _daban_ride_decision(
+            code, cost, cur, last_close, hold, _DABAN_PEAKS.get(key, cost))
+        _DABAN_PEAKS[key] = new_peak
+        if not sell:
+            continue
+        res = broker.submit_sell(code, cur, sell_reason=reason)
+        if res.get("ok"):
+            pnl_amt = res.get("pnl", 0)
+            sign = "✅" if pnl_amt >= 0 else "❌"
+            _add_log(uid, f"{sign} [打板Ride] {code} {p.get('name','')} {reason} "
+                          f"盈亏¥{pnl_amt:+,.2f}({res.get('pnl_pct',0):+.1f}%)",
+                     "buy" if pnl_amt >= 0 else "error")
+            s["positions"].pop(code, None)
+            _DABAN_PEAKS.pop(key, None)
+
+
 def _check_paper_risk(uid: int):
-    """检查模拟盘持仓风控（止损/止盈/超期）。"""
-    if not DRY_RUN:
+    """检查模拟盘持仓风控并自动卖出。打板策略用 Ride 卖法（吃连板+紧止损+回落卖，
+    正确的非对称盈亏比），其它策略沿用账户默认（止损/止盈/超期）。
+    仅对「模拟盘持仓」生效（实盘持仓在 xiadan，走另一条卖出链）。
+    """
+    try:
+        broker_cfg = um.get_user_broker_config(uid)
+        is_paper   = DRY_RUN or broker_cfg.get("broker_type", "paper") == "paper"
+    except Exception:
+        is_paper = DRY_RUN
+    if not is_paper:
         return
     try:
         broker    = pb.get_broker(uid)
         positions = broker.get_positions()
         if not positions:
             return
-        codes      = [p["code"] for p in positions]
-        cur_prices = {}
+        codes = [p["code"] for p in positions]
+        qmap  = {}
         try:
             import ths_quote as tq
             client = tq.get_client()
             if client and client._ok:
-                qs = client.get_quotes(codes)
-                cur_prices = {q["code"]: q.get("price", 0) for q in qs if q.get("price", 0) > 0}
-        except Exception:
-            pass
-        triggered = broker.check_risk_rules(cur_prices)
+                for q in client.get_quotes(codes):
+                    if q.get("code"):
+                        qmap[q["code"]] = q
+        except Exception as _qe:
+            logger.debug(f"[风控 uid={uid}] 实时行情获取失败: {_qe}")
+
         s = get_user_state(uid)
+        if s.get("active_strategy") == "da_ban":
+            _check_daban_ride(uid, broker, positions, qmap)   # 打板 Ride 卖法
+            return
+        # 其它策略：账户默认止损/止盈/超期
+        cur_prices = {c: float(q.get("price") or 0) for c, q in qmap.items()}
+        triggered = broker.check_risk_rules(cur_prices)
         for t in triggered:
             pnl  = t.get("pnl", 0)
             sign = "✅" if pnl >= 0 else "❌"
@@ -655,7 +449,8 @@ def do_scan(uid: int):
     if not s["running"] or not is_trading_time():
         return
     _reset_daily_if_needed(uid)
-    _check_paper_risk(uid)
+    _check_paper_risk(uid)        # 模拟盘持仓风控/Ride 自动卖出
+    _check_live_daban_ride(uid)   # 实盘打板持仓 Ride 自动卖出（生成卖出信号）
 
     active    = s.get("active_strategy")
     is_daban  = (active == "da_ban")
@@ -693,12 +488,43 @@ def do_scan(uid: int):
 
     added = 0
     buy_candidates = [r for r in results if r.get("signal", True)]
+    # 仓位基数：实盘走 live_cash，模拟走 s["capital"]（500000 虚拟资金）
+    _broker_cfg = um.get_user_broker_config(uid)
+    _broker_type = _broker_cfg.get("broker_type", "paper")
+    if _broker_type == "live" and not DRY_RUN:
+        _live_cash = float((_broker_cfg.get("config") or {}).get("live_cash") or 0)
+        if _live_cash > 0:
+            _base_cash = _live_cash
+            _add_log(uid, f"💰 [自动扫描] 实盘资金基数 ¥{_base_cash:,.0f} × {s['position_ratio']*100:.0f}% 仓位", "info")
+        else:
+            _add_log(uid, "⚠️ 实盘模式但未配置 live_cash，本轮自动入队跳过。请在顶部切换实盘 Modal 输入 xiadan 真账户余额", "error")
+            s["scan_progress"] = {"running": False, "stage": "等待配置", "current": 0, "total": 0}
+            return
+    else:
+        _base_cash = s["capital"]
+
     for r in buy_candidates:
         code  = r["code"]
         price = r["price"] or 1
         if not any(q["code"] == code for q in s["queue"]):
-            budget = s["capital"] * s["position_ratio"]
+            budget = _base_cash * s["position_ratio"]
             shares = max(int(budget / price / 100) * 100, 100)
+            # ★ 实盘模式：提前检查是否超 MAX_ORDER_AMOUNT 护栏，避免桥接器层无谓拒单 ★
+            _est = price * shares
+            if _broker_type == "live":
+                try:
+                    from config import MAX_ORDER_AMOUNT as _MAX_ORD
+                except Exception:
+                    _MAX_ORD = 50000
+                if _est > _MAX_ORD:
+                    # 自动缩到护栏内（按 100 股向下取整）
+                    safe_shares = max(int(_MAX_ORD / price / 100) * 100, 100)
+                    if safe_shares < 100:
+                        _add_log(uid, f"⏭ {code} 单股 @¥{price:.2f} × 100股 = ¥{price*100:.0f} 已超 ¥{_MAX_ORD} 护栏，跳过", "error")
+                        continue
+                    _add_log(uid, f"⚠️ {code} 预估 ¥{_est:,.0f} > 护栏 ¥{_MAX_ORD}，自动缩仓 {shares}→{safe_shares} 股", "info")
+                    shares = safe_shares
+                    budget = price * shares
             item = {
                 "code":       code,
                 "name":       r["name"],
@@ -831,6 +657,84 @@ def bridge_get_signals():
     return jsonify({"ok": True, "signals": signals})
 
 
+@app.route("/api/bridge/today_orders", methods=["GET"])
+@require_auth
+def bridge_today_orders():
+    """读 xiadan 当日委托表，返回每笔精确状态（已成/已报/部成/已撤/废单）
+
+    Query 参数:
+      code     - 可选, 只查该 code 的委托
+      limit    - 可选, 最多读多少行（默认 50）
+      navigate - 可选, 1/true 时 F4 后自校准点击左侧「当日委托」再截图（拿真实成交
+                 状态）；默认不导航=只截 F4 默认的资金股票页（不向实盘发送鼠标点击）
+
+    返回:
+      {ok, screenshot, abs_path, orders:[{code,name,action,status,numbers,raw}],
+       funds, positions, tabs:[...], ocr_lines:[...], msg}
+
+    实现：xiadan 委托表是自绘控件读不到，桥接器按 F4 切到查询页 → 截图 →
+    本地 Windows OCR(winocr) 逐行识别 → 解析结构化 → 按 F1 切回买入页（约 2-3 秒）。
+    未装 winocr 时 orders 为空，仅返回截图。
+    """
+    if platform.system() != "Windows":
+        return jsonify({"ok": False, "msg": "服务端非 Windows，无法读 xiadan"})
+    if not operator:
+        return jsonify({"ok": False, "msg": "xiadan 操作员未初始化（DRY_RUN 或 Linux）"})
+
+    code = (request.args.get("code") or "").strip() or None
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 50))))
+    except (TypeError, ValueError):
+        limit = 50
+    # navigate=1：F4 后自校准点击左侧「当日委托」再截图（拿真实成交状态）。
+    # 默认 0=只截 F4 默认的资金股票页（安全，不向实盘客户端发送鼠标点击）。
+    navigate = (request.args.get("navigate") or "").strip().lower() in ("1", "true", "yes", "on")
+
+    try:
+        r = operator.query_today_orders(code_filter=code, max_rows=limit, navigate=navigate)
+        # code 可靠、OCR 名称易错或缺失 → 用本地名称库按 code 纠正/补全（持仓同样处理）
+        for lst in (r.get("orders") or [], r.get("positions") or []):
+            for it in lst:
+                c = (it.get("code") or "").strip()
+                if c:
+                    nm = dm.get_stock_name(c)
+                    if nm and nm != c:
+                        it["name"] = nm
+        return jsonify(r)
+    except Exception as e:
+        logger.exception(f"读当日委托失败: {e}")
+        return jsonify({"ok": False, "msg": f"调用异常: {e}"})
+
+
+@app.route("/api/bridge/signals/<int:signal_id>/status", methods=["GET"])
+@require_auth
+def bridge_signal_status(signal_id):
+    """前端轮询单条信号当前状态（pending/sent/executed/failed/cancelled）"""
+    uid = session["user_id"]
+    sig = um.get_trade_signal(signal_id)
+    if not sig:
+        return jsonify({"ok": False, "error": "信号不存在"})
+    # 仅允许查自己的信号
+    if sig.get("user_id") != uid:
+        return jsonify({"ok": False, "error": "无权查看此信号"}), 403
+    return jsonify({
+        "ok": True,
+        "signal": {
+            "id":          sig["id"],
+            "code":        sig["code"],
+            "name":        sig["name"],
+            "action":      sig["action"],
+            "price":       sig["price"],
+            "shares":      sig["shares"],
+            "status":      sig["status"],     # pending/sent/executed/failed/cancelled
+            "report_msg":  sig.get("msg") or "",
+            "exec_price":  sig.get("exec_price") or sig["price"],
+            "created_at":  sig.get("created_at"),
+            "updated_at":  sig.get("updated_at"),
+        }
+    })
+
+
 @app.route("/api/bridge/signals/<int:signal_id>/report", methods=["POST"])
 @require_auth
 def bridge_report_signal(signal_id):
@@ -845,9 +749,15 @@ def bridge_report_signal(signal_id):
         return jsonify(res)
         
     action_label = "买入" if res["action"] == "BUY" else "卖出"
-    sign = "✅" if status == "executed" else "❌"
+    # 三态显示：executed=✅ 成功 / submitted=⏳ 已提交未确认 / 其他=❌ 失败
+    if status == "executed":
+        sign = "✅"; log_level = "buy"
+    elif status == "submitted":
+        sign = "⏳"; log_level = "info"   # 中间态，不当失败标红
+    else:
+        sign = "❌"; log_level = "error"
     log_msg = f"{action_label} {res['code']} {res['name'] or ''} {res['shares']}股 @{res['price']:.2f} — 执行完毕: {msg}"
-    _add_log(uid, f"{sign} [实盘回传] {log_msg}", "buy" if status == "executed" else "error")
+    _add_log(uid, f"{sign} [实盘回传] {log_msg}", log_level)
     
     # 同步更新云端的仓位视图缓存
     s = get_user_state(uid)
@@ -862,10 +772,48 @@ def bridge_report_signal(signal_id):
                 "cost": res["price"],
                 "date": datetime.now().strftime("%Y-%m-%d"),
             }
+            # ── 实盘持仓台账（打板 Ride 自动卖出的数据源）──
+            # 买入成交确认 → 记台账（带当前策略，da_ban 才会被 Ride 自动管理卖出）。
+            # OCR 读不到成本价，但这里是我们自己下的单，价/量/日精确。
+            try:
+                stg = s.get("active_strategy") or ""
+                um.record_live_position(uid, code, res["name"] or "",
+                                        float(res["price"]), int(res["shares"]), strategy=stg)
+            except Exception as _e:
+                logger.warning(f"[live台账 uid={uid}] 记录买入失败（不影响下单）: {_e}")
+            # 同步执行队列状态：找到这条队列项，标记 executed
+            for q in s.get("queue", []):
+                if q.get("code") == code and q.get("status") in ("pending", "submitted"):
+                    q["status"] = "executed"
+                    break
         elif res["action"] == "SELL":
             s["executed"] += 1
             s["positions"].pop(code, None)
-            
+            # 卖出成交 → 移除台账 + 清峰值 + 解锁卖出去重
+            try:
+                um.remove_live_position(uid, code)
+            except Exception as _e:
+                logger.warning(f"[live台账 uid={uid}] 移除持仓失败: {_e}")
+            _DABAN_PEAKS.pop((uid, code), None)
+            _LIVE_SELL_PENDING.discard((uid, code))
+    elif status == "failed":
+        # 卖出失败：解锁去重，下轮可重发；若失败原因是"无持仓"说明买单其实没成交=幽灵→清台账
+        if res["action"] == "SELL":
+            _LIVE_SELL_PENDING.discard((uid, code))
+            if any(k in (msg or "") for k in ("无持仓", "持仓不足", "可用不足", "可用为0", "数量为0")):
+                try:
+                    um.remove_live_position(uid, code)
+                except Exception:
+                    pass
+                _DABAN_PEAKS.pop((uid, code), None)
+        # ★ 桥接器执行失败：把执行队列里的"已买"假象清掉 ★
+        # 之前 _auto_buy 把队列项标成 sent/submitted，前端显示"已入队/已买"
+        # 现在桥接器明确失败 → 重置回 pending 状态，让用户能看清楚没买进去
+        for q in s.get("queue", []):
+            if q.get("code") == code and q.get("status") in ("pending", "submitted", "sent"):
+                q["status"] = "failed"
+                q["fail_msg"] = (msg or "桥接器执行失败")[:80]
+                break
     return jsonify({"ok": True})
 
 
@@ -888,8 +836,8 @@ def execute():
                 budget = s["capital"] * s["position_ratio"]
                 shares = int(budget / price / 100) * 100 if price > 0 else 100
                 shares = max(shares, 100)
-            ok = execute_buy(uid, code, name, price, int(shares), reason="手动买入")
-            return jsonify({"ok": ok})
+            res = execute_buy(uid, code, name, price, int(shares), reason="手动买入")
+            return jsonify(res)
         return jsonify({"ok": False, "msg": "未找到"})
 
     if action == "skip":
@@ -898,8 +846,10 @@ def execute():
         price  = item["price"]
         name   = item.get("name", code)
         shares = item.get("shares", 100)
-        ok = execute_buy(uid, code, name, price, shares, reason="队列买入")
-        item["status"] = "done" if ok else "error"
+        res = execute_buy(uid, code, name, price, shares, reason="队列买入")
+        item["status"] = "done" if res.get("ok") else "error"
+        if not res.get("ok"):
+            item["error_msg"] = res.get("msg", "")
 
     return jsonify({"ok": True})
 
@@ -1059,12 +1009,29 @@ def close_position():
 # ══════════════════════════════════════════════════════════════
 # 模拟盘 API（per-user）
 # ══════════════════════════════════════════════════════════════
+def _paper_live_prices(broker) -> dict:
+    """为模拟盘持仓拉取 TDX 实时价 {code: price}，用于实时市值/盈亏。失败返回 {}。"""
+    try:
+        positions = broker.get_positions()
+        if not positions:
+            return {}
+        import ths_quote as tq
+        client = tq.get_client()
+        if client and client._ok:
+            codes = [p["code"] for p in positions]
+            qs    = client.get_quotes(codes)
+            return {q["code"]: q.get("price", 0) for q in qs if q.get("price", 0) > 0}
+    except Exception:
+        pass
+    return {}
+
+
 @app.route("/api/paper/account")
 @require_auth
 def paper_account():
     uid    = session["user_id"]
     broker = pb.get_broker(uid)
-    return jsonify({**broker.get_account(), "ok": True})
+    return jsonify({**broker.get_account(cur_prices=_paper_live_prices(broker)), "ok": True})
 
 
 @app.route("/api/paper/positions")
@@ -1072,19 +1039,150 @@ def paper_account():
 def paper_positions():
     uid        = session["user_id"]
     broker     = pb.get_broker(uid)
-    cur_prices = {}
+    return jsonify(broker.get_positions(cur_prices=_paper_live_prices(broker)))
+
+
+@app.route("/api/account/funds")
+@require_auth
+def account_funds():
+    """统一「可用资金」查询，方便下单前知道还能买多少。
+
+    模拟盘 / DRY_RUN：从模拟盘账本读现金 + 实时权益（可靠、实时）。
+    实盘：调用 xiadan 操作器尽力读「可用资金」（GUI 抓取，可能需现场校准）。
+    返回统一字段 available（可下单金额），便于前端直接用。
+    """
+    uid         = session["user_id"]
+    broker_cfg  = um.get_user_broker_config(uid)
+    broker_type = broker_cfg.get("broker_type", "paper")
+
+    if DRY_RUN or broker_type == "paper":
+        broker = pb.get_broker(uid)
+        acct   = broker.get_account(cur_prices=_paper_live_prices(broker))
+        return jsonify({
+            "ok":           True,
+            "mode":         "paper",
+            "available":    acct["cash"],          # 可用资金 = 现金（可下单金额）
+            "cash":         acct["cash"],
+            "market_value": acct["market_value"],
+            "equity":       acct["equity"],
+            "total_return": acct["total_return"],
+        })
+
+    # ── 实盘：读 xiadan ──
+    if platform.system() != "Windows":
+        return jsonify({"ok": False, "mode": "real", "msg": "服务端非 Windows，无法读 xiadan 资金"})
+    if not operator:
+        return jsonify({"ok": False, "mode": "real", "msg": "xiadan 操作员未初始化（DRY_RUN 或 Linux）"})
     try:
-        positions = broker.get_positions()
-        if positions:
-            import ths_quote as tq
-            client = tq.get_client()
-            if client and client._ok:
-                codes      = [p["code"] for p in positions]
-                qs         = client.get_quotes(codes)
-                cur_prices = {q["code"]: q.get("price", 0) for q in qs if q.get("price", 0) > 0}
-    except Exception:
-        pass
-    return jsonify(broker.get_positions(cur_prices=cur_prices))
+        import time as _time
+        force = (request.args.get("force") or "").strip().lower() in ("1", "true", "yes")
+        cache = getattr(operator, "_funds_cache", None)
+        # ⚠️ 事件驱动 + 只读缓存：实盘资金缓存由「下单成功后」和「手动查实盘账户」更新。
+        # 这个轮询接口默认只返回缓存，绝不激活 xiadan 窗口——彻底告别每 10 秒弹窗。
+        if cache and cache.get("data") and not force:
+            age = round(_time.time() - cache.get("ts", 0))
+            return jsonify({**cache["data"], "cached": True, "age_sec": age})
+        if not force:
+            # 无缓存且非强制 → 不弹窗，返回占位；交易后会自动有值，或手动刷新一次
+            return jsonify({
+                "ok": True, "mode": "real", "available": None, "total_asset": None,
+                "cached": False,
+                "msg": "暂无资金缓存：下单成功后自动更新，或打开「📊 查实盘账户」刷新一次",
+            })
+        # 仅当 ?force=1（用户主动）才真正去读 xiadan（会激活窗口一次）
+        r = operator.query_funds()
+        r.setdefault("mode", "real")
+        if r.get("ok"):
+            prev = (cache or {}).get("data", {}) if cache else {}
+            operator._funds_cache = {"ts": _time.time(), "data": {
+                "ok": True, "mode": "real",
+                "available":   r.get("available"),
+                "total_asset": prev.get("total_asset"),  # query_funds 不含总资产，保留旧值
+            }}
+            return jsonify(operator._funds_cache["data"])
+        return jsonify(r)
+    except Exception as e:
+        logger.exception(f"读 xiadan 资金失败: {e}")
+        return jsonify({"ok": False, "mode": "real", "msg": f"调用异常: {e}"})
+
+
+@app.route("/api/account/snapshot")
+@require_auth
+def account_snapshot():
+    """实盘资金 + 持仓快照（一次性返回 可用资金 / 总资产 / 持仓列表）。
+
+    模拟盘 / DRY_RUN：从模拟盘账本读现金 + 持仓（可靠、实时）。
+    实盘：调用 xiadan 操作器按 F4 截图 + 本地 OCR 解析「资金股票」页：
+          - 可用资金 / 总资产：顶部工具栏 OCR，已在真账户验证可靠；
+          - 持仓代码：词坐标行聚类，可靠；
+          - 名称：OCR 易错，这里用本地名称库按 code 纠正；
+          - 数字列（股数/成本/盈亏）：自绘表格 OCR 仅供参考，附截图供复核。
+    统一字段：available（可用资金）/ total_asset（总资产）/ positions（持仓列表）。
+    """
+    uid         = session["user_id"]
+    broker_cfg  = um.get_user_broker_config(uid)
+    broker_type = broker_cfg.get("broker_type", "paper")
+
+    if DRY_RUN or broker_type == "paper":
+        broker    = pb.get_broker(uid)
+        prices    = _paper_live_prices(broker)
+        acct      = broker.get_account(cur_prices=prices)
+        positions = broker.get_positions(cur_prices=prices)
+        return jsonify({
+            "ok":           True,
+            "mode":         "paper",
+            "available":    acct["cash"],
+            "total_asset":  acct["equity"],
+            "market_value": acct["market_value"],
+            "positions":    positions,
+        })
+
+    # ── 实盘：F4 截图 + 本地 OCR ──
+    if platform.system() != "Windows":
+        return jsonify({"ok": False, "mode": "real", "msg": "服务端非 Windows，无法读 xiadan 账户"})
+    if not operator:
+        return jsonify({"ok": False, "mode": "real", "msg": "xiadan 操作员未初始化（DRY_RUN 或 Linux）"})
+    try:
+        r = operator.query_account_snapshot()
+        r.setdefault("mode", "real")
+        # code 可靠、OCR 名称易错 → 用本地名称库按 code 纠正
+        for p in r.get("positions", []):
+            code = (p.get("code") or "").strip()
+            if code:
+                fixed = dm.get_stock_name(code)
+                if fixed and fixed != code:
+                    p["name"] = fixed
+        return jsonify(r)
+    except Exception as e:
+        logger.exception(f"读 xiadan 账户快照失败: {e}")
+        return jsonify({"ok": False, "mode": "real", "msg": f"调用异常: {e}"})
+
+
+@app.route("/api/account/trade_settings", methods=["GET", "POST"])
+@require_auth
+def account_trade_settings():
+    """读/写 实盘交易自动化开关（运行时切换，免改 config）：
+      - auto_confirm_order   下单后自动按 Y 提交(True) / 下单后等人工按 Y(False)
+      - auto_cancel_unfilled 未成交自动撤单(True) / 手动撤单(False)
+      - auto_cancel_delay    未成交多少秒后撤
+    这是驱动单一 xiadan 客户端的全局设置，持久化到 data/trade_settings.json（重启仍生效）。
+    """
+    if not operator:
+        return jsonify({"ok": False, "msg": "xiadan 操作员未初始化（DRY_RUN 或 Linux），无实盘设置"})
+    if request.method == "POST":
+        d = request.json or {}
+        s = operator.set_trade_settings(
+            auto_confirm_order=d.get("auto_confirm_order"),
+            auto_cancel_unfilled=d.get("auto_cancel_unfilled"),
+            auto_cancel_delay=d.get("auto_cancel_delay"),
+        )
+        uid = session.get("user_id")
+        _add_log(uid,
+                 f"⚙️ 实盘自动化设置: 下单{'自动确认' if s['auto_confirm_order'] else '手动确认'} · "
+                 f"{'自动撤单' if s['auto_cancel_unfilled'] else '手动撤单'}"
+                 f"(未成交{s['auto_cancel_delay']:.0f}秒)", "WARN")
+        return jsonify({"ok": True, **s})
+    return jsonify({"ok": True, **operator.get_trade_settings()})
 
 
 @app.route("/api/paper/trades")
@@ -1147,7 +1245,7 @@ def paper_stats():
     uid    = session["user_id"]
     broker = pb.get_broker(uid)
     stats  = broker.get_stats()
-    acct   = broker.get_account()
+    acct   = broker.get_account(cur_prices=_paper_live_prices(broker))
     return jsonify({**stats, **acct, "ok": True})
 
 
@@ -1233,13 +1331,37 @@ def paper_manual_buy():
     except Exception:
         pass
     if shares <= 0:
-        broker = pb.get_broker(uid)
-        acct   = broker.get_account()
-        budget = acct["cash"] * s.get("position_ratio", 0.20)
+        # 仓位基数：实盘走 live_cash（xiadan 真账户余额），模拟走 paper_broker.cash
+        broker_cfg = um.get_user_broker_config(uid)
+        broker_type = broker_cfg.get("broker_type", "paper")
+        if broker_type == "paper" or DRY_RUN:
+            broker = pb.get_broker(uid)
+            acct   = broker.get_account()
+            base_cash = float(acct.get("cash") or 0)
+        else:
+            # 实盘：从 broker_config.config.live_cash 取 xiadan 真账户余额
+            live_cash = float((broker_cfg.get("config") or {}).get("live_cash") or 0)
+            if live_cash <= 0:
+                return jsonify({
+                    "ok": False,
+                    "msg": "实盘模式下未配置真账户余额（live_cash），请在顶部切换实盘开关时输入 xiadan 当前可用资金",
+                    "need_live_cash": True,
+                }), 400
+            base_cash = live_cash
+        budget = base_cash * s.get("position_ratio", 0.20)
         shares = max(int(budget / price / 100) * 100, 100)
+        _add_log(uid, f"💰 仓位计算: {broker_type} base_cash=¥{base_cash:,.0f} × {s.get('position_ratio', 0.20)*100:.0f}% = ¥{budget:,.0f} → {shares}股 @{price:.2f}")
     res = execute_buy(uid, code, name, price, shares, reason="模拟盘手动买入")
     if res.get("ok"):
-        return jsonify({"ok": True, "shares": shares, "msg": f"已买入 {code} {shares}股 @{price}"})
+        # 透传 execute_buy 所有字段（含实盘的 signal_id，前端轮询用）
+        return jsonify({
+            "ok":         True,
+            "shares":     shares,
+            "msg":        res.get("msg") or f"已买入 {code} {shares}股 @{price}",
+            "signal_id":  res.get("signal_id"),     # 实盘模式才有
+            "exec_price": res.get("exec_price"),    # 模拟模式才有
+            "total_cost": res.get("total_cost"),
+        })
     return jsonify({"ok": False, "msg": res.get("msg") or "买入失败，请检查资金或持仓（详见日志）"})
 
 
@@ -1461,10 +1583,8 @@ def api_factor_ai_generate():
     if not desc:
         return jsonify({"ok": False, "error": "描述不能为空"})
     _add_log(uid, f"AI生成因子策略: {desc[:30]}...")
-    user_ai_cfg = um.get_user_ai_config(uid) or {}
-    cfg = ai.load_config()
-    if user_ai_cfg.get("api_key"):
-        cfg.update({k: v for k, v in user_ai_cfg.items() if v})
+    # 全局配置为权威，per-user 仅兜底（与 ai_analyze 一致，避免旧 key 顶掉新配置导致 401）
+    cfg = ai.resolve_config(um.get_user_ai_config(uid) or {})
     r = ai.generate_factor(desc, config_override=cfg)
     if r.get("ok"):
         _add_log(uid, f"AI因子生成完成，共{r.get('length', len(r.get('code','')))}字符")
@@ -1506,6 +1626,666 @@ def api_factor_evaluate():
         return jsonify({"ok": False, "error": "因子管理器暂不支持 evaluate 方法"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
+
+
+# ──────────────────────────────────────────────────────────────
+#  Vibe Alpha 因子库 (HKUDS/Vibe-Trading 移植)
+#  - /api/factors_zoo/list:           列出所有可用 alpha（带元数据）
+#  - /api/factors_zoo/compute:        同步算分（< 1000 只，前端等结果）
+#  - /api/factors_zoo/compute_async:  异步算分（启动后台任务，返回 task_id）
+#  - /api/factors_zoo/progress/<id>:  查询任务进度
+#  - /api/factors_zoo/result/<id>:    取任务结果
+#  完全独立于 factor_manager，不参与自动监控扫描/下单链路
+# ──────────────────────────────────────────────────────────────
+# 异步任务表（进程内，重启丢失；阶段 1 够用）
+_fz_tasks: dict = {}            # task_id -> {status, progress, total, ...}
+_fz_tasks_lock = threading.Lock()
+@app.route("/api/factors_zoo/list")
+@require_auth
+def api_factors_zoo_list():
+    """列出 Vibe Alpha 因子库的所有可用因子"""
+    try:
+        from analytics.factors_zoo import registry as _fz_registry
+        reg = _fz_registry()
+        items = []
+        for aid in reg.list():
+            try:
+                h = reg.get(aid)
+                m = h.meta or {}
+                items.append({
+                    "id":              h.id,
+                    "zoo":             h.zoo,
+                    "nickname":        m.get("nickname") or h.id,
+                    "description_cn":  m.get("description_cn", ""),
+                    "theme":           m.get("theme", []),
+                    "formula":         m.get("formula_latex", ""),
+                    "universe":        m.get("universe", []),
+                    "frequency":       m.get("frequency", []),
+                    "decay_horizon":   m.get("decay_horizon", 0),
+                    "min_warmup_bars": m.get("min_warmup_bars", 0),
+                    "columns_required": m.get("columns_required", []),
+                    "notes":           m.get("notes", ""),
+                })
+            except Exception as e:
+                logger.warning(f"[factors_zoo] meta 读取失败 {aid}: {e}")
+        return jsonify({
+            "ok": True,
+            "factors": sorted(items, key=lambda x: x["id"]),
+            "health": reg.health(),
+        })
+    except Exception as e:
+        logger.exception("[factors_zoo] list 失败")
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/factors_zoo/compute", methods=["POST"])
+@require_auth
+def api_factors_zoo_compute():
+    """对一组股票算指定 alpha 的分数
+
+    入参:
+      factor_id:  str           必填，例 "gtja191_001"
+      mode:       str           "manual" (默认) | "market_top"
+      codes:      list[str]     mode=manual 时必填，例 ["600519","000001"]
+      max_codes:  int           mode=market_top 时取活跃前 N 只（默认 500，上限 1000）
+      days:       int           回看天数（默认 60，最少 30，最多 250）
+    返回:
+      ok:           bool
+      factor_meta:  dict
+      scores:       {code: float|None}  按分数降序，None 列在末尾
+      ranked:       [{code,name,score,rank}]  含名称的排序结果
+      scanned:      int       实际算到 panel 里的股票数
+      took_ms:      int       服务端总耗时
+    """
+    import time as _time
+    uid = session["user_id"]
+    d   = request.json or {}
+    factor_id = (d.get("factor_id") or "").strip()
+    mode      = (d.get("mode") or "manual").strip()
+    try:
+        days = max(30, min(250, int(d.get("days", 60))))
+    except (TypeError, ValueError):
+        days = 60
+    try:
+        # 0 = 全市场无上限（~5000+ 只）；>0 = 取活跃前 N 只
+        max_codes = int(d.get("max_codes", 500))
+        if max_codes != 0:
+            max_codes = max(10, min(10000, max_codes))
+    except (TypeError, ValueError):
+        max_codes = 500
+
+    if not factor_id:
+        return jsonify({"ok": False, "error": "factor_id 必填"})
+
+    t_start = _time.time()
+    try:
+        from analytics.factors_zoo import registry as _fz_registry, build_panel, latest_score
+        from market.market_data import get_kline as _get_kline
+        reg = _fz_registry()
+        if factor_id not in reg.list():
+            return jsonify({"ok": False, "error": f"因子 {factor_id} 不存在，已注册: {reg.list()[:10]}"})
+
+        # ── 确定股票池 ──
+        if mode == "market_top":
+            try:
+                universe, _qcache = sm._full_market_universe_with_quotes(max_codes=max_codes)
+            except Exception as e:
+                return jsonify({"ok": False, "error": f"全市场拉取失败: {e}"})
+            if not universe:
+                return jsonify({"ok": False, "error": "无法获取全市场行情（TDX 未连接），请稍后重试或手动输入代码"})
+            codes = list(universe)
+            scope_label = f"活跃前{len(codes)}只"
+        else:
+            raw_codes = d.get("codes") or []
+            if isinstance(raw_codes, str):
+                codes = [c.strip() for c in raw_codes.replace("，", ",").split(",") if c.strip()]
+            else:
+                codes = [str(c).strip() for c in raw_codes if str(c).strip()]
+            if not codes:
+                return jsonify({"ok": False, "error": "manual 模式 codes 必填"})
+            if len(codes) > 1000:
+                return jsonify({"ok": False, "error": f"代码数 {len(codes)} 超过 1000 上限"})
+            scope_label = f"{len(codes)}只"
+            _qcache = {}
+
+        _add_log(uid, f"Vibe因子计算: [{factor_id}] {scope_label} days={days}")
+
+        # ── 预热检查（友好错误，比"NaN 占比过高"更好理解）──
+        try:
+            _meta_check = reg.get(factor_id).meta or {}
+            _warmup = int(_meta_check.get("min_warmup_bars", 0) or 0)
+            if _warmup > 0 and days < _warmup + 5:
+                return jsonify({
+                    "ok": False,
+                    "error": f"因子 {factor_id} 需要至少 {_warmup} 天历史数据进行预热（当前回看 {days} 天）。"
+                             f"请把「回看天数」调到 {_warmup + 20} 天以上再算。",
+                    "min_warmup_bars": _warmup,
+                    "suggested_days": _warmup + 20,
+                })
+        except Exception:
+            pass
+
+        # ── 拼面板 + 计算 ──
+        # 全市场用 12 线程并行拉 K 线（手动模式 ≤ 50 只用 8 线程足够）
+        _workers = 12 if mode == "market_top" else 8
+        panel = build_panel(codes, _get_kline, days=days, workers=_workers)
+        if not panel or "close" not in panel:
+            return jsonify({"ok": False, "error": "没有任何股票能拿到 K 线数据，请检查网络/缓存"})
+
+        # 检查实际拿到的 K 线行数是否够预热
+        _actual_rows = panel["close"].shape[0]
+        if _warmup > 0 and _actual_rows < _warmup:
+            return jsonify({
+                "ok": False,
+                "error": f"实际拉到的 K 线只有 {_actual_rows} 天，不足因子 {factor_id} 所需的 {_warmup} 天预热。"
+                         f"原因：股票上市不足 / 缓存数据不全 / 数据源限流。建议换一只历史悠久的股票或减小回看要求。",
+                "actual_rows": _actual_rows,
+                "min_warmup_bars": _warmup,
+            })
+
+        df = reg.compute(factor_id, panel)
+        scores = latest_score(df, mode="per_column")
+        scanned = panel["close"].shape[1]
+
+        # ── 拼名称 + 价格（用于直接灌入选股池）+ 排序 ──
+        # market_top 模式 _qcache 已有 quotes；manual 模式现拉一次
+        quote_map: dict = {}
+        if mode == "market_top" and _qcache:
+            for q in _qcache.values():
+                if isinstance(q, dict) and q.get("code"):
+                    quote_map[q["code"]] = q
+        else:
+            try:
+                import market.ths_quote as _tq
+                _client = _tq.get_client()
+                if _client and _client._ok:
+                    for q in (_client.get_quotes(codes) or []):
+                        if q and q.get("code"):
+                            quote_map[q["code"]] = q
+            except Exception as e:
+                logger.debug(f"[factors_zoo] manual 模式 quote 拉取失败: {e}")
+
+        # 现价 fallback：quote 拿不到时退到 panel.close 最新值（非交易时段必备）
+        _close_panel = panel.get("close")
+        ranked = []
+        for code, val in scores.items():
+            q = quote_map.get(code, {})
+            price = float(q.get("price") or 0)
+            if price <= 0 and _close_panel is not None and code in _close_panel.columns:
+                try:
+                    _last_close = _close_panel[code].dropna()
+                    if len(_last_close) > 0:
+                        price = float(_last_close.iloc[-1])
+                except Exception:
+                    pass
+            ranked.append({
+                "code":   code,
+                "name":   q.get("name", ""),
+                "price":  price,
+                "change": float(q.get("change_pct") or 0),
+                "score":  val,
+            })
+        # None 排在最后，其余按降序
+        ranked.sort(key=lambda r: (r["score"] is None, -(r["score"] or 0)))
+        for i, r in enumerate(ranked):
+            r["rank"] = i + 1
+
+        meta = reg.get(factor_id).meta or {}
+        took_ms = int((_time.time() - t_start) * 1000)
+        _add_log(uid, f"Vibe因子完成: [{factor_id}] scanned={scanned} took={took_ms}ms")
+        return jsonify({
+            "ok": True,
+            "factor_id": factor_id,
+            "factor_meta": {
+                "nickname":        meta.get("nickname") or factor_id,
+                "description_cn":  meta.get("description_cn", ""),
+                "theme":           meta.get("theme", []),
+                "formula":         meta.get("formula_latex", ""),
+                "universe":        meta.get("universe", []),
+                "min_warmup_bars": meta.get("min_warmup_bars", 0),
+                "notes":           meta.get("notes", ""),
+            },
+            "scores":  scores,
+            "ranked":  ranked,
+            "scanned": scanned,
+            "requested": len(codes),
+            "took_ms": took_ms,
+        })
+    except Exception as e:
+        logger.exception(f"[factors_zoo] compute 失败 factor_id={factor_id}")
+        return jsonify({"ok": False, "error": str(e), "took_ms": int((_time.time() - t_start) * 1000)})
+
+
+def _fz_run_async_compute(task_id: str, uid: int, factor_id: str, codes: list,
+                          quote_map: dict, days: int):
+    """后台线程执行因子计算，结果存到 _fz_tasks[task_id]"""
+    import time as _time
+    from analytics.factors_zoo import registry as _fz_registry, build_panel, latest_score
+    from market.market_data import get_kline as _get_kline
+    t0 = _time.time()
+    try:
+        # 注意：build_panel 内部用 factor_manager 的 _scan_prog 上报进度
+        # 我们这里只把任务从 init → running → done 三态切
+        with _fz_tasks_lock:
+            _fz_tasks[task_id]["status"] = "running"
+            _fz_tasks[task_id]["phase"]  = "拉取K线"
+        panel = build_panel(codes, _get_kline, days=days, workers=12)
+        if not panel or "close" not in panel:
+            with _fz_tasks_lock:
+                _fz_tasks[task_id].update({"status": "error", "error": "无任何 K 线数据"})
+            return
+
+        with _fz_tasks_lock:
+            _fz_tasks[task_id]["phase"] = "计算因子分数"
+        reg = _fz_registry()
+        df = reg.compute(factor_id, panel)
+        scores = latest_score(df, mode="per_column")
+        scanned = panel["close"].shape[1]
+
+        with _fz_tasks_lock:
+            _fz_tasks[task_id]["phase"] = "整理结果"
+        # 现价 fallback：quote 拿不到时退到 panel.close 最新值（非交易时段必备）
+        _close_panel = panel.get("close")
+        ranked = []
+        for code, val in scores.items():
+            q = quote_map.get(code, {})
+            price = float(q.get("price") or 0)
+            if price <= 0 and _close_panel is not None and code in _close_panel.columns:
+                try:
+                    _last_close = _close_panel[code].dropna()
+                    if len(_last_close) > 0:
+                        price = float(_last_close.iloc[-1])
+                except Exception:
+                    pass
+            ranked.append({
+                "code":   code,
+                "name":   q.get("name", ""),
+                "price":  price,
+                "change": float(q.get("change_pct") or 0),
+                "score":  val,
+            })
+        ranked.sort(key=lambda r: (r["score"] is None, -(r["score"] or 0)))
+        for i, r in enumerate(ranked):
+            r["rank"] = i + 1
+
+        meta = reg.get(factor_id).meta or {}
+        took_ms = int((_time.time() - t0) * 1000)
+        result = {
+            "ok": True,
+            "factor_id": factor_id,
+            "factor_meta": {
+                "nickname":        meta.get("nickname") or factor_id,
+                "description_cn":  meta.get("description_cn", ""),
+                "theme":           meta.get("theme", []),
+                "formula":         meta.get("formula_latex", ""),
+                "universe":        meta.get("universe", []),
+                "min_warmup_bars": meta.get("min_warmup_bars", 0),
+            },
+            "scores":  scores,
+            "ranked":  ranked,
+            "scanned": scanned,
+            "requested": len(codes),
+            "took_ms": took_ms,
+        }
+        with _fz_tasks_lock:
+            _fz_tasks[task_id].update({"status": "done", "result": result, "took_ms": took_ms})
+        _add_log(uid, f"Vibe异步完成: [{factor_id}] scanned={scanned} took={took_ms}ms")
+    except Exception as e:
+        logger.exception(f"[factors_zoo] async compute 失败 task={task_id}")
+        with _fz_tasks_lock:
+            _fz_tasks[task_id].update({"status": "error", "error": str(e)})
+
+
+@app.route("/api/factors_zoo/compute_async", methods=["POST"])
+@require_auth
+def api_factors_zoo_compute_async():
+    """启动异步因子计算（适合全市场扫描）
+
+    入参同 /compute，多支持 max_codes=0（全市场无上限 ~5000+ 只）
+    返回：{ok, task_id} —— 客户端凭 task_id 轮询 /progress 和 /result
+    """
+    import uuid as _uuid
+    uid = session["user_id"]
+    d   = request.json or {}
+    factor_id = (d.get("factor_id") or "").strip()
+    mode      = (d.get("mode") or "manual").strip()
+    try:
+        days = max(30, min(250, int(d.get("days", 60))))
+    except (TypeError, ValueError):
+        days = 60
+    try:
+        max_codes = int(d.get("max_codes", 0))
+        if max_codes != 0:
+            max_codes = max(10, min(10000, max_codes))
+    except (TypeError, ValueError):
+        max_codes = 0
+
+    if not factor_id:
+        return jsonify({"ok": False, "error": "factor_id 必填"})
+
+    try:
+        from analytics.factors_zoo import registry as _fz_registry
+        reg = _fz_registry()
+        if factor_id not in reg.list():
+            return jsonify({"ok": False, "error": f"因子 {factor_id} 不存在"})
+
+        # 确定股票池 + quote
+        quote_map = {}
+        if mode == "market_top":
+            try:
+                universe, _qcache = sm._full_market_universe_with_quotes(max_codes=max_codes)
+            except Exception as e:
+                return jsonify({"ok": False, "error": f"全市场拉取失败: {e}"})
+            if not universe:
+                return jsonify({"ok": False, "error": "无法获取全市场行情"})
+            codes = list(universe)
+            for q in (_qcache or {}).values():
+                if isinstance(q, dict) and q.get("code"):
+                    quote_map[q["code"]] = q
+        else:
+            raw_codes = d.get("codes") or []
+            if isinstance(raw_codes, str):
+                codes = [c.strip() for c in raw_codes.replace("，", ",").split(",") if c.strip()]
+            else:
+                codes = [str(c).strip() for c in raw_codes if str(c).strip()]
+            if not codes:
+                return jsonify({"ok": False, "error": "manual 模式 codes 必填"})
+
+        task_id = _uuid.uuid4().hex[:12]
+        scope_label = f"活跃{max_codes or '全市场'}只" if mode == "market_top" else f"{len(codes)}只"
+        with _fz_tasks_lock:
+            _fz_tasks[task_id] = {
+                "status":    "pending",
+                "phase":     "排队中",
+                "factor_id": factor_id,
+                "scope":     scope_label,
+                "total":     len(codes),
+                "created":   _time.time() if (_time := __import__("time")) else 0,
+            }
+        threading.Thread(
+            target=_fz_run_async_compute,
+            args=(task_id, uid, factor_id, codes, quote_map, days),
+            daemon=True,
+            name=f"fz-{task_id}",
+        ).start()
+        _add_log(uid, f"Vibe异步启动: [{factor_id}] {scope_label} task={task_id}")
+        return jsonify({"ok": True, "task_id": task_id, "scope": scope_label, "total": len(codes)})
+    except Exception as e:
+        logger.exception(f"[factors_zoo] compute_async 启动失败")
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/factors_zoo/progress/<task_id>")
+@require_auth
+def api_factors_zoo_progress(task_id):
+    """查询异步任务进度（轻量级，前端可 1s 轮询）"""
+    with _fz_tasks_lock:
+        task = _fz_tasks.get(task_id)
+        if not task:
+            return jsonify({"ok": False, "error": "任务不存在"})
+        snap = {
+            "ok":        True,
+            "task_id":   task_id,
+            "status":    task.get("status"),
+            "phase":     task.get("phase", ""),
+            "scope":     task.get("scope", ""),
+            "factor_id": task.get("factor_id", ""),
+            "total":     task.get("total", 0),
+        }
+    # 借用 sm._scan_prog（factor_manager / strategy_manager 共享的全局扫描进度）
+    try:
+        import strategy_manager as _sm_mod
+        prog = getattr(_sm_mod, "_scan_prog", None) or getattr(_sm_mod, "_tdx_prog", {})
+        if isinstance(prog, dict) and prog.get("running"):
+            snap["scan_current"] = int(prog.get("current") or 0)
+            snap["scan_total"]   = int(prog.get("total") or 0)
+            snap["scan_code"]    = prog.get("code") or ""
+    except Exception:
+        pass
+    if snap["status"] == "error":
+        with _fz_tasks_lock:
+            snap["error"] = _fz_tasks[task_id].get("error", "未知错误")
+    return jsonify(snap)
+
+
+@app.route("/api/factors_zoo/backtest", methods=["POST"])
+@require_auth
+def api_factors_zoo_backtest():
+    """因子回测（同步，前端等结果；大池子用 codes 限制规模）
+
+    入参:
+      factor_id:      str    必填
+      codes:          list/str  股票池（manual 模式）
+      mode:           "manual" | "market_top"
+      max_codes:      int    market_top 模式时取活跃前 N（默认 100，回测建议 ≤ 500）
+      days:           int    历史天数（默认 200）
+      top_k:          int    每次调仓选前 K 只（默认 10）
+      rebalance_days: int    调仓周期（默认 5）
+      hold_days:      int    持有天数（默认 5）
+      fee_rate:       float  单边费率（默认 0）
+    """
+    uid = session["user_id"]
+    d   = request.json or {}
+    factor_id = (d.get("factor_id") or "").strip()
+    mode      = (d.get("mode") or "manual").strip()
+    try:    days = max(60, min(400, int(d.get("days", 200))))
+    except: days = 200
+    try:    top_k = max(1, min(50, int(d.get("top_k", 10))))
+    except: top_k = 10
+    try:    rebalance_days = max(1, min(30, int(d.get("rebalance_days", 5))))
+    except: rebalance_days = 5
+    try:    hold_days = max(1, min(rebalance_days, int(d.get("hold_days", 5))))
+    except: hold_days = 5
+    try:    fee_rate = max(0.0, min(0.01, float(d.get("fee_rate", 0))))
+    except: fee_rate = 0.0
+    try:    max_codes = max(10, min(1000, int(d.get("max_codes", 100))))
+    except: max_codes = 100
+
+    if not factor_id:
+        return jsonify({"ok": False, "error": "factor_id 必填"})
+
+    try:
+        if mode == "market_top":
+            universe, _qcache = sm._full_market_universe_with_quotes(max_codes=max_codes)
+            codes = list(universe or [])
+            if not codes:
+                return jsonify({"ok": False, "error": "全市场拉取失败"})
+        else:
+            raw = d.get("codes") or []
+            if isinstance(raw, str):
+                codes = [c.strip() for c in raw.replace("，", ",").split(",") if c.strip()]
+            else:
+                codes = [str(c).strip() for c in raw if str(c).strip()]
+            if not codes:
+                return jsonify({"ok": False, "error": "codes 必填"})
+
+        _add_log(uid, f"Vibe因子回测: [{factor_id}] {len(codes)}只 days={days} top_k={top_k} hold={hold_days}")
+        from analytics.factors_zoo.backtest import backtest_factor
+        from market.market_data import get_kline as _get_kline
+        result = backtest_factor(
+            factor_id=factor_id,
+            codes=codes,
+            get_kline=_get_kline,
+            days=days,
+            top_k=top_k,
+            rebalance_days=rebalance_days,
+            hold_days=hold_days,
+            fee_rate=fee_rate,
+        )
+        if result.get("ok"):
+            s = result["stats"]
+            _add_log(uid, f"回测完成: 总收益={s['total_return']*100:.2f}% 胜率={s['win_rate']*100:.1f}% IC={s['ic_mean']:.3f}")
+        return jsonify(result)
+    except Exception as e:
+        logger.exception(f"[factors_zoo] backtest 失败")
+        return jsonify({"ok": False, "error": str(e)})
+
+
+# ──────────────────────────────────────────────────────────────
+#  Vibe 因子激活 API（激活后调度器每 5 分钟自动算分+开单）
+# ──────────────────────────────────────────────────────────────
+@app.route("/api/vibe_activations/me", methods=["GET"])
+@require_auth
+def api_vibe_activation_me():
+    uid = session["user_id"]
+    try:
+        from analytics.factors_zoo import activator as _act
+        cfg = _act.get(uid)
+        return jsonify({"ok": True, "activation": cfg})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/vibe_activations/activate", methods=["POST"])
+@require_auth
+def api_vibe_activation_activate():
+    uid = session["user_id"]
+    d   = request.json or {}
+    factor_id = (d.get("factor_id") or "").strip()
+    if not factor_id:
+        return jsonify({"ok": False, "error": "factor_id 必填"})
+    # 二次保护：检查因子是否存在 + 是否做过回测且胜率 ≥ 55%（强烈建议但不强制）
+    try:
+        from analytics.factors_zoo import registry as _r, activator as _act
+        if factor_id not in _r().list():
+            return jsonify({"ok": False, "error": f"因子 {factor_id} 不存在"})
+        params = {
+            "mode":             d.get("mode", "market_top"),
+            "codes":            d.get("codes", []),
+            "max_codes":        d.get("max_codes", 500),
+            "daily_limit":      d.get("daily_limit", 3),
+            "position_pct":     d.get("position_pct", 0.2),
+            "score_percentile": d.get("score_percentile", 0.8),
+            "stop_loss_pct":    d.get("stop_loss_pct", -0.03),
+            "interval_sec":     d.get("interval_sec", 120),
+        }
+        cfg = _act.activate(uid, factor_id, params)
+        _add_log(uid, f"📚 Alpha因子激活: [{factor_id}] 仓位={params['position_pct']*100:.0f}% 日限={params['daily_limit']} 阈值=top{(1-params['score_percentile'])*100:.0f}% 止损={params['stop_loss_pct']*100:.1f}% 每{params['interval_sec']}秒")
+        return jsonify({"ok": True, "activation": cfg})
+    except Exception as e:
+        logger.exception("[vibe.activate] 失败")
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/vibe_activations/deactivate", methods=["POST"])
+@require_auth
+def api_vibe_activation_deactivate():
+    uid = session["user_id"]
+    try:
+        from analytics.factors_zoo import activator as _act
+        cfg = _act.deactivate(uid)
+        _add_log(uid, "📚 Alpha 因子已停用")
+        return jsonify({"ok": True, "activation": cfg})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+# 后台调度器：每 30 秒检查一次所有 enabled 激活，达到 interval_sec 间隔且交易时段就跑
+# 默认 120 秒（2 分钟），用户可在激活配置里通过 interval_sec 字段自定义
+_VIBE_INTERVAL_SEC = 120   # 默认 2 分钟（旧值 5 分钟太长，错过短线机会）
+_VIBE_INTERVAL_MIN = 30    # 最快 30 秒一次（防接口压力）
+_VIBE_INTERVAL_MAX = 600   # 最慢 10 分钟一次
+_vibe_last_run: dict = {}  # uid -> ts
+
+
+def _vibe_get_paper_cash(uid: int) -> float:
+    """给 activator 用的 paper 可用资金回调"""
+    try:
+        broker = pb.get_broker(uid)
+        return float(broker.cash) if broker else 0.0
+    except Exception:
+        return 0.0
+
+
+def _vibe_compute_daily_pnl(uid: int) -> float | None:
+    """计算用户当日浮动盈亏比例（持仓 mtm 比初始资金）
+    返回 None 表示无法计算
+    """
+    try:
+        broker = pb.get_broker(uid)
+        if not broker:
+            return None
+        positions = broker.get_positions()
+        if not positions:
+            return 0.0
+        total_pnl = 0.0
+        for code, pos in positions.items():
+            if not isinstance(pos, dict):
+                continue
+            cost = float(pos.get("cost") or 0)
+            shares = int(pos.get("shares") or 0)
+            cur = float(pos.get("cur_price") or cost)
+            total_pnl += (cur - cost) * shares
+        # 用 paper_config.cash + 持仓市值 还原总资产 →  pnl / 总资产
+        total_value = broker.cash + sum(
+            float(p.get("cur_price") or p.get("cost") or 0) * int(p.get("shares") or 0)
+            for p in positions.values() if isinstance(p, dict)
+        )
+        if total_value <= 0:
+            return None
+        return total_pnl / total_value
+    except Exception as e:
+        logger.debug(f"_vibe_compute_daily_pnl uid={uid} 失败: {e}")
+        return None
+
+
+def run_vibe_scheduler():
+    """独立线程：每 30s 检查 vibe_activations enabled，达自定义间隔 + 交易时段则跑"""
+    logger.info(f"[vibe.scheduler] 启动 默认间隔 {_VIBE_INTERVAL_SEC}s")
+    while True:
+        try:
+            time.sleep(30)   # 检查频率（不是扫描频率）
+            if not is_trading_time():
+                continue
+            from analytics.factors_zoo import activator as _act
+            actives = _act.list_all_enabled()
+            if not actives:
+                continue
+            now_ts = time.time()
+            for cfg in actives:
+                uid = cfg["user_id"]
+                # 更新当日盈亏（每分钟一次，触发熔断）
+                pnl = _vibe_compute_daily_pnl(uid)
+                if pnl is not None:
+                    _act.update_daily_pnl(uid, pnl)
+
+                # 取每个激活配置自己的 interval_sec（用户可在激活时自定义）
+                try:
+                    _user_interval = int((cfg or {}).get("interval_sec") or _VIBE_INTERVAL_SEC)
+                except (TypeError, ValueError):
+                    _user_interval = _VIBE_INTERVAL_SEC
+                _user_interval = max(_VIBE_INTERVAL_MIN, min(_VIBE_INTERVAL_MAX, _user_interval))
+
+                # 满间隔才扫一次
+                last = _vibe_last_run.get(uid, 0)
+                if now_ts - last < _user_interval:
+                    continue
+                _vibe_last_run[uid] = now_ts
+                try:
+                    result = _act.run_tick(uid, execute_buy, lambda: _vibe_get_paper_cash(uid))
+                    placed = result.get("placed", [])
+                    if placed:
+                        _add_log(uid, f"📚 Vibe调度: 开仓 {len(placed)} 只 (今日 {result.get('daily_count')}/{result.get('daily_limit')})")
+                    elif result.get("phase") not in ("done", "skip_disabled"):
+                        logger.info(f"[vibe.scheduler] uid={uid} phase={result.get('phase')}")
+                except Exception as e:
+                    logger.exception(f"[vibe.scheduler] uid={uid} run_tick 抛错")
+        except Exception:
+            logger.exception("[vibe.scheduler] 循环抛错")
+            time.sleep(60)
+
+
+@app.route("/api/factors_zoo/result/<task_id>")
+@require_auth
+def api_factors_zoo_result(task_id):
+    """取异步任务结果（仅 status=done 时返回完整 ranked）"""
+    with _fz_tasks_lock:
+        task = _fz_tasks.get(task_id)
+        if not task:
+            return jsonify({"ok": False, "error": "任务不存在"})
+        if task.get("status") != "done":
+            return jsonify({"ok": False, "error": f"任务尚未完成: status={task.get('status')}"})
+        return jsonify(task["result"])
 
 
 # ── 回测 API ──────────────────────────────────────────────────
@@ -1614,757 +2394,6 @@ def api_portfolio_optimize():
         return jsonify({"ok": False, "error": str(e)})
 
 
-# ── 市场环境 API ──────────────────────────────────────────────
-@app.route("/api/market/context")
-def api_market_context():
-    try:
-        force = request.args.get("refresh", "0") == "1"
-        ctx   = mctx.get_market_regime(force_refresh=force)
-        try:
-            import ths_quote as tq
-            client = tq.get_client()
-            if client and client._ok:
-                index_pairs = [(1, "000001"), (0, "399001"), (0, "399006")]
-                name_map    = {"000001": "上证指数", "399001": "深证成指", "399006": "创业板指"}
-                qs = client.get_index_quotes(index_pairs)
-                for q in qs:
-                    nm = name_map.get(q.get("code", ""), "")
-                    if nm:
-                        ctx.setdefault("indices", {}).setdefault(nm, {}).update({
-                            "price":  round(float(q.get("price") or 0), 2),
-                            "change": round(float(q.get("change_pct") or 0), 2),
-                            "code":   q.get("code", ""),
-                        })
-        except Exception:
-            pass
-        return jsonify({"ok": True, **ctx})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
-
-
-@app.route("/api/market/regime", methods=["POST"])
-@require_auth
-def api_market_regime():
-    """
-    市场环境检测（牛市/熊市/震荡/急跌）+ 建议仓位系数。
-    ---
-    responses:
-      200:
-        description: regime, score, position_multiplier
-    """
-    try:
-        from market_regime import MarketRegimeDetector
-        detector = MarketRegimeDetector()
-        result   = detector.detect()
-        return jsonify({"ok": True, **result})
-    except ImportError:
-        # 降级：使用 market_context
-        ctx = mctx.get_market_regime(force_refresh=True)
-        return jsonify({"ok": True, **ctx})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
-
-
-# ── 数据管理 API ──────────────────────────────────────────────
-@app.route("/api/data/stocks")
-def api_data_list():
-    return jsonify(dm.list_stocks())
-
-
-@app.route("/api/data/download", methods=["POST"])
-@require_auth
-def api_data_download():
-    uid        = session["user_id"]
-    d          = request.json
-    raw_codes  = d.get("codes", "")
-    start_date = d.get("start_date", "2020-01-01")
-    if isinstance(raw_codes, str):
-        codes = [c.strip() for c in raw_codes.replace("，", ",").split(",") if c.strip()]
-    else:
-        codes = raw_codes
-    if not codes:
-        return jsonify({"ok": False, "msg": "请输入股票代码"})
-    task_id = str(uuid.uuid4())[:8]
-    _add_log(uid, f"开始下载 {len(codes)} 只股票历史数据...")
-    dm.start_download(codes, start_date, task_id)
-    return jsonify({"ok": True, "task_id": task_id, "total": len(codes)})
-
-
-@app.route("/api/data/progress/<task_id>")
-def api_data_progress(task_id):
-    return jsonify(dm.get_progress(task_id))
-
-
-@app.route("/api/data/delete", methods=["POST"])
-@require_auth
-def api_data_delete():
-    uid  = session["user_id"]
-    code = request.json.get("code", "")
-    r    = dm.delete_stock(code)
-    if r["ok"]:
-        _add_log(uid, f"已删除本地数据: {code}", "WARN")
-    return jsonify(r)
-
-
-@app.route("/api/data/refresh_names", methods=["POST"])
-@require_auth
-def api_refresh_names():
-    uid = session["user_id"]
-    threading.Thread(target=dm.refresh_name_cache, daemon=True).start()
-    _add_log(uid, "开始刷新股票名称缓存...")
-    return jsonify({"ok": True, "msg": "后台刷新中"})
-
-
-@app.route("/api/data/sector/<code>")
-def api_stock_sector(code):
-    r       = dm.get_stock_sector(code)
-    r["name"] = dm.get_stock_name(code)
-    return jsonify(r)
-
-
-# ── K 线 API ──────────────────────────────────────────────────
-@app.route("/api/kline/<code>")
-def api_kline(code):
-    try:
-        df = dm.get_local(code)
-        if df is not None and not df.empty and len(df) >= 10:
-            cols = [c for c in ["date", "open", "close", "high", "low", "volume"] if c in df.columns]
-            sub  = df[cols].tail(120).copy()
-            sub["date"] = sub["date"].apply(
-                lambda d: d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
-            )
-            name = dm.get_stock_name(code) or code
-            return jsonify({"ok": True, "code": code, "name": name,
-                            "source": "local", "data": sub.to_dict("records")})
-    except Exception:
-        pass
-    try:
-        import ths_quote as tq
-        client = tq.get_client()
-        if client and client._ok:
-            bars = client.get_kline(code, 120)
-            if bars:
-                name = tq.get_stock_name(code) or code
-                return jsonify({"ok": True, "code": code, "name": name, "source": "tdx", "data": bars})
-    except Exception as e:
-        logger.warning(f"K 线 TDX 失败: {e}")
-    return jsonify({"ok": False, "data": [], "msg": "暂无数据，请先在「数据管理」下载"})
-
-
-# ── AI 分析 API ───────────────────────────────────────────────
-@app.route("/api/ai/config", methods=["GET"])
-def ai_get_config():
-    """全局 AI 配置（管理员设置的默认配置）。"""
-    cfg = ai.load_config()
-    key = cfg.get("api_key", "")
-    if len(key) > 8:
-        cfg["api_key_masked"] = key[:4] + "****" + key[-4:]
-    else:
-        cfg["api_key_masked"] = "****" if key else ""
-    return jsonify({**cfg, "presets": ai.PROVIDER_PRESETS})
-
-
-@app.route("/api/ai/config", methods=["POST"])
-def ai_save_config():
-    d   = request.json
-    cfg = ai.load_config()
-    for k in ("provider", "base_url", "model", "enabled"):
-        if k in d:
-            cfg[k] = d[k]
-    if d.get("api_key"):
-        cfg["api_key"] = d["api_key"]
-    ai.save_config(cfg)
-    return jsonify({"ok": True})
-
-
-@app.route("/api/stocks/score", methods=["POST"])
-def api_stock_score():
-    d    = request.json
-    code = d.get("code", "").strip()
-    if not code:
-        return jsonify({"ok": False, "error": "请输入股票代码"})
-    df = dm.get_local(code)
-    if df is None or df.empty:
-        try:
-            import ths_quote as tq
-            import pandas as pd
-            client = tq.get_client()
-            if client and client._ok:
-                bars = client.get_kline(code, 60)
-                if bars:
-                    df = pd.DataFrame(bars)
-                    df["date"] = pd.to_datetime(df["date"])
-        except Exception:
-            pass
-    if df is None or df.empty:
-        return jsonify({"ok": False, "error": "无数据，请先下载历史数据"})
-    result         = scorer.score_stock(df)
-    result["code"] = code
-    result["name"] = dm.get_stock_name(code) or code
-    return jsonify(result)
-
-
-@app.route("/api/ai/analyze", methods=["POST"])
-@require_auth
-def ai_analyze():
-    err = _deduct("ai_analysis", f"AI分析 {(request.json or {}).get('code','')}")
-    if err:
-        return jsonify(err), 402
-    uid  = session["user_id"]
-    d    = request.json
-    code = d.get("code", "").strip()
-    if not code:
-        return jsonify({"ok": False, "error": "请输入股票代码"})
-    name = dm.get_stock_name(code) or code
-    df   = dm.get_local(code)
-    # 修复：本地 CSV 不存在 / 为空 / 行数 < 30（"半残"）都触发 pytdx 补抓
-    # 原逻辑只在 None 或 empty 时补抓，半残 CSV 会绕过 pytdx 让 ai_analyst 直接报"数据不足"
-    if df is None or df.empty or len(df) < 30:
-        try:
-            import ths_quote as tq
-            import pandas as pd
-            client = tq.get_client()
-            if client and client._ok:
-                bars = client.get_kline(code, 120)
-                if bars:
-                    df = pd.DataFrame(bars)
-                    df["date"] = pd.to_datetime(df["date"])
-                    # 拉到数据后保存到本地 CSV 作为缓存
-                    # 下次同一只票分析时秒读，不必每次都打 TDX 服务器
-                    try:
-                        from pathlib import Path
-                        daily_dir = Path(__file__).parent / "data" / "daily"
-                        daily_dir.mkdir(parents=True, exist_ok=True)
-                        df.to_csv(daily_dir / f"{code}.csv", index=False, encoding="utf-8")
-                        logger.info(f"[ai_analyze] 已缓存 {code} K 线到 data/daily/{code}.csv ({len(df)} 行)")
-                    except Exception as _e:
-                        logger.debug(f"[ai_analyze] 缓存 {code} CSV 失败（不致命）: {_e}")
-        except Exception:
-            pass
-
-    realtime_price = realtime_change = None
-    try:
-        import ths_quote as tq
-        client = tq.get_client()
-        if client and client._ok:
-            qs = client.get_quotes([code])
-            if qs:
-                q  = qs[0]
-                rp = float(q.get("price") or q.get("now") or 0)
-                if rp > 0:
-                    realtime_price  = round(rp, 2)
-                    realtime_change = round(float(q.get("change_pct", 0)), 2)
-                    qname = q.get("name", "")
-                    if qname and name == code:
-                        name = qname
-    except Exception:
-        pass
-
-    _add_log(uid, f"AI分析: {code} {name}")
-
-    # 三级 API Key 优先级：用户 key → 管理员 key → 报错
-    user_ai_cfg = um.get_user_ai_config(uid) or {}
-    cfg = ai.load_config()
-    if user_ai_cfg.get("api_key"):
-        cfg.update({k: v for k, v in user_ai_cfg.items() if v})
-
-    result = ai.run_analysis(code, name, df, config_override=cfg)
-
-    if realtime_price and result.get("ok"):
-        result["realtime_price"]  = realtime_price
-        result["realtime_change"] = realtime_change
-        if isinstance(result.get("indicators"), dict):
-            result["indicators"]["price"] = realtime_price
-        sc = result.get("score", {})
-        if isinstance(sc.get("indicators"), dict):
-            sc["indicators"]["price"] = realtime_price
-
-    action    = result.get("summary", {}).get("action") or result.get("score", {}).get("signal") or "—"
-    score_val = result.get("score", {}).get("total", "—")
-    if result.get("ok"):
-        _add_log(uid, f"AI分析完成: {code} {name} → {action}（评分{score_val}）")
-    else:
-        _add_log(uid, f"AI分析失败: {code} — {result.get('error','')}", "error")
-    # 修复：递归把 NaN/Inf 换成 None，否则 Python jsonify 输出字面量 NaN，
-    # 浏览器 JSON.parse 拒收（SyntaxError），前端误显示"分析失败"
-    return jsonify(ai._json_safe(result))
-
-
-@app.route("/api/ai/test", methods=["POST"])
-def ai_test_conn():
-    d   = request.json or {}
-    cfg = ai.load_config()
-    if d.get("api_key"):
-        cfg["api_key"]  = d["api_key"]
-    if d.get("base_url"):
-        cfg["base_url"] = d["base_url"]
-    if d.get("model"):
-        cfg["model"]    = d["model"]
-    if not cfg.get("api_key"):
-        return jsonify({"ok": False, "error": "未配置 API Key，请先填写并保存"})
-    if not cfg.get("base_url"):
-        return jsonify({"ok": False, "error": "未配置 Base URL，请先填写并保存"})
-    try:
-        reply = ai._call_llm(cfg, [{"role": "user", "content": "请回复'OK'，不要任何其他内容。"}],
-                             temperature=0.1, max_tokens=16)
-        return jsonify({"ok": True, "reply": reply.strip(),
-                        "model": cfg.get("model"), "base_url": cfg.get("base_url")})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e),
-                        "base_url": cfg.get("base_url"), "model": cfg.get("model")})
-
-
-@app.route("/api/ai/generate_strategy", methods=["POST"])
-@require_auth
-def ai_gen_strategy():
-    uid  = session["user_id"]
-    d    = request.json or {}
-    desc = d.get("description", "").strip()
-    if not desc:
-        return jsonify({"ok": False, "error": "请描述策略需求"})
-    _add_log(uid, f"AI写策略: {desc[:40]}...")
-    # 用户 Key → 全局 Key 优先级（与 ai_analyze 路由一致）
-    user_ai_cfg = um.get_user_ai_config(uid) or {}
-    cfg = ai.load_config()
-    if user_ai_cfg.get("api_key"):
-        cfg.update({k: v for k, v in user_ai_cfg.items() if v})
-    result = ai.generate_strategy(desc, config_override=cfg)
-    if result.get("ok"):
-        _add_log(uid, f"AI策略生成完成，共{result.get('length', len(result.get('code','')))}字符")
-    else:
-        _add_log(uid, f"AI写策略失败: {result.get('error','')}", "error")
-    return jsonify(result)
-
-
-# ── 策略模板 API ──────────────────────────────────────────────
-@app.route("/api/strategy_templates")
-def api_strategy_templates():
-    """获取预设策略模板列表"""
-    tpl_file = BASE_DIR / "data" / "strategy_templates.json"
-    try:
-        templates = json.loads(tpl_file.read_text(encoding="utf-8"))
-        return jsonify({"ok": True, "templates": templates})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "templates": []})
-
-
-# ── 通知配置 API ──────────────────────────────────────────────
-@app.route("/api/user/notify_config", methods=["GET"])
-@require_auth
-def user_get_notify_config():
-    cfg = nm.load_notify_config()
-    # 隐藏敏感字段
-    safe = json.loads(json.dumps(cfg))
-    for ch in ("wecom", "feishu", "dingtalk"):
-        wh = safe.get(ch, {}).get("webhook", "")
-        if wh and len(wh) > 20:
-            safe[ch]["webhook"] = wh[:12] + "****" + wh[-8:]
-    tg = safe.get("telegram", {})
-    if tg.get("token") and len(tg["token"]) > 10:
-        tg["token"] = tg["token"][:8] + "****"
-    return jsonify({"ok": True, **safe})
-
-
-@app.route("/api/user/notify_config", methods=["POST"])
-@require_auth
-def user_save_notify_config():
-    uid = session["user_id"]
-    d   = request.json or {}
-    # 加载已有配置，合并更新（避免覆盖 ****）
-    existing = nm.load_notify_config()
-    for channel in ("wecom", "feishu", "dingtalk", "telegram"):
-        if channel in d and isinstance(d[channel], dict):
-            if channel not in existing:
-                existing[channel] = {}
-            for k, v in d[channel].items():
-                # 忽略含 **** 的字段（前端回传了脱敏值）
-                if "****" not in str(v):
-                    existing[channel][k] = v
-    nm.save_notify_config(existing)
-    _add_log(uid, "消息推送配置已更新")
-    return jsonify({"ok": True})
-
-
-@app.route("/api/notify/test", methods=["POST"])
-@require_auth
-def api_notify_test():
-    """测试推送（发送测试消息到所有启用渠道）"""
-    uid = session["user_id"]
-    result = nm.send_notification(
-        title="🔔 见微 Alpha 推送测试",
-        content=f"测试消息发送成功！\n用户：{session.get('username','')}\n时间：{datetime.now().strftime('%H:%M:%S')}",
-    )
-    _add_log(uid, f"推送测试: {'成功' if result.get('ok') else '失败'} {result.get('results', {})}")
-    return jsonify(result)
-
-
-@app.route("/api/stock/news/<code>")
-@require_auth
-def api_stock_news(code):
-    """获取个股新闻 + 情绪分析（search_manager 五级降级）"""
-    try:
-        name = dm.get_stock_name(code) or code
-        from news_fetcher import get_stock_news, _simple_sentiment, news_to_context_text
-        news = get_stock_news(code, limit=8, name=name)
-        sentiment = _simple_sentiment(news)
-        return jsonify({
-            "ok": True,
-            "news": news,
-            "sentiment": sentiment,
-            "context_text": news_to_context_text(news, code),
-        })
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "news": [], "sentiment": {}})
-
-
-# ── 搜索 API ──────────────────────────────────────────
-@app.route("/api/search/news/<code>")
-@require_auth
-def api_search_news(code):
-    """个股新闻搜索（Tavily→SerpAPI→直接抓取）"""
-    name  = dm.get_stock_name(code) or request.args.get("name", "")
-    limit = int(request.args.get("limit", 8))
-    force = request.args.get("refresh", "0") == "1"
-    try:
-        results = search_mgr.search_stock_news(code, name=name, limit=limit,
-                                               force_refresh=force)
-        return jsonify({"ok": True, "results": results, "count": len(results),
-                        "code": code, "name": name})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "results": []})
-
-
-@app.route("/api/search/web", methods=["POST"])
-@require_auth
-def api_search_web():
-    """通用网页搜索（Tavily→SerpAPI）"""
-    d     = request.json or {}
-    query = d.get("query", "").strip()
-    if not query:
-        return jsonify({"ok": False, "error": "query 不能为空"})
-    topic = d.get("topic", "general")   # general | news | research
-    limit = int(d.get("limit", 10))
-    force = bool(d.get("force_refresh", False))
-    try:
-        results = search_mgr.search_web(query, topic=topic, limit=limit,
-                                        force_refresh=force)
-        return jsonify({"ok": True, "results": results, "count": len(results)})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "results": []})
-
-
-@app.route("/api/search/stock_info/<code>")
-@require_auth
-def api_search_stock_info(code):
-    """综合股票信息（新闻+网页+TwelveData报价）"""
-    name = dm.get_stock_name(code) or code
-    try:
-        result = search_mgr.search_stock_info(code, name=name)
-        return jsonify({"ok": True, **result})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
-
-
-@app.route("/api/search/twelvedata/quote/<code>")
-@require_auth
-def api_td_quote(code):
-    """TwelveData 实时报价（A股）"""
-    try:
-        q = search_mgr.td_get_quote(code)
-        return jsonify({"ok": True, **q})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
-
-
-@app.route("/api/search/twelvedata/kline/<code>")
-@require_auth
-def api_td_kline(code):
-    """TwelveData K线数据（A股）"""
-    days     = int(request.args.get("days", 60))
-    interval = request.args.get("interval", "1day")
-    try:
-        bars = search_mgr.td_get_kline(code, days=days, interval=interval)
-        return jsonify({"ok": True, "data": bars, "count": len(bars)})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
-
-
-@app.route("/api/search/symbol_search")
-def api_symbol_search():
-    """TwelveData 股票代码/名称搜索"""
-    q = request.args.get("q", "").strip()
-    if not q:
-        return jsonify({"ok": False, "error": "q 不能为空"})
-    try:
-        results = search_mgr.td_symbol_search(q)
-        return jsonify({"ok": True, "results": results})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "results": []})
-
-
-@app.route("/api/search/stats")
-@require_auth
-def api_search_stats():
-    """搜索服务用量统计"""
-    return jsonify({"ok": True, **search_mgr.get_stats()})
-
-
-@app.route("/api/search/status")
-def api_search_status():
-    """搜索服务状态（是否有可用额度）"""
-    return jsonify({"ok": True, **search_mgr.get_service_status()})
-
-
-@app.route("/api/search/config", methods=["GET"])
-@require_admin
-def api_search_config_get():
-    """获取搜索服务配置（管理员）"""
-    cfg = search_mgr.get_config()
-    # 脱敏 key
-    safe = json.loads(json.dumps(cfg))
-    for svc in ("tavily", "serpapi", "twelvedata"):
-        for k in safe.get(svc, {}).get("keys", []):
-            raw = k.get("key", "")
-            if len(raw) > 12:
-                k["key_masked"] = raw[:6] + "****" + raw[-4:]
-    return jsonify({"ok": True, "config": safe})
-
-
-@app.route("/api/search/config", methods=["POST"])
-@require_admin
-def api_search_config_save():
-    """保存搜索服务配置（管理员）"""
-    d = request.json or {}
-    existing = search_mgr.get_config()
-    # 合并（保留未变更的 key）
-    for svc in ("tavily", "serpapi", "twelvedata"):
-        if svc in d:
-            if svc not in existing:
-                existing[svc] = {}
-            for k2, v2 in d[svc].items():
-                if k2 == "keys":
-                    # 按 label 匹配更新（不覆盖 ****）
-                    for new_key in v2:
-                        for old_key in existing[svc].get("keys", []):
-                            if old_key.get("label") == new_key.get("label"):
-                                for field, val in new_key.items():
-                                    if field != "key" or "****" not in str(val):
-                                        old_key[field] = val
-                else:
-                    existing[svc][k2] = v2
-    search_mgr.save_config(existing)
-    return jsonify({"ok": True})
-
-
-# ── 日报 API ──────────────────────────────────────────────────
-
-def _get_market_review() -> dict:
-    """大盘复盘：指数行情 + 市场宽度 + 板块轮动（含缓存）"""
-    import pandas as _pd
-    from datetime import datetime as _dt
-    review = {
-        "date":    _dt.now().strftime("%Y-%m-%d"),
-        "time":    _dt.now().strftime("%H:%M"),
-        "indices": {},
-        "breadth": {},
-        "sectors": {"top_gainers": [], "top_losers": []},
-    }
-
-    # 1. 指数实时价格 —— 优先 TDX，降级 akshare
-    index_meta = [(1, "000001", "上证指数"), (0, "399001", "深证成指"), (0, "399006", "创业板指")]
-    try:
-        import ths_quote as tq
-        client = tq.get_client()
-        if client and client._ok:
-            pairs    = [(mkt, code) for mkt, code, _ in index_meta]
-            qs       = client.get_index_quotes(pairs)
-            name_map = {code: name for _, code, name in index_meta}
-            for q in qs:
-                nm = name_map.get(q.get("code", ""), "")
-                if nm:
-                    review["indices"][nm] = {
-                        "code":   q.get("code", ""),
-                        "price":  round(float(q.get("price") or 0), 2),
-                        "change": round(float(q.get("change_pct") or 0), 2),
-                    }
-    except Exception:
-        pass
-
-    if not review["indices"]:
-        try:
-            import akshare as ak
-            code_map = {"000001": "上证指数", "399001": "深证成指", "399006": "创业板指"}
-            df_all = ak.stock_zh_index_spot_em()
-            if df_all is not None and not df_all.empty:
-                for _, row in df_all.iterrows():
-                    code = str(row.get("代码", ""))
-                    nm   = code_map.get(code, "")
-                    if nm:
-                        review["indices"][nm] = {
-                            "code":   code,
-                            "price":  round(float(row.get("最新价", 0) or 0), 2),
-                            "change": round(float(row.get("涨跌幅", 0) or 0), 2),
-                        }
-        except Exception:
-            pass
-
-    # 2. 市场宽度（全市场快照）
-    try:
-        import akshare as ak
-        df_spot = ak.stock_zh_a_spot_em()
-        if df_spot is not None and not df_spot.empty and "涨跌幅" in df_spot.columns:
-            chg = _pd.to_numeric(df_spot["涨跌幅"], errors="coerce").dropna()
-            review["breadth"] = {
-                "up":       int((chg > 0).sum()),
-                "down":     int((chg < 0).sum()),
-                "flat":     int((chg == 0).sum()),
-                "limit_up": int((chg >= 9.9).sum()),
-                "limit_dn": int((chg <= -9.9).sum()),
-                "total":    len(chg),
-            }
-    except Exception:
-        pass
-
-    # 3. 板块轮动（行业板块）
-    try:
-        import akshare as ak
-        df_sec = ak.stock_board_industry_rank_em(symbol="沪深A股")
-        if df_sec is not None and not df_sec.empty:
-            chg_col  = next((c for c in df_sec.columns if "涨跌幅" in c), None)
-            name_col = df_sec.columns[0]
-            if chg_col:
-                df_sec[chg_col] = _pd.to_numeric(df_sec[chg_col], errors="coerce")
-                df_s = df_sec.dropna(subset=[chg_col]).sort_values(chg_col, ascending=False)
-                review["sectors"]["top_gainers"] = df_s.head(3)[name_col].tolist()
-                review["sectors"]["top_losers"]  = df_s.tail(3)[name_col].tolist()
-    except Exception:
-        pass
-
-    return review
-
-
-@app.route("/api/market/review")
-def api_market_review():
-    """大盘复盘（公开接口）"""
-    try:
-        return jsonify({"ok": True, **_get_market_review()})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
-
-
-@app.route("/api/dashboard/generate", methods=["POST"])
-@require_auth
-def api_dashboard_generate():
-    """
-    决策仪表盘生成（批量评分 + 新闻情绪 + 可选AI摘要）。
-    请求体: {"codes": ["000657", "600105"], "with_ai": true}
-    """
-    d       = request.json or {}
-    codes   = [str(c).strip() for c in d.get("codes", []) if str(c).strip()]
-    with_ai = bool(d.get("with_ai", True))
-    if not codes or len(codes) > 20:
-        return jsonify({"ok": False, "error": "codes 需要 1~20 个"})
-
-    uid  = session["user_id"]
-    try:
-        cfg = um.get_user_ai_config(uid) or {}
-    except Exception:
-        cfg = {}
-    has_ai = bool(cfg.get("api_key")) and with_ai
-
-    results = []
-    import news_fetcher as _nf
-    import traceback as _tb
-
-    for code in codes:
-        name = dm.get_stock_name(code) or code
-        item = {
-            "code": code, "name": name,
-            "score": None, "signal": "N/A", "signal_color": "#888",
-            "sentiment": "中性", "sentiment_score": 0,
-            "news": [], "risks": [], "catalysts": [],
-            "ai_summary": "", "ai_outlook": "", "latest": "",
-        }
-
-        # ── 六维评分 ────────────────────────────────────────
-        try:
-            df_k = dm.get_local(code)
-            if df_k is not None and not df_k.empty:
-                scored = scorer.score_stock(df_k)
-                if scored.get("ok"):
-                    item["score"]        = scored["total"]
-                    item["signal"]       = scored["signal"]
-                    item["signal_color"] = scored.get("signal_color", "#888")
-                    item["risks"]        = scored.get("risks", [])
-                    item["catalysts"]    = scored.get("catalysts", [])
-        except Exception as ex:
-            logger.debug(f"[dashboard] score {code}: {ex}")
-
-        # ── 新闻 + 情绪 ─────────────────────────────────────
-        try:
-            nd = _nf.get_news_with_sentiment(code, limit=5)
-            item["news"]            = nd.get("news", [])
-            sent                    = nd.get("sentiment", {})
-            item["sentiment"]       = sent.get("label", "中性")
-            item["sentiment_score"] = sent.get("score", 0)
-            if item["news"]:
-                item["latest"] = item["news"][0].get("title", "")
-        except Exception as ex:
-            logger.debug(f"[dashboard] news {code}: {ex}")
-
-        # ── 可选 AI 摘要 ─────────────────────────────────────
-        if has_ai and item["news"]:
-            try:
-                news_text = "\n".join(f"- {n['title']}" for n in item["news"][:4])
-                prompt = (
-                    f"股票：{name}（{code}）\n"
-                    f"六维评分：{item['score']}，信号：{item['signal']}\n"
-                    f"近期新闻：\n{news_text}\n\n"
-                    "请各用一句话回答：\n"
-                    "舆情：<市场情绪摘要>\n"
-                    "预期：<业绩/基本面预期>"
-                )
-                import ai_analyst as _aa
-                reply = _aa._call_llm(cfg, [
-                    {"role": "system", "content": "你是A股分析助手，中文简洁回答，每句话不超过50字。"},
-                    {"role": "user",   "content": prompt},
-                ], max_tokens=150, timeout=30)
-                # 解析舆情/预期
-                for line in reply.splitlines():
-                    if line.startswith("舆情"):
-                        item["ai_summary"] = line.split("：", 1)[-1].strip()
-                    elif line.startswith("预期"):
-                        item["ai_outlook"] = line.split("：", 1)[-1].strip()
-                if not item["ai_summary"]:
-                    item["ai_summary"] = reply.strip()[:80]
-            except Exception as ex:
-                logger.debug(f"[dashboard] AI summary {code}: {ex}")
-
-        results.append(item)
-
-    try:
-        buy   = sum(1 for r in results if r["signal"] in ("买入", "强烈买入"))
-        watch = sum(1 for r in results if r["signal"] == "观望")
-        hold  = sum(1 for r in results if r["signal"] == "持有")
-        sell  = sum(1 for r in results if r["signal"] == "卖出")
-
-        from datetime import datetime as _dt
-        return jsonify({
-            "ok": True,
-            "date":   _dt.now().strftime("%Y-%m-%d"),
-            "time":   _dt.now().strftime("%H:%M"),
-            "total":  len(results),
-            "buy":    buy,
-            "watch":  watch,
-            "hold":   hold,
-            "sell":   sell,
-            "stocks": results,
-        })
-    except Exception as ex:
-        logger.error(f"[dashboard] jsonify error: {ex}\n{_tb.format_exc()}")
-        return jsonify({"ok": False, "error": f"序列化失败: {ex}"})
-
-
 # ══════════════════════════════════════════════════════════════
 # 调度器（多用户并发扫描）
 # ══════════════════════════════════════════════════════════════
@@ -2381,8 +2410,21 @@ def _scan_thread_worker(uid: int):
     _scan_running[uid] = True
     try:
         do_scan(uid)
+    except Exception as _e:
+        logger.exception(f"[uid={uid}] do_scan 异常崩溃: {_e}")
+        try:
+            _s = get_user_state(uid)
+            _add_log(uid, f"❌ 扫描异常崩溃: {_e}", "error")
+        except Exception:
+            pass
     finally:
         _scan_running[uid] = False
+        # ★ 强制清进度条假状态（防止异常崩溃后前端永远显示"扫描中"）★
+        try:
+            _s = get_user_state(uid)
+            _s["scan_progress"] = {"running": False, "stage": "已结束", "current": 0, "total": 0}
+        except Exception:
+            pass
 
 
 def run_scheduler():
@@ -2412,10 +2454,32 @@ def run_scheduler():
 
 
 # ══════════════════════════════════════════════════════════════
-# 启动
+# 后台服务启动
+# 本地 `python main.py` 与云端 `gunicorn main:app` 都会在模块导入时执行一次。
+# 之前仅写在 __main__ 内，导致 gunicorn 下调度器从不启动（自动扫描失效）。
 # ══════════════════════════════════════════════════════════════
-if __name__ == "__main__":
+_bg_lock = threading.Lock()
+_bg_started = False
+
+
+def _start_background_services():
+    global _bg_started
+    with _bg_lock:
+        if _bg_started:
+            return
+        _bg_started = True
     _restore_all_user_states()
     threading.Thread(target=run_scheduler, daemon=True).start()
-    logger.info(f"服务启动 DRY_RUN={'开启' if DRY_RUN else '关闭'}")
+    # Vibe Alpha 因子激活调度器（独立线程，每 60s 检查，5 分钟跑一次扫描）
+    threading.Thread(target=run_vibe_scheduler, daemon=True, name="vibe-scheduler").start()
+    logger.info(f"后台调度已启动 DRY_RUN={'开启' if DRY_RUN else '关闭'}")
+
+
+# 模块级启动：gunicorn 导入 main:app 时不进入 __main__，必须在此启动。
+# 设 THS_NO_SCHEDULER=1 可禁用（供测试/纯导入场景）。
+if _os.environ.get("THS_NO_SCHEDULER") != "1":
+    _start_background_services()
+
+
+if __name__ == "__main__":
     app.run(port=5001, debug=False)

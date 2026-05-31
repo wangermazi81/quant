@@ -2,8 +2,10 @@
 用户管理系统 — 注册 / 登录 / 积分管理
 数据库: data/users.db  (SQLite，WAL 模式)
 """
-import sqlite3, hashlib, os, threading
+import sqlite3, hashlib, hmac, os, secrets, threading, logging
 from typing import Optional, Dict
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "users.db")
 
@@ -54,14 +56,51 @@ def init_db():
         );
         """)
         c.commit()
-        # 没有管理员时自动创建默认账号
+        # 没有管理员时自动创建默认账号（密码取自环境变量，否则随机生成）
         if not c.execute("SELECT id FROM users WHERE is_admin=1").fetchone():
-            _create_user(c, "admin", "admin@local.com", "admin123",
+            admin_email = os.environ.get("ADMIN_EMAIL", "admin@local.com")
+            env_pw = os.environ.get("ADMIN_PASSWORD")
+            admin_pw = env_pw or secrets.token_urlsafe(12)
+            _create_user(c, "admin", admin_email, admin_pw,
                          is_admin=1, points=999999)
+            if env_pw:
+                logger.warning("已用环境变量 ADMIN_PASSWORD 创建默认管理员 admin")
+            else:
+                logger.warning("=" * 60)
+                logger.warning(f"已创建默认管理员  用户名: admin  初始密码: {admin_pw}")
+                logger.warning("请立即登录修改此密码；该密码仅本次启动日志可见。")
+                logger.warning("=" * 60)
 
 
-def _hash(pw: str) -> str:
-    return hashlib.sha256(pw.encode()).hexdigest()
+_PBKDF2_ALGO       = "sha256"
+_PBKDF2_ITERATIONS = 240_000
+
+
+def _hash_password(pw: str) -> str:
+    """加盐慢哈希。格式: pbkdf2:sha256$<迭代次数>$<salt_hex>$<hash_hex>"""
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac(_PBKDF2_ALGO, pw.encode(), salt, _PBKDF2_ITERATIONS)
+    return f"pbkdf2:{_PBKDF2_ALGO}${_PBKDF2_ITERATIONS}${salt.hex()}${dk.hex()}"
+
+
+def _is_legacy_hash(stored: str) -> bool:
+    """旧格式：无 $ 分隔的纯 sha256 十六进制串。"""
+    return bool(stored) and "$" not in stored
+
+
+def _verify_password(pw: str, stored: str) -> bool:
+    """恒定时间校验密码，兼容旧 sha256 与新 pbkdf2 格式。"""
+    if not stored:
+        return False
+    if _is_legacy_hash(stored):
+        return hmac.compare_digest(stored, hashlib.sha256(pw.encode()).hexdigest())
+    try:
+        scheme, iters, salt_hex, hash_hex = stored.split("$", 3)
+        algo = scheme.split(":", 1)[1] if ":" in scheme else "sha256"
+        dk = hashlib.pbkdf2_hmac(algo, pw.encode(), bytes.fromhex(salt_hex), int(iters))
+        return hmac.compare_digest(dk.hex(), hash_hex)
+    except Exception:
+        return False
 
 
 def _create_user(c, username, email, password,
@@ -69,7 +108,7 @@ def _create_user(c, username, email, password,
     c.execute(
         "INSERT INTO users (username,email,password_hash,points,is_admin)"
         " VALUES (?,?,?,?,?)",
-        (username, email, _hash(password), points, is_admin)
+        (username, email, _hash_password(password), points, is_admin)
     )
     c.commit()
     uid = c.execute("SELECT id FROM users WHERE username=?",
@@ -106,13 +145,19 @@ def register(username: str, email: str, password: str) -> dict:
 def login(username: str, password: str) -> dict:
     with _conn() as c:
         row = c.execute(
-            "SELECT * FROM users WHERE username=? AND password_hash=?",
-            (username.strip(), _hash(password))
+            "SELECT * FROM users WHERE username=?", (username.strip(),)
         ).fetchone()
-        if not row:
+        if not row or not _verify_password(password, row["password_hash"]):
             return {"ok": False, "error": "用户名或密码错误"}
         if not row["is_active"]:
             return {"ok": False, "error": "账号已被禁用，请联系管理员"}
+        # 旧 sha256 哈希命中 → 透明升级为加盐慢哈希
+        if _is_legacy_hash(row["password_hash"]):
+            try:
+                c.execute("UPDATE users SET password_hash=? WHERE id=?",
+                          (_hash_password(password), row["id"]))
+            except Exception as _e:
+                logger.warning(f"密码哈希升级失败 uid={row['id']}: {_e}")
         c.execute(
             "UPDATE users SET last_login=datetime('now','localtime') WHERE id=?",
             (row["id"],)
@@ -141,10 +186,10 @@ def change_password(user_id: int, old_password: str, new_password: str) -> dict:
                         (user_id,)).fetchone()
         if not row:
             return {"ok": False, "error": "用户不存在"}
-        if row["password_hash"] != _hash(old_password):
+        if not _verify_password(old_password, row["password_hash"]):
             return {"ok": False, "error": "原密码错误"}
         c.execute("UPDATE users SET password_hash=? WHERE id=?",
-                  (_hash(new_password), user_id))
+                  (_hash_password(new_password), user_id))
         c.commit()
         return {"ok": True}
 
@@ -159,7 +204,7 @@ def admin_reset_password(user_id: int, new_password: str) -> dict:
         if not row:
             return {"ok": False, "error": "用户不存在"}
         c.execute("UPDATE users SET password_hash=? WHERE id=?",
-                  (_hash(new_password), user_id))
+                  (_hash_password(new_password), user_id))
         c.commit()
         return {"ok": True, "username": row["username"]}
 
@@ -467,6 +512,18 @@ def get_user_ai_config(user_id: int) -> Optional[Dict]:
     return dict(row) if row else None
 
 
+def delete_user_ai_config(user_id: int) -> dict:
+    """删除用户 per-user AI 配置行。
+
+    背景：网页『AI设置』只写全局配置，per-user 表是历史遗留且会顶掉全局新 key 导致 401。
+    保存全局配置时调用本函数清掉对应用户的残留，确保全局配置成为唯一来源、永不再被旧 key 顶。
+    """
+    with _lock, _conn() as c:
+        c.execute("DELETE FROM user_ai_config WHERE user_id=?", (user_id,))
+        c.commit()
+    return {"ok": True}
+
+
 # ── 用户券商配置 ──────────────────────────────────────────────
 
 def save_user_broker_config(user_id: int, broker_type: str,
@@ -637,6 +694,13 @@ def get_pending_signals(user_id: int) -> list:
         return res
 
 
+def get_trade_signal(signal_id: int) -> dict | None:
+    """查询单条交易信号的当前状态（前端轮询用）"""
+    with _conn() as c:
+        row = c.execute("SELECT * FROM trade_signals WHERE id=?", (signal_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def report_trade_signal(signal_id: int, status: str, msg: str = "") -> dict:
     """本地交易机上报交易执行结果，更新信号状态与反馈消息"""
     with _lock, _conn() as c:
@@ -657,3 +721,52 @@ def report_trade_signal(signal_id: int, status: str, msg: str = "") -> dict:
             "price": row["price"],
             "shares": row["shares"],
         }
+
+
+# ── 实盘持仓台账（live_positions）──────────────────────────────
+# 实盘下单成交确认时记入；打板 Ride 卖出规则读它来判断止损/回落/吃连板。
+
+def record_live_position(user_id: int, code: str, name: str, buy_price: float,
+                         shares: int, strategy: str = "") -> dict:
+    """记录/累加一笔实盘持仓。同 code 再买入则按加权均价合并、股数累加。"""
+    import datetime as _dt
+    today = _dt.datetime.now().strftime("%Y-%m-%d")
+    with _lock, _conn() as c:
+        row = c.execute("SELECT shares, buy_price FROM live_positions "
+                        "WHERE user_id=? AND code=?", (user_id, code)).fetchone()
+        if row and row["shares"] > 0:
+            old_sh, old_px = int(row["shares"]), float(row["buy_price"])
+            new_sh = old_sh + int(shares)
+            new_px = (old_px * old_sh + float(buy_price) * int(shares)) / new_sh if new_sh else buy_price
+            c.execute("UPDATE live_positions SET shares=?, buy_price=?, "
+                      "peak=MAX(COALESCE(peak,0),?), updated_at=datetime('now','localtime') "
+                      "WHERE user_id=? AND code=?",
+                      (new_sh, round(new_px, 3), float(buy_price), user_id, code))
+        else:
+            c.execute("INSERT OR REPLACE INTO live_positions"
+                      "(user_id,code,name,shares,buy_price,buy_date,peak,strategy) "
+                      "VALUES(?,?,?,?,?,?,?,?)",
+                      (user_id, code, name, int(shares), float(buy_price),
+                       today, float(buy_price), strategy))
+        c.commit()
+    return {"ok": True}
+
+
+def get_live_positions(user_id: int) -> list:
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM live_positions WHERE user_id=? AND shares>0",
+                         (user_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_live_peak(user_id: int, code: str, peak: float) -> None:
+    with _lock, _conn() as c:
+        c.execute("UPDATE live_positions SET peak=?, updated_at=datetime('now','localtime') "
+                  "WHERE user_id=? AND code=?", (float(peak), user_id, code))
+        c.commit()
+
+
+def remove_live_position(user_id: int, code: str) -> None:
+    with _lock, _conn() as c:
+        c.execute("DELETE FROM live_positions WHERE user_id=? AND code=?", (user_id, code))
+        c.commit()

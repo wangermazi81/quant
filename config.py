@@ -56,9 +56,26 @@ THS_BACKEND      = "win32"            # xiadan 是 32 位老程序，win32 比 u
 # ── 全自动下单（含委托确认）配置 ──
 # ⚠️ AUTO_CONFIRM_ORDER=True 后桥接器会自动按 Y 确认委托对话框 → 真成交！
 # 启用前务必确认 (1) 账户余额、(2) MAX_ORDER_AMOUNT 足够低、(3) 已校准策略不会出错单
-AUTO_CONFIRM_ORDER = False            # True=Enter 后自动按 Y 提交 / False=等用户手动按 Y
+AUTO_CONFIRM_ORDER = True           # True=Enter 后自动按 Y 提交 / False=等用户手动按 Y
 AUTO_CONFIRM_DELAY = 0.8              # Enter 后等委托确认框弹出的秒数
 MAX_ORDER_AMOUNT   = 50000.0          # 单笔买入金额上限（元）, broker 层硬拒过大订单
+
+# ── 未成交自动撤单（订单生命周期）配置 ──
+# ⚠️ AUTO_CANCEL_UNFILLED=True 后：每笔买/卖下单成功 N 秒后，若仍未成交则自动撤单
+#    并刷新资金。撤单走撤单页(F3)，仅当该笔是「全场唯一可撤单」时用全撤(Z)，多笔则
+#    为安全跳过(记日志)，绝不误撤。默认 False（需自行确认策略+账户后再开）。
+AUTO_CANCEL_UNFILLED = False          # True=下单后未成交自动撤单 / False=不自动撤
+AUTO_CANCEL_DELAY    = 15.0           # 下单成功后等多少秒再查、未成交则撤（秒）
+
+# ── 打板策略卖出规则（回测 Ride：让利润奔跑，正确的非对称盈亏比）──
+# 核心：吃连板（当日仍封板就持有，让利润奔跑）+ 紧止损（砍得快）+ 从最高回落才走（保护利润）。
+# 回测(主板,2025-26,含连板)：胜率约 50-55%、盈亏比≈2.5、期望+3%/笔；连板期望更高(3板+5.4%)。
+# ⚠ 打板真实形态就是"多数小亏、少数连板大赚"；最差单笔可达-20%+(连板次日一字跌停跑不掉)，
+#   靠仓位控制(单笔≤20%、最多持3-5只)而非策略消除尾部风险。
+DABAN_STOP_LOSS    = -0.05   # 初始止损 -5%（跌破成本5%即卖，亏损砍得快）
+DABAN_TRAIL        = 0.07    # 从持仓期最高价回落 7% 即卖（吃完连板后保护利润）
+DABAN_MAX_HOLD     = 10      # 最长持有天数（backstop，连板结束后不恋战）
+DABAN_HOLD_LIMITUP = True    # 当日仍封板(连板)则继续持有 → 让利润奔跑
 
 # ── 模拟盘（Paper Trading）配置 ─────────────────────
 PAPER_COMMISSION_RATE = 0.0003   # 佣金率万3（买卖双向）
@@ -68,3 +85,7 @@ PAPER_SLIPPAGE_BPS    = 3        # 滑点3bps
 PAPER_STOP_LOSS       = -0.05    # 止损-5%
 PAPER_TAKE_PROFIT     = 0.10     # 止盈+10%
 PAPER_MAX_HOLD_DAYS   = 10       # 最大持仓天数
+
+# ── 下单诊断截图保留策略（自动清理，避免 logs/screenshots 无限增长）──
+SCREENSHOT_RETENTION_DAYS = 3      # 仅保留最近几天的下单截图
+SCREENSHOT_MAX_FILES      = 500    # 截图数量硬上限，超出按时间删最旧

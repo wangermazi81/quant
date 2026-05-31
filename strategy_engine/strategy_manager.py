@@ -588,8 +588,11 @@ def run(filename: str, codes: list, max_codes: int = 0) -> dict:
             universe = codes
 
         get_kline, get_quotes = _build_data_fns(universe)
-        # 打板策略传空列表触发其全市场TDX实时路径
-        scan_codes = [] if filename == "da_ban" else universe
+        # ★ Bug fix 2026-05-25: 不再对 da_ban 写死 [] 屏蔽 universe ★
+        # 之前 scan_codes=[] 导致 da_ban 在 _from_tdx 失败（盘后 TDX 关 5档盘口数据流）
+        # 后降级路径拿不到任何股 → 0 命中。
+        # 现在统一传 universe，让 da_ban 内部先试 _from_tdx，失败用 universe 降级。
+        scan_codes = universe
 
         # ─── 策略 scan 阶段：初始化进度 ───
         # universe 阶段（ths_quote._scan_prog）完成后接力上报进度，让前端

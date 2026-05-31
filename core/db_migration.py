@@ -193,6 +193,24 @@ def migrate_users_db():
         );
         CREATE INDEX IF NOT EXISTS idx_ts_uid ON trade_signals(user_id);
         CREATE INDEX IF NOT EXISTS idx_ts_status ON trade_signals(status);
+
+        -- live_positions：实盘持仓台账（2026-05-30）。实盘(xiadan)成本价/买入日 OCR
+        -- 读不到，但"我们自己下的单"精确知道，故成交确认时记此表，供打板 Ride 卖出
+        -- 规则（吃连板/止损/回落）自动管理。peak=持仓期最高价；strategy=买入时策略。
+        CREATE TABLE IF NOT EXISTS live_positions (
+            user_id    INTEGER NOT NULL,
+            code       TEXT NOT NULL,
+            name       TEXT DEFAULT '',
+            shares     INTEGER NOT NULL,
+            buy_price  REAL NOT NULL,
+            buy_date   TEXT NOT NULL,
+            peak       REAL,
+            strategy   TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_at TEXT DEFAULT (datetime('now','localtime')),
+            PRIMARY KEY (user_id, code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_lp_uid ON live_positions(user_id);
         """)
         c.commit()
         # 补列迁移（对已存在的旧库）
