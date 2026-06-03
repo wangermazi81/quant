@@ -491,6 +491,17 @@ tr:hover td{background:#fafbff}
             <div id="pc-msg" class="form-err" style="min-height:0"></div>
           </div>
           <div class="card">
+            <div class="card-title"><i class="fas fa-coins"></i> 我的积分</div>
+            <div class="alert alert-warn"><i class="fas fa-info-circle"></i> 当前积分：<b id="pc-cur-points" style="color:var(--orange)">—</b></div>
+            <div class="form-group">
+              <label class="form-label">积分数值 <span class="req">*</span></label>
+              <input class="form-input" id="pc-pts-val" type="number" placeholder="充值=填增加量；设为=填目标值">
+            </div>
+            <div id="pc-pts-msg" class="form-err" style="min-height:0;margin-bottom:12px"></div>
+            <button class="btn btn-outline" onclick="selfPoints('set')"><i class="fas fa-pen"></i> 设为此值</button>
+            <button class="btn btn-primary" onclick="selfPoints('add')"><i class="fas fa-coins"></i> 充值(增加)</button>
+          </div>
+          <div class="card">
             <div class="card-title"><i class="fas fa-key"></i> 修改密码</div>
             <div id="page-change-pwd-inline">
               <div class="form-group">
@@ -1375,6 +1386,35 @@ async function loadUserCenter(){
   document.getElementById('pcUserId').textContent = u.user_id||'—';
   document.getElementById('pc-username').value = u.username;
   document.getElementById('pc-email').value = u.email||'';
+  const curEl = document.getElementById('pc-cur-points');
+  if(curEl) curEl.textContent = u.points?.toLocaleString()||'—';
+}
+
+// 个人中心：管理员给自己充值/设为积分（独立调用积分接口，不影响系统运行态）
+async function selfPoints(mode){
+  const uid = currentUser && currentUser.user_id;
+  const msg = document.getElementById('pc-pts-msg');
+  msg.style.color=''; msg.textContent='';
+  if(!uid){ msg.textContent='未获取到当前账号信息，请刷新'; return; }
+  const val = parseInt(document.getElementById('pc-pts-val').value);
+  let url, body;
+  if(mode==='set'){
+    if(isNaN(val)||val<0){ msg.textContent='请输入有效的目标积分（≥0 的整数）'; return; }
+    url = `${API}/admin/users/${uid}/set_points`; body = {value:val, description:'管理员自助修改积分'};
+  } else {
+    if(!val||val<=0){ msg.textContent='充值数量必须为大于0的整数'; return; }
+    url = `${API}/admin/users/${uid}/points`; body = {amount:val, description:'管理员自助充值'};
+  }
+  try{
+    const r = await fetch(url,{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d = await r.json();
+    if(d.ok){
+      msg.style.color='#22c55e';
+      msg.textContent = `✓ 成功，当前积分 ${Number(d.new_balance).toLocaleString()}`;
+      document.getElementById('pc-pts-val').value='';
+      loadUserCenter();   // 刷新积分显示
+    } else { msg.textContent = d.error||'操作失败'; }
+  }catch(e){ msg.textContent='请求失败：'+e; }
 }
 
 async function doChangePassword(){
