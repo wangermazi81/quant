@@ -265,6 +265,56 @@ def add_points(user_id: int, amount: int,
                 "username": row["username"]}
 
 
+def set_points(user_id: int, new_value, description: str = "管理员修改积分") -> dict:
+    """把用户积分直接设为指定值（可增可减），并按差额记一条流水。"""
+    try:
+        new_value = int(new_value)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "积分必须是整数"}
+    if new_value < 0:
+        return {"ok": False, "error": "积分不能为负"}
+    with _lock, _conn() as c:
+        row = c.execute("SELECT points,username FROM users WHERE id=?",
+                        (user_id,)).fetchone()
+        if not row:
+            return {"ok": False, "error": "用户不存在"}
+        old   = row["points"]
+        delta = new_value - old
+        c.execute("UPDATE users SET points=? WHERE id=?", (new_value, user_id))
+        c.execute(
+            "INSERT INTO point_transactions"
+            " (user_id,amount,type,description,balance) VALUES (?,?,?,?,?)",
+            (user_id, delta, "admin_set", f"{description}（{old}→{new_value}）", new_value)
+        )
+        c.commit()
+        return {"ok": True, "new_balance": new_value, "old_balance": old,
+                "username": row["username"]}
+
+
+def delete_user(user_id: int) -> dict:
+    """删除用户及其在 users.db 中的所有关联数据（动态扫描所有含 user_id 列的表）。
+    注：paper_trading.db 是独立库，遗留的模拟盘数据无害（不与新用户串号，因主键是 user_id）。"""
+    with _lock, _conn() as c:
+        row = c.execute("SELECT username FROM users WHERE id=?", (user_id,)).fetchone()
+        if not row:
+            return {"ok": False, "error": "用户不存在"}
+        uname = row["username"]
+        tables = [r[0] for r in c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")]
+        for t in tables:
+            if t == "users":
+                continue
+            try:
+                cols = [ci[1] for ci in c.execute(f"PRAGMA table_info({t})")]
+                if "user_id" in cols:
+                    c.execute(f"DELETE FROM {t} WHERE user_id=?", (user_id,))
+            except Exception:
+                pass
+        c.execute("DELETE FROM users WHERE id=?", (user_id,))
+        c.commit()
+        return {"ok": True, "username": uname}
+
+
 def get_point_history(user_id: int, limit: int = 50) -> list:
     with _conn() as c:
         rows = c.execute(
@@ -356,6 +406,7 @@ def save_user_settings(user_id: int, **kwargs) -> dict:
     allowed = {
         "running", "auto_execute", "capital", "position_ratio",
         "portfolio_mode", "active_strategy", "stock_pool", "broker_type",
+        "max_positions", "single_position_max_ratio",
     }
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
@@ -393,6 +444,8 @@ def get_user_settings(user_id: int) -> dict:
         "active_strategy": "",
         "stock_pool":     "[]",
         "broker_type":    "paper",
+        "max_positions":             5,
+        "single_position_max_ratio": 0.20,
     }
 
 
@@ -578,6 +631,8 @@ def get_active_announcements(user_id: Optional[int] = None,
     with _conn() as c:
         rows = c.execute(
             "SELECT * FROM announcements WHERE is_active=1"
+            " AND (expires_at IS NULL OR expires_at='' "
+            "      OR expires_at > datetime('now','localtime'))"
             " ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
@@ -692,6 +747,19 @@ def get_pending_signals(user_id: int) -> list:
             )
             c.commit()
         return res
+
+
+def cancel_pending_signals(user_id: int) -> int:
+    """把用户所有 pending 交易信号标记为 cancelled（收盘自动终止时清理）。
+    桥接器只拉 status='pending' 的信号，标记后就不会再被拉去下单。返回清理条数。"""
+    with _lock, _conn() as c:
+        cur = c.execute(
+            "UPDATE trade_signals SET status='cancelled', msg='收盘自动终止，未执行', "
+            "updated_at=datetime('now','localtime') WHERE user_id=? AND status='pending'",
+            (user_id,),
+        )
+        c.commit()
+        return cur.rowcount
 
 
 def get_trade_signal(signal_id: int) -> dict | None:

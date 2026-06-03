@@ -16,6 +16,22 @@ logger = logging.getLogger(__name__)
 bp = Blueprint("ai", __name__)
 
 
+def _kline_is_stale(df, max_lag_days: int = 3) -> bool:
+    """K 线缓存是否过期（最后一根距今超过 max_lag_days 个自然日）。
+    过期则应重新从 pytdx 拉取最新数据，避免「本地 CSV 停留在多日前
+    → MA/MACD/RSI 失真、与用实时数据的环境结论不一致」（曾导致同一只
+    票一边『强烈买入』一边『观望』）。容忍 3 天兼顾长周末，正常盘后不会频繁重抓。"""
+    try:
+        import pandas as pd
+        from datetime import date
+        if df is None or getattr(df, "empty", True) or "date" not in getattr(df, "columns", []):
+            return True
+        last = pd.to_datetime(df["date"]).max().date()
+        return (date.today() - last).days > max_lag_days
+    except Exception:
+        return False
+
+
 @bp.route("/api/ai/config", methods=["GET"])
 def ai_get_config():
     """全局 AI 配置（管理员设置的默认配置）。"""
@@ -56,16 +72,23 @@ def api_stock_score():
     if not code:
         return jsonify({"ok": False, "error": "请输入股票代码"})
     df = dm.get_local(code)
-    if df is None or df.empty:
+    # 不存在 / 为空 / 过期 → 从 pytdx 拉最新并回写缓存（与 ai_analyze 口径一致）
+    if df is None or df.empty or _kline_is_stale(df):
         try:
             import ths_quote as tq
             import pandas as pd
             client = tq.get_client()
             if client and client._ok:
-                bars = client.get_kline(code, 60)
+                bars = client.get_kline(code, 120)
                 if bars:
                     df = pd.DataFrame(bars)
                     df["date"] = pd.to_datetime(df["date"])
+                    try:
+                        daily_dir = BASE_DIR / "data" / "daily"
+                        daily_dir.mkdir(parents=True, exist_ok=True)
+                        df.to_csv(daily_dir / f"{code}.csv", index=False, encoding="utf-8")
+                    except Exception:
+                        pass
         except Exception:
             pass
     if df is None or df.empty:
@@ -89,9 +112,10 @@ def ai_analyze():
         return jsonify({"ok": False, "error": "请输入股票代码"})
     name = dm.get_stock_name(code) or code
     df   = dm.get_local(code)
-    # 修复：本地 CSV 不存在 / 为空 / 行数 < 30（"半残"）都触发 pytdx 补抓
+    # 修复：本地 CSV 不存在 / 为空 / 行数 < 30（"半残"）/ 过期（停留多日前）都触发 pytdx 补抓
     # 原逻辑只在 None 或 empty 时补抓，半残 CSV 会绕过 pytdx 让 ai_analyst 直接报"数据不足"
-    if df is None or df.empty or len(df) < 30:
+    # ★ 新增 _kline_is_stale：旧 CSV 会让指标失真、且与用实时数据的环境结论不一致
+    if df is None or df.empty or len(df) < 30 or _kline_is_stale(df):
         try:
             import ths_quote as tq
             import pandas as pd

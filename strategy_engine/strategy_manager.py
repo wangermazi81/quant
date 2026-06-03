@@ -110,6 +110,15 @@ def get_code(filename: str) -> str:
     return TEMPLATE
 
 
+def get_meta(filename: str) -> dict:
+    """读取策略 META（含 builtin 标记），供路由层判断是否对非 admin 隐藏代码。
+    文件不存在返回默认（非内置）。"""
+    path = STRATEGIES_DIR / f"{filename}.py"
+    if path.exists():
+        return _read_meta(path)
+    return {"name": filename, "desc": "", "author": "用户", "builtin": False}
+
+
 _AST_BANNED_IMPORTS = {"os", "sys", "subprocess", "shutil", "socket", "requests",
                         "urllib", "http", "ftplib", "smtplib", "paramiko"}
 _AST_BANNED_CALLS   = {"eval", "exec", "open", "compile", "__import__",

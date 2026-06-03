@@ -249,6 +249,33 @@ def _auto_buy(uid: int, item: dict):
 
 
 _DABAN_PEAKS: dict = {}   # (uid, code) -> 持仓期最高价（Ride 追踪止盈用）
+_DABAN_PEAKS_FILE = BASE_DIR / "data" / "daban_peaks.json"
+
+
+def _load_daban_peaks():
+    """启动时加载模拟盘持仓期峰值。
+    ★ 跟实盘 um.update_live_peak 一致：peak 持久化，重启不丢失，
+    否则回落止盈会因 peak 被重置成成本价而失真（高位回落判断算不准、漏卖）。"""
+    try:
+        if _DABAN_PEAKS_FILE.exists():
+            raw = json.loads(_DABAN_PEAKS_FILE.read_text(encoding="utf-8"))
+            for k, v in raw.items():
+                uid_s, code = k.split("|", 1)
+                _DABAN_PEAKS[(int(uid_s), code)] = float(v)
+            logger.info(f"[daban] 已加载持仓峰值缓存 {len(_DABAN_PEAKS)} 条")
+    except Exception as e:
+        logger.warning(f"[daban] 加载峰值缓存失败: {e}")
+
+
+def _save_daban_peaks():
+    try:
+        raw = {f"{uid}|{code}": v for (uid, code), v in _DABAN_PEAKS.items()}
+        _DABAN_PEAKS_FILE.write_text(json.dumps(raw), encoding="utf-8")
+    except Exception as e:
+        logger.debug(f"[daban] 保存峰值缓存失败: {e}")
+
+
+_load_daban_peaks()
 
 
 def _daban_board_rate(code: str) -> float:
@@ -382,7 +409,9 @@ def _check_daban_ride(uid: int, broker, positions: list, qmap: dict):
         key  = (uid, code)
         sell, reason, new_peak = _daban_ride_decision(
             code, cost, cur, last_close, hold, _DABAN_PEAKS.get(key, cost))
-        _DABAN_PEAKS[key] = new_peak
+        if _DABAN_PEAKS.get(key) != new_peak:
+            _DABAN_PEAKS[key] = new_peak
+            _save_daban_peaks()          # 峰值变化即持久化（跟实盘一致，重启不丢）
         if not sell:
             continue
         res = broker.submit_sell(code, cur, sell_reason=reason)
@@ -394,6 +423,7 @@ def _check_daban_ride(uid: int, broker, positions: list, qmap: dict):
                      "buy" if pnl_amt >= 0 else "error")
             s["positions"].pop(code, None)
             _DABAN_PEAKS.pop(key, None)
+            _save_daban_peaks()
 
 
 def _check_paper_risk(uid: int):
@@ -503,11 +533,50 @@ def do_scan(uid: int):
     else:
         _base_cash = s["capital"]
 
+    # ── 仓位护栏（防一次大面腰斩）：最多持仓数 + 单笔上限 ─────────────
+    # 优先用用户在前端设置的值，缺失时回落到 config 默认。
+    try:
+        from config import MAX_POSITIONS as _CFG_POS, SINGLE_POSITION_MAX_RATIO as _CFG_RATIO
+    except Exception:
+        _CFG_POS, _CFG_RATIO = 5, 0.20
+    _MAX_POS  = int(s.get("max_positions") or _CFG_POS)
+    _SP_RATIO = float(s.get("single_position_max_ratio") or _CFG_RATIO)
+    # 已占用的持仓名额 = 实际持仓 + 队列里待成交/已下单的买单（按 code 去重，避免双算）
+    if _broker_type == "live":
+        try:
+            _occupied = {p["code"] for p in um.get_live_positions(uid)}
+        except Exception:
+            _occupied = set()
+    else:
+        _occupied = set((s.get("positions") or {}).keys())
+    # 仅计 pending（待执行）买单：done 的买单已落到持仓/台账，由上面持仓侧统计，
+    # 再从队列计会在"会话内买入又卖出"后被 done 残留记录永久错占名额。
+    _occupied |= {q["code"] for q in s["queue"]
+                  if q.get("action") == "buy" and q.get("status") == "pending"}
+    # 单笔上限：把 position_ratio 夹到护栏比例内（用户调更高也不超过）
+    _eff_ratio = min(float(s["position_ratio"]), _SP_RATIO)
+    if _eff_ratio < float(s["position_ratio"]):
+        _add_log(uid,
+            f"🛡 单笔护栏：仓位比 {s['position_ratio']*100:.0f}% 超过单笔上限 "
+            f"{_SP_RATIO*100:.0f}%，本轮按 {_eff_ratio*100:.0f}% 建仓", "info")
+    _guard_full_logged = False
+
     for r in buy_candidates:
         code  = r["code"]
         price = r["price"] or 1
+        if code in _occupied:
+            continue   # 已持有 / 已在队列 → 不重复开仓
+        # 护栏①：最多持仓数 —— 名额满则停止开新仓（含待成交队列）
+        if len(_occupied) >= _MAX_POS:
+            if not _guard_full_logged:
+                _add_log(uid,
+                    f"🛡 持仓护栏：已占用 {len(_occupied)}/{_MAX_POS} 个名额，"
+                    f"本轮剩余信号不再开新仓", "info")
+                _guard_full_logged = True
+            continue
         if not any(q["code"] == code for q in s["queue"]):
-            budget = _base_cash * s["position_ratio"]
+            # 护栏②：单笔上限
+            budget = _base_cash * _eff_ratio
             shares = max(int(budget / price / 100) * 100, 100)
             # ★ 实盘模式：提前检查是否超 MAX_ORDER_AMOUNT 护栏，避免桥接器层无谓拒单 ★
             _est = price * shares
@@ -537,8 +606,10 @@ def do_scan(uid: int):
                 "status":     "pending",
             }
             s["queue"].append(item)
+            _occupied.add(code)   # 占用一个名额，后续信号据此判断是否已满
             _add_log(uid,
-                f"📌 {code} {r['name']} 进入队列 | 计划买入{shares}股 预算¥{budget:,.0f}", "buy")
+                f"📌 {code} {r['name']} 进入队列 | 计划买入{shares}股 预算¥{budget:,.0f} "
+                f"| 名额 {len(_occupied)}/{_MAX_POS}", "buy")
             added += 1
             if s.get("auto_execute"):
                 _auto_buy(uid, item)
@@ -863,6 +934,8 @@ def get_account():
     return jsonify({
         "capital":        s["capital"],
         "position_ratio": s["position_ratio"],
+        "max_positions":             s.get("max_positions", 5),
+        "single_position_max_ratio": s.get("single_position_max_ratio", 0.20),
         "today_trades":   s["today_trades"],
         "positions":      s["positions"],
     })
@@ -878,8 +951,30 @@ def set_account():
         s["capital"]        = float(d["capital"])
     if "position_ratio" in d:
         s["position_ratio"] = float(d["position_ratio"])
-    _persist_state(uid, capital=s["capital"], position_ratio=s["position_ratio"])
-    _add_log(uid, f"账户设置更新: 资金¥{s['capital']:,.0f} 仓位{s['position_ratio']*100:.0f}%")
+    # ── 仓位护栏（前端可调）：单笔上限 + 最多持仓数 ──────────────
+    if "max_positions" in d:
+        try:
+            mp = int(d["max_positions"])
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "max_positions 必须是整数"}), 400
+        if mp < 1 or mp > 50:
+            return jsonify({"ok": False, "error": "最多持仓数须在 1~50 之间"}), 400
+        s["max_positions"] = mp
+    if "single_position_max_ratio" in d:
+        try:
+            sr = float(d["single_position_max_ratio"])
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "single_position_max_ratio 必须是数字"}), 400
+        if sr <= 0 or sr > 1:
+            return jsonify({"ok": False, "error": "单笔上限须在 (0, 1] 之间"}), 400
+        s["single_position_max_ratio"] = sr
+    _persist_state(uid,
+        capital=s["capital"], position_ratio=s["position_ratio"],
+        max_positions=s["max_positions"],
+        single_position_max_ratio=s["single_position_max_ratio"])
+    _add_log(uid,
+        f"账户设置更新: 资金¥{s['capital']:,.0f} 仓位{s['position_ratio']*100:.0f}% "
+        f"| 护栏 单笔≤{s['single_position_max_ratio']*100:.0f}% 最多持{s['max_positions']}只")
     return jsonify({"ok": True})
 
 
@@ -1348,9 +1443,15 @@ def paper_manual_buy():
                     "need_live_cash": True,
                 }), 400
             base_cash = live_cash
-        budget = base_cash * s.get("position_ratio", 0.20)
+        # 单笔上限护栏：把仓位比夹到 single_position_max_ratio 内（防一次大面腰斩）
+        _ratio = float(s.get("position_ratio", 0.20))
+        _cap   = float(s.get("single_position_max_ratio", 0.20))
+        _eff   = min(_ratio, _cap)
+        budget = base_cash * _eff
         shares = max(int(budget / price / 100) * 100, 100)
-        _add_log(uid, f"💰 仓位计算: {broker_type} base_cash=¥{base_cash:,.0f} × {s.get('position_ratio', 0.20)*100:.0f}% = ¥{budget:,.0f} → {shares}股 @{price:.2f}")
+        if _eff < _ratio:
+            _add_log(uid, f"🛡 单笔护栏：仓位比 {_ratio*100:.0f}% > 单笔上限 {_cap*100:.0f}%，按 {_eff*100:.0f}% 建仓")
+        _add_log(uid, f"💰 仓位计算: {broker_type} base_cash=¥{base_cash:,.0f} × {_eff*100:.0f}% = ¥{budget:,.0f} → {shares}股 @{price:.2f}")
     res = execute_buy(uid, code, name, price, shares, reason="模拟盘手动买入")
     if res.get("ok"):
         # 透传 execute_buy 所有字段（含实盘的 signal_id，前端轮询用）
@@ -1424,14 +1525,80 @@ def paper_stream():
 # ══════════════════════════════════════════════════════════════
 # 策略 API
 # ══════════════════════════════════════════════════════════════
+@app.route("/api/announcements")
+@require_auth
+def api_announcements():
+    """用户端：拉取当前有效公告（含是否已读标记），供登录后弹窗。
+    ★ 修复：之前只有 admin 端公告 CRUD，没有任何用户端拉取路由，
+    导致管理员发的公告其他用户登录时永远弹不出来。"""
+    uid = session["user_id"]
+    return jsonify({"ok": True, "announcements": um.get_active_announcements(uid)})
+
+
+@app.route("/api/announcements/<int:ann_id>/read", methods=["POST"])
+@require_auth
+def api_announcement_read(ann_id):
+    """用户端：标记公告已读（关闭弹窗时调用，下次登录不再重复弹）。"""
+    try:
+        um.mark_announcement_read(session["user_id"], ann_id)
+    except Exception as e:
+        logger.warning(f"[公告已读] uid={session.get('user_id')} ann={ann_id}: {e}")
+    return jsonify({"ok": True})
+
+
 @app.route("/api/strategies")
 def api_list():
-    return jsonify(sm.list_strategies())
+    items = sm.list_strategies()
+    # ★ 策略隐私：非 admin 看不到内置(自研)策略的简介(desc)，只保留名称供选择/激活
+    if not session.get("is_admin"):
+        for it in items:
+            if it.get("builtin"):
+                it["desc"] = "🔒 内置策略，逻辑保密"
+    return jsonify(items)
 
 
 @app.route("/api/strategies/<filename>")
 def api_get(filename):
-    return jsonify({"code": sm.get_code(filename)})
+    meta = sm.get_meta(filename)
+    # ★ 策略隐私：内置策略（自研）的源码仅 admin 可见；其他云端用户拿到"受保护"占位，
+    #   防止被查看/复制复用。策略仍可正常激活运行（运行/回测走 sm 内部真实代码，不经此路由）。
+    if meta.get("builtin") and not session.get("is_admin"):
+        nm = meta.get("name", filename)
+        placeholder = (
+            '# META: {"name": "%s", "builtin": true}\n'
+            '"""\n'
+            '🔒 内置策略「%s」— 源码与逻辑均受保护\n\n'
+            '这是平台内置策略，选股/交易逻辑及说明均不对外展示。\n'
+            '你可以直接「激活」运行它，但无法查看其源码或策略细节。\n'
+            '如需自定义策略，请点「+ 新建」编写你自己的（你自建的可正常查看/编辑）。\n'
+            '"""\n'
+        ) % (nm, nm)
+        return jsonify({"code": placeholder, "builtin": True, "locked": True})
+    return jsonify({"code": sm.get_code(filename),
+                    "builtin": bool(meta.get("builtin")), "locked": False})
+
+
+def _inject_builtin_flag(code: str, is_admin: bool) -> str:
+    """在策略 META 行注入 builtin 标记，自动落实"admin 创建的策略一律受保护、
+    普通用户自建的可见"：admin 存→builtin:true，普通用户存→builtin:false。
+    保留 META 其它字段；无 META 行则补一行。"""
+    protect = bool(is_admin)
+    lines = code.split("\n", 1)
+    first = lines[0].strip() if lines else ""
+    rest  = lines[1] if len(lines) > 1 else ""
+    if first.startswith("# META:"):
+        try:
+            meta = json.loads(first[len("# META:"):].strip())
+            if not isinstance(meta, dict):
+                meta = {}
+        except Exception:
+            meta = {}
+        meta["builtin"] = protect
+        new_first = "# META: " + json.dumps(meta, ensure_ascii=False)
+        return new_first + ("\n" + rest if rest != "" or len(lines) > 1 else "\n")
+    # 没有 META 行：补一行
+    meta = {"name": "策略", "desc": "", "author": ("admin" if protect else "用户"), "builtin": protect}
+    return "# META: " + json.dumps(meta, ensure_ascii=False) + "\n" + code
 
 
 @app.route("/api/strategies/save", methods=["POST"])
@@ -1439,7 +1606,14 @@ def api_get(filename):
 def api_save():
     uid = session["user_id"]
     d   = request.json
-    r   = sm.save(d.get("filename", ""), d.get("code", ""))
+    fn  = d.get("filename", "")
+    is_admin = bool(session.get("is_admin"))
+    # ★ 内置(admin)策略受保护：非 admin 不可保存/覆盖
+    if sm.get_meta(fn).get("builtin") and not is_admin:
+        return jsonify({"ok": False, "msg": "内置策略受保护，不可修改或覆盖。请点『+ 新建』编写你自己的策略"})
+    # ★ 自动打标记：admin 创建/保存的策略一律受保护(builtin:true)，普通用户自建的可见(false)
+    code = _inject_builtin_flag(d.get("code", ""), is_admin)
+    r   = sm.save(fn, code)
     if r["ok"]:
         _add_log(uid, f"策略已保存: {r['file']}")
     return jsonify(r)
@@ -2427,16 +2601,58 @@ def _scan_thread_worker(uid: int):
             pass
 
 
+def _on_market_close():
+    """收盘(15:00)自动终止所有用户的自动交易：停 running + 清残留未执行信号 + 持久化。
+    避免收盘后桥接器还在拉 pending 信号去下单。仅在下午真收盘触发（午休 11:30 不触发）。"""
+    with _user_state_lock:
+        uids = [uid for uid, s in user_states.items() if s.get("running")]
+    if not uids:
+        return
+    for uid in uids:
+        try:
+            s = get_user_state(uid)
+            s["running"] = False
+            # 清掉本地队列里 pending 的买单（收盘后不再执行）
+            try:
+                s["queue"] = [q for q in s.get("queue", []) if q.get("status") != "pending"]
+            except Exception:
+                pass
+            _persist_state(uid, running=0)
+            # 取消实盘 pending 交易信号，避免桥接器收盘后继续拉去下单
+            try:
+                n = um.cancel_pending_signals(uid)
+            except Exception:
+                n = 0
+            _add_log(uid, f"🔔 收盘(15:00)自动终止：已停止自动交易"
+                          + (f"，清理未执行实盘信号 {n} 条" if n else ""), "WARN")
+        except Exception as e:
+            logger.warning(f"[收盘终止 uid={uid}] {e}")
+    logger.info(f"[收盘] 已自动终止 {len(uids)} 个用户的自动交易")
+
+
 def run_scheduler():
     """
     主调度循环：
     - 每秒检查所有 running 用户
     - 普通策略：每 SCAN_INTERVAL 秒触发一次
     - 打板策略：每 DABAN_INTERVAL 秒触发一次
+    - 收盘(15:00)自动终止所有自动交易（午休 11:30 不触发）
     """
     now_ts = time.time()
+    _was_trading = is_trading_time()        # 收盘下降沿检测
     while True:
         now_ts = time.time()
+        # ★ 收盘自动终止：交易时段→非交易时段 的下降沿，且已到下午收盘(>=15:00)
+        _now_trading = is_trading_time()
+        if _was_trading and not _now_trading:
+            _tc = datetime.now()
+            if _tc.hour * 100 + _tc.minute >= 1500:
+                try:
+                    _on_market_close()
+                except Exception as _ce:
+                    logger.warning(f"[收盘终止] 调度异常: {_ce}")
+        _was_trading = _now_trading
+
         with _user_state_lock:
             active_uids = [uid for uid, s in user_states.items() if s.get("running")]
 

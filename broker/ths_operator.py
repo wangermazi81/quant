@@ -51,6 +51,18 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _is_admin() -> bool:
+    """当前进程是否以管理员权限运行（Windows）。
+    诊断「模拟按键送不进 xiadan」的头号原因：若同花顺以管理员运行而本进程不是，
+    Windows UIPI（用户界面特权隔离）会静默拦截所有模拟按键/置顶请求 →
+    下单按 Y 没反应、撤单 F3/Z/Del 无效 → 全部 failed。两者必须同权限。"""
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
 class THSOperator:
     _last_prune_ts = 0.0   # 全类共享：节流截图清理，避免每次下单都扫描整目录
 
@@ -73,8 +85,16 @@ class THSOperator:
         self._load_trade_settings()
         import os
         if os.name == 'nt' and not DRY_RUN:
+            self.is_admin = _is_admin()
+            if self.is_admin:
+                logger.info("[权限] 本程序以管理员身份运行 ✓")
+            else:
+                logger.warning("[权限] ⚠ 本程序非管理员运行！若同花顺是『以管理员身份运行』，"
+                               "模拟按键会被 Windows UIPI 拦截 → 下单/撤单全部失败。"
+                               "请用管理员身份重启本桥接器（与同花顺同权限）")
             self._connect()
         else:
+            self.is_admin = False
             logger.info("非 Windows 系统或处于演练模式，跳过同花顺窗口连接")
 
     def _trade_settings_path(self):
@@ -155,9 +175,17 @@ class THSOperator:
                     continue
                 if title and THS_WINDOW_TITLE in title:
                     self.app = Application(backend=THS_BACKEND).connect(handle=w.handle)
-                    self.main_win = self.app.top_window()
+                    # ★ 关键修复：绑定到「标题匹配的那个完整下单窗口」本身，
+                    # 不要用 top_window()——同花顺常有置顶的悬浮迷你交易条（"买卖撤查"小条），
+                    # top_window() 会抓到那个迷你条（没有代码/价格/数量输入框），导致
+                    # 填单按键全落空、字段诊断为 {}、下单 failed。用 w.handle 精确锁定完整窗口。
+                    try:
+                        self.main_win = self.app.window(handle=w.handle)
+                        _ = self.main_win.window_text()   # 触发一次校验，失败则降级
+                    except Exception:
+                        self.main_win = self.app.top_window()
                     logger.info(
-                        f"已连接交易客户端: {title!r} (backend={THS_BACKEND}, "
+                        f"已连接交易客户端: {title!r} (handle={w.handle}, backend={THS_BACKEND}, "
                         f"buy_key={THS_BUY_KEY.upper()}, sell_key={THS_SELL_KEY.upper()})"
                     )
                     return
@@ -475,10 +503,15 @@ class THSOperator:
             if self.auto_confirm_order:
                 time.sleep(AUTO_CONFIRM_DELAY)        # 等委托确认对话框弹出
                 self._save_screenshot(f"{action}_{code}_6_before_press_y")
-                pyautogui.press('y')                  # 按 Y =「是(Y)」=确认提交
+                # ★ 修复：委托确认框标题常为空，盲按 Y 经常确认不掉（按钮可能是"确定"=Enter，
+                # 或焦点不在框上）。改为：定位 #32770 确认框 → 点它的确认按钮；点不到再 Enter+Y 兜底。
+                confirmed = self._confirm_order_dialog()
+                if not confirmed:
+                    pyautogui.press('enter'); time.sleep(0.2)
+                    pyautogui.press('y')
                 logger.info(
-                    f"已按自动确认 Y: {action} {code} @ {price_str} x {amount_str}股 "
-                    f"(hotkey={hotkey.upper()}) — 正在检测 xiadan 后续反馈..."
+                    f"已确认委托({'点按钮' if confirmed else 'Enter/Y兜底'}): {action} {code} "
+                    f"@ {price_str} x {amount_str}股 (hotkey={hotkey.upper()}) — 正在检测 xiadan 反馈..."
                 )
                 # ── 关键：按 Y 之后检测 xiadan 反馈（错误对话框 / 委托成功）──
                 result = self._check_post_submit_result(action, code, price_str, amount_str)
@@ -558,6 +591,45 @@ class THSOperator:
                 "msg": f"{action} GUI 操作异常: {e}",
             }
 
+    def _confirm_order_dialog(self) -> bool:
+        """定位「委托确认」框（#32770，标题常为空，靠对话框内容识别）→ 点它的确认按钮。
+        返回 True=已点确认按钮。比盲按 Y 可靠：不依赖热键猜测，也不依赖键盘焦点落在框上。
+        点不到具名按钮时返回 False，由调用方用 Enter/Y 兜底。"""
+        try:
+            from pywinauto import Desktop
+        except Exception:
+            return False
+        import time as _t
+        # 等确认框出现，最多 ~12s（第一单 xiadan 首次响应可能很慢，3s 不够会漏点→走兜底失败）
+        for _ in range(24):
+            try:
+                dialogs = Desktop(backend='win32').windows(class_name='#32770', visible_only=True)
+            except Exception:
+                _t.sleep(0.5); continue
+            for d in dialogs:
+                try:
+                    texts = " ".join((c.window_text() or "") for c in d.descendants())
+                except Exception:
+                    continue
+                # 委托确认框：内容含 委托/确认/买入/卖出/是否 之一（标题为空也能命中）
+                if not any(k in texts for k in ("委托", "确认", "买入", "卖出", "是否")):
+                    continue
+                # 枚举对话框所有按钮，点文字含 确定/是/买入/卖出/确认 的那个（排除取消/否）
+                try:
+                    for ctl in d.descendants(class_name="Button"):
+                        bt = (ctl.window_text() or "").strip()
+                        if not bt:
+                            continue
+                        if any(k in bt for k in ("确定", "是", "买入", "卖出", "确认")) \
+                           and not any(x in bt for x in ("取消", "否", "放弃")):
+                            ctl.click_input()
+                            logger.info(f"✅ 已点委托确认框按钮[{bt}]")
+                            return True
+                except Exception:
+                    pass
+            _t.sleep(0.5)
+        return False
+
     def _check_post_submit_result(self, action: str, code: str,
                                   price_str: str, amount_str: str) -> dict:
         """按 Y 之后检测 xiadan 弹出的对话框，识别错误原因或确认成功。
@@ -598,7 +670,18 @@ class THSOperator:
                     title = d.window_text() or ""
                 except Exception:
                     continue
-                if any(k in title for k in relevant_titles):
+                matched = any(k in title for k in relevant_titles)
+                if not matched:
+                    # ★ 修复：委托确认/成功提示框的标题常为空，"委托确认"等字在内容区。
+                    # 标题没命中就读内容文字再判，避免空标题对话框被漏判成 failed。
+                    try:
+                        body_txt = " ".join((c.window_text() or "") for c in d.descendants())
+                    except Exception:
+                        body_txt = ""
+                    matched = any(k in body_txt for k in
+                                  ("委托", "确认", "成功", "已提交", "资金不足", "余额不足",
+                                   "涨停", "跌停", "废单", "失败", "错误", "提示"))
+                if matched:
                     found_dialog = (d, title)
                     break
             if found_dialog:
@@ -656,9 +739,12 @@ class THSOperator:
             )
         except Exception:
             pass
+        _perm_hint = ("" if getattr(self, "is_admin", False) else
+                      "。⚠ 头号嫌疑：本程序非管理员运行——若同花顺是『以管理员身份运行』，"
+                      "按键会被 Windows UIPI 静默拦截。请用管理员身份重启本桥接器（与同花顺同权限）")
         return {"status": "failed",
                 "msg": f"按 Y 后 xiadan 未弹出任何对话框 — 按键可能被其他窗口拦截，xiadan 实际未收到操作。"
-                       f"请确保 xiadan 在前台 + 下单时鼠标键盘不要碰",
+                       f"请确保 xiadan 在前台 + 下单时鼠标键盘不要碰" + _perm_hint,
                 **meta}
 
     @staticmethod
@@ -2154,7 +2240,8 @@ class THSOperator:
             if act == "cancelled":
                 logger.info(f"[监控] {code} {action} 超时未成交 → 已自动撤单，资金已刷新")
             elif act == "none":
-                logger.info(f"[监控] {code} {action} 已成交/已不在可撤列表 → 无需撤单（已刷新资金）")
+                logger.info(f"[监控] {code} {action} 不在可撤列表（已成交 或 未成功提交，二者皆无单可撤）"
+                            f" → 无需撤单（已刷新资金）。如需确认是否成交请查「当日成交」")
             elif act == "abort":
                 logger.warning(f"[监控] {code} {action} 撤单页有多笔可撤、为安全未自动撤：{msg}")
             else:

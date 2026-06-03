@@ -106,3 +106,22 @@ def admin_transactions():
 def admin_reset_password(uid):
     new_pw = (request.json or {}).get("new_password", "")
     return jsonify(um.admin_reset_password(uid, new_pw))
+
+
+@bp.route("/api/admin/users/<int:uid>/set_points", methods=["POST"])
+@require_admin
+def admin_set_points(uid):
+    """把用户积分设为指定值（可增可减），区别于 /points 的增量充值。"""
+    d     = request.json or {}
+    value = d.get("value")
+    desc  = d.get("description", "管理员修改积分")
+    return jsonify(um.set_points(uid, value, desc))
+
+
+@bp.route("/api/admin/users/<int:uid>", methods=["DELETE"])
+@require_admin
+def admin_delete_user(uid):
+    """删除用户（不可删自己）。"""
+    if uid == session.get("user_id"):
+        return jsonify({"ok": False, "error": "不能删除自己的账号"})
+    return jsonify(um.delete_user(uid))

@@ -104,6 +104,8 @@ def migrate_users_db():
             active_strategy TEXT   DEFAULT '',
             stock_pool     TEXT    DEFAULT '[]',
             broker_type    TEXT    DEFAULT 'paper',
+            max_positions             INTEGER DEFAULT 5,
+            single_position_max_ratio REAL    DEFAULT 0.20,
             updated_at     TEXT    DEFAULT (datetime('now','localtime')),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
@@ -215,6 +217,9 @@ def migrate_users_db():
         c.commit()
         # 补列迁移（对已存在的旧库）
         _safe_add_column(c, "announcements", "expires_at", "TEXT DEFAULT NULL")
+        # 仓位护栏（防一次大面腰斩）：单笔上限 + 最多持仓数，支持前端按用户调
+        _safe_add_column(c, "user_settings", "max_positions", "INTEGER DEFAULT 5")
+        _safe_add_column(c, "user_settings", "single_position_max_ratio", "REAL DEFAULT 0.20")
         logger.info("[users.db] 新表创建/迁移完成 ✓")
     finally:
         c.close()

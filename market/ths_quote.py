@@ -92,15 +92,26 @@ class TDXQuoteClient:
     _FAIL_COOLDOWN = 300.0   # 5 分钟内不再重试
 
     def _connect(self) -> bool:
+        # 失败冷却：如果近 5 分钟内已经全部连接失败过，直接返回（避免每次 AI 分析卡 30s）
+        now = time.time()
+        if now - type(self)._last_fail_ts < type(self)._FAIL_COOLDOWN:
+            return False
+        ok = self._do_connect()
+        if not ok:
+            # 标记本轮全失败，进入冷却期
+            type(self)._last_fail_ts = time.time()
+            logger.error(f"[TDX] 所有服务器均连接失败，冷却 {type(self)._FAIL_COOLDOWN:.0f}s 不再重试")
+        return ok
+
+    def _do_connect(self) -> bool:
+        """实际建立连接（不涉及冷却策略）。
+        供 _connect（受冷却保护的初始连接）与运行中批次失败重连共用。
+        ★ 关键：运行中重连走这里，不会污染进程级 _last_fail_ts 冷却，
+        避免「全市场扫描偶发单批失败 → 整个 worker 进程 5 分钟假性不可用」的 bug。"""
         try:
             from pytdx.hq import TdxHq_API
         except ImportError:
             logger.error("pytdx 未安装，请运行: pip install pytdx")
-            return False
-
-        # 失败冷却：如果近 5 分钟内已经全部连接失败过，直接返回（避免每次 AI 分析卡 30s）
-        now = time.time()
-        if now - type(self)._last_fail_ts < type(self)._FAIL_COOLDOWN:
             return False
 
         # 关键修复：限制每次 connect 最多 3 秒，避免云服务器 TCP 防火墙下挂死等 75 秒
@@ -121,9 +132,6 @@ class TDXQuoteClient:
                         return True
                 except Exception as e:
                     logger.debug(f"[TDX] 连接失败 {host}:{port}: {e}")
-            # 标记本轮全失败，进入冷却期
-            type(self)._last_fail_ts = time.time()
-            logger.error(f"[TDX] 所有服务器均连接失败，冷却 {type(self)._FAIL_COOLDOWN:.0f}s 不再重试")
         finally:
             _socket.setdefaulttimeout(_old_timeout)
         return False
@@ -153,15 +161,26 @@ class TDXQuoteClient:
         with self._lock:
             for i in range(0, total, BATCH):
                 batch = params[i: i + BATCH]
-                try:
-                    raw = self._api.get_security_quotes(batch)
-                    if raw:
-                        results.extend(raw)
-                except Exception as e:
-                    logger.warning(f"[TDX] 行情批次失败: {e}")
-                    self._ok = False
-                    self._connect()
+                for _attempt in range(2):     # 单批失败：重连后重试一次
+                    try:
+                        raw = self._api.get_security_quotes(batch)
+                        if raw:
+                            results.extend(raw)
+                        break
+                    except Exception as e:
+                        logger.warning(f"[TDX] 行情批次失败(尝试{_attempt + 1}/2): {e}")
+                        if _attempt == 0:
+                            # 运行中重连：走 _do_connect 而非 _connect，
+                            # 偶发单批失败不该让整个进程进入 5 分钟假性不可用冷却
+                            self._do_connect()
+                        # 第二次仍失败 → 跳过该批，继续后续批次（不毒化全局状态）
                 _scan_prog["current"] = min(i + BATCH, total)
+
+        # 只要本轮拿到了任何行情，就证明连接是健康的：
+        # 强制标记可用并解除历史失败冷却，杜绝「假性不可用」状态残留
+        if results:
+            self._ok = True
+            type(self)._last_fail_ts = 0.0
 
         _scan_prog["running"] = False
 
@@ -432,13 +451,29 @@ def _is_valid_a_share(code: str, name: str = "") -> bool:
 # ══════════════════════════════════════════════════════════
 _client: Optional[TDXQuoteClient] = None
 _client_lock = threading.Lock()
+_last_heal_ts = 0.0          # 上次自愈重连时间戳（限频用）
+_HEAL_INTERVAL = 30.0        # 最多每 30s 自愈重连一次
 
 
 def get_client() -> Optional[TDXQuoteClient]:
-    """获取全局 TDX 客户端单例（双重检查锁，避免初始化后不必要的锁争用）"""
-    global _client
+    """获取全局 TDX 客户端单例（双重检查锁，避免初始化后不必要的锁争用）。
+
+    ★ 自愈（关键修复）：单例已存在但 _ok=False（连接假死）时，限频强制重连。
+    破解死结：很多调用方（strategy_manager 等）直接读裸标志位 client._ok 判断
+    可用性，一旦 _ok 变 False 就绕开 TDX，导致 get_quotes/_ensure 的自愈路径
+    永不触发、_ok 永远卡死。这里在返回单例前主动重连，让所有调用方拿到的都是
+    尽力自愈过的连接。_do_connect 绕过 5 分钟冷却，且新进程已证明随时能连上。"""
+    global _client, _last_heal_ts
     # 快速路径：已初始化则直接返回（无锁）
     if _client is not None:
+        if not _client._ok:
+            now = time.time()
+            if now - _last_heal_ts > _HEAL_INTERVAL:
+                _last_heal_ts = now
+                with _client._lock:
+                    if not _client._ok:          # 双检：拿到锁后确认仍不健康
+                        logger.warning("[TDX] 检测到连接假死(_ok=False)，自愈重连...")
+                        _client._do_connect()    # 绕过冷却直接重连
         return _client
     # 慢速路径：首次初始化加锁
     with _client_lock:
@@ -451,5 +486,6 @@ def get_client() -> Optional[TDXQuoteClient]:
 
 
 def is_available() -> bool:
+    """供外部判断 TDX 是否可用。get_client() 已含自愈，这里直接复用其结果。"""
     c = get_client()
     return c is not None and c._ok

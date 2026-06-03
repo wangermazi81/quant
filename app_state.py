@@ -13,7 +13,10 @@ from pathlib import Path
 from flask import session, jsonify
 
 import user_manager as um
-from config import INITIAL_CAPITAL, POSITION_RATIO
+from config import (
+    INITIAL_CAPITAL, POSITION_RATIO,
+    MAX_POSITIONS, SINGLE_POSITION_MAX_RATIO,
+)
 
 logger = logging.getLogger("app_state")
 
@@ -43,6 +46,8 @@ def _default_user_state() -> dict:
         "active_strategy": None,
         "capital":        INITIAL_CAPITAL,
         "position_ratio": POSITION_RATIO,
+        "max_positions":             MAX_POSITIONS,             # 仓位护栏：最多持仓只数
+        "single_position_max_ratio": SINGLE_POSITION_MAX_RATIO, # 仓位护栏：单笔占比上限
         "today_trades":   0,
         "today_date":     "",
         "positions":      {},
@@ -93,6 +98,9 @@ def get_user_state(uid: int) -> dict:
                 s["auto_execute"]     = bool(settings.get("auto_execute", 0))
                 s["capital"]          = float(settings.get("capital", INITIAL_CAPITAL))
                 s["position_ratio"]   = float(settings.get("position_ratio", POSITION_RATIO))
+                s["max_positions"]    = int(settings.get("max_positions", MAX_POSITIONS) or MAX_POSITIONS)
+                s["single_position_max_ratio"] = float(
+                    settings.get("single_position_max_ratio", SINGLE_POSITION_MAX_RATIO) or SINGLE_POSITION_MAX_RATIO)
                 s["active_strategy"]  = settings.get("active_strategy") or None
             except Exception:
                 pass

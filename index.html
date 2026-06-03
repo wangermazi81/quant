@@ -632,6 +632,14 @@ tr:hover td{background:var(--card)}
         <span style="font-size:11px;color:var(--t3)">日限</span>
         <input id="cfgDailyLimit" type="number" step="1" min="1" max="10" placeholder="3"
           style="width:36px;padding:3px 6px;background:var(--inp);border:1px solid var(--b1);border-radius:4px;color:var(--t1);font-size:12px">
+        <span style="font-size:11px;color:var(--t3)" title="护栏：单笔买入金额占总资金比例的硬上限。即使把仓位%调更高，单笔也不会超过这个值，防一次大面腰斩。">🛡单笔%</span>
+        <input id="cfgSingleCap" type="number" step="5" min="1" max="100" placeholder="20"
+          title="单笔买入金额上限（占总资金%）。会夹住上面的仓位%。"
+          style="width:46px;padding:3px 6px;background:var(--inp);border:1px solid var(--b1);border-radius:4px;color:var(--t1);font-size:12px">
+        <span style="font-size:11px;color:var(--t3)" title="护栏：同时最多持有的标的数（含队列里待成交买单）。名额满则停止开新仓，控制总仓位与集中度。">🛡持仓</span>
+        <input id="cfgMaxPos" type="number" step="1" min="1" max="50" placeholder="5"
+          title="同时最多持仓只数（含待成交队列）"
+          style="width:40px;padding:3px 6px;background:var(--inp);border:1px solid var(--b1);border-radius:4px;color:var(--t1);font-size:12px">
         <button class="btn btn-gray btn-xs" onclick="saveAccount()">保存</button>
       </div>
       <div class="card-bd" id="qBody"><div class="empty">无待处理</div></div>
@@ -1651,9 +1659,13 @@ async function fetchSt(){
   const ci=document.getElementById('cfgCapital')
   const ri=document.getElementById('cfgRatio')
   const di=document.getElementById('cfgDailyLimit')
+  const si=document.getElementById('cfgSingleCap')
+  const mi=document.getElementById('cfgMaxPos')
   if(ci&&!ci.matches(':focus')) ci.value=d.capital||500000
   if(ri&&!ri.matches(':focus')) ri.value=Math.round((d.position_ratio||0.2)*100)
   if(di&&!di.matches(':focus')) di.value=d.max_daily_trades||3
+  if(si&&!si.matches(':focus')) si.value=Math.round((d.single_position_max_ratio||0.2)*100)
+  if(mi&&!mi.matches(':focus')) mi.value=d.max_positions||5
   const ss=document.getElementById('scanSt')
   ss.innerHTML=d.running?'<span class="spin">⟳</span> 监控中':'已停止'
   ss.style.color=d.running?'var(--gl)':'var(--t3)'
@@ -1781,7 +1793,16 @@ async function saveAccount(){
   const cap=parseFloat(document.getElementById('cfgCapital').value)||500000
   const rat=parseFloat(document.getElementById('cfgRatio').value)||20
   const dlm=parseInt(document.getElementById('cfgDailyLimit').value)||3
-  await api('/account','POST',{capital:cap, position_ratio:rat/100, max_daily_trades:dlm})
+  const scap=parseFloat(document.getElementById('cfgSingleCap').value)||20
+  const mpos=parseInt(document.getElementById('cfgMaxPos').value)||5
+  // 前端兜底校验：单笔% 1~100，持仓 1~50
+  if(scap<1||scap>100){ alert('单笔上限须在 1~100% 之间'); return }
+  if(mpos<1||mpos>50){ alert('最多持仓数须在 1~50 之间'); return }
+  const r=await api('/account','POST',{
+    capital:cap, position_ratio:rat/100, max_daily_trades:dlm,
+    single_position_max_ratio:scap/100, max_positions:mpos })
+  if(r&&r.ok===false){ alert('保存失败: '+(r.error||'')); return }
+  if(scap<rat) alert(`⚠️ 单笔上限 ${scap}% 低于仓位 ${rat}%，建仓时将按 ${scap}% 执行（护栏生效）`)
   fetchSt()
 }
 
@@ -1959,12 +1980,13 @@ async function loadFactor(fn){
   const d = await api('/factors/'+fn)
   if(!d) return
   editor.setValue(d.code||'')
+  editor.setOption('readOnly', false)
   document.getElementById('sfn').value = fn
-  setEdSt(`因子已载入: ${fn}`)
+  setEdSt(`因子已载入: ${fn} — 点「🔍 扫描」开始因子选股`)
   loadFactorList()
-  // 切换到选股面板，用因子执行选股
-  switchRTab('screen', document.querySelectorAll('.rtab')[1])
-  await _runFactorScreen(fn)
+  // ★ 不再自动选股：点因子只载入代码，由用户主动点「🔍 扫描」按钮才跑因子选股。
+  //   原先点一下因子就触发全市场因子计算（几秒~几分钟），占满单 worker，
+  //   导致这期间点策略/切换全卡、其他用户请求排队点不动。改成手动触发。
 }
 
 async function newFactor(){
@@ -1972,6 +1994,7 @@ async function newFactor(){
   _curMode  = 'factor'
   const d = await api('/factors/template')
   editor.setValue(d?.code || '')
+  editor.setOption('readOnly', false)
   document.getElementById('sfn').value = 'my_factor'
   setEdSt('新因子（未保存）')
   loadFactorList()
@@ -2643,12 +2666,33 @@ async function vibeQuickBuy(rowIdx){
     }
   }
 
+  // 拉取真实账户设置（仓位比 + 护栏 + 当前持仓数），与后端口径一致
+  let positionRatio = 0.20, singleCap = 0.20, maxPos = 5, heldCount = 0
+  try {
+    const acct = await api('/account')
+    if(acct){
+      positionRatio = +acct.position_ratio || 0.20
+      singleCap = +acct.single_position_max_ratio || 0.20
+      maxPos = +acct.max_positions || 5
+      heldCount = Object.keys(acct.positions || {}).length
+    }
+  } catch(e){}
+  // 单笔上限护栏：生效仓位比 = min(仓位比, 单笔上限)（后端 paper_manual_buy 同样口径）
+  const effRatio = Math.min(positionRatio, singleCap)
+  const capped = effRatio < positionRatio
+
   // 二次确认
-  const positionRatio = 0.20  // 显示用，后端实际从 user_state.position_ratio 取
-  const targetBudget = isLive ? (liveCash * positionRatio) : null
+  const targetBudget = isLive ? (liveCash * effRatio) : null
   const estShares = isLive
     ? Math.max(Math.floor(targetBudget / row.price / 100) * 100, 100)
     : null
+  const guardLine =
+      `🛡 仓位护栏:\n`
+    + `   单笔上限: ${(singleCap*100).toFixed(0)}%`
+    + (capped ? ` ← 已夹住仓位比 ${(positionRatio*100).toFixed(0)}%，按 ${(effRatio*100).toFixed(0)}% 建仓\n`
+              : `（仓位比 ${(positionRatio*100).toFixed(0)}% 未超限）\n`)
+    + `   最多持仓: ${maxPos} 只（当前持 ${heldCount} 只）`
+    + (heldCount >= maxPos ? ` ⚠️ 已达上限，自动扫描不再开新仓\n` : `\n`)
 
   const msg = `${modeLabel} · 立即买入\n\n`
     + `股票: ${row.code} ${row.name||''}\n`
@@ -2657,12 +2701,15 @@ async function vibeQuickBuy(rowIdx){
     + (isLive
         ? `📊 仓位计算（基于 xiadan 真账户）:\n`
           + `   真余额: ¥${liveCash.toLocaleString()}\n`
-          + `   仓位比: ${(positionRatio*100).toFixed(0)}%\n`
+          + `   生效仓位比: ${(effRatio*100).toFixed(0)}%\n`
           + `   预算: ¥${targetBudget.toLocaleString()}\n`
           + `   预估手数: ${estShares} 股\n`
           + `   预估金额: ¥${(estShares * row.price).toFixed(0)}\n\n`
+          + guardLine + `\n`
           + '⚠️ 实盘模式：信号 → 桥接器 → xiadan 按 F1 真下单'
-        : '✅ 模拟模式：仅动 paper_trading.db，无任何资金风险。')
+        : `📊 后端按生效仓位比 ${(effRatio*100).toFixed(0)}% 自动算手数\n\n`
+          + guardLine + `\n`
+          + '✅ 模拟模式：仅动 paper_trading.db，无任何资金风险。')
   if(!confirm(msg)) return
 
   try {
@@ -3008,8 +3055,10 @@ async function loadStrat(fn){
   curStrat=fn; _curMode='strat'
   const d=await api('/strategies/'+fn); if(!d) return
   editor.setValue(d.code||'')
+  // ★ 内置策略受保护：非 admin 拿到的是占位 + locked，编辑器置只读并提示
+  editor.setOption('readOnly', d.locked ? 'nocursor' : false)
   document.getElementById('sfn').value=fn
-  setEdSt('已加载: '+fn)
+  setEdSt(d.locked ? '🔒 内置策略 · 源码受保护（可激活运行，不可查看/编辑）' : '已加载: '+fn)
   loadStratList()
   scResults=[]
   document.getElementById('scBody').innerHTML='<div class="empty">点击「选股」开始</div>'
@@ -3017,7 +3066,7 @@ async function loadStrat(fn){
   document.getElementById('addAllBtn').style.display='none'
 }
 function newStrat(){
-  curStrat=null; _curMode='strat'; document.getElementById('sfn').value='my_strategy'
+  curStrat=null; _curMode='strat'; editor.setOption('readOnly', false); document.getElementById('sfn').value='my_strategy'
   editor.setValue(`# META: {"name": "自定义策略", "desc": "描述", "author": "用户", "builtin": false}
 
 def scan(codes: list, get_kline, get_quotes) -> list:
@@ -5215,6 +5264,7 @@ async function doAiGen(){
   }
   // 填入编辑器
   editor.setValue(r.code||'')
+  editor.setOption('readOnly', false)
 
   if(isFactor){
     _curMode = 'factor'
@@ -5251,8 +5301,46 @@ async function checkAuthState(){
     _currentUser = r
     hideAuthOverlay()
     updateNavUser(r)
+    loadAnnouncements()   // 登录后拉取并弹出未读公告
   } else {
     showAuthOverlay()
+  }
+}
+
+// ── 平台公告：登录后拉未读公告并弹窗，关闭时标记已读 ──────────────
+async function loadAnnouncements(){
+  try{
+    const r = await api('/announcements')
+    if(!r || !r.ok || !Array.isArray(r.announcements)) return
+    const unread = r.announcements.filter(a => !a.is_read)
+    if(unread.length) showAnnouncements(unread)
+  }catch(e){ console.warn('公告拉取失败', e) }
+}
+
+function showAnnouncements(list){
+  const typeColor = {info:'#3b82f6', warn:'#f59e0b', warning:'#f59e0b', error:'#ef4444', success:'#22c55e'}
+  const old = document.getElementById('annOverlay'); if(old) old.remove()
+  const ov = document.createElement('div')
+  ov.id = 'annOverlay'
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:99999'
+  const cards = list.map(a=>`
+    <div style="border-left:4px solid ${typeColor[a.type]||'#3b82f6'};background:rgba(127,127,127,.08);border-radius:8px;padding:14px 16px;margin-bottom:12px">
+      <div style="font-weight:700;font-size:15px;margin-bottom:6px">${esc(a.title||'公告')}</div>
+      <div style="font-size:13px;line-height:1.6;opacity:.85;white-space:pre-wrap">${esc(a.content||'')}</div>
+      <div style="font-size:11px;opacity:.5;margin-top:8px">${esc(a.created_at||'')}</div>
+    </div>`).join('')
+  ov.innerHTML = `
+    <div style="background:#121826;border:1px solid #2a3142;border-radius:12px;max-width:560px;width:90%;max-height:80vh;overflow:auto;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.5);color:#e5e7eb">
+      <div style="font-size:18px;font-weight:800;margin-bottom:16px">📢 平台公告</div>
+      ${cards}
+      <div style="text-align:right;margin-top:8px">
+        <button id="annOkBtn" style="background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;border:none;border-radius:8px;padding:9px 22px;font-size:14px;cursor:pointer">我知道了</button>
+      </div>
+    </div>`
+  document.body.appendChild(ov)
+  document.getElementById('annOkBtn').onclick = async ()=>{
+    for(const a of list){ try{ await api('/announcements/'+a.id+'/read','POST',{}) }catch(e){} }
+    ov.remove()
   }
 }
 

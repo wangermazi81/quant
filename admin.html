@@ -669,24 +669,25 @@ tr:hover td{background:#fafbff}
 <div class="modal-overlay" id="modalPoints">
   <div class="modal">
     <div class="modal-header">
-      <div class="modal-title">充值积分</div>
+      <div class="modal-title">积分管理</div>
       <div class="modal-close" onclick="closeModal('modalPoints')"><i class="fas fa-times"></i></div>
     </div>
     <div class="modal-body">
-      <div class="alert alert-warn"><i class="fas fa-info-circle"></i> 为用户 <b id="pts-uname">—</b> 充值积分</div>
+      <div class="alert alert-warn"><i class="fas fa-info-circle"></i> 用户 <b id="pts-uname">—</b> 当前积分：<b id="pts-cur" style="color:var(--orange)">—</b></div>
       <div class="form-group">
-        <label class="form-label">充值数量 <span class="req">*</span></label>
-        <input class="form-input" id="pts-amount" type="number" min="1" placeholder="请输入正整数">
+        <label class="form-label">积分数值 <span class="req">*</span></label>
+        <input class="form-input" id="pts-amount" type="number" placeholder="充值=填增加量；设为=填目标值">
       </div>
       <div class="form-group">
         <label class="form-label">备注说明</label>
-        <input class="form-input" id="pts-desc" placeholder="管理员充值">
+        <input class="form-input" id="pts-desc" placeholder="留空则用默认说明">
       </div>
       <div class="form-err" id="pts-err"></div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal('modalPoints')">取消</button>
-      <button class="btn btn-primary" onclick="submitPoints()"><i class="fas fa-coins"></i> 确认充值</button>
+      <button class="btn btn-outline" onclick="submitPoints('set')" title="把积分直接设为输入的值（可增可减）"><i class="fas fa-pen"></i> 设为此值</button>
+      <button class="btn btn-primary" onclick="submitPoints('add')"><i class="fas fa-coins"></i> 充值(增加)</button>
     </div>
   </div>
 </div>
@@ -1037,7 +1038,7 @@ function renderUsersTable(users){
       <td style="color:var(--text3);font-size:12px">${u.last_login||'从未'}</td>
       <td>
         <div style="display:flex;gap:4px;flex-wrap:wrap">
-          <button class="btn btn-outline btn-sm" onclick="openPointsModal(${u.id},'${esc(u.username)}')"><i class="fas fa-coins"></i> 充值</button>
+          <button class="btn btn-outline btn-sm" onclick="openPointsModal(${u.id},'${esc(u.username)}',${u.points})"><i class="fas fa-coins"></i> 积分</button>
           <button class="btn btn-outline btn-sm" onclick="openResetPwdModal(${u.id},'${esc(u.username)}')"><i class="fas fa-key"></i></button>
           <button class="btn btn-outline btn-sm" onclick="toggleActive(${u.id},${u.is_active},'${esc(u.username)}')" title="${u.is_active?'禁用':'启用'}">
             <i class="fas fa-${u.is_active?'ban':'check'}"></i>
@@ -1045,6 +1046,7 @@ function renderUsersTable(users){
           <button class="btn btn-outline btn-sm" onclick="toggleAdmin(${u.id},${u.is_admin},'${esc(u.username)}')" title="${u.is_admin?'撤销管理员':'设为管理员'}">
             <i class="fas fa-${u.is_admin?'user-minus':'user-shield'}"></i>
           </button>
+          <button class="btn btn-danger btn-sm" onclick="delUser(${u.id},'${esc(u.username)}')" title="删除用户"><i class="fas fa-trash"></i></button>
         </div>
       </td>
     </tr>`).join('');
@@ -1125,29 +1127,52 @@ async function toggleAdmin(uid, current, uname){
 // ================================================================
 // POINTS MODAL
 // ================================================================
-function openPointsModal(uid, uname){
+function openPointsModal(uid, uname, cur){
   pointsTargetId = uid;
   document.getElementById('pts-uname').textContent = uname;
+  document.getElementById('pts-cur').textContent = (cur!=null && !isNaN(cur)) ? Number(cur).toLocaleString() : '—';
   document.getElementById('pts-amount').value='';
   document.getElementById('pts-desc').value='';
   document.getElementById('pts-err').textContent='';
   openModal('modalPoints');
 }
 
-async function submitPoints(){
-  const amount = parseInt(document.getElementById('pts-amount').value);
-  const desc = document.getElementById('pts-desc').value.trim()||'管理员充值';
-  const err = document.getElementById('pts-err');
+async function submitPoints(mode){
+  const val  = parseInt(document.getElementById('pts-amount').value);
+  const desc = document.getElementById('pts-desc').value.trim();
+  const err  = document.getElementById('pts-err');
   err.textContent='';
-  if(!amount||amount<=0){err.textContent='请输入有效的积分数量';return;}
-  const r = await fetch(`${API}/admin/users/${pointsTargetId}/points`,{
-    method:'POST',credentials:'include',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({amount,description:desc})
-  });
-  const d = await r.json();
-  if(d.ok){closeModal('modalPoints');loadUsers(usersState.page);}
-  else err.textContent = d.error||'充值失败';
+  if(mode==='set'){
+    if(isNaN(val)||val<0){err.textContent='请输入有效的目标积分（≥0 的整数）';return;}
+    const r = await fetch(`${API}/admin/users/${pointsTargetId}/set_points`,{
+      method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({value:val,description:desc||'管理员修改积分'})
+    });
+    const d = await r.json();
+    if(d.ok){closeModal('modalPoints');loadUsers(usersState.page);}
+    else err.textContent = d.error||'修改失败';
+  } else {
+    if(!val||val<=0){err.textContent='充值数量必须为大于0的整数';return;}
+    const r = await fetch(`${API}/admin/users/${pointsTargetId}/points`,{
+      method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({amount:val,description:desc||'管理员充值'})
+    });
+    const d = await r.json();
+    if(d.ok){closeModal('modalPoints');loadUsers(usersState.page);}
+    else err.textContent = d.error||'充值失败';
+  }
+}
+
+async function delUser(uid, uname){
+  showConfirm(`⚠️ 确定要<b>永久删除</b>用户 <b>${esc(uname)}</b> 吗？<br>该用户的积分 / 持仓 / 设置 / 日志 将一并删除，<b>不可恢复</b>！`, 'btn-danger',
+    async()=>{
+      const r = await fetch(`${API}/admin/users/${uid}`,{method:'DELETE',credentials:'include'});
+      const d = await r.json().catch(()=>({}));
+      closeModal('modalConfirm');
+      if(d.ok){ loadUsers(usersState.page); }
+      else { alert(d.error||'删除失败'); }
+    }
+  );
 }
 
 // ================================================================
