@@ -63,6 +63,29 @@ def _is_admin() -> bool:
         return False
 
 
+_OCR_DIGIT_FIX = {'O': '0', 'o': '0', 'D': '0', 'Q': '0',
+                  'I': '1', 'l': '1', 'i': '1', '|': '1',
+                  'Z': '2', 'z': '2', 'A': '4', 'S': '5', 's': '5',
+                  'b': '6', 'G': '6', 'T': '7', 'B': '8', 'g': '9', 'q': '9'}
+
+
+def _as_stock_code(text: str):
+    """把一个 OCR 词尝试归一成 6 位 A 股代码，容忍 OCR 常见字母↔数字混淆
+    （O→0/S→5/B→8/l→1 等）。成功返回 6 位代码字符串(以 0/3/6/8 开头)，否则 None。
+    用于 OCR 持仓表：原先严格 \\d{6} 会把被 OCR 轻微认错的代码整行丢掉。
+    加了首位前缀校验(0/3/6/8)，避免把普通 6 位数字/乱码误当成代码。"""
+    import re as _re
+    if not text:
+        return None
+    t = _re.sub(r"\s+", "", str(text))
+    if len(t) != 6:
+        return None
+    fixed = "".join(_OCR_DIGIT_FIX.get(ch, ch) for ch in t)
+    if _re.fullmatch(r"\d{6}", fixed) and fixed[0] in "0368":
+        return fixed
+    return None
+
+
 class THSOperator:
     _last_prune_ts = 0.0   # 全类共享：节流截图清理，避免每次下单都扫描整目录
 
@@ -1332,7 +1355,7 @@ class THSOperator:
         xs = []
         for r in rows:
             for w in r["words"]:
-                if re.fullmatch(r"\d{6}", w["text"]):
+                if _as_stock_code(w["text"]):
                     xs.append(w["x"])
         if not xs:
             return None, []
@@ -1369,14 +1392,14 @@ class THSOperator:
         holdings = []
         for r in rows:
             ws = r["words"]
-            code_word = None
+            code_word = None; code = None
             for w in ws:
-                if re.fullmatch(r"\d{6}", w["text"]) and abs(w["x"] - code_x) <= x_tol:
-                    code_word = w
+                _c = _as_stock_code(w["text"])
+                if _c and abs(w["x"] - code_x) <= x_tol:
+                    code_word = w; code = _c
                     break
             if not code_word:
                 continue
-            code = code_word["text"]
             right = [w for w in ws if w["x"] > code_word["x"]]
             # 名称：代码右侧「连续的中文词」拼起来（OCR 把汉字拆成单字词，
             # 如 杭/电/股/份），遇到数字列就停——避免把后面的「上海A股」也吃进来。
