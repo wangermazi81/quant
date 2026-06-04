@@ -178,44 +178,85 @@ class THSOperator:
         logger.info(f"交易自动化设置已更新: {self.get_trade_settings()}")
         return self.get_trade_settings()
 
+    def _find_xiadan_hwnd(self):
+        """用 win32 EnumWindows 枚举【所有】顶层窗口（含隐藏/最小化/被迷你交易条 SW_HIDE 的），
+        找标题含 THS_WINDOW_TITLE 的下单主窗口句柄。
+
+        为什么不用 pywinauto Desktop().windows()：它默认 visible_only=True。
+        当同花顺被收成「迷你交易条(买卖撤查)」时，完整下单窗口被隐藏(IsWindowVisible=False)，
+        Desktop().windows() 直接漏掉它 → 重连报「未找到窗口」→ 下单全部失败（今天 961 次失败的根因）。
+        EnumWindows 不过滤可见性，能找到被隐藏的完整窗口，再 ShowWindow 还原即可。
+
+        返回 (hwnd, title)，找不到返回 (None, None)。多个匹配时优先可见的。
+        """
+        import win32gui
+        matches = []
+
+        def _cb(hwnd, _):
+            try:
+                t = win32gui.GetWindowText(hwnd) or ""
+            except Exception:
+                return True
+            if t and THS_WINDOW_TITLE in t:
+                try:
+                    vis = bool(win32gui.IsWindowVisible(hwnd))
+                except Exception:
+                    vis = False
+                matches.append((hwnd, t, vis))
+            return True
+
+        try:
+            win32gui.EnumWindows(_cb, None)
+        except Exception as e:
+            logger.warning(f"EnumWindows 枚举窗口失败: {e}")
+        if not matches:
+            return None, None
+        # 优先可见窗口；都隐藏则取第一个（被迷你条藏起来的完整窗口）
+        matches.sort(key=lambda m: 0 if m[2] else 1)
+        return matches[0][0], matches[0][1]
+
     def _connect(self):
-        """连接交易客户端窗口。
-        backend='win32' 适合 32 位老 GUI（xiadan.exe、同花顺独立委托）
-        backend='uia'   适合 64 位现代 UI
+        """连接交易客户端窗口（backend=win32，适合 32 位老 GUI xiadan.exe）。
+        用 EnumWindows 兜底找窗口（含被迷你交易条隐藏的），连上后强制从最小化/隐藏还原成完整下单窗口。
         """
         import os
         if os.name != 'nt':
             return
         try:
-            from pywinauto import Application, Desktop
-            wins = Desktop(backend=THS_BACKEND).windows()
-            for w in wins:
-                # 单个窗口取标题可能返回 None 或抛异常（无标题窗口/提示框/通知等），
-                # 必须逐窗兜住，否则一个坏窗口会让整个扫描崩溃、连不上 xiadan。
-                try:
-                    title = w.window_text() or ""
-                except Exception:
-                    continue
-                if title and THS_WINDOW_TITLE in title:
-                    self.app = Application(backend=THS_BACKEND).connect(handle=w.handle)
-                    # ★ 关键修复：绑定到「标题匹配的那个完整下单窗口」本身，
-                    # 不要用 top_window()——同花顺常有置顶的悬浮迷你交易条（"买卖撤查"小条），
-                    # top_window() 会抓到那个迷你条（没有代码/价格/数量输入框），导致
-                    # 填单按键全落空、字段诊断为 {}、下单 failed。用 w.handle 精确锁定完整窗口。
-                    try:
-                        self.main_win = self.app.window(handle=w.handle)
-                        _ = self.main_win.window_text()   # 触发一次校验，失败则降级
-                    except Exception:
-                        self.main_win = self.app.top_window()
-                    logger.info(
-                        f"已连接交易客户端: {title!r} (handle={w.handle}, backend={THS_BACKEND}, "
-                        f"buy_key={THS_BUY_KEY.upper()}, sell_key={THS_SELL_KEY.upper()})"
-                    )
-                    return
-            logger.error(
-                f"未找到含 {THS_WINDOW_TITLE!r} 字串的窗口，"
-                f"请确认客户端已登录、或修改 config.py 的 THS_WINDOW_TITLE"
+            from pywinauto import Application
+            import win32gui, win32con
+            hwnd, title = self._find_xiadan_hwnd()
+            if hwnd is None:
+                logger.error(
+                    f"未找到含 {THS_WINDOW_TITLE!r} 字串的窗口，"
+                    f"请确认客户端已登录、未被关闭（迷你交易条/最小化已兼容）；"
+                    f"或修改 config.py 的 THS_WINDOW_TITLE"
+                )
+                return
+            # 若被隐藏(迷你交易条)/最小化，先还原成完整窗口，否则填单控件取不到、下单落空
+            try:
+                if not win32gui.IsWindowVisible(hwnd):
+                    logger.info(f"xiadan 主窗口被隐藏（疑似迷你交易条），ShowWindow 还原 handle={hwnd}")
+                    win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+                    time.sleep(0.3)
+                if win32gui.IsIconic(hwnd):
+                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                    time.sleep(0.3)
+            except Exception as _re:
+                logger.debug(f"还原 xiadan 窗口失败（不致命）: {_re}")
+            self.app = Application(backend=THS_BACKEND).connect(handle=hwnd)
+            # ★ 绑定到标题匹配的那个完整下单窗口本身，不用 top_window()（会抓到迷你条小窗）
+            try:
+                self.main_win = self.app.window(handle=hwnd)
+                _ = self.main_win.window_text()   # 触发一次校验，失败则降级
+            except Exception:
+                self.main_win = self.app.top_window()
+            self._xiadan_hwnd = hwnd
+            logger.info(
+                f"已连接交易客户端: {title!r} (handle={hwnd}, backend={THS_BACKEND}, "
+                f"buy_key={THS_BUY_KEY.upper()}, sell_key={THS_SELL_KEY.upper()})"
             )
+            return
         except Exception as e:
             logger.error(f"连接交易客户端失败 (backend={THS_BACKEND}): {e}")
 
@@ -373,13 +414,22 @@ class THSOperator:
             # ── 强制激活 xiadan 到前台（彻底破解最小化 + 焦点保护）──
             import win32gui, win32con, win32process
             import ctypes
-            hwnd = self.main_win.handle
-            if not win32gui.IsWindow(hwnd):
+            # ★ 句柄失效自愈：main_win 是懒加载 WindowSpecification，访问失效窗口的 .handle
+            #   会直接抛异常（不只是 IsWindow=False），故先 try 取句柄，失败/失效都重连。
+            try:
+                hwnd = self.main_win.handle
+                _valid = bool(win32gui.IsWindow(hwnd))
+            except Exception:
+                _valid = False
+            if not _valid:
                 logger.warning("xiadan 窗口 handle 失效，重连...")
                 self._connect()
                 if self.main_win is None:
                     return {"status": "failed", "msg": "xiadan 窗口已关闭，无法下单"}
-                hwnd = self.main_win.handle
+                try:
+                    hwnd = self.main_win.handle
+                except Exception:
+                    return {"status": "failed", "msg": "xiadan 重连后仍拿不到窗口句柄，请确认同花顺已登录"}
 
             activated = False
             user32 = ctypes.windll.user32

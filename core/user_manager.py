@@ -729,9 +729,29 @@ def add_trade_signal(user_id: int, code: str, name: str, action: str,
         return cur.lastrowid
 
 
+# 实盘信号新鲜度（秒）：超过此时长仍未被下发执行的 pending 信号直接作废。
+# 防止两种危险：① 隔夜堆积的老信号在次日开闸瞬间被一次性倾倒下单；
+# ② 总闸关闭期间扫描器不停生成的 pending 堆积，开闸后全部涌出。
+# 打板/盘中信号本就要求秒级执行，超 10 分钟的单价格/行情已变，作废最安全。
+_SIGNAL_FRESH_SECONDS = 600
+
+
 def get_pending_signals(user_id: int) -> list:
-    """拉取用户所有处于 pending 状态的实盘信号，并原子性地标记为 sent 防止重复拉取"""
+    """拉取用户处于 pending 状态的实盘信号，并原子性地标记为 sent 防止重复拉取。
+    ★ 新鲜度护栏：只下发 created_at 在最近 _SIGNAL_FRESH_SECONDS 秒内的信号；
+      超时的 pending 先就地作废(cancelled)，绝不下单、也不再堆积。"""
     with _lock, _conn() as c:
+        mins = _SIGNAL_FRESH_SECONDS // 60
+        # 1) 过期 pending 直接作废（created_at 与 now 同为 localtime，可直接相减）
+        c.execute(
+            f"UPDATE trade_signals SET status='cancelled', "
+            f"msg='信号过期未执行(超{mins}分钟)，已自动作废', "
+            f"updated_at=datetime('now','localtime') "
+            f"WHERE user_id=? AND status='pending' "
+            f"AND (julianday('now','localtime') - julianday(created_at)) * 86400.0 > ?",
+            (user_id, float(_SIGNAL_FRESH_SECONDS)),
+        )
+        # 2) 取剩下的新鲜 pending 下发
         rows = c.execute(
             "SELECT * FROM trade_signals WHERE user_id=? AND status='pending' ORDER BY id",
             (user_id,),
@@ -745,7 +765,7 @@ def get_pending_signals(user_id: int) -> list:
                 f"WHERE id IN ({placeholders})",
                 ids
             )
-            c.commit()
+        c.commit()
         return res
 
 

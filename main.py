@@ -720,12 +720,63 @@ def set_auto_execute():
 # 本地同花顺交易桥接 API (Cloud-Local Bridge)
 # ══════════════════════════════════════════════════════════════
 
+# ── 实盘下单总闸（前端可一键开关；关闭时不给桥接器任何信号 = 彻底停下单）──
+_BRIDGE_FLAGS_FILE = BASE_DIR / "data" / "bridge_flags.json"
+_live_trade_enabled = {}   # uid -> bool（缺省视为 True=开）
+
+
+def _load_bridge_flags():
+    global _live_trade_enabled
+    try:
+        if _BRIDGE_FLAGS_FILE.exists():
+            _live_trade_enabled = {int(k): bool(v) for k, v in
+                                   json.loads(_BRIDGE_FLAGS_FILE.read_text(encoding="utf-8")).items()}
+    except Exception as e:
+        logger.warning(f"[bridge闸门] 加载失败: {e}")
+
+
+def _save_bridge_flags():
+    try:
+        _BRIDGE_FLAGS_FILE.write_text(
+            json.dumps({str(k): v for k, v in _live_trade_enabled.items()}), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"[bridge闸门] 保存失败: {e}")
+
+
+def _live_enabled(uid) -> bool:
+    return _live_trade_enabled.get(uid, True)
+
+
+_load_bridge_flags()
+
+
 @app.route("/api/bridge/signals", methods=["GET"])
 @require_auth
 def bridge_get_signals():
     uid = session["user_id"]
+    # ★ 实盘下单总闸：关闭时不给桥接器任何信号（桥接器照常轮询但拿不到单 → 不下单）
+    if not _live_enabled(uid):
+        return jsonify({"ok": True, "signals": [], "live_disabled": True})
     signals = um.get_pending_signals(uid)
     return jsonify({"ok": True, "signals": signals})
+
+
+@app.route("/api/bridge/live_enabled", methods=["GET"])
+@require_auth
+def get_live_enabled():
+    return jsonify({"ok": True, "enabled": _live_enabled(session["user_id"])})
+
+
+@app.route("/api/bridge/live_enabled", methods=["POST"])
+@require_auth
+def set_live_enabled():
+    uid = session["user_id"]
+    en  = bool((request.json or {}).get("enabled", True))
+    _live_trade_enabled[uid] = en
+    _save_bridge_flags()
+    _add_log(uid, ("✅ 已开启实盘下单（桥接器恢复执行信号）" if en
+                   else "🛑 已关闭实盘下单（桥接器不再收到任何信号，不会下单到同花顺）"), "WARN")
+    return jsonify({"ok": True, "enabled": en})
 
 
 @app.route("/api/bridge/today_orders", methods=["GET"])

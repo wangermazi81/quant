@@ -80,6 +80,9 @@ data/market_universe.json
 # ── 打板持仓峰值（运行态，每环境各自维护，不进 git）──────
 data/daban_peaks.json
 
+# ── 实盘下单总闸开关状态（运行态，每环境各自维护，不进 git）──
+data/bridge_flags.json
+
 # ── 内置策略源码 + 模板（自研成果，绝不进 git/gitee，防泄露被复用）──
 # 云端/本地用 scp 部署，不依赖 git。用户自建策略也在此目录、同样不进 git。
 strategies/*.py

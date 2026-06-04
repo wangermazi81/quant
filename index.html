@@ -528,6 +528,8 @@ tr:hover td{background:var(--card)}
     <span id="tradeModeBadge" class="badge dry" style="cursor:pointer;user-select:none" onclick="toggleTradeMode()" title="点击切换实盘/模拟（实盘需二次确认）">🛡️ 模拟</span>
     <!-- 查 xiadan 当日委托真实成交状态 -->
     <span id="todayOrdersBtn" class="badge" style="cursor:pointer;user-select:none;background:rgba(14,165,233,.18);color:#0ea5e9;border:1px solid #0ea5e9" onclick="openTodayOrders()" title="桥接器按 F4 截图 xiadan 查询页 + 本地 OCR：看可用资金 / 持仓 / 当日委托真实状态">📊 查实盘账户</span>
+    <!-- 实盘下单总闸：点击一键开/关。关闭=桥接器收不到任何信号、彻底不下单到同花顺（选股/模拟/监控照常）-->
+    <span id="liveTradeBadge" class="badge" style="cursor:pointer;user-select:none" onclick="toggleLiveTrade()" title="实盘下单总闸：关闭后桥接器收不到任何信号、彻底不下单到同花顺（其他功能照常）">🔌 实盘下单</span>
     <!-- 实盘自动化状态标签：一眼看现在下单/撤单是自动还是手动，点击打开设置 -->
     <span id="autoModeBadge" class="badge" style="display:none;cursor:pointer;user-select:none;border:1px solid" onclick="openTodayOrders()" title="实盘自动化设置（点击调整）">⚙️</span>
     <span class="pill">扫描 <b id="nScanned">0</b></span>
@@ -5302,8 +5304,44 @@ async function checkAuthState(){
     hideAuthOverlay()
     updateNavUser(r)
     loadAnnouncements()   // 登录后拉取并弹出未读公告
+    refreshLiveTradeBadge()   // 同步实盘下单总闸状态
   } else {
     showAuthOverlay()
+  }
+}
+
+// ── 实盘下单总闸：一键开/关。关闭=桥接器收不到信号、不下单到同花顺 ──────────
+async function refreshLiveTradeBadge(){
+  try{
+    const r = await api('/bridge/live_enabled')
+    const el = document.getElementById('liveTradeBadge')
+    if(!el || !r) return
+    if(r.enabled){
+      el.textContent='🔌 实盘下单:开'
+      el.style.cssText='cursor:pointer;user-select:none;background:rgba(34,197,94,.18);color:#22c55e;border:1px solid #22c55e'
+    }else{
+      el.textContent='🛑 实盘下单:已关'
+      el.style.cssText='cursor:pointer;user-select:none;background:rgba(239,68,68,.18);color:#ef4444;border:1px solid #ef4444'
+    }
+  }catch(e){}
+}
+
+async function toggleLiveTrade(){
+  // 读不到状态时默认按「当前关闭」处理 → 点击=尝试开启=触发强确认，最安全
+  let cur=false
+  try{ const r0=await api('/bridge/live_enabled'); cur = !!(r0 && r0.enabled) }catch(e){}
+  const next = !cur
+  if(next){
+    // 开启 = 危险方向（真金白银下单），必须强确认；防误点意外开闸
+    if(!confirm('⚠️ 确定要【开启实盘下单】吗？\n\n开启后桥接器会把选股/策略信号真实下单到同花顺、动用真实资金！\n请先确认：同花顺已登录、下单窗口未被收成迷你条。\n\n确定开启？')) return
+  }
+  // 关闭 = 安全方向，一键即停，无需确认
+  const r = await api('/bridge/live_enabled','POST',{enabled:next})
+  if(r && r.ok){
+    refreshLiveTradeBadge()
+    if(typeof toast==='function') toast(next?'⚠️ 已开启实盘下单':'🛑 已关闭实盘下单（桥接器不再下单）')
+  }else{
+    if(typeof toast==='function') toast('操作失败，请重试')
   }
 }
 
