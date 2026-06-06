@@ -90,3 +90,8 @@ data/strategy_templates.json
 
 # ── 桥接器配置（含云端密码，绝对不能进 git）─────────
 tools/bridge_config.json
+
+# 数据库恢复/迁移前的临时备份（含用户数据，绝不进 git）
+data/*.before_*
+data/*.db.*
+data/users_server.db

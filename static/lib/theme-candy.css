@@ -1,0 +1,250 @@
+/* ════════════════════════════════════════════════════════════════
+   见微 Alpha · 糖果量化主题 (Candy Quant Theme)
+   —— 浅色/暖奶油 + 樱花粉 + 薄荷绿 + 暖棕，圆润卡片、柔和阴影。
+   作为最后加载的样式表，覆盖原深色主题（不改动抽取出的 app-*.css）。
+   A 股语义保色系：涨=红(粉红)、跌=绿(薄荷)。/legacy 仍为原深色。
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── 1. 设计 Token 重定义（绝大多数组件经此自动换肤）── */
+:root{
+  --bg:#FCFAF7;          /* 暖奶油背景 */
+  --panel:#FFFFFF;       /* 白色主表面：导航/卡片/侧栏 */
+  --card:#FAF6F0;        /* 次表面 / hover 暖白 */
+  --inp:#FAF6F0;         /* 输入框暖白 */
+  --b1:#EADCC9;          /* 暖茶色边框 */
+  --b2:#F0E5D7;          /* 更浅暖边框 */
+  --t1:#2D2A26;          /* 主文字（暖近黑）*/
+  --t2:#6F6155;          /* 次文字 */
+  --t3:#9C8B7A;          /* 弱文字 */
+  --t4:#B6A795;          /* 最弱文字 */
+  --blue:#FF7B93;        /* 主强调色 → 樱花粉（原蓝色位）*/
+  --green:#52B788;       /* 薄荷绿 */
+  --red:#FF6B81;         /* 糖果红（A 股涨/止损按钮）*/
+  --purple:#B580E8;      /* 糖果薰衣草 */
+  --orange:#E8964A;      /* 糖果橙 */
+  --gl:#52B788;          /* 跌/卖出-绿（薄荷）*/
+  --rl:#F4566E;          /* 涨/买入-红（樱花红）*/
+  --bl:#5B8DEF;          /* 信息-柔蓝 */
+  --ol:#D6822E;          /* 橙-文字（浅底加深）*/
+  --yl:#C28A1C;          /* 琥珀-文字（浅底加深以保对比）*/
+  --chart-bg:#ffffff;
+  /* 糖果专用辅助色 */
+  --candy-pink-bg:#FFF0F3; --candy-pink-bd:#FFCAD2;
+  --candy-mint-bg:#EAF8F2; --candy-mint-bd:#A7E2C7;
+  --candy-blue-bg:#EAF1FE; --candy-blue-bd:#C5D8F7;
+  --candy-amber-bg:#FBF3DD; --candy-amber-bd:#EAD9A8;
+  --ide-bg:#2D2A26; --ide-bg2:#1E1C1A; --ide-fg:#F5EDE4;
+}
+
+/* ── 2. 全局观感：字体/圆角/滚动条/选区 ── */
+body{font-family:'Noto Sans SC','Segoe UI',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+::selection{background:#FFE0E6;color:#2D2A26}
+*::-webkit-scrollbar{width:9px;height:9px}
+*::-webkit-scrollbar-thumb{background:#E3D3BE;border-radius:6px;border:2px solid #FCFAF7}
+*::-webkit-scrollbar-thumb:hover{background:#D8C3A5}
+*::-webkit-scrollbar-track{background:transparent}
+
+/* ── 3. 导航 ── */
+.nav{background:rgba(255,255,255,.92);backdrop-filter:blur(8px);border-bottom:2px solid var(--b1);box-shadow:0 2px 12px rgba(180,150,110,.06);height:54px}
+.nav-brand{color:var(--t1);font-weight:800}
+.ntab{font-weight:700}
+.ntab.active{border-bottom-color:var(--blue);color:var(--blue)}
+.pill{background:var(--card);border:1px solid var(--b1);color:var(--t2);font-weight:600}
+.pill b{color:var(--t1)}
+.badge{font-weight:800;border-radius:20px}
+
+/* ── 4. 卡片 / 面板：圆润 + 柔阴影 + 暖边框 ── */
+.card{background:var(--panel);border:2px solid var(--b1);border-radius:18px;box-shadow:0 2px 14px rgba(180,150,110,.07)}
+.card-hd{border-bottom:1px solid var(--b1)}
+.score-dashboard{background:var(--panel);border:2px solid var(--b1);border-radius:18px}
+.sl,.sr,.se-hd,.se-bar{background:var(--panel)}
+.sl{border-right:2px solid var(--b1)}
+.sr{border-left:2px solid var(--b1)}
+
+/* ── 5. 按钮：圆润 + 浅色 hover ── */
+.btn{border-radius:10px;font-weight:700}
+.btn:hover{filter:brightness(.96)}
+.btn-green{background:var(--green)}.btn-red{background:var(--red)}
+.btn-blue{background:var(--blue)}.btn-purple{background:var(--purple)}
+.btn-orange{background:var(--candy-amber-bg);color:var(--ol);border:1px solid var(--candy-amber-bd)}
+.btn-gray{background:var(--card);color:var(--t1);border:1px solid var(--b1)}
+.inp,.fi,.fn-input,.cfg-ta,.rename-box input,.auth-inp{border-radius:10px}
+
+/* ── 6. 语义状态块覆盖（深色 → 糖果浅色，保留涨红跌绿）── */
+/* 6a 成功/牛/涨/催化/已完成（薄荷绿系）*/
+.badge.run,.s-done,.ast-done,.mkt-bull,.bull-box,.cat-tag,.mc.pos-c,.ai-sum-buy,.svc-badge.ok{
+  background:var(--candy-mint-bg)!important;color:#368B63;border-color:var(--candy-mint-bd)!important}
+.mc.pos-c{border-top-color:var(--green)!important}
+.tog-wrap input:checked+.tog-sl{background:var(--green);border-color:var(--green)}
+
+/* 6b 失败/熊/跌/风险/止损（樱花红系）*/
+.badge.stop,.mkt-bear,.bear-box,.risk-tag,.mc.neg-c,.ai-sum-sell,.points-warn,.fb-toast.err{
+  background:var(--candy-pink-bg)!important;color:#D6456A!important;border-color:var(--candy-pink-bd)!important}
+.mc.neg-c{border-top-color:var(--rl)!important}
+
+/* 6c 信息/中性/激活（柔蓝/腮红系）*/
+.badge.dry,.mkt-neutral,.mc.neu-c,.ast-run{background:var(--candy-blue-bg)!important;color:#3D6FD0!important;border-color:var(--candy-blue-bd)!important}
+.mc.neu-c{border-top-color:var(--bl)!important}
+.si.active{background:var(--candy-pink-bg);border-left-color:var(--blue)}
+.si-bi{background:var(--candy-blue-bg);color:#3D6FD0}
+.fi-item.active{background:#F6EEFA;border-left-color:var(--purple)}
+.prov-btn.active{background:var(--candy-pink-bg);border-color:var(--blue);color:#D6456A}
+.tpl-card:hover,.tpl-card.active{background:var(--candy-pink-bg);border-color:var(--blue)}
+
+/* 6d 警告/观望/减仓（琥珀奶油系）*/
+.s-pending,.mc.warn-c,.warn-bar,.ai-sum-watch,.ai-sum-reduce,.svc-badge.warn{
+  background:var(--candy-amber-bg)!important;color:#A9791C!important;border-color:var(--candy-amber-bd)!important}
+.mc.warn-c{border-top-color:var(--yl)!important}
+.warn-bar{color:#A9791C}
+
+/* 6e 指标卡数值色（浅底加深以保对比）*/
+.pos,.td-win{color:#368B63}
+.neg,.td-loss{color:#D6456A}
+.neu{color:#3D6FD0}
+.warn{color:#A9791C}
+.td-buy{color:#3D6FD0}.td-sell{color:#C28A1C}
+
+/* 板块标签（蓝/紫 rgba → 浅色）*/
+.sector-tag{background:var(--candy-blue-bg);border-color:var(--candy-blue-bd);color:#3D6FD0}
+.sector-ind{background:#F6EEFA;border-color:#E4CFF5;color:#9B59C7}
+.srch-badge.tavily{background:#F4EEFC;color:#9B59C7}
+.srch-badge.serpapi{background:var(--candy-mint-bg);color:#368B63}
+.svc-badge.off{border-color:var(--b1);color:var(--t4)}
+.mr-idx-chg.up,.mr-sector-tag.up{background:rgba(244,86,110,.12);color:#D6456A}
+.mr-idx-chg.dn,.mr-sector-tag.dn{background:rgba(82,183,136,.16);color:#368B63}
+
+/* ── 7. 代码编辑器：保留深色 IDE 面板（呼应样稿）── */
+.se{background:var(--ide-bg);border-radius:0 0 18px 18px}
+.se-hd{background:var(--ide-bg2);border-bottom:1px solid #3a3631}
+.se-bar{background:var(--ide-bg2);border-top:1px solid #3a3631;color:#A89A88}
+.se-hd .fn-input{background:#1E1C1A;border-color:#3a3631;color:var(--ide-fg)}
+
+/* ── 8. 图表 / 成交表 / 板块卡：深色 → 白卡 ── */
+.chart-full,.chart-card,.monthly-card,.trades-card,.sector-card{
+  background:#fff;border:2px solid var(--b1);box-shadow:0 2px 14px rgba(180,150,110,.08)}
+.tr-tbl th{background:var(--card);color:var(--t3)}
+.tr-tbl td{border-bottom:1px solid var(--b2)}
+.tr-tbl tr:hover td{background:var(--card)}
+
+/* ── 9. K线弹窗：浅色 ── */
+.kl-box{background:#fff;border:2px solid var(--b1);box-shadow:0 20px 60px rgba(120,90,60,.25)}
+.kl-body{background:#FCFAF7}
+
+/* ── 10. 登录/注册框：糖果浅色（首屏第一印象）── */
+.auth-box{background:#fff;border:2px solid var(--b1);border-radius:20px;box-shadow:0 20px 60px rgba(120,90,60,.18)}
+.auth-title{color:var(--t1)}
+.auth-sub{color:var(--t3)}
+.auth-tabs{border-bottom:1px solid var(--b1)}
+.auth-tab{color:var(--t3)}
+.auth-tab.active{color:var(--blue);border-bottom-color:var(--blue)}
+.auth-label{color:var(--t3)}
+.auth-inp{background:var(--inp);border:1px solid var(--b1);color:var(--t1);border-radius:10px}
+.auth-inp:focus{border-color:var(--blue);background:#fff}
+.pwd-eye{color:var(--t4)}.pwd-eye:hover{color:var(--t2)}
+.auth-btn{background:var(--blue);border-radius:10px}
+.auth-btn:hover{background:#ff647f;filter:none}
+.auth-msg.ok{color:#368B63}.auth-msg.err{color:#D6456A}
+.auth-hint{color:var(--t4)}
+
+/* ── 11. 杂项收尾 ── */
+.points-warn{box-shadow:0 6px 20px rgba(214,69,106,.18)}
+.fb-fab{box-shadow:0 8px 24px rgba(255,123,147,.4)}
+.fb-toast{background:var(--candy-mint-bg);color:#368B63;border:1px solid var(--candy-mint-bd)}
+.score-circle{box-shadow:inset 0 0 0 1px rgba(234,220,201,.6)}
+.checklist li::before{color:var(--blue)}
+.dim-bar-item,.price-card{background:var(--card)}
+.mkt-banner{background:#fff}
+/* 链接/强调统一到糖果粉 */
+a{color:var(--blue)}
+
+/* ── 12. 牛熊吉祥物招牌横幅（监控页顶部）── */
+.mas-banner{display:flex;align-items:center;gap:16px;margin:10px 14px 0;padding:12px 18px;
+  border:2px solid var(--b1);border-radius:22px;background:#fff;box-shadow:0 3px 16px rgba(180,150,110,.10);
+  flex-shrink:0;transition:border-color .4s,background .4s}
+.mas-banner.mas-bull{background:#FFF8F8;border-color:#FFD2D8}
+.mas-banner.mas-neutral{background:#FFFBF1;border-color:#EFE0BF}
+.mas-banner.mas-bear{background:#FCFAF2;border-color:#E5D6BE}
+.mas-avatar{width:74px;height:74px;flex-shrink:0;filter:drop-shadow(0 4px 8px rgba(120,90,60,.18));transition:transform .3s}
+.mas-banner:hover .mas-avatar{transform:scale(1.07)}
+.mas-body{flex:1;min-width:0}
+.mas-tags{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mas-pill{font-size:11px;font-weight:800;padding:3px 12px;border-radius:20px;border:1px solid}
+.mas-bull .mas-pill{background:var(--candy-pink-bg);color:#D6456A;border-color:var(--candy-pink-bd)}
+.mas-neutral .mas-pill{background:var(--candy-amber-bg);color:#A9791C;border-color:var(--candy-amber-bd)}
+.mas-bear .mas-pill{background:#FAF0E6;color:#9A6B3C;border-color:#E5D6BE}
+.mas-sub{font-size:11px;color:var(--t3);font-weight:600}
+.mas-sub b{color:var(--t1)}
+.mas-msg{font-size:13px;color:var(--t2);font-weight:600;line-height:1.6;margin-top:6px;font-style:italic}
+@media(max-width:680px){.mas-banner{flex-direction:column;text-align:center}}
+
+/* ── 13. Stage II 打磨（用户反馈）── */
+/* 品牌名常亮：覆盖 rb-effects 的白蓝渐变透明文字 + shine 动画（浅底上原本几乎不可见）*/
+.nav .nav-brand{background:none!important;-webkit-text-fill-color:#2D2A26!important;color:#2D2A26!important;animation:none!important;letter-spacing:.5px;font-weight:800}
+/* 代码编辑器：dracula 冷紫底 → 暖深色，与糖果调性统一 */
+.cm-s-dracula.CodeMirror{background:#2D2A26!important;color:#F3EBDD}
+.cm-s-dracula .CodeMirror-gutters{background:#252320!important;border-right:1px solid #3a3631}
+.cm-s-dracula .CodeMirror-linenumber{color:#8A7E6E}
+.cm-s-dracula .CodeMirror-cursor{border-left:1px solid #F3EBDD}
+.cm-s-dracula .CodeMirror-activeline-background{background:rgba(255,255,255,.04)}
+.cm-s-dracula div.CodeMirror-selected{background:rgba(255,123,147,.18)}
+.se{background:#2D2A26}
+/* 吉祥物横幅：把行情板块嵌到熊右边空位 */
+.mas-body{flex:0 1 auto;min-width:0;max-width:44%}
+.mas-banner > .mkt-banner{flex:1 1 auto;border-bottom:none!important;background:transparent!important;padding:0!important;margin:0!important;min-width:0}
+@media(max-width:900px){.mas-body{max-width:100%}.mas-banner{flex-wrap:wrap}.mas-banner > .mkt-banner{flex-basis:100%}}
+
+/* ── 14. 打磨 v2：视觉降噪 + 外圆内方 + 精致化（用户深度诊断）── */
+/* 涨跌色降饱和：蜜桃珊瑚红 / 鼠尾草绿，过滤高饱和噪音（涨红跌绿语义不变）*/
+:root{ --rl:#E0536C; --gl:#4A7C59; --red:#E0536C; --green:#5B9E78; }
+.pos,.td-win{color:#4A7C59}
+.neg,.td-loss{color:#E0536C}
+.ai-act-buy{color:#4A7C59}.ai-act-sell{color:#E0536C}
+.td-buy{color:#5A86C9}.td-sell{color:#BD8A2E}
+.mr-idx-chg.up,.mr-sector-tag.up{background:rgba(224,83,108,.10);color:#E0536C}
+.mr-idx-chg.dn,.mr-sector-tag.dn{background:rgba(74,124,89,.14);color:#4A7C59}
+.badge.stop,.points-warn{color:#C24A60!important}
+.badge.run{color:#3E7A57!important}
+
+/* 外圆内方：卡片降到 16px 圆角 + 1px 轻边框 + 微妙阴影 + 更舒展内距 */
+.card,.score-dashboard{border:1px solid var(--b1)!important;border-radius:16px;box-shadow:0 8px 30px rgba(120,90,60,.045)}
+.chart-full,.chart-card,.monthly-card,.trades-card,.sector-card,.auth-box,.kl-box{border-width:1px!important}
+.mkt-banner{border-width:1px}
+.card-hd{padding:12px 16px}
+th,td{padding:9px 14px}
+.pos-row{padding:8px 14px}.sc-row{padding:9px 15px}.q-item{padding:11px 15px}
+
+/* 吉祥物精致化：放大 + 立体投影 + 悬停微缩放（去“扁平/老鼠感”）*/
+.mas-banner{border:1px solid var(--b1)!important;border-radius:20px;box-shadow:0 8px 30px rgba(120,90,60,.05)}
+.mas-banner.mas-bull{border-color:#FAD4DA!important}.mas-banner.mas-neutral{border-color:#EFE0BF!important}.mas-banner.mas-bear{border-color:#E5D6BE!important}
+.mas-avatar{width:90px;height:90px;filter:drop-shadow(0 6px 10px rgba(120,80,50,.22));transition:transform .3s}
+.mas-banner:hover .mas-avatar{transform:scale(1.06)}
+
+/* 暗色编辑器柔化“视觉断崖”：暖巧克力 + 底部圆角 */
+.se{border-radius:0 0 14px 14px}
+
+/* 运行日志放入柔和深色终端容器，过滤刺眼红字（用户建议）*/
+#logBody{background:#211F1C;padding:4px 0}
+#logBody .log-row{border-bottom:1px solid rgba(255,255,255,.045)}
+#logBody .log-row:hover{background:rgba(255,255,255,.03)}
+#logBody .lt{color:#8A7E6E}
+#logBody .lm{color:#D8CFC2}
+#logBody .log-buy .lm{color:#7FC8A0}
+#logBody .log-warn .lm{color:#E3C07A}
+#logBody .log-error .lm{color:#F0938C}
+#logBody .empty{color:#6b6258}
+
+/* 选股结果「已入队」按钮：绿 → 柔蓝（与持仓亏损绿区分；亏损绿保持不变）*/
+.btn-queued{background:#EAF1FE!important;color:#4E78C4!important;border:1px solid #C5D8F7!important}
+.btn-queued:hover{filter:none!important}
+
+/* AI 写策略/写因子弹窗：模板卡/标签/分类按钮 蓝 → 糖果 */
+.tpl-card:hover,.tpl-card.active{background:var(--candy-pink-bg)!important;border-color:var(--blue)!important;box-shadow:0 0 0 2px rgba(255,123,147,.18)!important}
+.tpl-card .tpl-tag{color:#8B53C9!important;background:#F2EAFB!important}
+.tpl-cat-btn{border-color:var(--b1);color:var(--t3)}
+.tpl-cat-btn.active,.tpl-cat-btn:hover{border-color:var(--blue)!important;color:#D6456A!important;background:var(--candy-pink-bg)!important}
+
+/* 弹窗遮罩：82% 死黑 → 柔和暖色半透明 + 毛玻璃（AI写策略/K线等弹窗去掉刺眼黑底）*/
+.kl-overlay{background:rgba(58,44,34,.40)!important;backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}
+/* AI 写策略弹窗盒子确保浅色（覆盖原 #161b22 深色）*/
+#aiGenOverlay .kl-box{background:#fff!important}
+.kl-hd{background:transparent}

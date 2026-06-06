@@ -96,6 +96,9 @@ except ImportError:
 
 # ── 初始化数据库 ──────────────────────────────────────────────
 um.init_db()
+# 问题反馈表（与 users.db 同库，幂等建表）
+import feedback_manager as fbm
+fbm.init_db()
 # 迁移必须在 pb.init_paper_db() 之前，先给旧表加 user_id 列
 try:
     import db_migration as _dbm
@@ -133,6 +136,7 @@ from web.data import bp as _data_bp
 from web.ai import bp as _ai_bp
 from web.search import bp as _search_bp
 from web.notify import bp as _notify_bp
+from web.feedback import bp as _feedback_bp
 app.register_blueprint(_auth_bp)
 app.register_blueprint(_user_bp)
 app.register_blueprint(_admin_bp)
@@ -142,6 +146,7 @@ app.register_blueprint(_data_bp)
 app.register_blueprint(_ai_bp)
 app.register_blueprint(_search_bp)
 app.register_blueprint(_notify_bp)
+app.register_blueprint(_feedback_bp)
 
 
 

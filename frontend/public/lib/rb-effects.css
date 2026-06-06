@@ -1,0 +1,275 @@
+/* ════════════════════════════════════════════════════════════════
+   rb-effects.css — 受 react-bits 启发的纯 CSS 视觉增强层
+   ────────────────────────────────────────────────────────────────
+   设计原则：
+   1. 纯叠加：直接 link 即可生效，原项目 CSS/HTML 不需要任何修改
+   2. 高优先级选择器：用更具体的选择器覆盖原样式（不用 !important）
+   3. prefers-reduced-motion 友好：尊重用户的减弱动画偏好
+   4. 性能：仅用 transform / opacity / filter，不触发 layout 重排
+   ════════════════════════════════════════════════════════════════ */
+
+
+/* ──────────────────────────────────────────────────────────────
+   1. Aurora 渐变背景层 (react-bits / Aurora Background)
+   挂在 body::before 上，z-index:-1，不影响内容点击
+   ────────────────────────────────────────────────────────────── */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 0%,   rgba(31, 111, 235, 0.10), transparent 60%),
+    radial-gradient(ellipse 70% 50% at 80% 0%,   rgba(130, 80, 223, 0.08), transparent 60%),
+    radial-gradient(ellipse 90% 60% at 50% 100%, rgba(35, 134, 54,  0.06), transparent 60%);
+  animation: rb-aurora-drift 22s ease-in-out infinite alternate;
+}
+
+@keyframes rb-aurora-drift {
+  0%   { transform: translate3d(0,    0,    0) scale(1);   filter: hue-rotate(0deg); }
+  50%  { transform: translate3d(-2%, 1.5%, 0) scale(1.04); filter: hue-rotate(-8deg); }
+  100% { transform: translate3d(2%,  -1.5%, 0) scale(1.02); filter: hue-rotate(6deg); }
+}
+
+
+/* ──────────────────────────────────────────────────────────────
+   2. Shiny / Gradient Text 品牌名
+   覆盖 .nav-brand
+   ────────────────────────────────────────────────────────────── */
+.nav .nav-brand {
+  background: linear-gradient(110deg, #ffffff 35%, #79c0ff 50%, #ffffff 65%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+          background-clip: text;
+  -webkit-text-fill-color: transparent;
+          color: transparent;
+  animation: rb-shine 6s linear infinite;
+  letter-spacing: 0.5px;
+}
+
+@keyframes rb-shine {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+
+/* ──────────────────────────────────────────────────────────────
+   3. 运行状态徽章脉冲 (react-bits / Status Pulse)
+   .badge.run 上加一圈呼吸光晕
+   ────────────────────────────────────────────────────────────── */
+.badge.run {
+  position: relative;
+  box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.7);
+  animation: rb-pulse-green 2.4s ease-in-out infinite;
+}
+.badge.run::before {
+  content: "";
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #3fb950;
+  box-shadow: 0 0 6px #3fb950;
+  vertical-align: middle;
+}
+
+@keyframes rb-pulse-green {
+  0%   { box-shadow: 0 0 0 0    rgba(63, 185, 80, 0.55); }
+  70%  { box-shadow: 0 0 0 10px rgba(63, 185, 80, 0);     }
+  100% { box-shadow: 0 0 0 0    rgba(63, 185, 80, 0);     }
+}
+
+/* 停止徽章不闪 — 但是加一个稳态的红色点 */
+.badge.stop::before {
+  content: "";
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #f85149;
+  vertical-align: middle;
+}
+
+
+/* ──────────────────────────────────────────────────────────────
+   4. Card Shimmer on Hover (react-bits / Shimmer)
+   ────────────────────────────────────────────────────────────── */
+.card {
+  position: relative;
+  transition: border-color 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
+}
+.card:hover {
+  border-color: #3a4150;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
+}
+.card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    transparent 30%,
+    rgba(121, 192, 255, 0.06) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  background-position: 200% 0;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.card:hover::after {
+  opacity: 1;
+  animation: rb-card-shimmer 1.4s ease-in-out;
+}
+@keyframes rb-card-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+
+/* ──────────────────────────────────────────────────────────────
+   5. Button Lift + Glow (react-bits / Glowy Button)
+   ────────────────────────────────────────────────────────────── */
+.btn {
+  position: relative;
+  transition: transform 0.15s ease, box-shadow 0.18s ease, filter 0.15s ease;
+  overflow: hidden;
+}
+.btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+.btn-green:hover:not(:disabled)  { box-shadow: 0 4px 16px rgba(35,134, 54, 0.4); }
+.btn-red:hover:not(:disabled)    { box-shadow: 0 4px 16px rgba(218,54, 51, 0.4); }
+.btn-blue:hover:not(:disabled)   { box-shadow: 0 4px 16px rgba(31,111,235, 0.4); }
+.btn-purple:hover:not(:disabled) { box-shadow: 0 4px 16px rgba(130,80,223, 0.4); }
+.btn-orange:hover:not(:disabled) { box-shadow: 0 4px 16px rgba(189, 86, 29, 0.4); }
+.btn:active:not(:disabled) {
+  transform: translateY(0);
+  filter: brightness(0.95);
+}
+
+/* 波纹由 JS 注入，css 提供动画 */
+.rb-ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+  transform: scale(0);
+  animation: rb-ripple-pop 0.55s ease-out forwards;
+  pointer-events: none;
+}
+@keyframes rb-ripple-pop {
+  to { transform: scale(4); opacity: 0; }
+}
+
+
+/* ──────────────────────────────────────────────────────────────
+   6. 平滑 Tab 切换 (react-bits / Animated Tabs)
+   底部高亮线变成滑动指示
+   ────────────────────────────────────────────────────────────── */
+.nav .ntab {
+  position: relative;
+  transition: color 0.2s ease;
+}
+.nav .ntab::after {
+  content: "";
+  position: absolute;
+  left: 16px; right: 16px; bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #1f6feb, #79c0ff);
+  border-radius: 2px 2px 0 0;
+  transform: scaleX(0);
+  transform-origin: center;
+  transition: transform 0.25s ease;
+}
+.nav .ntab.active::after { transform: scaleX(1); }
+.nav .ntab:not(.active):hover::after { transform: scaleX(0.5); opacity: 0.5; }
+
+/* 覆盖原下边框（避免双线） */
+.nav .ntab.active { border-bottom-color: transparent; }
+
+
+/* ──────────────────────────────────────────────────────────────
+   7. 美化滚动条
+   ────────────────────────────────────────────────────────────── */
+*::-webkit-scrollbar         { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track   { background: #0d1117; }
+*::-webkit-scrollbar-thumb   {
+  background: linear-gradient(180deg, #30363d, #21262d);
+  border-radius: 5px;
+  border: 2px solid #0d1117;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #484f58, #30363d);
+}
+
+
+/* ──────────────────────────────────────────────────────────────
+   8. 选区颜色 + 焦点环
+   ────────────────────────────────────────────────────────────── */
+::selection {
+  background: rgba(31, 111, 235, 0.35);
+  color: #fff;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(31, 111, 235, 0.55);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+
+/* ──────────────────────────────────────────────────────────────
+   9. 数字跳动效果（盈亏变化时由 JS 触发，加 class 即可）
+   ────────────────────────────────────────────────────────────── */
+.rb-flash-up {
+  animation: rb-flash-up 0.65s ease;
+}
+.rb-flash-down {
+  animation: rb-flash-down 0.65s ease;
+}
+@keyframes rb-flash-up {
+  0%   { background-color: rgba(248, 81, 73, 0.30); }
+  100% { background-color: transparent; }
+}
+@keyframes rb-flash-down {
+  0%   { background-color: rgba(63, 185, 80, 0.30); }
+  100% { background-color: transparent; }
+}
+/* 注：A 股惯例红涨绿跌 — 上涨用红 flash，下跌用绿 flash */
+
+
+/* ──────────────────────────────────────────────────────────────
+   10. 表格行渐入 + 鼠标 hover 微抬
+   ────────────────────────────────────────────────────────────── */
+table tbody tr {
+  transition: background 0.18s ease;
+}
+
+/* 登录卡片（如有 .auth-logo）增加 floating 效果 */
+.auth-logo {
+  animation: rb-float 4s ease-in-out infinite;
+}
+@keyframes rb-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-6px); }
+}
+
+
+/* ──────────────────────────────────────────────────────────────
+   11. 减弱动画偏好支持
+   ────────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  body::before { animation: none; }
+  .badge.run   { animation: none; }
+}

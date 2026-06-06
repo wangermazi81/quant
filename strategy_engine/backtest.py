@@ -463,12 +463,20 @@ class Cerebro:
                 continue
             sub = df[df["date"] <= day]
             if not sub.empty:
-                last = sub.iloc[-1]
+                last  = sub.iloc[-1]
+                close = float(last["close"])
+                # ★ 修复：K线 DataFrame 无 change_pct 列，旧代码 last.get("change_pct",0)
+                #   恒为 0 → 任何按「涨跌幅」过滤的策略(如 MACD动量 chg>=1%)信号恒 0、
+                #   回测永远 0 交易。改用前后两根收盘价实算涨跌幅，并补昨收/量比对齐实盘 quote。
+                prev_close = float(sub.iloc[-2]["close"]) if len(sub) >= 2 else close
+                chg = round((close - prev_close) / prev_close * 100, 2) if prev_close else 0.0
                 rows.append({
                     "代码": c, "名称": "",
-                    "最新价": float(last["close"]),
-                    "涨跌幅": float(last.get("change_pct", 0)),
+                    "最新价": close,
+                    "涨跌幅": chg,
+                    "昨收": prev_close,
                     "成交量": float(last["volume"]),
+                    "量比": 1.0,
                     "换手率": 0,
                 })
         return pd.DataFrame(rows) if rows else pd.DataFrame()

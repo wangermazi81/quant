@@ -107,22 +107,43 @@ def _get_market_review() -> dict:
         except Exception:
             pass
 
-    # 2. 市场宽度（全市场快照）
+    # 2. 市场宽度（全市场快照）—— 优先 TDX 全市场缓存（akshare 在云端常被东财
+    #    掐连接，单靠它会让涨跌家数恒空）；TDX 缓存拿不到时再降级 akshare。
     try:
-        import akshare as ak
-        df_spot = ak.stock_zh_a_spot_em()
-        if df_spot is not None and not df_spot.empty and "涨跌幅" in df_spot.columns:
-            chg = _pd.to_numeric(df_spot["涨跌幅"], errors="coerce").dropna()
+        import strategy_manager as _sm
+        _quotes = _sm._get_market_quotes_cached()
+        if _quotes:
+            def _cp(q):
+                try:
+                    return float(q.get("change_pct") or 0)
+                except Exception:
+                    return 0.0
             review["breadth"] = {
-                "up":       int((chg > 0).sum()),
-                "down":     int((chg < 0).sum()),
-                "flat":     int((chg == 0).sum()),
-                "limit_up": int((chg >= 9.9).sum()),
-                "limit_dn": int((chg <= -9.9).sum()),
-                "total":    len(chg),
+                "up":       sum(1 for q in _quotes if _cp(q) > 0),
+                "down":     sum(1 for q in _quotes if _cp(q) < 0),
+                "flat":     sum(1 for q in _quotes if _cp(q) == 0),
+                "limit_up": sum(1 for q in _quotes if _cp(q) >= 9.9),
+                "limit_dn": sum(1 for q in _quotes if _cp(q) <= -9.9),
+                "total":    len(_quotes),
             }
     except Exception:
         pass
+    if not review["breadth"]:
+        try:
+            import akshare as ak
+            df_spot = ak.stock_zh_a_spot_em()
+            if df_spot is not None and not df_spot.empty and "涨跌幅" in df_spot.columns:
+                chg = _pd.to_numeric(df_spot["涨跌幅"], errors="coerce").dropna()
+                review["breadth"] = {
+                    "up":       int((chg > 0).sum()),
+                    "down":     int((chg < 0).sum()),
+                    "flat":     int((chg == 0).sum()),
+                    "limit_up": int((chg >= 9.9).sum()),
+                    "limit_dn": int((chg <= -9.9).sum()),
+                    "total":    len(chg),
+                }
+        except Exception:
+            pass
 
     # 3. 板块轮动（行业板块）
     try:

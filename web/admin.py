@@ -125,3 +125,34 @@ def admin_delete_user(uid):
     if uid == session.get("user_id"):
         return jsonify({"ok": False, "error": "不能删除自己的账号"})
     return jsonify(um.delete_user(uid))
+
+
+# ── 邀请码管理（邀请制注册）──────────────────────────────────
+@bp.route("/api/admin/invite_codes", methods=["GET"])
+@require_admin
+def admin_list_invites():
+    """列出全部邀请码（含生成者、名额、已用、奖励、状态）。"""
+    return jsonify({"ok": True, "codes": um.list_invite_codes()})
+
+
+@bp.route("/api/admin/invite_codes", methods=["POST"])
+@require_admin
+def admin_create_invite():
+    """生成邀请码：max_uses 名额 / reward 每邀请奖励积分 / note 备注 / expires_at 可选过期。"""
+    d = request.json or {}
+    r = um.create_invite_code(
+        creator_uid   = session.get("user_id", 0),
+        max_uses      = d.get("max_uses", 1),
+        reward        = d.get("reward"),
+        note          = d.get("note", ""),
+        is_admin_code = True,
+        expires_at    = d.get("expires_at"),
+    )
+    return jsonify(r)
+
+
+@bp.route("/api/admin/invite_codes/<int:cid>", methods=["DELETE"])
+@require_admin
+def admin_revoke_invite(cid):
+    """作废邀请码（停止可用，不删历史）。"""
+    return jsonify(um.revoke_invite_code(cid))

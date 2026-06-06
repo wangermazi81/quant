@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="/static/lib/codemirror.min.css">
 <link rel="stylesheet" href="/static/lib/dracula.min.css">
 <link rel="stylesheet" href="/static/lib/rb-effects.css">
-<link rel="stylesheet" href="/static/lib/cd-linear.css">
+<!-- cd-linear.css（旧 Linear 深色主题）与糖果主题冲突，已停用 -->
 <script src="/static/lib/codemirror.min.js"></script>
 <script src="/static/lib/python.min.js"></script>
 <script src="/static/lib/chart.min.js"></script>
@@ -750,7 +750,7 @@ tr:hover td{background:var(--card)}
       <span class="kl-title">💹 模拟盘手动买入</span>
       <button class="kl-close" onclick="closePaperBuy()">✕</button>
     </div>
-    <div style="padding:18px;background:#0d1117;display:flex;flex-direction:column;gap:12px">
+    <div style="padding:18px;background:#FCFAF7;display:flex;flex-direction:column;gap:12px">
       <div style="font-size:12px;color:var(--t3)">按当前仓位比例（20%）自动计算股数，也可手动填写。</div>
       <div style="display:flex;gap:8px;align-items:center">
         <label style="font-size:13px;color:var(--t2);width:60px;flex-shrink:0">股票代码</label>
@@ -1204,11 +1204,11 @@ tr:hover td{background:var(--card)}
         <button class="btn btn-blue btn-sm"   onclick="runScreen(0)"   data-mode="strat" title="扫描全市场约 5000 只票，约 2-3 分钟">🌐 全市场</button>
         <button class="btn btn-purple btn-sm" onclick="goBacktest()"   data-mode="strat">📈 回测</button>
         <button class="btn btn-orange btn-sm" onclick="activateStrat()" id="actBtn" data-mode="strat" title="激活此策略为自动交易策略：激活后系统定时扫描并将信号自动加入执行队列">⚡ 激活</button>
-        <button class="btn btn-sm" onclick="openAiGen()" id="aiGenBtn" data-mode="strat" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff" title="用AI自动生成选股策略代码">✨ AI写策略</button>
+        <button class="btn btn-sm" onclick="openAiGen()" id="aiGenBtn" data-mode="strat" style="background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff" title="用AI自动生成选股策略代码">✨ AI写策略</button>
 
         <!-- 因子库专属按钮（对当前编辑器中的因子文件操作）-->
         <button class="btn btn-blue btn-sm" onclick="runScreen(600)" data-mode="factor" title="按当前因子代码扫描活跃前 600 只">🔍 扫描</button>
-        <button class="btn btn-sm" onclick="openAiFactorGen()" data-mode="factor" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff" title="用AI自动生成因子代码">✨ AI写因子</button>
+        <button class="btn btn-sm" onclick="openAiFactorGen()" data-mode="factor" style="background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff" title="用AI自动生成因子代码">✨ AI写因子</button>
 
         <!-- 共用删除按钮 -->
         <button class="btn btn-red btn-xs" onclick="delStrat()" data-mode="both">🗑</button>
@@ -1266,8 +1266,8 @@ tr:hover td{background:var(--card)}
     <div class="rpanel active" id="rp-screen">
       <div class="sc-hd">
         <span style="font-size:13px;color:var(--t3)" id="scInfo">点击「选股」开始</span>
-        <button class="btn btn-green btn-sm" id="addAllBtn" style="display:none" onclick="addAllQ()">全部入队</button>
-        <button class="btn btn-sm" id="optBtn" style="display:none;background:linear-gradient(135deg,#0ea5e9,#6366f1);color:#fff" onclick="openPortfolioOpt()" title="对选股结果进行投资组合优化（等权/最大夏普/最小波动/风险平价）">⚖ 组合优化</button>
+        <button class="btn btn-purple btn-sm" id="addAllBtn" style="display:none" onclick="addAllQ()">全部入队</button>
+        <button class="btn btn-sm" id="optBtn" style="display:none;background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff" onclick="openPortfolioOpt()" title="对选股结果进行投资组合优化（等权/最大夏普/最小波动/风险平价）">⚖ 组合优化</button>
       </div>
       <div class="scan-prog" id="scProgWrap" style="display:none">
         <div class="scan-prog-bar pulse" id="scProgBar"></div>
@@ -1835,13 +1835,13 @@ function renderPool(pool){
     // 连板标签
     const consec = r.consec_limit || 0
     const consecLbl = r.consec_label || ''
-    const consecColor = consec >= 3 ? '#f97316' : consec >= 2 ? '#eab308' : '#22c55e'
+    const consecColor = consec >= 3 ? '#f97316' : consec >= 2 ? '#eab308' : '#6B95D6'
     const consecBadge = consecLbl
       ? `<span style="font-size:9px;background:${consecColor};color:#000;border-radius:3px;padding:1px 5px;margin-left:3px;font-weight:800">${consecLbl}</span>`
       : ''
     // 信号标签
     const tagHtml = isSignal
-      ? `<span style="font-size:9px;background:#1a4731;color:#3fb950;border-radius:3px;padding:1px 5px;margin-left:4px">打板</span>${consecBadge}`
+      ? `<span style="font-size:9px;background:#F2EAFB;color:#8B53C9;border-radius:3px;padding:1px 5px;margin-left:4px;font-weight:700">打板</span>${consecBadge}`
       : `<span style="font-size:9px;background:#2a2a2a;color:#666;border-radius:3px;padding:1px 5px;margin-left:4px">封板</span>${consecBadge}`
     // 操作按钮（"+队"加入待执行，"🛒"立即模拟买入）
     let actionHtml
@@ -1851,7 +1851,7 @@ function renderPool(pool){
       actionHtml='<button class="btn btn-queued btn-xs" disabled>✓ 已入队</button>'
       + ` <button class="btn btn-orange btn-xs" onclick="event.stopPropagation();manualBuy(${JSON.stringify({code:r.code,name:r.name,price:r.price})})" title="立即按当前价模拟盘买入（按仓位%计算手数）">🛒 买入</button>`
     } else {
-      actionHtml=`<button class="btn btn-green btn-xs" onclick="event.stopPropagation();addOneQ(${JSON.stringify({code:r.code,name:r.name,price:r.price,reason:r.reason||''})})">+队</button>`
+      actionHtml=`<button class="btn btn-purple btn-xs" onclick="event.stopPropagation();addOneQ(${JSON.stringify({code:r.code,name:r.name,price:r.price,reason:r.reason||''})})">+队</button>`
       + ` <button class="btn btn-orange btn-xs" onclick="event.stopPropagation();manualBuy(${JSON.stringify({code:r.code,name:r.name,price:r.price})})" title="跳过队列直接按当前价模拟盘买入（按仓位%计算手数）">🛒 买入</button>`
     }
     const isTdx = r.reason?.includes('TDX')||r.reason?.includes('封板')
@@ -4967,7 +4967,7 @@ async function loadPaperEquity(){
   _equityChart = new Chart(ctx,{
     type:'line',
     data:{labels,datasets:[{
-      label:'净资产',data,borderColor:'#1f6feb',backgroundColor:'rgba(31,111,235,0.12)',
+      label:'净资产',data,borderColor:'#FF7B93',backgroundColor:'rgba(255,123,147,0.12)',
       borderWidth:2,pointRadius:0,fill:true,tension:0.3
     }]},
     options:{
@@ -4976,9 +4976,9 @@ async function loadPaperEquity(){
         callbacks:{label:c=>'¥'+c.parsed.y.toLocaleString('zh-CN',{maximumFractionDigits:0})}
       }},
       scales:{
-        x:{ticks:{color:'#8b949e',font:{size:10}},grid:{color:'#21262d'}},
-        y:{ticks:{color:'#8b949e',font:{size:10},
-             callback:v=>'¥'+(v/1000).toFixed(0)+'k'},grid:{color:'#21262d'}}
+        x:{ticks:{color:'#9C8B7A',font:{size:10}},grid:{display:false},border:{display:false}},
+        y:{ticks:{color:'#9C8B7A',font:{size:10},
+             callback:v=>'¥'+(v/1000).toFixed(0)+'k'},grid:{display:false},border:{display:false}}
       }
     }
   })
@@ -5017,10 +5017,10 @@ async function resetPaper(){
   <div class="kl-box" style="width:640px;max-width:96vw">
     <div class="kl-hd">
       <span class="kl-title">✨ AI 写选股策略</span>
-      <span class="kl-src" id="aiGenSrc" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none">Beta</span>
+      <span class="kl-src" id="aiGenSrc" style="background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff;border:none">Beta</span>
       <button class="kl-close" onclick="closeAiGen()">✕</button>
     </div>
-    <div style="padding:16px;background:#0d1117">
+    <div style="padding:16px;background:#FCFAF7">
       <div style="font-size:12px;color:var(--t3);margin-bottom:10px;line-height:1.6">
         用自然语言描述你想要的选股逻辑，AI 将自动生成可运行的 Python 策略代码。
         生成后会直接填入编辑器，你可以再调整保存。
@@ -5042,7 +5042,7 @@ async function resetPaper(){
       <div id="aiGenErr" style="font-size:12px;color:var(--rl);margin-top:8px;display:none"></div>
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--b1);display:flex;gap:8px;align-items:center;background:var(--panel)">
-      <button class="btn btn-sm" id="aiGenBtn2" onclick="doAiGen()" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;min-width:100px">✨ 生成策略</button>
+      <button class="btn btn-sm" id="aiGenBtn2" onclick="doAiGen()" style="background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff;min-width:100px">✨ 生成策略</button>
       <span id="aiGenSt" style="font-size:12px;color:var(--t3);flex:1"></span>
       <button class="btn btn-gray btn-sm" onclick="closeAiGen()">取消</button>
     </div>
@@ -5372,7 +5372,7 @@ function showAnnouncements(list){
       <div style="font-size:18px;font-weight:800;margin-bottom:16px">📢 平台公告</div>
       ${cards}
       <div style="text-align:right;margin-top:8px">
-        <button id="annOkBtn" style="background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;border:none;border-radius:8px;padding:9px 22px;font-size:14px;cursor:pointer">我知道了</button>
+        <button id="annOkBtn" style="background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff;border:none;border-radius:8px;padding:9px 22px;font-size:14px;cursor:pointer">我知道了</button>
       </div>
     </div>`
   document.body.appendChild(ov)
@@ -6133,5 +6133,157 @@ function toggleDcDetail(id){
   if(el) el.classList.toggle('open')
 }
 </script>
+<!-- ══════════ 问题反馈入口（自成一体，复用主题类）══════════ -->
+<style>
+.fb-fab{position:fixed;right:22px;bottom:22px;z-index:8500;display:flex;align-items:center;gap:7px;
+  background:var(--blue);color:#fff;border:none;border-radius:24px;padding:10px 16px;font-size:13px;font-weight:600;
+  cursor:pointer;box-shadow:0 6px 20px rgba(31,111,235,.45);transition:transform .15s,box-shadow .15s;user-select:none}
+.fb-fab:hover{transform:translateY(-2px);box-shadow:0 10px 28px rgba(31,111,235,.55)}
+.fb-box{width:460px;max-width:92vw;max-height:88vh;overflow-y:auto}
+.fb-box label{display:block;font-size:11px;color:var(--t3);margin:10px 0 4px}
+.fb-box select,.fb-box textarea,.fb-box input{width:100%;background:var(--inp);border:1px solid var(--b1);
+  border-radius:6px;padding:8px 10px;color:var(--t1);font-size:13px}
+.fb-box select:focus,.fb-box textarea:focus,.fb-box input:focus{outline:none;border-color:var(--blue)}
+.fb-box textarea{resize:vertical;min-height:96px;line-height:1.6}
+.fb-cat{display:flex;gap:8px;flex-wrap:wrap}
+.fb-cat .fb-chip{flex:1;min-width:92px;text-align:center;padding:8px 6px;border:1px solid var(--b1);border-radius:8px;
+  background:var(--inp);color:var(--t2);cursor:pointer;font-size:12px;transition:.12s;user-select:none}
+.fb-cat .fb-chip.on{border-color:var(--blue);color:var(--t1);background:rgba(31,111,235,.14)}
+.fb-mine{margin-top:12px;border-top:1px solid var(--b1);padding-top:10px}
+.fb-mine-item{font-size:12px;color:var(--t2);padding:7px 0;border-bottom:1px dashed var(--b2)}
+.fb-mine-item .fb-st{font-size:10px;padding:1px 7px;border-radius:10px;margin-left:6px}
+.fb-toast{position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:9999;background:#1a4731;color:#3fb950;
+  border:1px solid #238636;border-radius:8px;padding:10px 18px;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.4);
+  opacity:0;transition:opacity .25s,bottom .25s;pointer-events:none}
+.fb-toast.show{opacity:1;bottom:96px}
+.fb-toast.err{background:#3d1418;color:#f85149;border-color:#da3633}
+</style>
+<button class="fb-fab" onclick="openFeedback()" title="提交问题反馈 / 建议">💬 反馈</button>
+<div class="rename-modal" id="feedbackModal" onclick="closeFeedback(event)">
+  <div class="rename-box fb-box" onclick="event.stopPropagation()">
+    <h4>💬 问题反馈</h4>
+    <div style="font-size:11px;color:var(--t3);line-height:1.6;margin-bottom:6px">
+      发现 Bug、有改进建议或数据异常，都欢迎反馈。我们会在后台跟进处理。
+    </div>
+    <label>类型</label>
+    <div class="fb-cat" id="fbCat">
+      <div class="fb-chip on" data-cat="bug"        onclick="fbPickCat(this)">🐞 功能异常</div>
+      <div class="fb-chip"    data-cat="suggestion" onclick="fbPickCat(this)">💡 功能建议</div>
+      <div class="fb-chip"    data-cat="data"       onclick="fbPickCat(this)">📊 数据问题</div>
+      <div class="fb-chip"    data-cat="other"      onclick="fbPickCat(this)">💬 其他</div>
+    </div>
+    <label>所在页面</label>
+    <input id="fbPage" readonly>
+    <label>详细描述 <span style="color:var(--rl)">*</span></label>
+    <textarea id="fbContent" maxlength="4000" placeholder="请描述你遇到的问题、复现步骤或建议（越具体越好）"></textarea>
+    <label>联系方式（选填，便于回复）</label>
+    <input id="fbContact" maxlength="120" placeholder="微信 / 邮箱 / 手机，留空亦可">
+    <div class="rename-btns" style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:14px">
+      <button class="btn btn-gray btn-sm" onclick="toggleMyFeedback()" id="fbMineBtn">📋 我的反馈</button>
+      <span style="flex:1"></span>
+      <button class="btn btn-gray btn-sm" onclick="closeFeedback()">取消</button>
+      <button class="btn btn-blue btn-sm" onclick="submitFeedback()" id="fbSubmitBtn">提交</button>
+    </div>
+    <div class="fb-mine" id="fbMine" style="display:none"></div>
+  </div>
+</div>
+<script>
+// 问题反馈：自成一体，仅依赖已有的 api() 封装与 .rename-modal 主题
+const FB_PAGE_LABELS = {
+  'page-monitor':'监控中心','page-strategy':'策略中心','page-paper':'模拟盘',
+  'page-search':'智能搜索','page-daily':'日报'
+};
+const FB_STATUS_LABELS = {open:'待处理',read:'已读',in_progress:'处理中',resolved:'已解决'};
+const FB_STATUS_COLORS = {
+  open:'background:#3d2b14;color:#ffa657', read:'background:#21262d;color:#8b949e',
+  in_progress:'background:#11324d;color:#79c0ff', resolved:'background:#1a4731;color:#3fb950'
+};
+let _fbCat = 'bug';
+function fbPickCat(el){
+  document.querySelectorAll('#fbCat .fb-chip').forEach(c=>c.classList.remove('on'));
+  el.classList.add('on'); _fbCat = el.dataset.cat;
+}
+function _fbCurrentPage(){
+  const act = document.querySelector('.page.active');
+  const id  = act ? act.id : '';
+  return {id, label: FB_PAGE_LABELS[id] || '其他'};
+}
+function openFeedback(){
+  const p = _fbCurrentPage();
+  document.getElementById('fbPage').value = p.label;
+  document.getElementById('feedbackModal').classList.add('open');
+}
+function closeFeedback(ev){
+  if(ev && ev.target !== document.getElementById('feedbackModal')) return;
+  document.getElementById('feedbackModal').classList.remove('open');
+  document.getElementById('fbMine').style.display = 'none';
+}
+function fbToast(msg, isErr){
+  let t = document.getElementById('_fbToast');
+  if(!t){ t = document.createElement('div'); t.id='_fbToast'; t.className='fb-toast'; document.body.appendChild(t); }
+  t.textContent = msg; t.className = 'fb-toast' + (isErr?' err':'');
+  void t.offsetWidth; t.classList.add('show');
+  clearTimeout(t._tmr); t._tmr = setTimeout(()=>t.classList.remove('show'), 2600);
+}
+async function submitFeedback(){
+  const content = document.getElementById('fbContent').value.trim();
+  if(!content){ fbToast('请填写详细描述', true); return; }
+  const btn = document.getElementById('fbSubmitBtn');
+  btn.disabled = true; btn.textContent = '提交中…';
+  const body = {
+    category: _fbCat,
+    page: _fbCurrentPage().label,
+    content,
+    contact: document.getElementById('fbContact').value.trim(),
+    app_version: '2.0.0'
+  };
+  let r = null, status = 0;
+  try{
+    const resp = await fetch(API + '/feedback', {method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    status = resp.status;
+    try { r = await resp.json(); } catch(e){}
+  }catch(e){}
+  btn.disabled = false; btn.textContent = '提交';
+  if(r && r.ok){
+    fbToast('✅ 反馈已提交（#' + r.id + '），感谢你的反馈！');
+    document.getElementById('fbContent').value = '';
+    document.getElementById('fbContact').value = '';
+    if(document.getElementById('fbMine').style.display !== 'none') loadMyFeedback();
+    setTimeout(()=>closeFeedback(), 700);
+  } else if(status === 404){
+    fbToast('反馈后端需重启一次服务才生效（仅此一项需重启）', true);
+  } else if(status === 401){
+    fbToast('请先登录后再提交反馈', true);
+  } else {
+    fbToast('提交失败，请稍后重试', true);
+  }
+}
+function toggleMyFeedback(){
+  const box = document.getElementById('fbMine');
+  if(box.style.display === 'none'){ box.style.display='block'; loadMyFeedback(); }
+  else { box.style.display='none'; }
+}
+async function loadMyFeedback(){
+  const box = document.getElementById('fbMine');
+  box.innerHTML = '<div style="font-size:12px;color:var(--t3)">加载中…</div>';
+  let r = null, status = 0;
+  try{ const resp = await fetch(API + '/feedback/mine', {credentials:'include'}); status = resp.status; try{ r = await resp.json(); }catch(e){} }catch(e){}
+  if(!r || !r.ok){ box.innerHTML='<div style="font-size:12px;color:var(--rl)">'+(status===404?'反馈后端需重启一次服务才生效':'加载失败（请先登录）')+'</div>'; return; }
+  if(!r.items.length){ box.innerHTML='<div style="font-size:12px;color:var(--t3)">你还没有提交过反馈</div>'; return; }
+  box.innerHTML = '<div style="font-size:11px;color:var(--t3);margin-bottom:4px">我的反馈（'+r.items.length+'）</div>' +
+    r.items.map(it=>{
+      const st = FB_STATUS_LABELS[it.status]||it.status;
+      const c  = FB_STATUS_COLORS[it.status]||'';
+      const note = it.admin_note ? '<div style="color:var(--bl);margin-top:2px">↳ 回复：'+_fbEsc(it.admin_note)+'</div>' : '';
+      return '<div class="fb-mine-item">#'+it.id+' · '+(it.created_at||'').slice(5,16)+
+        '<span class="fb-st" style="'+c+'">'+st+'</span>'+
+        '<div style="color:var(--t1);margin-top:2px">'+_fbEsc(it.content).slice(0,120)+'</div>'+note+'</div>';
+    }).join('');
+}
+function _fbEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
+</script>
+<link rel="stylesheet" href="/static/lib/theme-candy.css">
+<script src="/static/lib/jianwei-mascot.js"></script>
 </body>
 </html>

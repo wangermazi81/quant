@@ -6,13 +6,33 @@ from app_state import BASE_DIR, require_auth
 bp = Blueprint("pages", __name__)
 
 
-@bp.route("/")
-def index():
-    resp = send_from_directory(str(BASE_DIR), "index.html")
+def _nocache(resp):
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"]  = "no-cache"
     resp.headers["Expires"] = "0"
     return resp
+
+
+@bp.route("/")
+def index():
+    # 主前端 index.html 已套用糖果主题（theme-candy.css），从磁盘实时读取 → 改样式免重启。
+    # 模块化 Vite 构建版本在 /v2 并行可选。
+    return _nocache(send_from_directory(str(BASE_DIR), "index.html"))
+
+
+@bp.route("/v2")
+def index_v2():
+    """新版前端（frontend/ 经 Vite 构建到 static/dist/）。登录后逐页验收功能对等。"""
+    dist = BASE_DIR / "static" / "dist"
+    if not (dist / "index.html").exists():
+        return ("新版前端尚未构建：请在 frontend/ 下执行 npm install && npm run build", 503)
+    return _nocache(send_from_directory(str(dist), "index.html"))
+
+
+@bp.route("/legacy")
+def index_legacy():
+    """旧版单文件 UI 兜底入口（切换期保留）。"""
+    return _nocache(send_from_directory(str(BASE_DIR), "index.html"))
 
 
 @bp.route("/admin")

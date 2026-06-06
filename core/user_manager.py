@@ -42,7 +42,8 @@ def init_db():
             is_admin      INTEGER DEFAULT 0,
             is_active     INTEGER DEFAULT 1,
             created_at    TEXT    DEFAULT (datetime('now','localtime')),
-            last_login    TEXT
+            last_login    TEXT,
+            invited_by    INTEGER DEFAULT NULL
         );
         CREATE TABLE IF NOT EXISTS point_transactions (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,11 +105,11 @@ def _verify_password(pw: str, stored: str) -> bool:
 
 
 def _create_user(c, username, email, password,
-                 is_admin=0, points=REGISTER_BONUS):
+                 is_admin=0, points=REGISTER_BONUS, invited_by=None):
     c.execute(
-        "INSERT INTO users (username,email,password_hash,points,is_admin)"
-        " VALUES (?,?,?,?,?)",
-        (username, email, _hash_password(password), points, is_admin)
+        "INSERT INTO users (username,email,password_hash,points,is_admin,invited_by)"
+        " VALUES (?,?,?,?,?,?)",
+        (username, email, _hash_password(password), points, is_admin, invited_by)
     )
     c.commit()
     uid = c.execute("SELECT id FROM users WHERE username=?",
@@ -121,19 +122,147 @@ def _create_user(c, username, email, password,
     c.commit()
 
 
+# ── 邀请制注册 ────────────────────────────────────────────
+INVITE_REWARD         = 100   # 用户码：每成功邀请1人，邀请人得的积分（admin码可自定义）
+_INVITE_USER_MAX_USES = 20    # 用户自建邀请码的名额上限（防滥用）
+_INVITE_ALPHABET      = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # 去掉易混 I/O/0/1
+
+
+def _gen_invite_code(n: int = 8) -> str:
+    return "".join(secrets.choice(_INVITE_ALPHABET) for _ in range(n))
+
+
+def create_invite_code(creator_uid: int, max_uses=1, reward=None,
+                       note: str = "", is_admin_code: bool = False,
+                       expires_at: str = None) -> dict:
+    """生成邀请码。
+    - 用户码(is_admin_code=False)：reward 强制 INVITE_REWARD、max_uses 夹到 [1,20]、不可设过期，防刷分。
+    - admin 码：reward / max_uses / 过期 均可自定义。"""
+    try:
+        max_uses = int(max_uses or 1)
+    except Exception:
+        max_uses = 1
+    if is_admin_code:
+        max_uses = max(1, max_uses)
+        try:
+            reward = max(0, int(reward)) if reward is not None else INVITE_REWARD
+        except Exception:
+            reward = INVITE_REWARD
+    else:
+        max_uses   = max(1, min(max_uses, _INVITE_USER_MAX_USES))
+        reward     = INVITE_REWARD
+        expires_at = None
+    note = (note or "").strip()[:60]
+    with _lock, _conn() as c:
+        code = None
+        for _ in range(6):
+            cand = _gen_invite_code()
+            try:
+                c.execute(
+                    "INSERT INTO invite_codes (code,created_by,max_uses,reward,note,expires_at)"
+                    " VALUES (?,?,?,?,?,?)",
+                    (cand, creator_uid, max_uses, reward, note, expires_at)
+                )
+                c.commit()
+                code = cand
+                break
+            except sqlite3.IntegrityError:
+                continue
+        if not code:
+            return {"ok": False, "error": "生成失败，请重试"}
+    return {"ok": True, "code": code, "max_uses": max_uses, "reward": reward}
+
+
+def list_invite_codes(creator_uid: int = None) -> list:
+    """creator_uid=None → 全部（admin 视角，含生成者用户名）；否则只列该用户生成的。"""
+    with _conn() as c:
+        if creator_uid is None:
+            rows = c.execute(
+                "SELECT ic.*, u.username AS creator_name FROM invite_codes ic"
+                " LEFT JOIN users u ON u.id=ic.created_by ORDER BY ic.id DESC"
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT * FROM invite_codes WHERE created_by=? ORDER BY id DESC",
+                (creator_uid,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def revoke_invite_code(code_id: int, creator_uid: int = None) -> dict:
+    """作废邀请码。creator_uid 非空时只能作废自己生成的（用户侧）。"""
+    with _lock, _conn() as c:
+        if creator_uid is None:
+            cur = c.execute("UPDATE invite_codes SET is_active=0 WHERE id=?", (code_id,))
+        else:
+            cur = c.execute("UPDATE invite_codes SET is_active=0 WHERE id=? AND created_by=?",
+                            (code_id, creator_uid))
+        c.commit()
+        if cur.rowcount == 0:
+            return {"ok": False, "error": "邀请码不存在或无权操作"}
+    return {"ok": True}
+
+
+def get_invite_summary(creator_uid: int) -> dict:
+    """用户邀请概览：生成码数 / 累计成功邀请人数 / 累计奖励积分。"""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS codes, COALESCE(SUM(used_count),0) AS invited"
+            " FROM invite_codes WHERE created_by=?", (creator_uid,)
+        ).fetchone()
+        earned = c.execute(
+            "SELECT COALESCE(SUM(amount),0) AS s FROM point_transactions"
+            " WHERE user_id=? AND type='invite_reward'", (creator_uid,)
+        ).fetchone()["s"]
+        return {"codes": row["codes"], "invited": row["invited"], "earned": earned,
+                "reward_per_invite": INVITE_REWARD}
+
+
 # ── 公开接口 ──────────────────────────────────────────────
-def register(username: str, email: str, password: str) -> dict:
-    username = username.strip()
-    email    = email.strip().lower()
+def register(username: str, email: str, password: str, invite_code: str = "") -> dict:
+    username    = username.strip()
+    email       = email.strip().lower()
+    invite_code = (invite_code or "").strip().upper()
     if len(username) < 2:
         return {"ok": False, "error": "用户名至少 2 个字符"}
     if len(password) < 6:
         return {"ok": False, "error": "密码至少 6 位"}
     if "@" not in email:
         return {"ok": False, "error": "邮箱格式错误"}
+    if not invite_code:
+        return {"ok": False, "error": "请输入邀请码（本平台仅限邀请注册）"}
     try:
         with _lock, _conn() as c:
-            _create_user(c, username, email, password)
+            ic = c.execute("SELECT * FROM invite_codes WHERE code=?", (invite_code,)).fetchone()
+            if not ic or not ic["is_active"]:
+                return {"ok": False, "error": "邀请码无效"}
+            if ic["expires_at"]:
+                try:
+                    from datetime import datetime as _dt
+                    if str(ic["expires_at"]) < _dt.now().strftime("%Y-%m-%d %H:%M:%S"):
+                        return {"ok": False, "error": "邀请码已过期"}
+                except Exception:
+                    pass
+            if ic["used_count"] >= ic["max_uses"]:
+                return {"ok": False, "error": "邀请码名额已用完"}
+            inviter = ic["created_by"]
+            # 创建用户（记录邀请人）
+            _create_user(c, username, email, password, invited_by=inviter)
+            # 消费一个名额
+            c.execute("UPDATE invite_codes SET used_count=used_count+1 WHERE id=?", (ic["id"],))
+            # 奖励邀请人积分
+            reward = int(ic["reward"] or 0)
+            if reward > 0 and inviter:
+                prow = c.execute("SELECT points FROM users WHERE id=?", (inviter,)).fetchone()
+                if prow:
+                    new_bal = prow["points"] + reward
+                    c.execute("UPDATE users SET points=? WHERE id=?", (new_bal, inviter))
+                    c.execute(
+                        "INSERT INTO point_transactions (user_id,amount,type,description,balance)"
+                        " VALUES (?,?,?,?,?)",
+                        (inviter, reward, "invite_reward", f"邀请新用户「{username}」奖励", new_bal)
+                    )
+            c.commit()
         return {"ok": True}
     except sqlite3.IntegrityError as e:
         msg = "用户名已存在" if "username" in str(e) else "邮箱已注册"
@@ -292,8 +421,7 @@ def set_points(user_id: int, new_value, description: str = "管理员修改积�
 
 
 def delete_user(user_id: int) -> dict:
-    """删除用户及其在 users.db 中的所有关联数据（动态扫描所有含 user_id 列的表）。
-    注：paper_trading.db 是独立库，遗留的模拟盘数据无害（不与新用户串号，因主键是 user_id）。"""
+    """删除用户及其在 users.db 中的所有关联数据（动态扫描所有含 user_id 列的表）。"""
     with _lock, _conn() as c:
         row = c.execute("SELECT username FROM users WHERE id=?", (user_id,)).fetchone()
         if not row:
@@ -406,7 +534,6 @@ def save_user_settings(user_id: int, **kwargs) -> dict:
     allowed = {
         "running", "auto_execute", "capital", "position_ratio",
         "portfolio_mode", "active_strategy", "stock_pool", "broker_type",
-        "max_positions", "single_position_max_ratio",
     }
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
@@ -444,8 +571,6 @@ def get_user_settings(user_id: int) -> dict:
         "active_strategy": "",
         "stock_pool":     "[]",
         "broker_type":    "paper",
-        "max_positions":             5,
-        "single_position_max_ratio": 0.20,
     }
 
 
@@ -729,29 +854,9 @@ def add_trade_signal(user_id: int, code: str, name: str, action: str,
         return cur.lastrowid
 
 
-# 实盘信号新鲜度（秒）：超过此时长仍未被下发执行的 pending 信号直接作废。
-# 防止两种危险：① 隔夜堆积的老信号在次日开闸瞬间被一次性倾倒下单；
-# ② 总闸关闭期间扫描器不停生成的 pending 堆积，开闸后全部涌出。
-# 打板/盘中信号本就要求秒级执行，超 10 分钟的单价格/行情已变，作废最安全。
-_SIGNAL_FRESH_SECONDS = 600
-
-
 def get_pending_signals(user_id: int) -> list:
-    """拉取用户处于 pending 状态的实盘信号，并原子性地标记为 sent 防止重复拉取。
-    ★ 新鲜度护栏：只下发 created_at 在最近 _SIGNAL_FRESH_SECONDS 秒内的信号；
-      超时的 pending 先就地作废(cancelled)，绝不下单、也不再堆积。"""
+    """拉取用户所有处于 pending 状态的实盘信号，并原子性地标记为 sent 防止重复拉取"""
     with _lock, _conn() as c:
-        mins = _SIGNAL_FRESH_SECONDS // 60
-        # 1) 过期 pending 直接作废（created_at 与 now 同为 localtime，可直接相减）
-        c.execute(
-            f"UPDATE trade_signals SET status='cancelled', "
-            f"msg='信号过期未执行(超{mins}分钟)，已自动作废', "
-            f"updated_at=datetime('now','localtime') "
-            f"WHERE user_id=? AND status='pending' "
-            f"AND (julianday('now','localtime') - julianday(created_at)) * 86400.0 > ?",
-            (user_id, float(_SIGNAL_FRESH_SECONDS)),
-        )
-        # 2) 取剩下的新鲜 pending 下发
         rows = c.execute(
             "SELECT * FROM trade_signals WHERE user_id=? AND status='pending' ORDER BY id",
             (user_id,),
@@ -765,21 +870,8 @@ def get_pending_signals(user_id: int) -> list:
                 f"WHERE id IN ({placeholders})",
                 ids
             )
-        c.commit()
+            c.commit()
         return res
-
-
-def cancel_pending_signals(user_id: int) -> int:
-    """把用户所有 pending 交易信号标记为 cancelled（收盘自动终止时清理）。
-    桥接器只拉 status='pending' 的信号，标记后就不会再被拉去下单。返回清理条数。"""
-    with _lock, _conn() as c:
-        cur = c.execute(
-            "UPDATE trade_signals SET status='cancelled', msg='收盘自动终止，未执行', "
-            "updated_at=datetime('now','localtime') WHERE user_id=? AND status='pending'",
-            (user_id,),
-        )
-        c.commit()
-        return cur.rowcount
 
 
 def get_trade_signal(signal_id: int) -> dict | None:

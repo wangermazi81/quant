@@ -9,7 +9,8 @@ bp = Blueprint("auth", __name__)
 @bp.route("/api/auth/register", methods=["POST"])
 def auth_register():
     d = request.json or {}
-    r = um.register(d.get("username", ""), d.get("email", ""), d.get("password", ""))
+    r = um.register(d.get("username", ""), d.get("email", ""), d.get("password", ""),
+                    d.get("invite_code", ""))
     return jsonify(r)
 
 

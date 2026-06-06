@@ -1,0 +1,70 @@
+
+.tog-wrap{position:relative;display:inline-block;width:40px;height:22px;flex-shrink:0}
+.tog-wrap input{opacity:0;width:0;height:0}
+.tog-sl{position:absolute;cursor:pointer;inset:0;background:var(--inp);border-radius:22px;border:1px solid var(--b1);transition:.2s}
+.tog-sl:before{position:absolute;content:"";height:16px;width:16px;left:2px;bottom:2px;background:var(--t3);border-radius:50%;transition:.2s}
+.tog-wrap input:checked+.tog-sl{background:#1a4731;border-color:var(--green)}
+.tog-wrap input:checked+.tog-sl:before{transform:translateX(18px);background:var(--gl)}
+/* 通知渠道卡片 */
+.notify-ch-card{background:var(--card);border:1px solid var(--b1);border-radius:8px;padding:12px;margin-bottom:8px}
+/* 搜索页 */
+.srch-mode-btn{font-size:11px;padding:3px 10px;border-radius:4px;border:1px solid var(--b1);background:transparent;color:var(--t3);cursor:pointer;transition:.15s}
+.srch-mode-btn.active,.srch-mode-btn:hover{border-color:var(--blue);color:var(--bl);background:rgba(88,166,255,.12)}
+.srch-result-item{padding:12px 16px;border-bottom:1px solid var(--b1);cursor:pointer;transition:.1s}
+.srch-result-item:hover{background:var(--hover)}
+.srch-result-item.active{background:rgba(88,166,255,.08);border-left:3px solid var(--blue)}
+.srch-badge{display:inline-block;font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(88,166,255,.15);color:var(--bl);margin-left:4px}
+.srch-badge.tavily{background:rgba(139,92,246,.15);color:#a78bfa}
+.srch-badge.serpapi{background:rgba(34,197,94,.15);color:#4ade80}
+.srch-badge.direct{background:rgba(100,100,100,.15);color:var(--t3)}
+.svc-badge{font-size:11px;padding:2px 8px;border-radius:4px;border:1px solid}
+.svc-badge.ok{border-color:#238636;color:#3fb950;background:#0d2016}
+.svc-badge.warn{border-color:#9e6a03;color:#e3b341;background:#1c1600}
+/* 日报页 */
+.daily-card{background:var(--card);border:1px solid var(--b1);border-radius:10px;padding:14px 16px;margin-bottom:12px}
+.daily-card-hd{display:flex;align-items:center;gap:10px;margin-bottom:10px;cursor:pointer}
+.daily-card-hd .dc-name{font-size:15px;font-weight:600}
+.daily-card-hd .dc-code{font-size:12px;color:var(--t3)}
+.daily-card-hd .dc-signal{font-size:12px;padding:2px 9px;border-radius:4px;font-weight:600}
+.daily-card-hd .dc-score{font-size:22px;font-weight:700;margin-left:auto}
+.daily-card-hd .dc-sent{font-size:12px;padding:2px 8px;border-radius:4px;background:rgba(88,166,255,.12);color:var(--bl)}
+.dc-detail{margin-top:10px;border-top:1px solid var(--b1);padding-top:10px;display:none}
+.dc-detail.open{display:block}
+.dc-section{margin-bottom:8px}
+.dc-section-title{font-size:12px;color:var(--t3);margin-bottom:4px;font-weight:600}
+.dc-section-body{font-size:13px;color:var(--t1);line-height:1.6}
+.dc-news-item{font-size:12px;color:var(--t2);padding:3px 0;border-bottom:1px solid var(--b1)}
+.dc-news-item:last-child{border-bottom:none}
+.mr-index-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--b1)}
+.mr-index-row:last-child{border-bottom:none}
+.mr-idx-name{font-size:14px;font-weight:600}
+.mr-idx-price{font-size:18px;font-weight:700}
+.mr-idx-chg{font-size:13px;padding:2px 8px;border-radius:4px}
+.mr-idx-chg.up{background:rgba(35,134,54,.15);color:#3fb950}
+.mr-idx-chg.dn{background:rgba(218,54,51,.15);color:#f85149}
+.mr-breadth{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}
+.mr-stat{background:var(--hover);border-radius:6px;padding:8px 10px;text-align:center}
+.mr-stat-val{font-size:20px;font-weight:700}
+.mr-stat-lbl{font-size:11px;color:var(--t3);margin-top:2px}
+.mr-sector-tag{display:inline-block;font-size:12px;padding:2px 9px;border-radius:12px;margin:2px}
+.mr-sector-tag.up{background:rgba(35,134,54,.2);color:#3fb950}
+.mr-sector-tag.dn{background:rgba(218,54,51,.2);color:#f85149}
+.dash-summary{background:var(--card);border:1px solid var(--b1);border-radius:10px;padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.dash-sum-item{text-align:center}
+.dash-sum-val{font-size:22px;font-weight:700}
+.dash-sum-lbl{font-size:11px;color:var(--t3)}
+.svc-badge.off{border-color:#30363d;color:var(--t4);background:transparent}
+.srch-news-card{background:var(--card);border:1px solid var(--b1);border-radius:8px;padding:14px;margin-bottom:10px}
+.srch-news-card .nc-title{font-size:14px;font-weight:700;color:var(--t1);margin-bottom:6px;line-height:1.4}
+.srch-news-card .nc-meta{font-size:11px;color:var(--t4);margin-bottom:8px}
+.srch-news-card .nc-body{font-size:12px;color:var(--t2);line-height:1.6}
+.usage-bar{height:6px;border-radius:3px;background:var(--inp);overflow:hidden;margin-top:4px}
+.usage-bar-fill{height:100%;border-radius:3px;transition:.3s}
+/* 策略模板卡片 */
+.tpl-card{background:var(--card);border:1px solid var(--b1);border-radius:6px;padding:7px 9px;cursor:pointer;transition:.15s;font-size:12px;line-height:1.4}
+.tpl-card:hover{border-color:var(--blue);background:#1a2744}
+.tpl-card.active{border-color:var(--blue);background:#1a2744;box-shadow:0 0 0 2px rgba(88,166,255,.25)}
+.tpl-card .tpl-name{font-weight:700;color:var(--t1);margin-bottom:2px}
+.tpl-card .tpl-tag{font-size:10px;color:var(--bl);background:rgba(88,166,255,.12);border-radius:3px;padding:1px 4px;display:inline-block}
+.tpl-cat-btn{font-size:11px;padding:2px 8px;border-radius:4px;border:1px solid var(--b1);background:transparent;color:var(--t3);cursor:pointer;transition:.15s}
+.tpl-cat-btn.active,.tpl-cat-btn:hover{border-color:var(--blue);color:var(--bl);background:rgba(88,166,255,.1)}

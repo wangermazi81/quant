@@ -384,29 +384,40 @@ def _call_llm(cfg: dict, messages: list, temperature: float = 0.3,
                      "Authorization": f"Bearer {api_key}"},
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                return data["choices"][0]["message"]["content"].strip()
-        except urllib.error.HTTPError as e:
+        import time as _time
+        _content = ""
+        # ★ 空响应重试：部分国产模型(小米MiMo等)在限流/偶发时会返回 200 但 content 为空，
+        #   旧代码直接返回空串 → AI 分析某一级(多方/风控等)整段空白、看着"不完整"。
+        #   200-空 重试一次（HTTP/网络错误仍立即抛出，不重试）。
+        for _attempt in range(3):
             try:
-                err_body = e.read().decode("utf-8", errors="ignore")
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    _content = (data["choices"][0]["message"]["content"] or "").strip()
+            except urllib.error.HTTPError as e:
                 try:
-                    err_obj = json.loads(err_body)
-                    api_msg = err_obj.get("error", {})
-                    if isinstance(api_msg, dict):
-                        api_msg = api_msg.get("message", str(api_msg))
-                    elif not api_msg:
-                        api_msg = err_body  # 直接显示原始body
-                except json.JSONDecodeError:
-                    api_msg = err_body or e.reason
-                raise RuntimeError(f"HTTP {e.code} — {api_msg}")
-            except RuntimeError:
-                raise
-            except Exception:
-                raise RuntimeError(f"HTTP {e.code} {e.reason}")
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"网络错误: {e.reason}（请检查 Base URL 是否正确）")
+                    err_body = e.read().decode("utf-8", errors="ignore")
+                    try:
+                        err_obj = json.loads(err_body)
+                        api_msg = err_obj.get("error", {})
+                        if isinstance(api_msg, dict):
+                            api_msg = api_msg.get("message", str(api_msg))
+                        elif not api_msg:
+                            api_msg = err_body  # 直接显示原始body
+                    except json.JSONDecodeError:
+                        api_msg = err_body or e.reason
+                    raise RuntimeError(f"HTTP {e.code} — {api_msg}")
+                except RuntimeError:
+                    raise
+                except Exception:
+                    raise RuntimeError(f"HTTP {e.code} {e.reason}")
+            except urllib.error.URLError as e:
+                raise RuntimeError(f"网络错误: {e.reason}（请检查 Base URL 是否正确）")
+            if _content:
+                return _content
+            if _attempt < 2:
+                _time.sleep(2.0 * (_attempt + 1))   # 空响应退避重试：2s、4s
+        return _content
     except RuntimeError:
         raise
     except Exception as e:
@@ -522,6 +533,121 @@ SYSTEM_DECISION = """你是一位融合四大投资风格的首席交易决策�
 # ══════════════════════════════════════════════════════
 # 主分析函数
 # ══════════════════════════════════════════════════════
+def _get_fundamentals(code: str) -> dict:
+    """基本面/估值，三源互补，优雅降级：
+      ① 百度估值(akshare stock_zh_valuation_baidu)：总市值/PE(TTM)/PE(静)/PB —— 走非
+         eastmoney host，阿里云稳定可达，作可靠主干。
+      ② efinance get_base_info(东财)：行业/流通市值/ROE/毛利率/净利率/净利润 —— 字段最全，
+         但走 push2.eastmoney.com，阿里云会被东财间歇性掐连接，best-effort + 重试，连上才加。
+      ③ pytdx finance_info：每股净资产/股东数/上市日。
+    净利润优先 efinance；缺失则由「市值/PE」反推(可靠，pytdx 的 jinglirun 绝对值口径不稳弃用)。
+    返回 {'text': 文本块, ...数值}；全失败 {'text': ''}。"""
+    import os as _os
+    data: dict = {}
+    _bak = {k: _os.environ.pop(k, None) for k in
+            ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY")}
+    try:
+        # ① 百度估值（可靠主干：市值/PE-TTM/PE静/PB）
+        try:
+            import akshare as _ak
+            for _ind, _key in (("总市值", "mktcap"), ("市盈率(TTM)", "pe_ttm"),
+                               ("市盈率(静)", "pe_static"), ("市净率", "pb")):
+                try:
+                    _df = _ak.stock_zh_valuation_baidu(symbol=code, indicator=_ind, period="近一年")
+                    if _df is not None and not _df.empty:
+                        data[_key] = round(float(_df.iloc[-1]["value"]), 2)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # ② efinance（东财富字段，best-effort + 重试，东财掐连接时优雅跳过）
+        try:
+            import efinance as _ef
+            import time as _eft
+            s = None
+            for _try in range(3):
+                try:
+                    s = _ef.stock.get_base_info(code)
+                except Exception:
+                    s = None
+                if s is not None:
+                    break
+                if _try < 2:
+                    _eft.sleep(1.0)
+            if s is not None:
+                def _g(k):
+                    try:
+                        return s.get(k)
+                    except Exception:
+                        return None
+
+                def _num(k):
+                    try:
+                        return round(float(_g(k)), 2)
+                    except Exception:
+                        return None
+                if _g("所处行业"):
+                    data["industry"] = _g("所处行业")
+                _fc = _num("流通市值")
+                if _fc:
+                    data["float_cap"] = round(_fc / 1e8, 2)
+                _mc2 = _num("总市值")
+                if _mc2 and not data.get("mktcap"):
+                    data["mktcap"] = round(_mc2 / 1e8, 2)
+                if _num("市盈率(动)") is not None:
+                    data["pe_dyn"] = _num("市盈率(动)")
+                if _num("市净率") is not None and not data.get("pb"):
+                    data["pb"] = _num("市净率")
+                data["roe"]          = _num("ROE")
+                data["gross_margin"] = _num("毛利率")
+                data["net_margin"]   = _num("净利率")
+                _np = _num("净利润")
+                if _np is not None:
+                    data["net_profit_yi"] = round(_np / 1e8, 2)
+        except Exception:
+            pass
+    finally:
+        for _k, _v in _bak.items():
+            if _v is not None:
+                _os.environ[_k] = _v
+    # ③ pytdx：每股净资产/股东/上市日
+    try:
+        import ths_quote as _tq
+        _c = _tq.get_client()
+        fi = _c.get_finance_info(code) if _c else {}
+        if fi:
+            data.setdefault("bps", round(float(fi.get("meigujingzichan") or 0), 2) or None)
+            data.setdefault("holders", int(float(fi.get("gudongrenshu") or 0)) or None)
+            data.setdefault("ipo_date", fi.get("ipo_date"))
+    except Exception:
+        pass
+
+    if not any(data.get(k) is not None for k in ("mktcap", "pe_ttm", "pe_dyn", "pb")):
+        return {"text": ""}
+
+    # 净利润：优先 efinance；缺失则 市值/PE 反推（百度PE可靠）
+    mc = data.get("mktcap"); pe_ttm = data.get("pe_ttm"); pe_st = data.get("pe_static")
+    if data.get("net_profit_yi") is None and mc and pe_ttm:
+        data["net_profit_yi"] = round(mc / pe_ttm, 1)
+
+    def _f(v, suf="", none="—"):
+        return none if v is None else f"{v}{suf}"
+    npf     = data.get("net_profit_yi")
+    pe_show = data.get("pe_dyn") if data.get("pe_dyn") is not None else pe_ttm
+    warn    = "  ⚠亏损/微利" if ((pe_st is not None and pe_st < 0)
+                               or (npf is not None and npf < 0)
+                               or (data.get("pe_dyn") is not None and data["pe_dyn"] < 0)) else ""
+    ind     = data.get("industry")
+    lines = [f"【基本面 / 估值】{('· 行业:' + str(ind)) if ind else ''}（来源:百度估值+东财efinance+TDX）",
+             f"总市值≈{_f(mc,'亿')}  流通市值≈{_f(data.get('float_cap'),'亿')}  "
+             f"市净率PB={_f(data.get('pb'))}  每股净资产{_f(data.get('bps'),'元')}",
+             f"市盈率PE={_f(pe_show)}  PE(静)={_f(pe_st)}{warn}  ROE={_f(data.get('roe'),'%')}  "
+             f"毛利率={_f(data.get('gross_margin'),'%')}  净利率={_f(data.get('net_margin'),'%')}",
+             f"净利润≈{_f(npf,'亿')}  股东人数≈{_f(data.get('holders'))}  上市日{_f(data.get('ipo_date'))}"]
+    data["text"] = "\n".join(lines)
+    return data
+
+
 def run_analysis(code: str, name: str, df: pd.DataFrame,
                  config_override: dict = None) -> dict:
     """
@@ -627,6 +753,19 @@ RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']} 
             news_section = f"\n{news_ctx_text}\n【新闻情绪】{sent.get('label','中性')} (得分:{sent.get('score',0):+.2f})"
             stock_ctx = stock_ctx.rstrip("═" * 39).rstrip() + news_section + "\n" + "═" * 39
 
+        # ── 基本面/估值注入（百度估值 + TDX财务）──────────────────
+        # 补齐 AI 之前缺失的财务维度：旧版只喂技术指标+新闻，AI 常因「无基本面」而
+        # 保守给「观望」、并在操作清单里写"需先查财报/估值"。现注入 PE/PB/市值/净利润。
+        fund_data = {}
+        try:
+            fund_data = _get_fundamentals(code)
+            if fund_data.get("text"):
+                stock_ctx = stock_ctx.rstrip("═" * 39).rstrip() + "\n" + fund_data["text"] + "\n" + "═" * 39
+                logger.info(f"[AI] 基本面 {code}: 市值={fund_data.get('mktcap')}亿 "
+                            f"PE(TTM)={fund_data.get('pe_ttm')} PB={fund_data.get('pb')}")
+        except Exception as _fe:
+            logger.debug(f"[AI] 基本面注入跳过: {_fe}")
+
         logs = []
 
         # ── Level 2: 技术分析师 ─────────────────────
@@ -672,13 +811,15 @@ RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']} 
             {"role": "system", "content": SYSTEM_DECISION},
             {"role": "user",   "content": (
                 f"股票：{code} {name}\n"
-                f"量化评分：{score_result.get('total', '-')}/100  信号：{score_result.get('signal', '-')}\n\n"
+                f"量化评分：{score_result.get('total', '-')}/100  信号：{score_result.get('signal', '-')}\n"
+                f"{fund_data.get('text', '')}\n\n"
                 f"技术分析：\n{tech_report}\n\n"
                 f"多方研究：\n{bull_report}\n\n"
                 f"空方研究：\n{bear_report}\n\n"
                 f"风险评估：\n{risk_report}\n\n"
                 f"市场背景：{market_ctx_data.get('trend', '-')} 强度{market_ctx_data.get('strength', '-')}/100\n\n"
-                "请用中文给出最终综合决策，JSON摘要中的字符串值也必须是中文。"
+                "请用中文给出最终综合决策，须结合上述基本面/估值（PE/PB/净利润）一并研判，"
+                "JSON摘要中的字符串值也必须是中文。"
             )},
         ], temperature=0.2, max_tokens=1000)
         logs[-1].update({"status": "done", "output": final_report})

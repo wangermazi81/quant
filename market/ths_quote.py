@@ -89,7 +89,7 @@ class TDXQuoteClient:
 
     # 全局连接失败缓存（避免每个请求都重试 5 个服务器）
     _last_fail_ts = 0.0
-    _FAIL_COOLDOWN = 300.0   # 5 分钟内不再重试
+    _FAIL_COOLDOWN = 30.0    # 30s 内不再重试（原 300s 太长，假死后恢复过慢）
 
     def _connect(self) -> bool:
         # 失败冷却：如果近 5 分钟内已经全部连接失败过，直接返回（避免每次 AI 分析卡 30s）
@@ -159,28 +159,38 @@ class TDXQuoteClient:
         _scan_prog.update({"running": True, "current": 0, "total": total})
 
         with self._lock:
+            aborted = False
             for i in range(0, total, BATCH):
                 batch = params[i: i + BATCH]
-                for _attempt in range(2):     # 单批失败：重连后重试一次
+                for _attempt in range(2):     # 单批失败/空：重连后重试一次
                     try:
                         raw = self._api.get_security_quotes(batch)
-                        if raw:
-                            results.extend(raw)
-                        break
                     except Exception as e:
-                        logger.warning(f"[TDX] 行情批次失败(尝试{_attempt + 1}/2): {e}")
-                        if _attempt == 0:
-                            # 运行中重连：走 _do_connect 而非 _connect，
-                            # 偶发单批失败不该让整个进程进入 5 分钟假性不可用冷却
-                            self._do_connect()
-                        # 第二次仍失败 → 跳过该批，继续后续批次（不毒化全局状态）
+                        logger.warning(f"[TDX] 行情批次异常(尝试{_attempt + 1}/2): {e}")
+                        raw = None
+                    if raw:
+                        results.extend(raw)
+                        break
+                    # ★ 关键修复（选股恒0死结）：get_security_quotes 返回空但不抛异常
+                    #   = 连接假死（盘后/长 idle 后 socket 静默失效）。旧代码此处直接 break，
+                    #   既不重连也不翻 _ok，导致 _ok 长期卡 True、get_client 自愈永不触发。
+                    #   现在视为失败：重连一次再试；重连都失败=真断网，中止本轮走兜底。
+                    if _attempt == 0:
+                        if not self._do_connect():
+                            aborted = True
+                            break
+                if aborted:
+                    break
                 _scan_prog["current"] = min(i + BATCH, total)
 
-        # 只要本轮拿到了任何行情，就证明连接是健康的：
-        # 强制标记可用并解除历史失败冷却，杜绝「假性不可用」状态残留
+        # 本轮拿到任何行情 → 连接健康，解除历史失败冷却；
+        # 确有请求却一条没拿到 → 标记假死(_ok=False)，让 get_client 自愈重连，
+        # 杜绝「socket 静默失效但 _ok 仍 True」→ 选股恒 0 的死结。
         if results:
             self._ok = True
             type(self)._last_fail_ts = 0.0
+        elif codes:
+            self._ok = False
 
         _scan_prog["running"] = False
 
@@ -258,28 +268,53 @@ class TDXQuoteClient:
         market = _market(code)
         count   = min(days, 800)
         with self._lock:
-            try:
-                # pytdx category: 9 = 日K线
-                bars = self._api.get_security_bars(9, market, code, 0, count)
-                if not bars:
-                    return []
-                result = []
-                for b in bars:
-                    if not b:
-                        continue
-                    dt = str(b.get("datetime", ""))[:10]
-                    result.append({
-                        "date":   dt,
-                        "open":   round(_f(b.get("open",  0)), 2),
-                        "close":  round(_f(b.get("close", 0)), 2),
-                        "high":   round(_f(b.get("high",  0)), 2),
-                        "low":    round(_f(b.get("low",   0)), 2),
-                        "volume": int(b.get("vol", 0)),
-                    })
-                return result
-            except Exception as e:
-                logger.warning(f"[TDX] K线获取失败 {code}: {e}")
-                return []
+            for _attempt in range(2):
+                try:
+                    # pytdx category: 9 = 日K线
+                    bars = self._api.get_security_bars(9, market, code, 0, count)
+                except Exception as e:
+                    logger.warning(f"[TDX] K线获取失败 {code}(尝试{_attempt + 1}/2): {e}")
+                    bars = None
+                if bars:
+                    result = []
+                    for b in bars:
+                        if not b:
+                            continue
+                        dt = str(b.get("datetime", ""))[:10]
+                        result.append({
+                            "date":   dt,
+                            "open":   round(_f(b.get("open",  0)), 2),
+                            "close":  round(_f(b.get("close", 0)), 2),
+                            "high":   round(_f(b.get("high",  0)), 2),
+                            "low":    round(_f(b.get("low",   0)), 2),
+                            "volume": int(b.get("vol", 0)),
+                        })
+                    return result
+                # ★ 空或异常 = 可能连接假死（与 get_quotes 同源 bug）：重连一次再试。
+                #   重连失败=真断网则放弃；真·空票(退市/停牌)重试仍空→返回[]，不毒化 _ok。
+                if _attempt == 0 and not self._do_connect():
+                    break
+            return []
+
+    def get_finance_info(self, code: str) -> dict:
+        """获取个股财务/基本面信息（pytdx 原生，阿里云可达）。
+        返回字段含 zongguben/liutongguben/meigujingzichan/jinglirun/gudongrenshu/
+        ipo_date/updated_date 等；失败返回 {}。含 dead-socket 重连重试。"""
+        if not self._ensure():
+            return {}
+        market = _market(code)
+        with self._lock:
+            for _attempt in range(2):
+                try:
+                    fi = self._api.get_finance_info(market, code)
+                except Exception as e:
+                    logger.warning(f"[TDX] 财务信息失败 {code}(尝试{_attempt + 1}/2): {e}")
+                    fi = None
+                if fi:
+                    return dict(fi)
+                if _attempt == 0 and not self._do_connect():
+                    break
+            return {}
 
     def get_index_quotes(self, index_pairs: list) -> list:
         """
@@ -292,12 +327,18 @@ class TDXQuoteClient:
         if not index_pairs or not self._ensure():
             return []
         with self._lock:
-            try:
-                raw = self._api.get_security_quotes(index_pairs)
-                return [_parse_quote(r) for r in (raw or []) if r]
-            except Exception as e:
-                logger.warning(f"[TDX] 指数行情失败: {e}")
-                return []
+            for _attempt in range(2):
+                try:
+                    raw = self._api.get_security_quotes(index_pairs)
+                except Exception as e:
+                    logger.warning(f"[TDX] 指数行情失败(尝试{_attempt + 1}/2): {e}")
+                    raw = None
+                if raw:
+                    return [_parse_quote(r) for r in raw if r]
+                # 空或异常 = 可能连接假死：重连一次再试（重连失败=真断网则放弃）
+                if _attempt == 0 and not self._do_connect():
+                    break
+            return []
 
     def get_index_kline(self, code: str, market: int, days: int = 60) -> list:
         """

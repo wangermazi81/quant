@@ -19,6 +19,15 @@ for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
            "ALL_PROXY", "all_proxy", "SOCKS_PROXY", "socks_proxy"):
     os.environ.pop(_k, None)
 
+# ── 强制 stdout/stderr 用 UTF-8 ──────────────────────────────
+# Windows 控制台/重定向默认 GBK，日志里的 emoji(🎉✨📈等)写不出会抛
+# UnicodeEncodeError 刷屏、并可能影响轮询；用 errors="replace" 兜底，永不因日志崩。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 # ── 自动设置系统路径，使其能够导入 ths_operator ────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:

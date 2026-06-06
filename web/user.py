@@ -143,3 +143,37 @@ def mark_announcement_read(ann_id):
     uid = session["user_id"]
     um.mark_announcement_read(uid, ann_id)
     return jsonify({"ok": True})
+
+
+# ── 我的邀请（邀请制注册：老用户可生成邀请码拉新得积分）──────────
+@bp.route("/api/user/invite_codes", methods=["GET"])
+@require_auth
+def my_invite_codes():
+    """我生成的邀请码列表 + 邀请概览（累计邀请人数/奖励积分/每邀请奖励）。"""
+    uid = session["user_id"]
+    return jsonify({
+        "ok":      True,
+        "codes":   um.list_invite_codes(uid),
+        "summary": um.get_invite_summary(uid),
+    })
+
+
+@bp.route("/api/user/invite_codes", methods=["POST"])
+@require_auth
+def create_my_invite_code():
+    """生成我的邀请码（名额可设 1~20；奖励为平台固定值，不可自定义防刷分）。"""
+    uid = session["user_id"]
+    d   = request.json or {}
+    r = um.create_invite_code(uid, max_uses=d.get("max_uses", 1),
+                              note=d.get("note", ""), is_admin_code=False)
+    if r.get("ok"):
+        _add_log(uid, f"生成邀请码 {r['code']}（名额{r['max_uses']}）")
+    return jsonify(r)
+
+
+@bp.route("/api/user/invite_codes/<int:cid>", methods=["DELETE"])
+@require_auth
+def revoke_my_invite_code(cid):
+    """作废我自己的邀请码。"""
+    uid = session["user_id"]
+    return jsonify(um.revoke_invite_code(cid, creator_uid=uid))
