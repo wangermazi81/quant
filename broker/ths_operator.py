@@ -1456,17 +1456,25 @@ class THSOperator:
         if code_x is None:
             code_x, _ = self._detect_code_column(rows, x_tol)
         if code_x is None:
-            return []
+            # 降级：直接在所有行里找 6 位代码
+            code_x = 0
         holdings = []
         for r in rows:
             ws = r["words"]
             code_word = None; code = None
-            # 先在整行找代码（放宽 x_tol 到 40，应对 OCR 坐标偏移）
+            # 先在整行找代码（放宽 x_tol 到 50，应对 OCR 坐标偏移）
             for w in ws:
                 _c = _as_stock_code(w["text"])
-                if _c and abs(w["x"] - code_x) <= max(x_tol, 40):
+                if _c and abs(w["x"] - code_x) <= max(x_tol, 50):
                     code_word = w; code = _c
                     break
+            # 降级：如果在代码列找不到，行内任意位置找 6 位代码
+            if not code_word:
+                for w in ws:
+                    _c = _as_stock_code(w["text"])
+                    if _c:
+                        code_word = w; code = _c
+                        break
             if not code_word:
                 continue
             right = [w for w in ws if w["x"] > code_word["x"]]
@@ -1503,64 +1511,92 @@ class THSOperator:
         """从顶部工具栏词里抽「可用 / 资产」金额。
 
         xiadan 顶部一行形如：资产：208374.89 可用：208374.89 当日：+260 ...
-        OCR 会把它拆成很多词且数字含空格/全角点。做法：取顶部一带的词按 X 拼成
-        一整串 → 去空格、全角点→半角 → 正则取「资产」「可用」后的金额。
-        返回 {available, total_asset}（取不到为 None）。
+        核心改进：对「标签→金额」做局部小数点恢复，而非全局正则，避免把
+        13303.78 误重组成 1330378（100倍）。
         """
         import re
         if not words:
             return {"available": None, "total_asset": None}
-        # 动态计算顶部区域：找含「资」「可」「额」等关键词的行，而非固定 40px
+        # 动态计算顶部区域：找含「资」「可」「额」等关键词的行
         top_y = min(w["y"] for w in words)
-        # 先取顶部 60px 的词（放宽范围，确保不漏）
         top_words = sorted([w for w in words if w["y"] <= top_y + 60], key=lambda d: d["x"])
         # 按行聚类，找含资金关键词的行
         fund_row_ys = set()
         for w in top_words:
             txt = re.sub(r"\s+", "", w["text"])
             if any(k in txt for k in ["资", "可", "额", "总", "用", "余"]):
-                fund_row_ys.add(round(w["y"], -1))  # 取整到10px
-        # 如果找到关键词行，只取那些行附近的词（±15px）
+                fund_row_ys.add(round(w["y"], -1))
         if fund_row_ys:
             min_fy = min(fund_row_ys)
             top = [w for w in top_words if abs(w["y"] - min_fy) <= 15]
         else:
             top = top_words
-        # 保留单空格，便于把「大整数 + 两位」重组成小数（低分辨率 OCR 常丢小数点，
-        # 把 208374.89 识别成 "208374 89"）。
-        s = " ".join(w["text"] for w in top)
-        s = (s.replace("．", ".").replace("。", ".").replace("·", ".")
-               .replace("，", "").replace(",", "").replace("：", ":"))
-        s = re.sub(r"(\d)\s*\.\s*(\d)", r"\1.\2", s)            # 合拢小数点两侧空格
-        s = re.sub(r"(\d{3,})\s+(\d{2})(?!\d)", r"\1.\2", s)    # 大整数+空格+恰两位 → 小数
-        sc = s.replace(" ", "")                                 # 去剩余空格便于标签匹配
-        # OCR 常见中文误认修正（扩大匹配范围）
-        sc_fix = (sc.replace("资全", "资产").replace("资广", "资产").replace("资厂", "资产")
-                   .replace("可田", "可用").replace("可甩", "可用").replace("石T用", "可用")
-                   .replace("可月", "可用").replace("可目", "可用")
-                   .replace("总资广", "总资产").replace("总资全", "总资产")
-                   .replace("资金余颜", "资金余额").replace("资金余领", "资金余额"))
 
-        def _after(label, text=None):
-            # label 后紧跟的金额；允许 label 与数字间夹杂 :/. 等噪声
-            t = text or sc_fix
-            m = re.search(label + r"[\s:.]*(-?\d+(?:\.\d+)?)", t)
-            return self._norm_num(m.group(1)) if m else None
+        # ── 按标签局部提取金额（关键修复）─────────────────────
+        # 不再对整个字符串做全局正则，而是：
+        #   1. 先拼接原始文本（保留空格）
+        #   2. 找到标签位置
+        #   3. 只对标签后面的数字做小数点恢复
+        # 这样避免「13303 78」被错误重组成「1330378」。
+        s_raw = " ".join(w["text"] for w in top)
+        s_raw = (s_raw.replace("．", ".").replace("。", ".").replace("·", ".")
+                      .replace("，", "").replace(",", "").replace("：", ":"))
 
-        total = (_after("总资产") or _after("资产") or _after("总资")
-                 or _after("总z产", sc_fix) or _after("总2产", sc_fix))
-        avail = (_after("可用余额") or _after("资金余额")
-                 or _after("可用资金") or _after("可用")
-                 or _after("可甩资金", sc_fix) or _after("可田资金", sc_fix))
-        # 「可用」常被 OCR 误识（可用→石T用）→ 退而按工具栏顺序取第二个「大额」金额
-        # （工具栏固定顺序：资产 X 可用 Y 当日 Z，故第 1 大额=资产、第 2 大额=可用）。
+        def _recover_decimal(num_str):
+            """对单个数字串做小数点恢复：如果原始无小数点，且末尾恰2位，
+            则可能是小数点丢失（如 13303 78 → 13303.78）。"""
+            n = num_str.replace(" ", "")
+            if "." in n:
+                return n  # 已有小数点，不处理
+            # 匹配：若干位数字 + 空格 + 恰2位数字 → 中间加小数点
+            m = re.match(r"^(\d{2,})\s+(\d{2})$", num_str)
+            if m:
+                return m.group(1) + "." + m.group(2)
+            return n
+
+        def _find_amount_after(label_pattern, text):
+            """在 text 中找 label_pattern 后面的金额数字。"""
+            # 先做中文误认修正
+            t = (text.replace("资全", "资产").replace("资广", "资产").replace("资厂", "资产")
+                     .replace("可田", "可用").replace("可甩", "可用").replace("石T用", "可用")
+                     .replace("可月", "可用").replace("可目", "可用")
+                     .replace("总资广", "总资产").replace("总资全", "总资产")
+                     .replace("资金余颜", "资金余额").replace("资金余领", "资金余额"))
+            # 找标签后紧跟的数字（允许 :/. / 空格 分隔）
+            m = re.search(label_pattern + r"[\s:.]*([\d][\d\s.]*\d)", t)
+            if not m:
+                return None
+            raw_num = m.group(1)
+            recovered = _recover_decimal(raw_num)
+            return self._norm_num(recovered)
+
+        total = (_find_amount_after(r"总资产", s_raw)
+                 or _find_amount_after(r"资产", s_raw)
+                 or _find_amount_after(r"总资", s_raw))
+        avail = (_find_amount_after(r"可用余额", s_raw)
+                 or _find_amount_after(r"资金余额", s_raw)
+                 or _find_amount_after(r"可用资金", s_raw)
+                 or _find_amount_after(r"可用", s_raw))
+
+        # 降级：按工具栏顺序取第1/第2大额（标签全失败时）
         if avail is None or total is None:
-            amounts = [float(x) for x in re.findall(r"\d+\.\d{2}", sc_fix)]
+            amounts = [float(x) for x in re.findall(r"\d+\.\d{2}", s_raw)]
             big = [a for a in amounts if a >= 100]
             if total is None and big:
                 total = big[0]
             if avail is None and big:
                 avail = big[1] if len(big) >= 2 else big[0]
+
+        # ── 逻辑校验：可用资金不应超过总资产 ──────────────────
+        if avail is not None and total is not None and avail > total:
+            # 可用 > 总资产 = 不合理，说明小数点恢复出错
+            # 尝试把 avail 除以 100 看是否合理
+            if avail / 100 > 1 and abs(avail / 100 - total) / max(total, 1) < 0.5:
+                logger.warning(f"[funds] 可用资金({avail})>总资产({total})，自动修正 ÷100 → {avail/100}")
+                avail = avail / 100
+            else:
+                logger.warning(f"[funds] 可用资金({avail})>总资产({total})，数据可能有误")
+
         return {"available": avail, "total_asset": total}
 
     # 查询区左侧导航节点（用于定位/导航到「当日委托」等子页）
