@@ -1719,6 +1719,84 @@ def api_run():
     return jsonify(r)
 
 
+@app.route("/api/strategies/run_async", methods=["POST"])
+@require_auth
+def api_run_async():
+    """异步选股：立即返回 task_id，前端轮询 /strategies/progress 和 /strategies/result。"""
+    import uuid as _uuid
+    err = _deduct("scan", "全市场选股扫描")
+    if err:
+        return jsonify(err), 402
+    uid = session["user_id"]
+    d   = request.json or {}
+    fn  = d.get("filename", "")
+    cs  = d.get("codes") or []
+    try:
+        mc = int(d.get("max_codes", 0))
+    except (TypeError, ValueError):
+        mc = 0
+    task_id = _uuid.uuid4().hex[:12]
+    with _strat_tasks_lock:
+        _strat_tasks[task_id] = {"status": "pending", "uid": uid, "fn": fn}
+    scope_label = "全市场" if not cs else f"{len(cs)}只"
+    if not cs and mc > 0:
+        scope_label = f"活跃前{mc}只"
+    _add_log(uid, f"执行选股(异步): [{fn}] {scope_label}... task={task_id}")
+    def _worker():
+        try:
+            with _strat_tasks_lock:
+                _strat_tasks[task_id]["status"] = "running"
+            r = sm.run(fn, cs, max_codes=mc)
+            with _strat_tasks_lock:
+                _strat_tasks[task_id].update({"status": "done", "result": r})
+            scanned = r.get("scanned", r.get("count", 0))
+            _add_log(uid, f"选股完成(异步)，扫描 {scanned} 只，命中 {r.get('count',0)} 只")
+        except Exception as e:
+            logger.exception(f"[uid={uid}] async scan 失败 task={task_id}")
+            with _strat_tasks_lock:
+                _strat_tasks[task_id].update({"status": "error", "error": str(e)})
+    threading.Thread(target=_worker, daemon=True).start()
+    return jsonify({"ok": True, "task_id": task_id})
+
+
+@app.route("/api/strategies/progress/<task_id>")
+@require_auth
+def api_strat_progress(task_id):
+    """查询异步选股任务状态（前端可 1-2s 轮询）"""
+    with _strat_tasks_lock:
+        task = _strat_tasks.get(task_id)
+    if not task:
+        return jsonify({"ok": False, "error": "任务不存在"})
+    snap = {"ok": True, "task_id": task_id, "status": task.get("status")}
+    # 借用 strategy_manager 的全局扫描进度
+    try:
+        prog = getattr(sm, "_scan_prog", None) or getattr(sm, "_tdx_prog", {})
+        if isinstance(prog, dict) and prog.get("running"):
+            snap["scan_current"] = int(prog.get("current") or 0)
+            snap["scan_total"]   = int(prog.get("total") or 0)
+            snap["scan_code"]    = prog.get("code") or ""
+    except Exception:
+        pass
+    if task.get("status") == "error":
+        snap["error"] = task.get("error", "未知错误")
+    return jsonify(snap)
+
+
+@app.route("/api/strategies/result/<task_id>")
+@require_auth
+def api_strat_result(task_id):
+    """获取异步选股结果（任务完成后调用）"""
+    with _strat_tasks_lock:
+        task = _strat_tasks.get(task_id)
+    if not task:
+        return jsonify({"ok": False, "error": "任务不存在"})
+    if task["status"] == "done":
+        return jsonify(task.get("result", {"ok": False}))
+    if task["status"] == "error":
+        return jsonify({"ok": False, "error": task.get("error", "未知错误")})
+    return jsonify({"ok": False, "status": task["status"], "msg": "任务未完成"})
+
+
 @app.route("/api/strategies/activate", methods=["POST"])
 @require_auth
 def api_activate():
@@ -1868,6 +1946,11 @@ def api_factor_evaluate():
 #  - /api/factors_zoo/progress/<id>:  查询任务进度
 #  - /api/factors_zoo/result/<id>:    取任务结果
 #  完全独立于 factor_manager，不参与自动监控扫描/下单链路
+# ──────────────────────────────────────────────────────────────
+# 策略选股异步任务表（进程内，重启丢失）
+_strat_tasks: dict = {}            # task_id -> {status, result, error, ...}
+_strat_tasks_lock = threading.Lock()
+
 # ──────────────────────────────────────────────────────────────
 # 异步任务表（进程内，重启丢失；阶段 1 够用）
 _fz_tasks: dict = {}            # task_id -> {status, progress, total, ...}
