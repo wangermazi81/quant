@@ -485,10 +485,15 @@ tr:hover td{background:var(--card)}
         </div>
         <button class="auth-btn" onclick="doLogin()" id="loginBtn">登录</button>
         <div class="auth-msg" id="loginMsg"></div>
-        <div class="auth-hint">新用户注册即送 <b style="color:#e3b341">100 积分</b><br>积分可用于 AI分析 / 回测 / 选股 / 模拟下单</div>
+
       </div>
       <!-- 注册表单 -->
       <div class="auth-form" id="authRegisterForm">
+        <div class="auth-row">
+          <label class="auth-label">邀请码</label>
+          <input class="auth-inp" id="regInvite" placeholder="请输入邀请码（必填）"
+                 onkeydown="if(event.key==='Enter')doRegister()">
+        </div>
         <div class="auth-row">
           <label class="auth-label">用户名</label>
           <input class="auth-inp" id="regUser" placeholder="至少2个字符">
@@ -506,6 +511,7 @@ tr:hover td{background:var(--card)}
           </div>
         </div>
         <button class="auth-btn" onclick="doRegister()" id="regBtn">注册账号</button>
+        <div class="auth-hint">需要邀请码才能注册。联系管理员或已有用户获取邀请码。</div>
         <div class="auth-msg" id="regMsg"></div>
       </div>
     </div>
@@ -5483,12 +5489,14 @@ async function doLogin(){
 async function doRegister(){
   const btn = document.getElementById('regBtn')
   const msg = document.getElementById('regMsg')
+  const inviteCode = document.getElementById('regInvite').value.trim()
   const username = document.getElementById('regUser').value.trim()
   const email    = document.getElementById('regEmail').value.trim()
   const password = document.getElementById('regPass').value
+  if(!inviteCode){ setAuthMsg(msg,'请输入邀请码','err'); return }
   if(!username||!email||!password){ setAuthMsg(msg,'请填写所有字段','err'); return }
   btn.disabled = true; btn.textContent = '注册中...'
-  const r = await api('/auth/register','POST',{username, email, password})
+  const r = await api('/auth/register','POST',{username, email, password, invite_code: inviteCode})
   btn.disabled = false; btn.textContent = '注册账号'
   if(r?.ok){
     setAuthMsg(msg,'✅ 注册成功！正在登录...','ok')
