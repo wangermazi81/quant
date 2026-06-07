@@ -4,7 +4,7 @@ echo ========================================
 echo   见微 Alpha — 一键部署到服务器
 echo ========================================
 
-set SERVER=root@47.100.109.173
+set SERVER=root@YOUR_SERVER_IP
 set REMOTE=/opt/quant
 set LOCAL=D:\同花顺量化交易\ths_auto_trader
 

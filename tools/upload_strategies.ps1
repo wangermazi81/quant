@@ -15,7 +15,7 @@
 param([switch]$SkipRestart)
 
 $ErrorActionPreference = "Stop"
-$SERVER = "root@47.100.109.173"
+$SERVER = "root@YOUR_SERVER_IP"
 $REMOTE_DIR = "/opt/quant/strategies"
 $LOCAL_DIR = Join-Path $PSScriptRoot ".." "strategies"
 

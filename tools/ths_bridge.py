@@ -54,7 +54,7 @@ logger = logging.getLogger("Bridge")
 # ── 默认配置（如果不存在 bridge_config.json 则使用默认值） ──────
 CONFIG_FILE = Path(__file__).parent / "bridge_config.json"
 DEFAULT_CONFIG = {
-    "server_url": "http://127.0.0.1:5001",  # 本地调试用 5001，云端部署请改为 http://47.100.109.173:5000
+    "server_url": "http://127.0.0.1:5001",  # 本地调试用 5001，云端部署请改为 http://YOUR_SERVER_IP:5000
     "username": "admin",
     "password": "your_password_here",
     "poll_interval_sec": 1.0
