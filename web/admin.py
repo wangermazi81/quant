@@ -156,3 +156,50 @@ def admin_create_invite():
 def admin_revoke_invite(cid):
     """作废邀请码（停止可用，不删历史）。"""
     return jsonify(um.revoke_invite_code(cid))
+
+
+# ── 更新日志管理 ──────────────────────────────────────────────
+import changelog_manager as clm
+
+@bp.route("/api/admin/changelog", methods=["GET"])
+@require_admin
+def admin_list_changelog():
+    """管理员列出全部更新日志（含未发布）。"""
+    items = clm.list_changelog(published_only=False)
+    return jsonify({"ok": True, "items": items})
+
+
+@bp.route("/api/admin/changelog", methods=["POST"])
+@require_admin
+def admin_create_changelog():
+    """管理员创建更新日志。"""
+    d = request.json or {}
+    title = (d.get("title") or "").strip()
+    if not title:
+        return jsonify({"ok": False, "error": "标题不能为空"}), 400
+    cid = clm.add_changelog(
+        title=title,
+        content=d.get("content", ""),
+        version=d.get("version", ""),
+        change_type=d.get("change_type", "notice"),
+        created_by=session.get("user_id", 0),
+        is_published=d.get("is_published", 1),
+    )
+    return jsonify({"ok": True, "id": cid})
+
+
+@bp.route("/api/admin/changelog/<int:cid>", methods=["PUT"])
+@require_admin
+def admin_update_changelog(cid):
+    """管理员更新日志。"""
+    d = request.json or {}
+    ok = clm.update_changelog(cid, **{k: v for k, v in d.items()
+                                       if k in ("version", "title", "content", "change_type", "is_published")})
+    return jsonify({"ok": ok})
+
+
+@bp.route("/api/admin/changelog/<int:cid>", methods=["DELETE"])
+@require_admin
+def admin_delete_changelog(cid):
+    """管理员删除更新日志。"""
+    return jsonify({"ok": clm.delete_changelog(cid)})

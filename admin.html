@@ -576,6 +576,49 @@ tr:hover td{background:#fafbff}
       </div>
     </div>
 
+    <!-- ===== 更新日志 ===== -->
+    <div class="page" id="page-changelog">
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title"><i class="fas fa-history"></i> 发布更新日志</div>
+        <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+          <div class="form-group" style="margin:0;width:120px">
+            <label class="form-label">版本号</label>
+            <input id="cl-version" class="form-input" placeholder="v1.0.0">
+          </div>
+          <div class="form-group" style="margin:0;width:140px">
+            <label class="form-label">类型</label>
+            <select id="cl-type" class="form-input">
+              <option value="feature">🆕 新功能</option>
+              <option value="fix">🐛 修复</option>
+              <option value="optimize">⚡ 优化</option>
+              <option value="security">🔒 安全</option>
+              <option value="notice">📢 公告</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin:0;flex:1;min-width:200px">
+            <label class="form-label">标题</label>
+            <input id="cl-title" class="form-input" placeholder="更新标题（必填）" maxlength="200">
+          </div>
+          <div class="form-group" style="margin:0;flex:2;min-width:300px">
+            <label class="form-label">内容</label>
+            <textarea id="cl-content" class="form-input" rows="3" placeholder="更新详情，支持换行" style="resize:vertical"></textarea>
+          </div>
+          <button class="btn btn-primary" onclick="createChangelog()" style="height:38px">
+            <i class="fas fa-plus"></i> 发布
+          </button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+          <span><i class="fas fa-list"></i> 更新日志列表</span>
+          <button class="btn btn-outline" onclick="loadChangelogAdmin()" style="padding:4px 12px;font-size:12px">
+            <i class="fas fa-sync-alt"></i> 刷新
+          </button>
+        </div>
+        <div id="cl-list-body"><div class="empty" style="padding:40px">加载中…</div></div>
+      </div>
+    </div>
+
     <!-- ===== 问题反馈 ===== -->
     <div class="page" id="page-feedback">
       <div class="card">
@@ -883,6 +926,7 @@ const MENU = [
   {id:'invites',   icon:'fas fa-ticket-alt',      label:'邀请码',   group:'系统管理'},
   {id:'stats',         icon:'fas fa-chart-bar',       label:'使用统计',  group:'数据分析'},
   {id:'announcements', icon:'fas fa-bullhorn',         label:'公告管理',  group:'内容管理'},
+  {id:'changelog',     icon:'fas fa-history',          label:'更新日志',  group:'内容管理'},
   {id:'feedback',      icon:'fas fa-comment-dots',     label:'问题反馈',  group:'内容管理'},
   {id:'user-center',   icon:'fas fa-user-circle',     label:'个人中心',  group:'账户'},
 ];
@@ -891,6 +935,7 @@ const PAGE_NAMES = {
   'points':'积分流水','stats':'使用统计','announcements':'公告管理',
   'invites':'邀请码','feedback':'问题反馈',
   'user-center':'个人中心','change-pwd':'修改密码','notifications':'系统通知',
+  'changelog':'更新日志',
 };
 
 // ================================================================
@@ -969,6 +1014,7 @@ function navigate(id, addTabFlag=true){
 
   // 页面专属初始化
   if(id === 'announcements') loadAnnouncements();
+  if(id === 'changelog') loadChangelogAdmin();
   if(id === 'feedback') loadFeedback();
 
   // Breadcrumb
@@ -1782,6 +1828,87 @@ function revokeInvite(id){
 const FB_CAT_LABELS = {bug:'🐞 功能异常', suggestion:'💡 功能建议', data:'📊 数据问题', other:'💬 其他'};
 const FB_STATUS_OPTS = [['open','待处理'],['read','已读'],['in_progress','处理中'],['resolved','已解决']];
 const FB_STATUS_COLOR = {open:'var(--orange)', read:'var(--text3)', in_progress:'var(--blue)', resolved:'var(--green)'};
+
+// ══════════════════════════════════════════════════
+//  更新日志管理
+// ══════════════════════════════════════════════════
+async function loadChangelogAdmin(){
+  const box = document.getElementById('cl-list-body')
+  box.innerHTML = '<div class="empty" style="padding:30px">加载中…</div>'
+  try{
+    const r = await (await fetch(`${API}/admin/changelog`, {credentials:'include'})).json()
+    const list = r.items || []
+    if(!list.length){ box.innerHTML = '<div class="empty" style="padding:40px">暂无更新日志</div>'; return }
+    const _tLabel = {feature:'🆕 新功能',fix:'🐛 修复',optimize:'⚡ 优化',security:'🔒 安全',notice:'📢 公告'}
+    const _tColor = {feature:'var(--green)',fix:'var(--red)',optimize:'var(--orange)',security:'var(--purple)',notice:'var(--blue)'}
+    let html = '<table><thead><tr><th>类型</th><th>版本</th><th>标题</th><th>状态</th><th>发布时间</th><th>操作</th></tr></thead><tbody>'
+    list.forEach(c => {
+      const t = _tLabel[c.change_type] || c.change_type
+      const tc = _tColor[c.change_type] || 'var(--text2)'
+      const pub = c.is_published ? '<span class="tag tag-green">已发布</span>' : '<span class="tag" style="background:#fff3cd;color:#856404">草稿</span>'
+      html += `<tr>
+        <td><span style="color:${tc};font-weight:600">${t}</span></td>
+        <td><code>${c.version||'-'}</code></td>
+        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.title}</td>
+        <td>${pub}</td>
+        <td style="font-size:12px;color:var(--text3)">${c.created_at||''}</td>
+        <td>
+          <button class="btn btn-outline btn-sm" onclick="editChangelog(${c.id})" title="编辑"><i class="fas fa-edit"></i></button>
+          <button class="btn btn-danger btn-sm" onclick="deleteChangelog(${c.id})" title="删除"><i class="fas fa-trash"></i></button>
+        </td>
+      </tr>`
+    })
+    html += '</tbody></table>'
+    box.innerHTML = html
+  }catch(e){ box.innerHTML = '<div class="empty" style="padding:40px;color:var(--red)">加载失败</div>' }
+}
+async function createChangelog(){
+  const title = document.getElementById('cl-title').value.trim()
+  if(!title){ alert('标题不能为空'); return }
+  const body = {
+    title,
+    version: document.getElementById('cl-version').value.trim(),
+    change_type: document.getElementById('cl-type').value,
+    content: document.getElementById('cl-content').value.trim(),
+    is_published: 1
+  }
+  try{
+    const r = await (await fetch(`${API}/admin/changelog`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      credentials:'include', body:JSON.stringify(body)
+    })).json()
+    if(r.ok){
+      document.getElementById('cl-title').value = ''
+      document.getElementById('cl-version').value = ''
+      document.getElementById('cl-content').value = ''
+      loadChangelogAdmin()
+    } else { alert(r.error || '发布失败') }
+  }catch(e){ alert('网络错误') }
+}
+async function deleteChangelog(id){
+  if(!confirm('确定删除这条更新日志？')) return
+  try{
+    await fetch(`${API}/admin/changelog/${id}`, {method:'DELETE', credentials:'include'})
+    loadChangelogAdmin()
+  }catch(e){ alert('删除失败') }
+}
+async function editChangelog(id){
+  const title = prompt('新标题（留空不改）：')
+  if(title === null) return
+  const content = prompt('新内容（留空不改）：')
+  if(content === null) return
+  const body = {}
+  if(title) body.title = title
+  if(content) body.content = content
+  if(!Object.keys(body).length) return
+  try{
+    await fetch(`${API}/admin/changelog/${id}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      credentials:'include', body:JSON.stringify(body)
+    })
+    loadChangelogAdmin()
+  }catch(e){ alert('更新失败') }
+}
 
 async function loadFeedback(){
   const box = document.getElementById('fb-list-body');

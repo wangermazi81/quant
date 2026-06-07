@@ -544,6 +544,7 @@ tr:hover td{background:var(--card)}
       <span style="font-size:13px;color:var(--t2)" id="navUsername"></span>
       <button class="btn btn-gray btn-sm" id="navAdminBtn" onclick="location.href='/admin'" style="display:none">⚙ 管理后台</button>
       <button class="btn btn-gray btn-sm" onclick="doLogout()">退出</button>
+      <span class="pill" style="cursor:pointer;user-select:none;color:var(--yl);border-color:var(--yl)" onclick="openChangelog()" title="查看更新日志">📝 更新日志</span>
     </div>
   </div>
 </nav>
@@ -1059,6 +1060,19 @@ tr:hover td{background:var(--card)}
       </div>
       <div style="display:flex;justify-content:flex-end;margin-top:10px">
         <button class="btn btn-gray btn-sm" onclick="closeTodayOrders()">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 更新日志 Modal -->
+  <div class="rename-modal" id="changelogModal" onclick="closeChangelog(event)">
+    <div class="rename-box" style="width:700px;max-width:90vw;max-height:80vh;overflow:auto" onclick="event.stopPropagation()">
+      <h4>📝 更新日志</h4>
+      <div id="changelogBody" style="padding:10px 0;min-height:100px">
+        <div style="color:var(--t3);text-align:center;padding:20px">加载中...</div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:10px">
+        <button class="btn btn-gray btn-sm" onclick="closeChangelog()">关闭</button>
       </div>
     </div>
   </div>
@@ -1930,7 +1944,7 @@ document.addEventListener('DOMContentLoaded', () => {
   try {
     ['renameModal','vibeActivateModal','liveModeModal','vibeModal',
      'aiGenModal','aiFactorGenModal','klOverlay','vibeBacktestModal',
-     'todayOrdersModal'
+     'todayOrdersModal','changelogModal'
     ].forEach(id => {
       const el = document.getElementById(id)
       if(el && el.parentNode !== document.body){
@@ -2400,6 +2414,50 @@ function renderOrdersTable(orders){
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`
+}
+
+// ══════════════════════════════════════════════════
+//  更新日志
+// ══════════════════════════════════════════════════
+const _clTypeLabel = {feature:'🆕 新功能',fix:'🐛 修复',optimize:'⚡ 优化',security:'🔒 安全',notice:'📢 公告'}
+const _clTypeColor = {feature:'#22c55e',fix:'#ef4444',optimize:'#f59e0b',security:'#8b5cf6',notice:'#3b82f6'}
+function openChangelog(){
+  document.getElementById('changelogModal').classList.add('open')
+  loadChangelog()
+}
+function closeChangelog(ev){
+  if(ev && ev.target !== document.getElementById('changelogModal')) return
+  document.getElementById('changelogModal').classList.remove('open')
+}
+async function loadChangelog(){
+  const body = document.getElementById('changelogBody')
+  body.innerHTML = '<div style="color:var(--t3);text-align:center;padding:20px">加载中...</div>'
+  try{
+    const r = await fetch('/api/changelog?limit=50')
+    const d = await r.json()
+    if(!d.ok || !d.items.length){
+      body.innerHTML = '<div style="color:var(--t3);text-align:center;padding:20px">暂无更新日志</div>'
+      return
+    }
+    body.innerHTML = d.items.map(item => {
+      const t = _clTypeLabel[item.change_type] || item.change_type
+      const c = _clTypeColor[item.change_type] || 'var(--t2)'
+      const ver = item.version ? `<span style="background:var(--inp);border:1px solid var(--b1);border-radius:10px;padding:1px 8px;font-size:11px;color:var(--t2)">${item.version}</span>` : ''
+      return `
+        <div style="border-bottom:1px solid var(--b1);padding:12px 0">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="color:${c};font-size:12px;font-weight:600">${t}</span>
+            <span style="font-size:14px;font-weight:600;color:var(--t1)">${item.title}</span>
+            ${ver}
+            <span style="margin-left:auto;font-size:11px;color:var(--t4)">${item.created_at||''}</span>
+          </div>
+          ${item.content ? `<div style="margin-top:6px;font-size:13px;color:var(--t2);line-height:1.6;white-space:pre-wrap">${item.content}</div>` : ''}
+        </div>
+      `
+    }).join('')
+  }catch(e){
+    body.innerHTML = '<div style="color:#ef4444;text-align:center;padding:20px">加载失败</div>'
+  }
 }
 
 async function confirmSwitchToLive(){

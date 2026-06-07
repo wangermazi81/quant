@@ -212,6 +212,22 @@ def migrate_users_db():
         );
         CREATE INDEX IF NOT EXISTS idx_lp_uid ON live_positions(user_id);
 
+        -- 更新日志（2026-06-07）。管理员发布，所有用户可见。
+        CREATE TABLE IF NOT EXISTS changelog (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            version      TEXT    NOT NULL DEFAULT '',
+            title        TEXT    NOT NULL,
+            content      TEXT    NOT NULL DEFAULT '',
+            change_type  TEXT    NOT NULL DEFAULT 'notice',
+            is_published INTEGER DEFAULT 1,
+            created_by   INTEGER,
+            created_at   TEXT    DEFAULT (datetime('now','localtime')),
+            updated_at   TEXT    DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_cl_published ON changelog(is_published);
+        CREATE INDEX IF NOT EXISTS idx_cl_created   ON changelog(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_cl_type      ON changelog(change_type);
+
         -- 邀请码（邀请制注册，2026-06-05）。管理员/老用户可生成；可多次(限名额)；
         -- 邀请人每成功邀请1人得 reward 积分。used_count 计已注册人数。
         CREATE TABLE IF NOT EXISTS invite_codes (

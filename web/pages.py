@@ -1,7 +1,8 @@
 """静态页面 + 截图文件服务蓝图。"""
-from flask import Blueprint, jsonify, send_from_directory
+from flask import Blueprint, jsonify, send_from_directory, request
 
 from app_state import BASE_DIR, require_auth
+import changelog_manager as clm
 
 bp = Blueprint("pages", __name__)
 
@@ -58,3 +59,12 @@ def serve_screenshot(filename):
     if not full.exists():
         return jsonify({"ok": False, "error": "截图不存在"}), 404
     return send_from_directory(str(scr_dir), filename)
+
+
+# ── 更新日志（公开接口，所有用户可见）──────────────────────────
+@bp.route("/api/changelog", methods=["GET"])
+def public_changelog():
+    """获取已发布的更新日志（登录/未登录均可看）。"""
+    limit = min(int(request.args.get("limit", 50)), 200)
+    items = clm.list_changelog(limit=limit, published_only=True)
+    return jsonify({"ok": True, "items": items, "total": clm.count()})

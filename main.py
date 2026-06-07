@@ -99,6 +99,8 @@ um.init_db()
 # 问题反馈表（与 users.db 同库，幂等建表）
 import feedback_manager as fbm
 fbm.init_db()
+import changelog_manager as clm
+clm.init_db()
 # 迁移必须在 pb.init_paper_db() 之前，先给旧表加 user_id 列
 try:
     import db_migration as _dbm
