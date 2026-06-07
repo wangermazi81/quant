@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 bp = Blueprint("ai", __name__)
 
+# AI 分析异步任务表（进程内，重启丢失）
+import threading as _threading
+_ai_tasks: dict = {}
+_ai_tasks_lock = _threading.Lock()
+
 
 def _kline_is_stale(df, max_lag_days: int = 3) -> bool:
     """K 线缓存是否过期（最后一根距今超过 max_lag_days 个自然日）。
@@ -181,6 +186,121 @@ def ai_analyze():
     # 修复：递归把 NaN/Inf 换成 None，否则 Python jsonify 输出字面量 NaN，
     # 浏览器 JSON.parse 拒收（SyntaxError），前端误显示"分析失败"
     return jsonify(ai._json_safe(result))
+
+
+@bp.route("/api/ai/analyze_async", methods=["POST"])
+@require_auth
+def ai_analyze_async():
+    """异步 AI 分析：立即返回 task_id，前端轮询进度和结果。"""
+    import uuid as _uuid
+    err = _deduct("ai_analysis", f"AI分析 {(request.json or {}).get('code','')}")
+    if err:
+        return jsonify(err), 402
+    uid  = session["user_id"]
+    d    = request.json or {}
+    code = d.get("code", "").strip()
+    if not code:
+        return jsonify({"ok": False, "error": "请输入股票代码"})
+    task_id = _uuid.uuid4().hex[:12]
+    with _ai_tasks_lock:
+        _ai_tasks[task_id] = {"status": "pending", "uid": uid, "code": code}
+    _add_log(uid, f"AI分析(异步): {code}... task={task_id}")
+
+    def _worker():
+        try:
+            with _ai_tasks_lock:
+                _ai_tasks[task_id]["status"] = "running"
+            name = dm.get_stock_name(code) or code
+            df   = dm.get_local(code)
+            if df is None or df.empty or len(df) < 30 or _kline_is_stale(df):
+                try:
+                    import ths_quote as tq
+                    import pandas as pd
+                    client = tq.get_client()
+                    if client and client._ok:
+                        bars = client.get_kline(code, 120)
+                        if bars:
+                            df = pd.DataFrame(bars)
+                            df["date"] = pd.to_datetime(df["date"])
+                            try:
+                                daily_dir = BASE_DIR / "data" / "daily"
+                                daily_dir.mkdir(parents=True, exist_ok=True)
+                                df.to_csv(daily_dir / f"{code}.csv", index=False, encoding="utf-8")
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            realtime_price = realtime_change = None
+            try:
+                import ths_quote as tq
+                client = tq.get_client()
+                if client and client._ok:
+                    qs = client.get_quotes([code])
+                    if qs:
+                        q  = qs[0]
+                        rp = float(q.get("price") or q.get("now") or 0)
+                        if rp > 0:
+                            realtime_price  = round(rp, 2)
+                            realtime_change = round(float(q.get("change_pct", 0)), 2)
+                            qname = q.get("name", "")
+                            if qname and name == code:
+                                name = qname
+            except Exception:
+                pass
+            cfg = ai.resolve_config(um.get_user_ai_config(uid) or {})
+            result = ai.run_analysis(code, name, df, config_override=cfg)
+            if realtime_price and result.get("ok"):
+                result["realtime_price"]  = realtime_price
+                result["realtime_change"] = realtime_change
+                if isinstance(result.get("indicators"), dict):
+                    result["indicators"]["price"] = realtime_price
+                sc = result.get("score", {})
+                if isinstance(sc.get("indicators"), dict):
+                    sc["indicators"]["price"] = realtime_price
+            action    = result.get("summary", {}).get("action") or result.get("score", {}).get("signal") or "—"
+            score_val = result.get("score", {}).get("total", "—")
+            if result.get("ok"):
+                _add_log(uid, f"AI分析完成: {code} {name} → {action}（评分{score_val}）")
+            else:
+                _add_log(uid, f"AI分析失败: {code} — {result.get('error','')}", "error")
+            with _ai_tasks_lock:
+                _ai_tasks[task_id].update({"status": "done", "result": ai._json_safe(result)})
+        except Exception as e:
+            logger.exception(f"[uid={uid}] async AI分析失败 task={task_id}")
+            with _ai_tasks_lock:
+                _ai_tasks[task_id].update({"status": "error", "error": str(e)})
+
+    _threading.Thread(target=_worker, daemon=True).start()
+    return jsonify({"ok": True, "task_id": task_id})
+
+
+@bp.route("/api/ai/analyze_progress/<task_id>")
+@require_auth
+def ai_analyze_progress(task_id):
+    """查询异步 AI 分析状态（前端可 1-2s 轮询）"""
+    with _ai_tasks_lock:
+        task = _ai_tasks.get(task_id)
+    if not task:
+        return jsonify({"ok": False, "error": "任务不存在"})
+    snap = {"ok": True, "task_id": task_id, "status": task.get("status")}
+    if task.get("status") == "error":
+        snap["error"] = task.get("error", "未知错误")
+    return jsonify(snap)
+
+
+@bp.route("/api/ai/analyze_result/<task_id>")
+@require_auth
+def ai_analyze_result(task_id):
+    """获取异步 AI 分析结果"""
+    with _ai_tasks_lock:
+        task = _ai_tasks.get(task_id)
+    if not task:
+        return jsonify({"ok": False, "error": "任务不存在"})
+    if task["status"] == "done":
+        return jsonify(task.get("result", {"ok": False}))
+    if task["status"] == "error":
+        return jsonify({"ok": False, "error": task.get("error", "未知错误")})
+    return jsonify({"ok": False, "status": task["status"], "msg": "分析进行中"})
 
 
 @bp.route("/api/ai/test", methods=["POST"])

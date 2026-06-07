@@ -3756,7 +3756,52 @@ async function runAI(){
       <span>技术师 → 多方研究员 → 空方研究员 → 风险师 → 决策官<br>请稍候约15-45秒</span>
     </div>`
 
-  const r = await api('/ai/analyze','POST',{code})
+  // 异步模式：先获取 task_id，再轮询进度和结果
+  const initR = await api('/ai/analyze_async','POST',{code})
+  if(!initR || !initR.ok){
+    btn.disabled = false; btn.textContent = '🤖 开始分析'
+    const err = initR?.error || '分析失败，请检查AI设置'
+    document.getElementById('aiStatusLine').textContent = '❌ ' + err
+    document.getElementById('aiResult').innerHTML = `
+      <div style="padding:15px">
+        <div style="background:#2d1a1e;border:1px solid var(--red);border-radius:8px;padding:13px">
+          <div style="color:var(--rl);font-weight:700;margin-bottom:6px">❌ AI分析失败</div>
+          <div style="color:#f0a0a0;font-size:13px">${esc(err)}</div>
+          <div style="margin-top:10px;font-size:12px;color:var(--t3)">
+            请前往「⚙ 设置」标签页配置 API Key 并启用 AI 功能
+          </div>
+        </div>
+      </div>`
+    return
+  }
+  const aiTaskId = initR.task_id
+  document.getElementById('aiStatusLine').textContent = `正在分析 ${code}...（后台处理中）`
+  // 轮询进度
+  let r = null
+  while(true){
+    await new Promise(res => setTimeout(res, 2000))
+    const prog = await api('/ai/analyze_progress/'+aiTaskId)
+    if(!prog) continue
+    if(prog.status === 'error'){
+      btn.disabled = false; btn.textContent = '🤖 开始分析'
+      const err = prog.error || '分析失败'
+      document.getElementById('aiStatusLine').textContent = '❌ ' + err
+      document.getElementById('aiResult').innerHTML = `
+        <div style="padding:15px">
+          <div style="background:#2d1a1e;border:1px solid var(--red);border-radius:8px;padding:13px">
+            <div style="color:var(--rl);font-weight:700;margin-bottom:6px">❌ AI分析失败</div>
+            <div style="color:#f0a0a0;font-size:13px">${esc(err)}</div>
+          </div>
+        </div>`
+      return
+    }
+    if(prog.status === 'done'){
+      r = await api('/ai/analyze_result/'+aiTaskId)
+      break
+    }
+    // 还在跑，更新提示
+    document.getElementById('aiStatusLine').textContent = `正在分析 ${code}...（AI 多智能体推理中）`
+  }
   btn.disabled = false; btn.textContent = '🤖 开始分析'
 
   if(!r || !r.ok){
