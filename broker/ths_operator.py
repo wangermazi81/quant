@@ -63,10 +63,13 @@ def _is_admin() -> bool:
         return False
 
 
-_OCR_DIGIT_FIX = {'O': '0', 'o': '0', 'D': '0', 'Q': '0',
-                  'I': '1', 'l': '1', 'i': '1', '|': '1',
-                  'Z': '2', 'z': '2', 'A': '4', 'S': '5', 's': '5',
-                  'b': '6', 'G': '6', 'T': '7', 'B': '8', 'g': '9', 'q': '9'}
+_OCR_DIGIT_FIX = {'O': '0', 'o': '0', 'D': '0', 'Q': '0', 'U': '0',
+                  'I': '1', 'l': '1', 'i': '1', '|': '1', 'J': '1',
+                  'Z': '2', 'z': '2', 'R': '2',
+                  'A': '4', 'S': '5', 's': '5', '$': '5',
+                  'b': '6', 'G': '6', 'e': '6',
+                  'T': '7', 'L': '7',
+                  'B': '8', 'g': '9', 'q': '9', 'P': '9'}
 
 
 def _as_stock_code(text: str):
@@ -1264,16 +1267,16 @@ class THSOperator:
         """打开截图并自适应放大到约 2000px 宽再交给 OCR。
 
         实测：xiadan 还原成中等窗口（如 1049×630）时，顶部资金行的小数点/小字
-        会被 Windows OCR 丢掉（可用→石T用、208374.89→208374 89）。放大后小字
-        识别明显更准。返回 (PIL.Image, factor)；factor 为放大倍数，取词坐标的
+        会被 Windows OCR 丢掉（可用→石T用、208374.89→208374 89）。放大到 3000px
+        后小字识别明显更准。返回 (PIL.Image, factor)；factor 为放大倍数，取词坐标的
         调用方需把坐标除以 factor 还原回原图像素（保证点击/聚类坐标系不变）。
         """
         from PIL import Image
         img = Image.open(str(img_path))
         w = img.width or 1
         factor = 1.0
-        if w < 1600:
-            factor = round(2000.0 / w, 3)
+        if w < 2000:
+            factor = round(3000.0 / w, 3)
             if factor < 1.0:
                 factor = 1.0
         if factor > 1.0:
@@ -1349,14 +1352,23 @@ class THSOperator:
             return []
 
     @staticmethod
-    def _cluster_rows(words: list, y_tol: float = 12.0) -> list:
+    def _cluster_rows(words: list, y_tol: float = None) -> list:
         """把词按 Y 坐标聚成行，行内按 X 排序。
 
         返回 [{'y':行中心, 'words':[{x,text,...}按X排序], 'text':整行拼接}, ...]，按 Y 升序。
-        y_tol 容差按行高一半左右取（xiadan 行高 ~42px → 12 足够区分相邻行）。
+        y_tol 自适应：根据词高（h）的中位数动态计算，默认为行高的一半。
+        xiadan 行高 ~42px → y_tol ~12；高分辨率截图行高更大 → y_tol 自动放大。
         """
         if not words:
             return []
+        # 自适应 y_tol：用词高的中位数 × 0.6 作为行聚类容差
+        if y_tol is None:
+            heights = sorted(w.get("h", 20) for w in words if w.get("h", 0) > 5)
+            if heights:
+                median_h = heights[len(heights) // 2]
+                y_tol = max(8.0, median_h * 0.6)
+            else:
+                y_tol = 12.0
         rows = []
         for w in sorted(words, key=lambda d: d["y"]):
             placed = False
@@ -1377,7 +1389,8 @@ class THSOperator:
 
     @staticmethod
     def _norm_num(s: str):
-        """把 OCR 数字串规整成 float：去空格、全角点／逗号→半角，去千分位。
+        """把 OCR 数字串规整成 float：去空格、全角点／逗号→半角，去千分位，
+        修正常见 OCR 数字误认（O→0, l→1 等）。
 
         例：'208374 ． 89' → 208374.89 ；'1,304.56' → 1304.56 ；失败返回 None。
         """
@@ -1386,6 +1399,11 @@ class THSOperator:
             return None
         t = (s.replace(" ", "").replace("．", ".").replace("，", "")
                .replace(",", "").replace("。", ".").replace("·", "."))
+        # 修正常见 OCR 数字误认（仅在数字上下文中）
+        t = (t.replace("O", "0").replace("o", "0")
+               .replace("l", "1").replace("I", "1").replace("i", "1")
+               .replace("S", "5").replace("s", "5")
+               .replace("B", "8").replace("G", "6"))
         m = re.search(r"-?\d+(?:\.\d+)?", t)
         if not m:
             return None
@@ -1443,9 +1461,10 @@ class THSOperator:
         for r in rows:
             ws = r["words"]
             code_word = None; code = None
+            # 先在整行找代码（放宽 x_tol 到 40，应对 OCR 坐标偏移）
             for w in ws:
                 _c = _as_stock_code(w["text"])
-                if _c and abs(w["x"] - code_x) <= x_tol:
+                if _c and abs(w["x"] - code_x) <= max(x_tol, 40):
                     code_word = w; code = _c
                     break
             if not code_word:
@@ -1453,12 +1472,18 @@ class THSOperator:
             right = [w for w in ws if w["x"] > code_word["x"]]
             # 名称：代码右侧「连续的中文词」拼起来（OCR 把汉字拆成单字词，
             # 如 杭/电/股/份），遇到数字列就停——避免把后面的「上海A股」也吃进来。
+            # 改进：允许中英文混合（如「A」「ST」），长度放宽到 6 个字符
             name_parts = []
             for w in right:
-                if re.fullmatch(r"\d{6}", w["text"]):
+                t = w["text"].strip()
+                if not t:
                     continue
-                if re.fullmatch(r"[一-鿿A-Za-z]{1,4}", w["text"]):
-                    name_parts.append(w["text"])
+                # 跳过纯数字（股票代码列或数字列）
+                if re.fullmatch(r"\d{6}", t):
+                    continue
+                # 中文/英文/ST 等股票名片段
+                if re.fullmatch(r"[一-鿿A-Za-z*]{1,6}", t) and len(t) <= 6:
+                    name_parts.append(t)
                 elif name_parts:
                     break  # 已开始收名字又遇到非纯中文(数字等) → 名字结束
             name = "".join(name_parts)
@@ -1485,8 +1510,22 @@ class THSOperator:
         import re
         if not words:
             return {"available": None, "total_asset": None}
+        # 动态计算顶部区域：找含「资」「可」「额」等关键词的行，而非固定 40px
         top_y = min(w["y"] for w in words)
-        top = sorted([w for w in words if w["y"] <= top_y + 40], key=lambda d: d["x"])
+        # 先取顶部 60px 的词（放宽范围，确保不漏）
+        top_words = sorted([w for w in words if w["y"] <= top_y + 60], key=lambda d: d["x"])
+        # 按行聚类，找含资金关键词的行
+        fund_row_ys = set()
+        for w in top_words:
+            txt = re.sub(r"\s+", "", w["text"])
+            if any(k in txt for k in ["资", "可", "额", "总", "用", "余"]):
+                fund_row_ys.add(round(w["y"], -1))  # 取整到10px
+        # 如果找到关键词行，只取那些行附近的词（±15px）
+        if fund_row_ys:
+            min_fy = min(fund_row_ys)
+            top = [w for w in top_words if abs(w["y"] - min_fy) <= 15]
+        else:
+            top = top_words
         # 保留单空格，便于把「大整数 + 两位」重组成小数（低分辨率 OCR 常丢小数点，
         # 把 208374.89 识别成 "208374 89"）。
         s = " ".join(w["text"] for w in top)
@@ -1495,19 +1534,28 @@ class THSOperator:
         s = re.sub(r"(\d)\s*\.\s*(\d)", r"\1.\2", s)            # 合拢小数点两侧空格
         s = re.sub(r"(\d{3,})\s+(\d{2})(?!\d)", r"\1.\2", s)    # 大整数+空格+恰两位 → 小数
         sc = s.replace(" ", "")                                 # 去剩余空格便于标签匹配
+        # OCR 常见中文误认修正（扩大匹配范围）
+        sc_fix = (sc.replace("资全", "资产").replace("资广", "资产").replace("资厂", "资产")
+                   .replace("可田", "可用").replace("可甩", "可用").replace("石T用", "可用")
+                   .replace("可月", "可用").replace("可目", "可用")
+                   .replace("总资广", "总资产").replace("总资全", "总资产")
+                   .replace("资金余颜", "资金余额").replace("资金余领", "资金余额"))
 
-        def _after(label):
+        def _after(label, text=None):
             # label 后紧跟的金额；允许 label 与数字间夹杂 :/. 等噪声
-            m = re.search(label + r"[\s:.]*(-?\d+(?:\.\d+)?)", sc)
+            t = text or sc_fix
+            m = re.search(label + r"[\s:.]*(-?\d+(?:\.\d+)?)", t)
             return self._norm_num(m.group(1)) if m else None
 
-        total = _after("总资产") or _after("资产") or _after("总资")
+        total = (_after("总资产") or _after("资产") or _after("总资")
+                 or _after("总z产", sc_fix) or _after("总2产", sc_fix))
         avail = (_after("可用余额") or _after("资金余额")
-                 or _after("可用资金") or _after("可用"))
+                 or _after("可用资金") or _after("可用")
+                 or _after("可甩资金", sc_fix) or _after("可田资金", sc_fix))
         # 「可用」常被 OCR 误识（可用→石T用）→ 退而按工具栏顺序取第二个「大额」金额
         # （工具栏固定顺序：资产 X 可用 Y 当日 Z，故第 1 大额=资产、第 2 大额=可用）。
         if avail is None or total is None:
-            amounts = [float(x) for x in re.findall(r"\d+\.\d{2}", sc)]
+            amounts = [float(x) for x in re.findall(r"\d+\.\d{2}", sc_fix)]
             big = [a for a in amounts if a >= 100]
             if total is None and big:
                 total = big[0]
