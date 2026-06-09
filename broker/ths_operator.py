@@ -531,6 +531,10 @@ class THSOperator:
             # 截图：按 F1/F2 之前的初始状态
             self._save_screenshot(f"{action}_{code}_0_before_hotkey")
 
+            # ★ 先切到对面再切回来，强制重置焦点（解决连续下单时 F1/F2 不重新聚焦的问题）
+            _opposite = 'f2' if hotkey == 'f1' else 'f1'
+            pyautogui.press(_opposite)
+            time.sleep(0.3)
             pyautogui.press(hotkey)              # 调起买入/卖出页（焦点应自动到"代码"字段）
             time.sleep(0.5)                      # 等 xiadan 渲染下单界面
             self._save_screenshot(f"{action}_{code}_1_after_hotkey")
@@ -1185,6 +1189,12 @@ class THSOperator:
         rel_path = cap["screenshot"]
         words     = self._ocr_grid_words(fn)
         rows      = self._cluster_rows(words)
+
+        # ⚠️ 截图可能包含整个桌面（浏览器+xiadan），导致资金读到浏览器文字。
+        # 检测并裁剪 xiadan 区域：找 F2/F3 菜单栏标记（只在 xiadan 窗口出现）
+        words, fn = self._crop_to_xiadan_if_needed(words, fn)
+        rows      = self._cluster_rows(words)
+
         positions = self._parse_holdings_from_rows(rows)
         if max_rows:
             positions = positions[:max_rows]
@@ -1209,6 +1219,48 @@ class THSOperator:
                 f"持仓 {len(positions)} 只（OCR 自绘表格，数字列仅供参考，请对照截图）"
             ),
         }
+
+    def _crop_to_xiadan_if_needed(self, words: list, img_path: str) -> tuple:
+        """检测截图是否包含浏览器等非 xiadan 内容，若是则裁剪到 xiadan 区域。
+
+        检测策略：xiadan 菜单栏有「卖出 [F2]」「撤单 [F3]」标记，浏览器中不会有。
+        找到这些标记的 y 坐标，裁掉上方浏览器区域，重新 OCR。
+
+        返回 (words, img_path)——如果裁剪了则返回新 OCR 词和裁剪图路径，
+        否则原样返回。
+        """
+        import re
+        # 找 F2/F3 标记（xiadan 菜单栏特征）
+        f2_words = [w for w in words if "[F2" in w["text"]]
+        f3_words = [w for w in words if "F3" in w["text"]]
+
+        if not f2_words and not f3_words:
+            # 没找到 xiadan 菜单标记 → 截图可能已经是纯 xiadan 窗口
+            return words, img_path
+
+        # 找 xiadan 菜单栏的 y 坐标（取 F2/F3 的最小 y）
+        menu_ys = [w["y"] for w in f2_words + f3_words]
+        xiadan_top = min(menu_ys) - 30  # 上方留 30px 余量
+
+        if xiadan_top <= 30:
+            # xiadan 已经在截图顶部，无需裁剪
+            return words, img_path
+
+        # 裁剪并重新 OCR
+        from PIL import Image
+        try:
+            img = Image.open(str(img_path))
+            cropped = img.crop((0, int(xiadan_top), img.width, img.height))
+            # 保存裁剪图（覆盖原文件，后续引用一致）
+            crop_path = img_path.replace(".png", "_xiadan.png").replace(".jpg", "_xiadan.jpg")
+            cropped.save(crop_path)
+            new_words = self._ocr_grid_words(crop_path)
+            if new_words:
+                logger.info(f"已裁剪 xiadan 区域 (y>={xiadan_top:.0f})，词数 {len(words)}→{len(new_words)}")
+                return new_words, crop_path
+        except Exception as e:
+            logger.debug(f"裁剪 xiadan 区域失败，使用原图: {e}")
+        return words, img_path
 
     def _ocr_lang(self) -> str:
         """挑一个可用的中文 OCR 语言标签（缓存）。
@@ -1445,18 +1497,13 @@ class THSOperator:
         前端可对照截图，必要时按真实表头映射）。
         """
         import re
-        # 先剔除「资金汇总行 / 左侧菜单行」：它们含 资金余额/可用/总资产/盈亏/[F1] 等
-        # 标签，且会把资产金额(如 208374)混进来，否则空仓时会被误判成持仓代码。
-        skip_re = re.compile(
-            r"\[F\d|资金|资全|可用|可取|资产|持仓盈亏|盈亏|冻结|"
-            r"参考市值|自选股|条件单|双向|市价|批量|新股申购|帮助"
-        )
-        # ⚠️ Windows OCR 在每个汉字间插空格（可 用），故先折叠空格再匹配标签
-        rows = [r for r in rows if not skip_re.search(re.sub(r"\s+", "", r.get("text", "")))]
+        # ⚠️ 不再用 skip_re 过滤整行！
+        # xiadan 左侧菜单文本（「市价委托」「批量下单」等）与右侧行情表共享 Y 坐标，
+        # OCR 后会被聚到同一行。用 skip_re 过滤会误杀含「市价」「批量」的持仓行。
+        # 改为：先找所有 6 位股票代码，再只提取代码右侧的数字（左菜单数字被自然排除）。
         if code_x is None:
             code_x, _ = self._detect_code_column(rows, x_tol)
         if code_x is None:
-            # 降级：直接在所有行里找 6 位代码
             code_x = 0
         holdings = []
         for r in rows:
@@ -1477,6 +1524,7 @@ class THSOperator:
                         break
             if not code_word:
                 continue
+            # 只取代码右侧的词（排除左菜单区域）
             right = [w for w in ws if w["x"] > code_word["x"]]
             # 名称：代码右侧「连续的中文词」拼起来（OCR 把汉字拆成单字词，
             # 如 杭/电/股/份），遇到数字列就停——避免把后面的「上海A股」也吃进来。
@@ -1495,7 +1543,7 @@ class THSOperator:
                 elif name_parts:
                     break  # 已开始收名字又遇到非纯中文(数字等) → 名字结束
             name = "".join(name_parts)
-            # 行内数字（规整后）作为参考列
+            # 行内数字（规整后）作为参考列——只取代码右侧的
             nums = []
             for w in right:
                 v = self._norm_num(w["text"])
@@ -1510,82 +1558,137 @@ class THSOperator:
     def _parse_funds_from_words(self, words: list) -> dict:
         """从顶部工具栏词里抽「可用 / 资产」金额。
 
-        xiadan 顶部一行形如：资产：208374.89 可用：208374.89 当日：+260 ...
-        核心改进：对「标签→金额」做局部小数点恢复，而非全局正则，避免把
-        13303.78 误重组成 1330378（100倍）。
+        xiadan 工具栏自绘控件 OCR 后，每个汉字常被拆成独立词（如「可用」→
+        「可」+「用」），多行工具栏（菜单行+资金行+持仓行）y 跨度可达 100+px。
+        本方法改用「词坐标」策略：先找标签关键词所在行，再取同行右侧最近的数字词，
+        相邻数字词自动合并并做小数点恢复。
         """
         import re
         if not words:
             return {"available": None, "total_asset": None}
-        # 动态计算顶部区域：找含「资」「可」「额」等关键词的行
+
         top_y = min(w["y"] for w in words)
-        top_words = sorted([w for w in words if w["y"] <= top_y + 60], key=lambda d: d["x"])
-        # 按行聚类，找含资金关键词的行
-        fund_row_ys = set()
-        for w in top_words:
-            txt = re.sub(r"\s+", "", w["text"])
-            if any(k in txt for k in ["资", "可", "额", "总", "用", "余"]):
-                fund_row_ys.add(round(w["y"], -1))
-        if fund_row_ys:
-            min_fy = min(fund_row_ys)
-            top = [w for w in top_words if abs(w["y"] - min_fy) <= 15]
-        else:
-            top = top_words
+        # 覆盖完整工具栏区域（菜单行+资金行+持仓行，y 跨度可达 150+px）
+        top_words = [w for w in words if w["y"] <= top_y + 200]
 
-        # ── 按标签局部提取金额（关键修复）─────────────────────
-        # 不再对整个字符串做全局正则，而是：
-        #   1. 先拼接原始文本（保留空格）
-        #   2. 找到标签位置
-        #   3. 只对标签后面的数字做小数点恢复
-        # 这样避免「13303 78」被错误重组成「1330378」。
-        s_raw = " ".join(w["text"] for w in top)
-        s_raw = (s_raw.replace("．", ".").replace("。", ".").replace("·", ".")
-                      .replace("，", "").replace(",", "").replace("：", ":"))
+        # ── 按行聚类 ──
+        rows = self._cluster_rows(top_words)
 
-        def _recover_decimal(num_str):
-            """对单个数字串做小数点恢复：如果原始无小数点，且末尾恰2位，
-            则可能是小数点丢失（如 13303 78 → 13303.78）。"""
-            n = num_str.replace(" ", "")
-            if "." in n:
-                return n  # 已有小数点，不处理
-            # 匹配：若干位数字 + 空格 + 恰2位数字 → 中间加小数点
-            m = re.match(r"^(\d{2,})\s+(\d{2})$", num_str)
-            if m:
-                return m.group(1) + "." + m.group(2)
-            return n
+        def _norm(s: str) -> str:
+            """折叠空格 + 全角转半角"""
+            s = (s.replace("．", ".").replace("，", "").replace("，", "")
+                  .replace("：", ":").replace("．", "."))
+            return re.sub(r"\s+", "", s)
 
-        def _find_amount_after(label_pattern, text):
-            """在 text 中找 label_pattern 后面的金额数字。"""
-            # 先做中文误认修正
-            t = (text.replace("资全", "资产").replace("资广", "资产").replace("资厂", "资产")
-                     .replace("可田", "可用").replace("可甩", "可用").replace("石T用", "可用")
-                     .replace("可月", "可用").replace("可目", "可用")
-                     .replace("总资广", "总资产").replace("总资全", "总资产")
-                     .replace("资金余颜", "资金余额").replace("资金余领", "资金余额"))
-            # 找标签后紧跟的数字（允许 :/. / 空格 分隔）
-            m = re.search(label_pattern + r"[\s:.]*([\d][\d\s.]*\d)", t)
-            if not m:
-                return None
-            raw_num = m.group(1)
-            recovered = _recover_decimal(raw_num)
-            return self._norm_num(recovered)
+        def _label_in_row(row_words: list, *label_parts) -> bool:
+            """检查一行词中是否包含标签的每个字（允许被 OCR 拆成独立词）。"""
+            texts = [_norm(w["text"]) for w in row_words]
+            joined = "".join(texts)
+            return all(part in joined for part in label_parts)
 
-        total = (_find_amount_after(r"总资产", s_raw)
-                 or _find_amount_after(r"资产", s_raw)
-                 or _find_amount_after(r"总资", s_raw))
-        avail = (_find_amount_after(r"可用余额", s_raw)
-                 or _find_amount_after(r"资金余额", s_raw)
-                 or _find_amount_after(r"可用资金", s_raw)
-                 or _find_amount_after(r"可用", s_raw))
+        def _nums_right_of(row_words: list, anchor_x: float) -> list:
+            """取锚点右侧同行的所有数字词（x 距离 < 500px），合并相邻数字并恢复小数。"""
+            right = sorted([w for w in row_words if w["x"] > anchor_x + 5],
+                           key=lambda d: d["x"])
+            nums = []
+            prev_x = None
+            prev_is_dot = False
+            for w in right:
+                t = _norm(w["text"])
+                # 只取纯数字（含小数点）
+                is_dot = (t == ".")
+                is_num = bool(re.fullmatch(r"\d+\.?\d*", t))
+                if not is_num and not is_dot:
+                    continue
+                # 相邻数字词（x 差距 < 30px）可能是同一个金额被拆开（如 4783 + .87）
+                if prev_x is not None and w["x"] - prev_x < 30 and nums:
+                    if is_dot:
+                        # 小数点词，标记下一个数字是小数部分
+                        prev_is_dot = True
+                        prev_x = w["x"] + w.get("w", 0)
+                        continue
+                    elif prev_is_dot:
+                        # 小数点后的数字，拼接时加小数点
+                        nums[-1] = nums[-1] + "." + t
+                        prev_is_dot = False
+                    else:
+                        # 无小数点的相邻数字合并（如 4783 + 87 → 4783.87）
+                        # 判断：前一个是4+位整数，当前是2位 → 可能是小数部分
+                        prev_n = nums[-1]
+                        if "." not in prev_n and len(prev_n) >= 3 and len(t) == 2:
+                            nums[-1] = prev_n + "." + t
+                        else:
+                            nums[-1] = prev_n + t
+                else:
+                    nums.append(t)
+                    prev_is_dot = False
+                prev_x = w["x"] + w.get("w", 0)
+            result = []
+            for n in nums:
+                try:
+                    result.append(float(n))
+                except ValueError:
+                    pass
+            return result
 
-        # 降级：按工具栏顺序取第1/第2大额（标签全失败时）
-        if avail is None or total is None:
-            amounts = [float(x) for x in re.findall(r"\d+\.\d{2}", s_raw)]
-            big = [a for a in amounts if a >= 100]
-            if total is None and big:
-                total = big[0]
-            if avail is None and big:
-                avail = big[1] if len(big) >= 2 else big[0]
+        # ── 逐行找「可用」和「资产」──
+        available = None
+        total_asset = None
+
+        for row in rows:
+            ws = row["words"]
+            row_text = "".join(_norm(w["text"]) for w in ws)
+
+            # 匹配「可用」（含 OCR 误识别修正）
+            row_fixed = (row_text.replace("可田", "可用").replace("可甩", "可用")
+                         .replace("石T用", "可用").replace("可月", "可用")
+                         .replace("可目", "可用"))
+            if available is None and "可用" in row_fixed:
+                # 找「可」字的 x 坐标作为锚点
+                for w in ws:
+                    if _norm(w["text"]) == "可":
+                        nums = _nums_right_of(ws, w["x"])
+                        # 跳过「全」「额」等非数字，取第一个真正的大额数字
+                        for n in nums:
+                            if n >= 10:
+                                available = round(n, 2)
+                                break
+                        break
+
+            # 匹配「总资产」
+            row_fixed2 = (row_text.replace("总资广", "总资产").replace("总资全", "总资产")
+                          .replace("资全", "资产").replace("资广", "资产")
+                          .replace("资厂", "资产"))
+            if total_asset is None and "总资产" in row_fixed2:
+                for w in ws:
+                    if _norm(w["text"]) == "总":
+                        nums = _nums_right_of(ws, w["x"])
+                        for n in nums:
+                            if n >= 10:
+                                total_asset = round(n, 2)
+                                break
+                        break
+
+        # 降级：取工具栏区域所有大额数字
+        if available is None or total_asset is None:
+            all_nums = []
+            for row in rows:
+                for w in row["words"]:
+                    t = _norm(w["text"])
+                    try:
+                        v = float(t)
+                        if v >= 100:
+                            all_nums.append(v)
+                    except ValueError:
+                        pass
+            if total_asset is None and all_nums:
+                total_asset = max(all_nums)
+            if available is None and all_nums:
+                # 可用资金通常比总资产小
+                smaller = [n for n in all_nums if n < (total_asset or float("inf"))]
+                available = max(smaller) if smaller else min(all_nums)
+
+        return {"available": available, "total_asset": total_asset}
 
         # ── 逻辑校验：可用资金不应超过总资产 ──────────────────
         if avail is not None and total is not None and avail > total:
