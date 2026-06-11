@@ -95,3 +95,32 @@ tools/bridge_config.json
 data/*.before_*
 data/*.db.*
 data/users_server.db
+
+# 复盘/新闻(2026-06-10 日报→复盘改造)
+data/news.db*
+data/review/
+
+# ── 运行时抓取缓存（每次运行会更新，不进 git）──────────────
+data/chains/
+data/kg/
+data/research_cache/
+data/lhb/
+data/point_costs.json
+
+# ── 临时调试/补丁脚本（开发过程留底，不进 git）────────────
+_fix*.py
+_patch*.py
+_inspect*.py
+_test_curl*.py
+_test_e2e.py
+_verify_research_flow.py
+_cdp_login_screenshot.py
+_dump_callsites.py
+_extract_front_blocks.py
+_show_progress_fn.py
+_call_sites.txt
+_front_blocks.txt
+_inspect_research_out.txt
+_tail_bt_result.json
+_curl_body.json
+local_ui.png

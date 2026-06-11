@@ -188,6 +188,77 @@ def _no_proxy_get(url: str, **kwargs):
     return _ak_session.get(url, **kwargs)
 
 
+# ── 多数据源 K 线降级链：akshare(腾讯) → baostock → 优矿(uqer) ──────
+def _fetch_kline_baostock(code: str, start: str, end: str):
+    """baostock 日线（免费，无需 token）。start/end: YYYY-MM-DD。失败返回 None。"""
+    try:
+        import io
+        import contextlib
+        import baostock as bs
+        prefix = "sh." if code.startswith(("6", "9", "5")) else "sz."
+        with contextlib.redirect_stdout(io.StringIO()):   # 压掉 login/logout 的打印
+            lg = bs.login()
+            try:
+                if lg.error_code != "0":
+                    return None
+                rs = bs.query_history_k_data_plus(
+                    prefix + code, "date,open,high,low,close,volume",
+                    start_date=start, end_date=end,
+                    frequency="d", adjustflag="2")   # 2=前复权，与腾讯源口径一致
+                rows = []
+                while rs.error_code == "0" and rs.next():
+                    rows.append(rs.get_row_data())
+            finally:
+                bs.logout()
+        if not rows:
+            return None
+        df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
+        for c in ("open", "high", "low", "close", "volume"):
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        df = df.dropna(subset=["close"])
+        return df if not df.empty else None
+    except Exception as e:
+        logger.debug(f"[baostock] {code} 失败: {e}")
+        return None
+
+
+def _uqer_token() -> str:
+    """优矿 token 从 data/datasource_config.json 读取（{"uqer_token": "..."}）。"""
+    try:
+        import json as _json
+        p = DATA_DIR.parent / "datasource_config.json"
+        if p.exists():
+            return (_json.loads(p.read_text(encoding="utf-8")) or {}).get("uqer_token", "")
+    except Exception:
+        pass
+    return ""
+
+
+def _fetch_kline_uqer(code: str, start: str, end: str):
+    """优矿(通联) 日线。需 pip install uqer + 配置 token，未配置时静默跳过。"""
+    token = _uqer_token()
+    if not token:
+        return None
+    try:
+        import uqer
+        from uqer import DataAPI
+        uqer.Client(token=token)
+        df = DataAPI.MktEqudAdjGet(
+            ticker=code,
+            beginDate=start.replace("-", ""), endDate=end.replace("-", ""),
+            field="tradeDate,openPrice,highestPrice,lowestPrice,closePrice,turnoverVol",
+            pandas="1")
+        if df is None or df.empty:
+            return None
+        df = df.rename(columns={
+            "tradeDate": "date", "openPrice": "open", "highestPrice": "high",
+            "lowestPrice": "low", "closePrice": "close", "turnoverVol": "volume"})
+        return df[["date", "open", "high", "low", "close", "volume"]]
+    except Exception as e:
+        logger.debug(f"[uqer] {code} 失败: {e}")
+        return None
+
+
 def _download_one(code: str, start_date: str) -> dict:
     try:
         symbol = _tx_symbol(code)
@@ -197,13 +268,27 @@ def _download_one(code: str, start_date: str) -> dict:
         # 临时清除代理环境变量（akshare 走 urllib3，直接受 env 影响）
         _tmp = {k: os.environ.pop(k) for k in list(_PROXY_KEYS) if k in os.environ}
         logger.info(f"下载 {code}({symbol}) {start}~{end} ...")
+        src = "腾讯"
         try:
-            df = ak.stock_zh_a_hist_tx(symbol=symbol, start_date=start, end_date=end)
+            try:
+                df = ak.stock_zh_a_hist_tx(symbol=symbol, start_date=start, end_date=end)
+            except Exception as _te:
+                logger.info(f"[{code}] 腾讯源失败({_te})，降级 baostock")
+                df = None
+            # 降级链：腾讯 → baostock → 优矿
+            if df is None or df.empty:
+                src = "baostock"
+                df  = _fetch_kline_baostock(code, start_date, datetime.today().strftime("%Y-%m-%d"))
+            if df is None or df.empty:
+                src = "uqer"
+                df  = _fetch_kline_uqer(code, start_date, datetime.today().strftime("%Y-%m-%d"))
         finally:
             os.environ.update(_tmp)   # 还原，避免影响其他请求（如 AI 接口）
 
         if df is None or df.empty:
-            return {"ok": False, "code": code, "msg": "akshare 返回空数据"}
+            return {"ok": False, "code": code, "msg": "腾讯/baostock/优矿 三源均无数据"}
+        if src != "腾讯":
+            logger.info(f"[{code}] 已用降级数据源: {src}")
 
         df = df.rename(columns={"amount": "volume"})
         df["date"] = pd.to_datetime(df["date"])

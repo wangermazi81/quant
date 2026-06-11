@@ -1,4 +1,4 @@
-"""AI 分析 / 评分 / 策略生成 / 决策仪表盘 API 蓝图。"""
+"""AI 分析 / 评分 / 策略生成 API 蓝图。"""
 import json
 import logging
 from datetime import datetime
@@ -9,7 +9,7 @@ import ai_analyst as ai
 import data_manager as dm
 import stock_scorer as scorer
 import user_manager as um
-from app_state import BASE_DIR, require_auth, _add_log, _deduct
+from app_state import BASE_DIR, require_auth, require_admin, _add_log, _deduct
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,9 @@ def _kline_is_stale(df, max_lag_days: int = 3) -> bool:
 
 
 @bp.route("/api/ai/config", methods=["GET"])
+@require_admin
 def ai_get_config():
-    """全局 AI 配置（管理员设置的默认配置）。"""
+    """全局 AI 配置（仅管理员可查看/修改；普通用户的 AI 功能由后端用全局配置代答）。"""
     cfg = ai.load_config()
     key = cfg.get("api_key", "")
     if len(key) > 8:
@@ -50,6 +51,7 @@ def ai_get_config():
 
 
 @bp.route("/api/ai/config", methods=["POST"])
+@require_admin
 def ai_save_config():
     d   = request.json
     cfg = ai.load_config()
@@ -304,6 +306,7 @@ def ai_analyze_result(task_id):
 
 
 @bp.route("/api/ai/test", methods=["POST"])
+@require_admin
 def ai_test_conn():
     d   = request.json or {}
     cfg = ai.load_config()
@@ -335,6 +338,9 @@ def ai_gen_strategy():
     desc = d.get("description", "").strip()
     if not desc:
         return jsonify({"ok": False, "error": "请描述策略需求"})
+    err = _deduct("ai_strategy", f"AI写策略 {desc[:20]}")
+    if err:
+        return jsonify(err)
     _add_log(uid, f"AI写策略: {desc[:40]}...")
     # 全局配置为权威，per-user 仅兜底（与 ai_analyze 一致，避免旧 key 顶掉新配置）
     cfg = ai.resolve_config(um.get_user_ai_config(uid) or {})
@@ -355,115 +361,3 @@ def api_strategy_templates():
         return jsonify({"ok": True, "templates": templates})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e), "templates": []})
-
-
-@bp.route("/api/dashboard/generate", methods=["POST"])
-@require_auth
-def api_dashboard_generate():
-    """
-    决策仪表盘生成（批量评分 + 新闻情绪 + 可选AI摘要）。
-    请求体: {"codes": ["000657", "600105"], "with_ai": true}
-    """
-    d       = request.json or {}
-    codes   = [str(c).strip() for c in d.get("codes", []) if str(c).strip()]
-    with_ai = bool(d.get("with_ai", True))
-    if not codes or len(codes) > 20:
-        return jsonify({"ok": False, "error": "codes 需要 1~20 个"})
-
-    uid  = session["user_id"]
-    try:
-        cfg = ai.resolve_config(um.get_user_ai_config(uid) or {})
-    except Exception:
-        cfg = {}
-    has_ai = bool(cfg.get("api_key")) and with_ai
-
-    results = []
-    import news_fetcher as _nf
-    import traceback as _tb
-
-    for code in codes:
-        name = dm.get_stock_name(code) or code
-        item = {
-            "code": code, "name": name,
-            "score": None, "signal": "N/A", "signal_color": "#888",
-            "sentiment": "中性", "sentiment_score": 0,
-            "news": [], "risks": [], "catalysts": [],
-            "ai_summary": "", "ai_outlook": "", "latest": "",
-        }
-
-        # ── 六维评分 ────────────────────────────────────────
-        try:
-            df_k = dm.get_local(code)
-            if df_k is not None and not df_k.empty:
-                scored = scorer.score_stock(df_k)
-                if scored.get("ok"):
-                    item["score"]        = scored["total"]
-                    item["signal"]       = scored["signal"]
-                    item["signal_color"] = scored.get("signal_color", "#888")
-                    item["risks"]        = scored.get("risks", [])
-                    item["catalysts"]    = scored.get("catalysts", [])
-        except Exception as ex:
-            logger.debug(f"[dashboard] score {code}: {ex}")
-
-        # ── 新闻 + 情绪 ─────────────────────────────────────
-        try:
-            nd = _nf.get_news_with_sentiment(code, limit=5)
-            item["news"]            = nd.get("news", [])
-            sent                    = nd.get("sentiment", {})
-            item["sentiment"]       = sent.get("label", "中性")
-            item["sentiment_score"] = sent.get("score", 0)
-            if item["news"]:
-                item["latest"] = item["news"][0].get("title", "")
-        except Exception as ex:
-            logger.debug(f"[dashboard] news {code}: {ex}")
-
-        # ── 可选 AI 摘要 ─────────────────────────────────────
-        if has_ai and item["news"]:
-            try:
-                news_text = "\n".join(f"- {n['title']}" for n in item["news"][:4])
-                prompt = (
-                    f"股票：{name}（{code}）\n"
-                    f"六维评分：{item['score']}，信号：{item['signal']}\n"
-                    f"近期新闻：\n{news_text}\n\n"
-                    "请各用一句话回答：\n"
-                    "舆情：<市场情绪摘要>\n"
-                    "预期：<业绩/基本面预期>"
-                )
-                import ai_analyst as _aa
-                reply = _aa._call_llm(cfg, [
-                    {"role": "system", "content": "你是A股分析助手，中文简洁回答，每句话不超过50字。"},
-                    {"role": "user",   "content": prompt},
-                ], max_tokens=150, timeout=30)
-                # 解析舆情/预期
-                for line in reply.splitlines():
-                    if line.startswith("舆情"):
-                        item["ai_summary"] = line.split("：", 1)[-1].strip()
-                    elif line.startswith("预期"):
-                        item["ai_outlook"] = line.split("：", 1)[-1].strip()
-                if not item["ai_summary"]:
-                    item["ai_summary"] = reply.strip()[:80]
-            except Exception as ex:
-                logger.debug(f"[dashboard] AI summary {code}: {ex}")
-
-        results.append(item)
-
-    try:
-        buy   = sum(1 for r in results if r["signal"] in ("买入", "强烈买入"))
-        watch = sum(1 for r in results if r["signal"] == "观望")
-        hold  = sum(1 for r in results if r["signal"] == "持有")
-        sell  = sum(1 for r in results if r["signal"] == "卖出")
-
-        return jsonify({
-            "ok": True,
-            "date":   datetime.now().strftime("%Y-%m-%d"),
-            "time":   datetime.now().strftime("%H:%M"),
-            "total":  len(results),
-            "buy":    buy,
-            "watch":  watch,
-            "hold":   hold,
-            "sell":   sell,
-            "stocks": results,
-        })
-    except Exception as ex:
-        logger.error(f"[dashboard] jsonify error: {ex}\n{_tb.format_exc()}")
-        return jsonify({"ok": False, "error": f"序列化失败: {ex}"})

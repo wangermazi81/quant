@@ -23,3 +23,6 @@ openai>=1.0.0
 # ── 实盘操作（仅 Windows 本地使用，云端请注释掉）──
 # pywinauto>=0.6.8
 # pyautogui>=0.9.54
+
+baostock>=0.8.9   # K线降级数据源(免费)
+# uqer            # 优矿(可选,需token,配置 data/datasource_config.json)

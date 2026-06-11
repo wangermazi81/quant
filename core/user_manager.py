@@ -9,13 +9,68 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "users.db")
 
-# ── 积分消耗配置 ──────────────────────────────────────────
+# ── 积分消耗配置（默认值；管理后台「积分设置」可改，存 data/point_costs.json）──
 POINT_COSTS = {
-    "ai_analysis": 10,   # AI 深度分析
-    "backtest":     5,   # 策略回测
-    "scan":         2,   # 全市场选股扫描
-    "paper_trade":  1,   # 模拟盘下单（每笔）
+    "ai_analysis":     10,   # AI 深度分析
+    "ai_strategy":      5,   # AI 写策略
+    "review_generate": 10,   # AI 复盘生成
+    "chain_graph":      5,   # AI 产业链图谱
+    "backtest":         5,   # 策略回测
+    "scan":             2,   # 全市场选股扫描
+    "paper_trade":      1,   # 模拟盘下单（每笔）
 }
+POINT_COST_LABELS = {
+    "ai_analysis":     "AI 深度分析",
+    "ai_strategy":     "AI 写策略",
+    "review_generate": "AI 复盘生成",
+    "chain_graph":     "AI 产业链图谱",
+    "backtest":        "策略回测",
+    "scan":            "全市场选股扫描",
+    "paper_trade":     "模拟盘下单（每笔）",
+}
+_COSTS_FILE = os.path.join(os.path.dirname(DB_PATH), "point_costs.json")
+
+
+def _load_point_costs():
+    """启动时加载管理员保存的积分配置覆盖默认值。"""
+    try:
+        import json as _json
+        if os.path.exists(_COSTS_FILE):
+            with open(_COSTS_FILE, encoding="utf-8") as f:
+                saved = _json.load(f)
+            for k, v in (saved or {}).items():
+                if k in POINT_COSTS:
+                    POINT_COSTS[k] = max(0, int(v))
+    except Exception:
+        pass
+
+
+def get_point_costs() -> dict:
+    return dict(POINT_COSTS)
+
+
+def set_point_costs(costs: dict) -> dict:
+    """管理员保存积分配置：内存即时生效 + 落盘持久化。0 = 该功能免费。"""
+    import json as _json
+    changed = {}
+    for k, v in (costs or {}).items():
+        if k not in POINT_COSTS:
+            continue
+        try:
+            POINT_COSTS[k] = max(0, int(v))
+            changed[k] = POINT_COSTS[k]
+        except Exception:
+            continue
+    try:
+        with open(_COSTS_FILE, "w", encoding="utf-8") as f:
+            _json.dump(POINT_COSTS, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return {"ok": False, "error": f"保存失败: {e}"}
+    return {"ok": True, "costs": dict(POINT_COSTS), "changed": changed}
+
+
+_load_point_costs()
+
 REGISTER_BONUS = 100    # 新用户注册赠送积分
 
 _lock = threading.Lock()
@@ -843,8 +898,17 @@ def list_all_announcements(page: int = 1, per_page: int = 100) -> list:
 def add_trade_signal(user_id: int, code: str, name: str, action: str,
                      price: float, shares: int, status: str = "pending",
                      msg: str = "") -> int:
-    """写入一条新的交易信号，返回其自增 ID"""
+    """写入一条新的交易信号，返回其自增 ID。
+    去重：同一只股如果有 pending/sent/submitted 状态的同方向信号，跳过不重复写入。"""
     with _lock, _conn() as c:
+        # 去重检查：同 code + 同 action + 未完成状态 → 跳过
+        dup = c.execute(
+            "SELECT id FROM trade_signals WHERE user_id=? AND code=? AND action=? "
+            "AND status IN ('pending','sent','submitted') LIMIT 1",
+            (user_id, code, action.upper()),
+        ).fetchone()
+        if dup:
+            return -1   # 重复信号，返回 -1 表示跳过
         cur = c.execute(
             "INSERT INTO trade_signals(user_id,code,name,action,price,shares,status,msg)"
             " VALUES(?,?,?,?,?,?,?,?)",
@@ -872,6 +936,28 @@ def get_pending_signals(user_id: int) -> list:
             )
             c.commit()
         return res
+
+
+def get_pending_buy_total(user_id: int) -> float:
+    """统计该用户所有未完成买单（pending/sent/submitted）的总金额，用于资金检查"""
+    with _lock, _conn() as c:
+        row = c.execute(
+            "SELECT COALESCE(SUM(price * shares), 0) FROM trade_signals "
+            "WHERE user_id=? AND action='BUY' AND status IN ('pending','sent','submitted')",
+            (user_id,),
+        ).fetchone()
+        return float(row[0]) if row else 0.0
+
+
+def has_pending_signal(user_id: int, code: str, action: str) -> bool:
+    """检查该股是否已有未完成的同方向信号（去重用）"""
+    with _lock, _conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM trade_signals WHERE user_id=? AND code=? AND action=? "
+            "AND status IN ('pending','sent','submitted') LIMIT 1",
+            (user_id, code, action.upper()),
+        ).fetchone()
+        return row is not None
 
 
 def get_trade_signal(signal_id: int) -> dict | None:

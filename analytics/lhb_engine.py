@@ -1,0 +1,445 @@
+"""龙虎榜数据引擎：每日数据抓取 / 游资识别 / 游资图谱构建。
+
+数据链路：
+  东财 datacenter-web API（主）→ akshare 备源 → 磁盘缓存（兜底）
+
+游资识别：内置约 150 条主要营业部→游资标签映射，模糊匹配。
+缓存策略：盘中（<15:30）5 分钟；盘后当天缓存；历史数据永久磁盘存储。
+"""
+import json
+import logging
+import re
+import time
+import threading
+from datetime import datetime, timedelta
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+LHB_DIR  = BASE_DIR / "data" / "lhb"
+LHB_DIR.mkdir(parents=True, exist_ok=True)
+
+# ─── 公用工具（复用 research_center 的代理补丁 / 清洗函数）────────────
+from research_center import no_proxy, _clean_text, _num
+
+
+# ══════════════════════════════════════════════════════════════
+# 游资营业部标签库
+# ══════════════════════════════════════════════════════════════
+YOUZAI_TAGS: dict[str, str] = {
+    # ── 浙系 ──────────────────────────────────────────────────
+    "中信证券杭州延安路":       "章盟主",
+    "中信证券杭州钱江新城":     "章盟主",
+    "中信证券杭州武林广场":     "章盟主",
+    "光大证券金华宾虹路":       "江南神鹰/落升",
+    "光大证券金华义乌":         "江南神鹰/落升",
+    "光大证券金华":             "江南神鹰/落升",
+    "浙商证券绍兴解放北路":     "绍兴游资",
+    "浙商证券杭州解放路":       "杭帮",
+    "国泰君安杭州城站":         "杭帮",
+    "东方财富证券杭州":         "杭帮",
+    "中信建投证券杭州":         "杭帮",
+    "国信证券杭州":             "杭帮",
+    "华泰证券杭州营业部":       "杭帮",
+    # ── 苏南系 ────────────────────────────────────────────────
+    "华泰证券武进":             "苏南帮",
+    "华泰证券苏州工业园区":     "苏南帮",
+    "华泰证券常州":             "苏南帮",
+    "华泰证券苏州":             "苏南帮",
+    "国泰君安淮安淮海路":       "苏南帮",
+    "光大证券苏州观前":         "苏南帮",
+    "银河证券北京学院南路":     "苏南帮",
+    "国泰君安苏州观前":         "苏南帮",
+    "国信证券苏州":             "苏南帮",
+    "广发证券苏州":             "苏南帮",
+    "中泰证券苏州":             "苏南帮",
+    # ── 湖北游资 ──────────────────────────────────────────────
+    "海通证券武汉紫阳东路":     "紫阳东路",
+    "海通证券武汉武昌南湖":     "南湖游资",
+    "海通证券武汉珞狮路":       "武汉游资",
+    "招商证券武汉营业部":       "武汉游资",
+    "国泰君安武汉营业部":       "武汉游资",
+    "华泰证券武汉营业部":       "武汉游资",
+    "中信证券武汉营业部":       "武汉游资",
+    # ── 上海系 ────────────────────────────────────────────────
+    "华泰证券上海武定路":       "炒新一族",
+    "华泰证券上海中山南路":     "炒新一族",
+    "华泰证券上海营业部":       "炒新一族",
+    "申万宏源上海华山路":       "上海游资",
+    "国泰君安上海营业部":       "上海游资",
+    "国泰君安上海分公司":       "上海游资",
+    "国泰君安上海浦建路":       "上海游资",
+    "中信证券上海营业部":       "上海游资",
+    "东方财富证券上海":         "上海游资",
+    "申万宏源上海营业部":       "上海游资",
+    # ── 深圳/广东系 ───────────────────────────────────────────
+    "亚前海证券深圳分公司":     "粉葛",
+    "华林证券深圳福田":         "粉葛",
+    "中信证券深圳益田路":       "深圳游资",
+    "广发证券深圳益田路":       "深圳游资",
+    "平安证券深圳益田路":       "深圳游资",
+    "华鑫证券深圳分公司":       "深圳华鑫",
+    "招商证券深圳福田":         "深圳游资",
+    "民生证券深圳深南大道":     "深圳游资",
+    "国信证券深圳营业部":       "深圳游资",
+    "广发证券深圳振兴路":       "T王",
+    "广发证券深圳深南中路":     "T王",
+    "广发证券深圳车公庙":       "T王",
+    "广发证券深圳":             "T王",
+    "国信证券佛山千灯湖":       "佛山游资",
+    "广发证券广州天河":         "广州游资",
+    "国金证券广州":             "广州游资",
+    "招商证券广州":             "广州游资",
+    "华泰证券广州营业部":       "广州游资",
+    # ── 南京/江苏 ─────────────────────────────────────────────
+    "东莞证券南京分公司":       "玉兰路",
+    "华泰证券南京营业部":       "南京游资",
+    "华泰证券南京新街口":       "南京游资",
+    "国信证券南京营业部":       "南京游资",
+    "中信证券南京营业部":       "南京游资",
+    "招商证券南京营业部":       "南京游资",
+    # ── 湖州系 ────────────────────────────────────────────────
+    "华鑫证券湖州劳动路":       "湖州劳动路",
+    "国信证券湖州":             "湖州游资",
+    "招商证券湖州":             "湖州游资",
+    "华泰证券湖州":             "湖州游资",
+    # ── 安徽系 ────────────────────────────────────────────────
+    "国泰君安合肥长江路":       "合肥游资",
+    "中信证券合肥营业部":       "合肥游资",
+    "方正证券合肥营业部":       "合肥游资",
+    "华泰证券合肥营业部":       "合肥游资",
+    "申万宏源合肥营业部":       "合肥游资",
+    # ── 北京系 ────────────────────────────────────────────────
+    "中信证券北京双井路":       "北京游资",
+    "国信证券北京航天桥":       "北京游资",
+    "国泰君安北京营业部":       "北京游资",
+    "申万宏源北京营业部":       "北京游资",
+    "华泰证券北京营业部":       "北京游资",
+    # ── 山东系 ────────────────────────────────────────────────
+    "兴业证券青岛营业部":       "青岛游资",
+    "东方证券青岛营业部":       "青岛游资",
+    "华泰证券济南营业部":       "济南游资",
+    "中信证券济南营业部":       "济南游资",
+    # ── 其他 ──────────────────────────────────────────────────
+    "华鑫证券沈阳营业部":       "东北游资",
+    "国信证券成都营业部":       "成都游资",
+    "华泰证券成都营业部":       "成都游资",
+    "招商证券重庆营业部":       "重庆游资",
+    "国泰君安重庆营业部":       "重庆游资",
+}
+
+
+def _tag_branch(branch: str) -> str:
+    """营业部名称 → 游资标签（精确匹配 → 包含匹配）。"""
+    if not branch:
+        return ""
+    if branch in YOUZAI_TAGS:
+        return YOUZAI_TAGS[branch]
+    for k, v in YOUZAI_TAGS.items():
+        if len(k) >= 6 and (k in branch or branch in k):
+            return v
+    return ""
+
+
+# ══════════════════════════════════════════════════════════════
+# 缓存
+# ══════════════════════════════════════════════════════════════
+_cache: dict = {}
+_lock = threading.Lock()
+
+
+def _disk_path(yyyymmdd: str) -> Path:
+    return LHB_DIR / f"lhb_{yyyymmdd}.json"
+
+
+def _disk_get(yyyymmdd: str):
+    try:
+        p = _disk_path(yyyymmdd)
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return None
+
+
+def _disk_put(yyyymmdd: str, data: dict):
+    try:
+        _disk_path(yyyymmdd).write_text(
+            json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _today() -> str:
+    return datetime.now().strftime("%Y%m%d")
+
+
+def _fmt(yyyymmdd: str) -> str:
+    d = yyyymmdd.replace("-", "")
+    return f"{d[:4]}-{d[4:6]}-{d[6:]}"
+
+
+# ══════════════════════════════════════════════════════════════
+# 数据抓取
+# ══════════════════════════════════════════════════════════════
+
+def _fetch_lhb_stocks(yyyymmdd: str) -> list:
+    """akshare 获取当日龙虎榜股票列表（带基本数据）。"""
+    try:
+        with no_proxy():
+            import akshare as ak
+            # akshare ≥1.18: start_date/end_date 参数（旧版 date= 已废弃）
+            df = ak.stock_lhb_detail_em(start_date=yyyymmdd, end_date=yyyymmdd)
+        if df is None or df.empty:
+            return []
+
+        def _col(df, *names):
+            for n in names:
+                if n in df.columns:
+                    return n
+            for c in df.columns:
+                for n in names:
+                    if n in str(c):
+                        return c
+            return None
+
+        code_c   = _col(df, "代码", "code", "股票代码")
+        name_c   = _col(df, "名称", "name", "股票名称")
+        chg_c    = _col(df, "涨跌幅", "chg", "涨跌幅(%)")
+        # akshare 1.18.x 列名带"汇总"后缀，兼容旧版
+        net_c    = _col(df, "净额汇总", "净额", "净买额", "净买入额", "龙虎榜净买额")
+        buy_c    = _col(df, "买入额汇总", "买入额", "买入总额")
+        sell_c   = _col(df, "卖出额汇总", "卖出额", "卖出总额")
+        close_c  = _col(df, "收盘价", "最新价")
+        turn_c   = _col(df, "换手率")
+        reason_c = _col(df, "上榜原因", "上榜理由", "原因")
+        amt_c    = _col(df, "成交额", "成交金额")
+
+        out = []
+        for _, r in df.iterrows():
+            code = str(r[code_c] if code_c else "").zfill(6)
+            name = _clean_text(r[name_c]) if name_c else ""
+            if not code.isdigit() or not name:
+                continue
+            net = _num(r[net_c]) if net_c else None
+            # net_amt 单位：万元
+            out.append({
+                "code":    code,
+                "name":    name,
+                "chg":     _num(r[chg_c]) if chg_c else None,
+                "net_amt": round(net / 10000, 2) if net else None,
+                "buy_amt": round((_num(r[buy_c]) or 0) / 10000, 2) if buy_c else None,
+                "sell_amt":round((_num(r[sell_c]) or 0) / 10000, 2) if sell_c else None,
+                "close":   _num(r[close_c]) if close_c else None,
+                "turnover":_num(r[turn_c]) if turn_c else None,
+                "reason":  _clean_text(r[reason_c])[:30] if reason_c else "",
+                "vol":     round((_num(r[amt_c]) or 0) / 1e8, 2) if amt_c else None,
+                "youzai":  [],
+                "branches":[]
+            })
+        out.sort(key=lambda x: x.get("net_amt") or -9e9, reverse=True)
+        return out
+    except Exception as e:
+        logger.warning(f"[lhb] 股票列表 {yyyymmdd} 失败: {e}")
+        return []
+
+
+def _fetch_seat_detail(code: str, date_str: str) -> list:
+    """东财席位明细 API：一只股票当日所有营业部买卖数据。
+
+    尝试顺序：datacenter-web v1 → 老版 getLHBDetail → akshare 备源。
+    """
+    import requests
+    hdrs = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Referer": "https://data.eastmoney.com/stock/lhb.html",
+        "Accept": "application/json",
+    }
+
+    # ── 方法1: 新版 datacenter-web API ───────────────────────
+    for report_name in ("RPT_BILLBOARD_YJLHB_DETAIL", "RPT_LHB_DETAIL",
+                        "RPT_LHB_STOCK_SEAT", "RPT_BILLBOARD_LHBINFO"):
+        try:
+            r = requests.get(
+                "https://datacenter-web.eastmoney.com/api/data/v1/get",
+                params={
+                    "reportName": report_name,
+                    "columns": "OPERATEDEPT_NAME,BILLBOARD_NET_AMT,BILLBOARD_BUY_AMT,"
+                               "BILLBOARD_SELL_AMT,BILLBOARD_DIRECTION",
+                    "filter":  f"(SECURITY_CODE='{code}')(TRADE_DATE='{date_str}')",
+                    "pageNumber": 1, "pageSize": 20,
+                    "sortTypes": -1, "sortColumns": "BILLBOARD_NET_AMT",
+                    "source": "WEB", "client": "WEB",
+                },
+                headers=hdrs, timeout=8,
+            )
+            data = ((r.json() or {}).get("result") or {}).get("data") or []
+            if data:
+                return [{"name": _clean_text(d.get("OPERATEDEPT_NAME", "")),
+                         "buy":  (_num(d.get("BILLBOARD_BUY_AMT"))  or 0) / 10000,
+                         "sell": (_num(d.get("BILLBOARD_SELL_AMT")) or 0) / 10000,
+                         "net":  (_num(d.get("BILLBOARD_NET_AMT"))  or 0) / 10000,
+                         "dir":  str(d.get("BILLBOARD_DIRECTION", ""))} for d in data]
+        except Exception:
+            pass
+
+    # ── 方法2: 老版 getLHBDetail ──────────────────────────────
+    try:
+        r = requests.get(
+            "https://data.eastmoney.com/DataCenter_V3/stock2016/getLHBDetail.ashx",
+            params={"security_code": code, "trade_date": date_str, "type": "0"},
+            headers=hdrs, timeout=8,
+        )
+        seats = (r.json() or {}).get("data") or []
+        if seats:
+            out = []
+            for s in seats:
+                nm   = _clean_text(s.get("OPERATEDEPT_NAME") or s.get("yyb_name") or "")
+                buy  = (_num(s.get("BILLBOARD_BUY_AMT")  or s.get("buy_amt"))  or 0) / 10000
+                sell = (_num(s.get("BILLBOARD_SELL_AMT") or s.get("sell_amt")) or 0) / 10000
+                out.append({"name": nm, "buy": buy, "sell": sell, "net": buy - sell,
+                            "dir": "B" if buy >= sell else "S"})
+            return out
+    except Exception:
+        pass
+
+    # ── 方法3: akshare stock_lhb_stock_statistic_em ──────────
+    try:
+        with no_proxy():
+            import akshare as ak
+            df = ak.stock_lhb_stock_statistic_em(
+                symbol=code, start_date=date_str.replace("-", ""),
+                end_date=date_str.replace("-", ""))
+        if df is not None and not df.empty:
+            out = []
+            for _, r in df.iterrows():
+                # 列名因版本而异，尽力提取
+                nm = _clean_text(r.get("营业部名称", r.get("席位名称", "")))
+                b  = (_num(r.get("买入额", 0)) or 0) / 10000
+                s  = (_num(r.get("卖出额", 0)) or 0) / 10000
+                if nm:
+                    out.append({"name": nm, "buy": b, "sell": s,
+                                "net": b - s, "dir": "B" if b >= s else "S"})
+            return out
+    except Exception:
+        pass
+
+    return []
+
+
+# ══════════════════════════════════════════════════════════════
+# 主入口
+# ══════════════════════════════════════════════════════════════
+
+def get_lhb_data(date: str = None) -> dict:
+    """获取龙虎榜全量数据（股票 + 席位 + 游资图谱标注）。
+
+    date: YYYY-MM-DD 或 YYYYMMDD，默认今日。
+    返回结构::
+
+        {ok, date, stocks:[{code,name,chg,net_amt,buy_amt,sell_amt,reason,
+                            youzai:[str], branches:[{name,buy,sell,net,tag}]}],
+         youzai_stat:[{name,stocks:[str],total_net}],
+         total}
+    """
+    if not date:
+        yyyymmdd = _today()
+    else:
+        yyyymmdd = date.replace("-", "")
+    date_str = _fmt(yyyymmdd)
+    is_today = (yyyymmdd == _today())
+
+    # 历史数据直读磁盘
+    if not is_today:
+        disk = _disk_get(yyyymmdd)
+        if disk:
+            return disk
+
+    # 内存缓存（盘中 5 分钟刷新；盘后不过期）
+    with _lock:
+        hit = _cache.get(yyyymmdd)
+        if hit:
+            ts, cached = hit
+            ttl = 300 if datetime.now().hour < 16 else 86400
+            if time.time() - ts < ttl:
+                return cached
+
+    # ── 1. 股票列表 ─────────────────────────────────────────
+    stocks = _fetch_lhb_stocks(yyyymmdd)
+    if not stocks:
+        disk = _disk_get(yyyymmdd)
+        if disk:
+            logger.info(f"[lhb] {date_str} 用磁盘缓存")
+            return disk
+        return {"ok": False, "date": date_str, "stocks": [],
+                "error": "龙虎榜数据暂未发布或接口暂时拉取失败，请15:30后重试"}
+
+    # ── 2. 席位明细（取前40只，避免过多请求）────────────────
+    top_n = min(40, len(stocks))
+    for i, s in enumerate(stocks[:top_n]):
+        try:
+            with no_proxy():
+                branches = _fetch_seat_detail(s["code"], date_str)
+            for b in branches:
+                b["tag"] = _tag_branch(b["name"])
+            s["branches"] = branches
+            buy_branches = [b for b in branches if b.get("buy", 0) > b.get("sell", 0)]
+            s["youzai"] = list({b["tag"] for b in buy_branches if b["tag"]})
+        except Exception as e:
+            logger.debug(f"[lhb] 席位 {s['code']} 失败: {e}")
+        if i < top_n - 1:
+            time.sleep(0.05)
+
+    # ── 3. 游资活跃统计 ──────────────────────────────────────
+    yz_stat: dict = {}
+    for s in stocks:
+        for yz in s.get("youzai", []):
+            if not yz:
+                continue
+            yz_stat.setdefault(yz, {"name": yz, "stocks": [], "total_net": 0.0})
+            yz_stat[yz]["stocks"].append(s["name"])
+            yz_stat[yz]["total_net"] += round(s.get("net_amt") or 0, 2)
+    youzai_stat = sorted(yz_stat.values(), key=lambda x: x["total_net"], reverse=True)
+
+    out = {
+        "ok":          True,
+        "date":        date_str,
+        "stocks":      stocks,
+        "youzai_stat": youzai_stat,
+        "total":       len(stocks),
+    }
+
+    with _lock:
+        _cache[yyyymmdd] = (time.time(), out)
+    if not is_today or datetime.now().hour >= 15:
+        _disk_put(yyyymmdd, out)
+
+    logger.info(f"[lhb] {date_str} 龙虎榜 {len(stocks)} 只，游资 {len(youzai_stat)} 组")
+    return out
+
+
+def get_lhb_dates(limit: int = 30) -> list:
+    """本地缓存的历史龙虎榜日期（最近 N 天，含今日）。"""
+    dates = []
+    try:
+        for p in sorted(LHB_DIR.glob("lhb_*.json"), reverse=True):
+            d = p.stem.replace("lhb_", "")
+            if len(d) == 8 and d.isdigit():
+                dates.append(_fmt(d))
+            if len(dates) >= limit:
+                break
+    except Exception:
+        pass
+    today = _fmt(_today())
+    if today not in dates:
+        dates.insert(0, today)
+    return dates[:limit]
+
+
+def preload_today():
+    """后台预加载今日数据（主要在 15:30 后触发）。"""
+    try:
+        get_lhb_data()
+    except Exception as e:
+        logger.warning(f"[lhb] 预加载失败: {e}")

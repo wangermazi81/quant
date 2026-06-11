@@ -278,6 +278,46 @@ tr:hover td{background:#fafbff}
 .switch::after{content:'';position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:2px;left:2px;transition:.25s;box-shadow:0 1px 4px rgba(0,0,0,.2)}
 .switch.on::after{left:20px}
 </style>
+<!-- ══════════ 糖果主题覆盖（与前台 /v2 统一风格）══════════ -->
+<style>
+:root{
+  --theme:#FFFFFF; --theme-light:#FFF6EF; --theme-active:#FF7B93;
+  --content-bg:#FCFAF7; --card-bg:#FFFFFF;
+  --blue:#FF7B93; --green:#52B788; --red:#FF6B81; --orange:#E8964A; --purple:#B580E8;
+  --text1:#2D2A26; --text2:#6F6155; --text3:#9C8B7A; --border:#EADCC9;
+  --shadow:0 3px 16px rgba(180,150,110,.10); --radius:12px;
+}
+body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-serif}
+/* 侧栏：浅色协调（白底 + 暖边框 + 深字 + 粉色激活）*/
+.sidebar{background:#fff;border-right:2px solid var(--border);box-shadow:2px 0 18px rgba(180,150,110,.07)}
+.sidebar-logo{border-bottom:1px solid var(--border)}
+.sidebar-logo .logo-icon{color:#FF7B93}
+.sidebar-logo .logo-title{color:#2D2A26}
+.menu-group-title{color:#B6A795}
+.menu-item{color:#6F6155}
+.menu-item:hover{background:#FFF0F3;color:#D6456A}
+.menu-item.active{background:var(--theme-active);color:#fff}
+/* 顶栏：白底深字，与内容统一 */
+.header{background:#fff;border-bottom:2px solid var(--border);color:#2D2A26;box-shadow:0 2px 12px rgba(180,150,110,.05)}
+.header-collapse{color:#9C8B7A}.header-collapse:hover{background:#FFF0F3;color:#D6456A}
+.header-breadcrumb{color:#9C8B7A}.header-breadcrumb span{color:#B6A795}.header-breadcrumb b{color:#2D2A26}
+.header-user{color:#2D2A26}.header-user:hover{background:#FAF6F0}
+.header-divider{background:var(--border)}
+/* 顶栏右侧图标按钮 + 用户名：浅顶栏上原白字不可见 → 改深色 */
+.hbtn{color:#6F6155}.hbtn:hover{background:#FFF0F3;color:#D6456A}
+.h-uname{color:#2D2A26}.h-role{color:#9C8B7A}
+.header-user i{color:#9C8B7A!important}
+.card{border:2px solid var(--border);border-radius:18px;box-shadow:var(--shadow)}
+.btn{border-radius:10px}
+.btn-primary{background:#FF7B93}.btn-primary:hover{filter:brightness(.96)}
+.form-input{border:1px solid var(--border);border-radius:10px;background:#FAF6F0}
+.form-input:focus{border-color:#FF7B93;background:#fff}
+.stat-card{border-radius:16px;border:2px solid var(--border)}
+::selection{background:#FFE0E6;color:#2D2A26}
+*::-webkit-scrollbar{width:9px;height:9px}
+*::-webkit-scrollbar-thumb{background:#E3D3BE;border-radius:6px}
+.tabs-bar .tab.active{color:#FF7B93}
+</style>
 </head>
 <body>
 
@@ -684,6 +724,49 @@ tr:hover td{background:#fafbff}
       </div>
     </div>
 
+    <!-- ===== 积分设置 ===== -->
+    <div class="page" id="page-point-costs">
+      <div class="card">
+        <div class="card-title"><i class="fas fa-sliders-h"></i> 功能调用积分设置</div>
+        <div style="font-size:12px;color:var(--text2);margin-bottom:14px">
+          每次调用对应功能扣除的积分。<b>保存后即时生效（无需重启）</b>，设为 0 = 该功能免费。配置持久化在 data/point_costs.json。
+        </div>
+        <div id="pc-body" style="max-width:520px"><div class="empty" style="padding:30px">加载中…</div></div>
+        <button class="btn btn-primary" style="margin-top:16px" onclick="savePointCosts()">
+          <i class="fas fa-save"></i> 保存并生效
+        </button>
+      </div>
+    </div>
+
+    <!-- ===== AI接口设置 ===== -->
+    <div class="page" id="page-ai-config">
+      <div class="card" style="max-width:680px">
+        <div class="card-title"><i class="fas fa-robot"></i> AI 大模型接口配置</div>
+        <div style="font-size:12px;color:var(--text2);margin-bottom:16px">
+          全平台所有 AI 功能（深度分析 / 写策略 / 复盘总结 / 产业链图谱）统一使用这份全局配置，
+          <b>保存后立即对全部功能生效（无需重启）</b>。仅管理员可见和修改。
+        </div>
+        <div class="form-group"><label class="form-label">服务商</label>
+          <select id="aic-provider" class="form-input" onchange="aicPreset()"></select></div>
+        <div class="form-group"><label class="form-label">Base URL</label>
+          <input id="aic-base" class="form-input" placeholder="https://api.deepseek.com/v1"></div>
+        <div class="form-group"><label class="form-label">模型</label>
+          <input id="aic-model" class="form-input" placeholder="deepseek-chat"></div>
+        <div class="form-group"><label class="form-label">API Key（留空 = 保持不变）</label>
+          <input id="aic-key" class="form-input" type="password" placeholder="sk-..." autocomplete="new-password"></div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+          <input id="aic-enabled" type="checkbox" style="width:auto">
+          <label for="aic-enabled" style="margin:0;cursor:pointer">启用 AI 功能</label>
+          <span id="aic-cur" style="font-size:11px;color:var(--text3);margin-left:auto"></span>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:16px;align-items:center">
+          <button class="btn btn-primary" onclick="aicSave()"><i class="fas fa-save"></i> 保存并生效</button>
+          <button class="btn btn-outline" onclick="aicTest()"><i class="fas fa-plug"></i> 测试连接</button>
+          <span id="aic-msg" style="font-size:12px"></span>
+        </div>
+      </div>
+    </div>
+
     <!-- ===== NOTIFICATIONS ===== -->
     <div class="page" id="page-notifications">
       <div class="card">
@@ -923,6 +1006,8 @@ const MENU = [
   {id:'users',     icon:'fas fa-users',          label:'用户管理', group:'系统管理'},
   {id:'roles',     icon:'fas fa-shield-alt',      label:'角色权限', group:'系统管理'},
   {id:'points',    icon:'fas fa-coins',           label:'积分流水', group:'系统管理'},
+  {id:'point-costs', icon:'fas fa-sliders-h',     label:'积分设置', group:'系统管理'},
+  {id:'ai-config',  icon:'fas fa-robot',          label:'AI接口设置', group:'系统管理'},
   {id:'invites',   icon:'fas fa-ticket-alt',      label:'邀请码',   group:'系统管理'},
   {id:'stats',         icon:'fas fa-chart-bar',       label:'使用统计',  group:'数据分析'},
   {id:'announcements', icon:'fas fa-bullhorn',         label:'公告管理',  group:'内容管理'},
@@ -933,7 +1018,7 @@ const MENU = [
 const PAGE_NAMES = {
   'dashboard':'工作台','users':'用户管理','roles':'角色权限',
   'points':'积分流水','stats':'使用统计','announcements':'公告管理',
-  'invites':'邀请码','feedback':'问题反馈',
+  'invites':'邀请码','feedback':'问题反馈','point-costs':'积分设置','ai-config':'AI接口设置',
   'user-center':'个人中心','change-pwd':'修改密码','notifications':'系统通知',
   'changelog':'更新日志',
 };
@@ -1029,6 +1114,8 @@ function navigate(id, addTabFlag=true){
   if(id==='stats') loadStats();
   if(id==='user-center') loadUserCenter();
   if(id==='invites') loadInvites();
+  if(id==='point-costs') loadPointCosts();
+  if(id==='ai-config') loadAiConfig();
   if(id==='notifications') renderNotifications();
 }
 
@@ -1760,6 +1847,93 @@ async function _annFetch(method, path, body){
 }
 
 // ================================================================
+// AI 大模型接口配置（全局唯一权威，保存即对所有AI功能生效）
+// ================================================================
+let _aicPresets = {};
+
+async function loadAiConfig(){
+  const r = await _annFetch('GET', '/ai/config');
+  if(!r || r.error){ showToast((r&&r.error)||'加载失败（需管理员权限）','error'); return; }
+  _aicPresets = r.presets || {};
+  const sel = document.getElementById('aic-provider');
+  const keys = Object.keys(_aicPresets);
+  sel.innerHTML = keys.map(p=>`<option value="${p}">${(_aicPresets[p]||{}).name||p}</option>`).join('')
+    || `<option value="${r.provider||''}">${r.provider||''}</option>`;
+  if(r.provider) sel.value = r.provider;
+  document.getElementById('aic-base').value  = r.base_url || '';
+  document.getElementById('aic-model').value = r.model || '';
+  document.getElementById('aic-key').value   = '';
+  document.getElementById('aic-enabled').checked = !!r.enabled;
+  document.getElementById('aic-cur').textContent = '当前 Key: ' + (r.api_key_masked || '未配置');
+}
+
+function aicPreset(){
+  const p = _aicPresets[document.getElementById('aic-provider').value] || {};
+  if(p.base_url) document.getElementById('aic-base').value  = p.base_url;
+  if(p.model)    document.getElementById('aic-model').value = p.model;
+}
+
+async function aicSave(){
+  const body = {
+    provider: document.getElementById('aic-provider').value,
+    base_url: document.getElementById('aic-base').value.trim(),
+    model:    document.getElementById('aic-model').value.trim(),
+    enabled:  document.getElementById('aic-enabled').checked,
+  };
+  const key = document.getElementById('aic-key').value.trim();
+  if(key) body.api_key = key;
+  const r = await _annFetch('POST', '/ai/config', body);
+  if(r && r.ok){ showToast('已保存，全部AI功能即时生效','success'); loadAiConfig(); }
+  else showToast((r&&r.error)||'保存失败','error');
+}
+
+async function aicTest(){
+  const msg = document.getElementById('aic-msg');
+  msg.style.color = 'var(--text2)'; msg.textContent = '⏳ 测试中…';
+  const body = {
+    base_url: document.getElementById('aic-base').value.trim(),
+    model:    document.getElementById('aic-model').value.trim(),
+  };
+  const key = document.getElementById('aic-key').value.trim();
+  if(key) body.api_key = key;
+  const r = await _annFetch('POST', '/ai/test', body);
+  if(r && r.ok){ msg.style.color = 'var(--green)'; msg.textContent = `✅ 连通 (${r.model}) 回复: ${r.reply||'OK'}`; }
+  else { msg.style.color = 'var(--red)'; msg.textContent = '❌ ' + ((r&&r.error)||'连接失败'); }
+}
+
+// ================================================================
+// 积分设置（各功能调用消耗，保存即时生效）
+// ================================================================
+async function loadPointCosts(){
+  const box = document.getElementById('pc-body');
+  box.innerHTML = '<div class="empty" style="padding:30px">加载中…</div>';
+  try{
+    const r = await _annFetch('GET', '/admin/point_costs');
+    if(!r || !r.ok) throw new Error((r&&r.error)||'加载失败');
+    let html='';
+    Object.entries(r.costs||{}).forEach(([k,v])=>{
+      const lbl = (r.labels||{})[k] || k;
+      html += `<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+        <span style="flex:1">${lbl}<span style="color:var(--text3);font-size:11px;margin-left:8px;font-family:monospace">${k}</span></span>
+        <input class="form-input pc-input" data-key="${k}" type="number" min="0" step="1" value="${v}" style="width:110px;text-align:right">
+        <span style="color:var(--text2);font-size:12px;width:40px">分/次</span>
+      </div>`;
+    });
+    box.innerHTML = html || '<div class="empty">无配置项</div>';
+  }catch(e){
+    box.innerHTML = `<div class="empty" style="padding:30px;color:#e05661">加载失败：${e.message}</div>`;
+  }
+}
+
+async function savePointCosts(){
+  const costs = {};
+  document.querySelectorAll('.pc-input').forEach(i=>{ costs[i.dataset.key] = parseInt(i.value)||0; });
+  const r = await _annFetch('POST', '/admin/point_costs', {costs});
+  if(r && r.ok){ showToast('已保存，即时生效','success'); loadPointCosts(); }
+  else showToast((r&&r.error)||'保存失败','error');
+}
+
+// ================================================================
 // 邀请码（邀请制注册）
 // ================================================================
 function _copyInv(t){
@@ -2092,45 +2266,15 @@ async function updateAnnouncement(){
 }
 
 </script>
-<!-- ══════════ 糖果主题覆盖（与前台 /v2 统一风格）══════════ -->
-<style>
-:root{
-  --theme:#FFFFFF; --theme-light:#FFF6EF; --theme-active:#FF7B93;
-  --content-bg:#FCFAF7; --card-bg:#FFFFFF;
-  --blue:#FF7B93; --green:#52B788; --red:#FF6B81; --orange:#E8964A; --purple:#B580E8;
-  --text1:#2D2A26; --text2:#6F6155; --text3:#9C8B7A; --border:#EADCC9;
-  --shadow:0 3px 16px rgba(180,150,110,.10); --radius:12px;
-}
-body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-serif}
-/* 侧栏：浅色协调（白底 + 暖边框 + 深字 + 粉色激活）*/
-.sidebar{background:#fff;border-right:2px solid var(--border);box-shadow:2px 0 18px rgba(180,150,110,.07)}
-.sidebar-logo{border-bottom:1px solid var(--border)}
-.sidebar-logo .logo-icon{color:#FF7B93}
-.sidebar-logo .logo-title{color:#2D2A26}
-.menu-group-title{color:#B6A795}
-.menu-item{color:#6F6155}
-.menu-item:hover{background:#FFF0F3;color:#D6456A}
-.menu-item.active{background:var(--theme-active);color:#fff}
-/* 顶栏：白底深字，与内容统一 */
-.header{background:#fff;border-bottom:2px solid var(--border);color:#2D2A26;box-shadow:0 2px 12px rgba(180,150,110,.05)}
-.header-collapse{color:#9C8B7A}.header-collapse:hover{background:#FFF0F3;color:#D6456A}
-.header-breadcrumb{color:#9C8B7A}.header-breadcrumb span{color:#B6A795}.header-breadcrumb b{color:#2D2A26}
-.header-user{color:#2D2A26}.header-user:hover{background:#FAF6F0}
-.header-divider{background:var(--border)}
-/* 顶栏右侧图标按钮 + 用户名：浅顶栏上原白字不可见 → 改深色 */
-.hbtn{color:#6F6155}.hbtn:hover{background:#FFF0F3;color:#D6456A}
-.h-uname{color:#2D2A26}.h-role{color:#9C8B7A}
-.header-user i{color:#9C8B7A!important}
-.card{border:2px solid var(--border);border-radius:18px;box-shadow:var(--shadow)}
-.btn{border-radius:10px}
-.btn-primary{background:#FF7B93}.btn-primary:hover{filter:brightness(.96)}
-.form-input{border:1px solid var(--border);border-radius:10px;background:#FAF6F0}
-.form-input:focus{border-color:#FF7B93;background:#fff}
-.stat-card{border-radius:16px;border:2px solid var(--border)}
-::selection{background:#FFE0E6;color:#2D2A26}
-*::-webkit-scrollbar{width:9px;height:9px}
-*::-webkit-scrollbar-thumb{background:#E3D3BE;border-radius:6px}
-.tabs-bar .tab.active{color:#FF7B93}
-</style>
+
+<!-- ICP / 公安联网备案（合规脚注，与主站一致） -->
+<div id="beianFooter" style="position:fixed;left:0;right:0;bottom:0;z-index:99999;display:flex;justify-content:center;align-items:center;gap:16px;padding:2px 0 3px;font-size:11px;line-height:1;color:#8a8378;background:#FBF7F0;border-top:1px solid #EADFD0;pointer-events:none">
+  <a href="https://beian.miit.gov.cn" target="_blank" rel="noreferrer"
+     style="color:inherit;text-decoration:none;pointer-events:auto">赣ICP备2026011468号</a>
+  <a href="https://beian.mps.gov.cn/#/query/webSearch?code=36102102000155" target="_blank" rel="noreferrer"
+     style="color:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:4px;pointer-events:auto">
+    <img src="/static/beian-gongan.png" alt="公安备案" style="width:13px;height:13px;vertical-align:middle">赣公网安备36102102000155号
+  </a>
+</div>
 </body>
 </html>

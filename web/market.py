@@ -146,12 +146,14 @@ def _get_market_review() -> dict:
             pass
 
     # 3. 板块轮动（行业板块）
+    # stock_board_industry_rank_em 在 akshare 1.18.x 不存在（此处曾静默失败导致板块恒空），
+    # 正确接口为 stock_board_industry_name_em；名称列需模糊匹配（首列是"排名"）。
     try:
         import akshare as ak
-        df_sec = ak.stock_board_industry_rank_em(symbol="沪深A股")
+        df_sec = ak.stock_board_industry_name_em()
         if df_sec is not None and not df_sec.empty:
             chg_col  = next((c for c in df_sec.columns if "涨跌幅" in c), None)
-            name_col = df_sec.columns[0]
+            name_col = next((c for c in df_sec.columns if "名称" in str(c)), df_sec.columns[0])
             if chg_col:
                 df_sec[chg_col] = _pd.to_numeric(df_sec[chg_col], errors="coerce")
                 df_s = df_sec.dropna(subset=[chg_col]).sort_values(chg_col, ascending=False)

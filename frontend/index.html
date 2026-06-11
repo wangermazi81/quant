@@ -84,7 +84,7 @@
   <div class="ntab" onclick="switchPage('strategy',this)">🧪 策略中心</div>
   <div class="ntab" onclick="switchPage('paper',this);loadPaperPage()">💹 模拟盘</div>
   <div class="ntab" onclick="switchPage('search',this);initSearchPage()">🔍 智能搜索</div>
-  <div class="ntab" onclick="switchPage('daily',this);initDailyPage()">📋 日报</div>
+  
   <div class="nav-r">
     <span id="runBadge" class="badge stop">已停止</span>
     <!-- 实盘/模拟总开关：点击切换，切到实盘需二次确认 -->
@@ -420,43 +420,6 @@
           <div style="font-size:11px;font-weight:700;color:var(--t2);margin-bottom:10px">📊 搜索服务用量（本月）</div>
           <div id="srchStatsContent"></div>
         </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- 日报页 -->
-<div class="page" id="page-daily" style="flex-direction:column;overflow:hidden">
-  <div style="display:flex;flex:1;gap:0;overflow:hidden;height:100%">
-
-    <!-- 左：大盘复盘 -->
-    <div id="daily-left" style="width:360px;min-width:320px;border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
-      <div style="padding:14px 16px;border-bottom:1px solid var(--b1);display:flex;align-items:center;justify-content:space-between">
-        <b style="font-size:15px">📊 大盘复盘</b>
-        <button class="btn" style="padding:3px 10px;font-size:12px" onclick="loadMarketReview()">刷新</button>
-      </div>
-      <div id="market-review-body" style="flex:1;overflow-y:auto;padding:14px">
-        <div class="empty-hint">点击「刷新」获取大盘数据</div>
-      </div>
-    </div>
-
-    <!-- 右：决策仪表盘 -->
-    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
-      <!-- 顶部输入区 -->
-      <div style="padding:12px 16px;border-bottom:1px solid var(--b1);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <textarea id="dash-codes-input" placeholder="输入股票代码，逗号或换行分隔&#10;如：000657,600105,300260"
-          style="flex:1;min-width:200px;height:52px;resize:none;padding:6px 10px;border:1px solid var(--b1);border-radius:6px;background:var(--bg);color:var(--t1);font-size:13px"></textarea>
-        <div style="display:flex;flex-direction:column;gap:6px">
-          <label style="font-size:12px;color:var(--t2);display:flex;align-items:center;gap:4px">
-            <input type="checkbox" id="dash-with-ai" checked> AI摘要
-          </label>
-          <button class="btn btn-blue" style="padding:5px 16px;font-size:13px" onclick="generateDashboard()">生成报告</button>
-        </div>
-        <button class="btn" style="padding:5px 12px;font-size:12px;align-self:flex-end" onclick="dashFromQueue()">从队列导入</button>
-      </div>
-      <!-- 报告区 -->
-      <div id="dash-report-body" style="flex:1;overflow-y:auto;padding:14px">
-        <div class="empty-hint">输入股票代码后点击「生成报告」</div>
       </div>
     </div>
   </div>
@@ -1147,7 +1110,7 @@
 
 <script src="/app/js/app-4.js"></script>
 
-<script src="/app/js/app-5.js"></script>
+
 <!-- ══════════ 问题反馈入口（自成一体，复用主题类）══════════ -->
 <link rel="stylesheet" href="/app/css/feedback.css">
 <button class="fb-fab" onclick="openFeedback()" title="提交问题反馈 / 建议">💬 反馈</button>

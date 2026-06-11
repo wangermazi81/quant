@@ -453,6 +453,7 @@ tr:hover td{background:var(--card)}
 .points-warn{position:fixed;top:60px;right:20px;background:#2d1a1e;border:1px solid #6e1c24;border-radius:8px;padding:12px 16px;color:#f85149;font-size:13px;z-index:8000;max-width:280px;display:none;box-shadow:0 4px 12px rgba(0,0,0,.3);animation:slideIn .2s ease}
 @keyframes slideIn{from{transform:translateY(-10px);opacity:0}to{transform:translateY(0);opacity:1}}
 </style>
+<link rel="stylesheet" href="/static/lib/theme-candy.css">
 </head>
 <body>
 
@@ -526,8 +527,8 @@ tr:hover td{background:var(--card)}
   <div class="ntab active" onclick="switchPage('monitor',this)">📊 监控中心</div>
   <div class="ntab" onclick="switchPage('strategy',this)">🧪 策略中心</div>
   <div class="ntab" onclick="switchPage('paper',this);loadPaperPage()">💹 模拟盘</div>
-  <div class="ntab" onclick="switchPage('search',this);initSearchPage()">🔍 智能搜索</div>
-  <div class="ntab" onclick="switchPage('daily',this);initDailyPage()">📋 日报</div>
+  <div class="ntab" onclick="switchPage('search',this);initSearchPage();rsInit()">🧬 产业链研报</div>
+  <div class="ntab" onclick="switchPage('review',this);initReviewPage()">🔁 复盘</div>
   <div class="nav-r">
     <span id="runBadge" class="badge stop">已停止</span>
     <!-- 实盘/模拟总开关：点击切换，切到实盘需二次确认 -->
@@ -788,7 +789,61 @@ tr:hover td{background:var(--card)}
 </div>
 
 <!-- 智能搜索页 -->
+<!-- 智能搜索页(投研中心):产业链/研报为主,搜索为辅 -->
 <div class="page" id="page-search" style="flex-direction:column;overflow:hidden">
+  <!-- 顶部子页签 -->
+  <div style="display:flex;gap:4px;padding:8px 16px 0;border-bottom:1px solid var(--b1);flex-shrink:0">
+    <div class="rs-tab active" id="rsTab-chain" onclick="rsSwitch('chain')">🧬 产业链</div>
+    <div class="rs-tab" id="rsTab-report" onclick="rsSwitch('report')">📑 研报中心</div>
+    <div class="rs-tab" id="rsTab-search" onclick="rsSwitch('search')">🔍 智能搜索</div>
+  </div>
+
+  <!-- ① 产业链视图 -->
+  <div id="rsView-chain" style="flex:1;display:flex;overflow:hidden">
+    <div style="width:300px;min-width:260px;border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
+      <div style="padding:12px 14px;border-bottom:1px solid var(--b1)">
+        <div style="display:flex;gap:6px">
+          <input id="chainQ" class="set-fi" placeholder="搜概念：低空经济 / 固态电池…" style="flex:1"
+                 onkeydown="if(event.key==='Enter')chainSearch(this.value)">
+          <button class="btn btn-blue btn-sm" onclick="chainSearch(document.getElementById('chainQ').value)">搜索</button>
+        </div>
+        <div id="chainListHint" style="font-size:11px;color:var(--t3);margin-top:6px">加载中…</div>
+      </div>
+      <div id="chainList" style="flex:1;overflow-y:auto"></div>
+    </div>
+    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:420px">
+      <div style="padding:12px 18px;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:10px">
+        <b id="chainTitle" style="font-size:15px">🧬 产业链</b>
+        <span id="chainMeta" style="font-size:11px;color:var(--t3)"></span>
+        <button class="btn btn-blue btn-sm" id="chainGraphBtn" style="margin-left:auto;display:none" onclick="genChainGraph()">🧬 AI生成产业链图谱</button>
+      </div>
+      <div id="chainDetail" style="flex:1;overflow-y:auto;padding:16px 18px">
+        <div class="empty-hint">在左侧选择或搜索一个概念板块，查看成分股、相关度与产业链图谱</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ② 研报中心视图 -->
+  <div id="rsView-report" style="flex:1;display:none;flex-direction:column;overflow:hidden">
+    <div style="padding:12px 18px;border-bottom:1px solid var(--b1);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <select id="repType" class="set-fi" style="width:120px" onchange="loadReports()">
+        <option value="0">📈 个股研报</option>
+        <option value="1">🏭 行业研报</option>
+        <option value="3">📊 策略报告</option>
+      </select>
+      <input id="repQ" class="set-fi" placeholder="筛选：股票代码 / 名称 / 行业 / 关键词，回车查询" style="flex:1;min-width:220px"
+             onkeydown="if(event.key==='Enter')loadReports()">
+      <button class="btn btn-blue btn-sm" onclick="loadReports()">查询</button>
+      <button class="btn btn-gray btn-sm" onclick="document.getElementById('repQ').value='';loadReports()">最新全部</button>
+      <span id="repHint" style="font-size:11px;color:var(--t3)"></span>
+    </div>
+    <div id="repBody" style="flex:1;overflow-y:auto;padding:14px 18px">
+      <div class="empty-hint">加载中…</div>
+    </div>
+  </div>
+
+  <!-- ③ 智能搜索视图(增强功能,原有引擎) -->
+  <div id="rsView-search" style="flex:1;display:none;overflow:hidden">
   <div style="display:flex;flex:1;gap:0;overflow:hidden;height:100%">
     <!-- 左侧搜索区 -->
     <div style="width:400px;min-width:360px;border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
@@ -867,40 +922,81 @@ tr:hover td{background:var(--card)}
       </div>
     </div>
   </div>
+  </div>
 </div>
 
-<!-- 日报页 -->
-<div class="page" id="page-daily" style="flex-direction:column;overflow:hidden">
+<!-- 复盘页 -->
+<div class="page" id="page-review" style="flex-direction:column;overflow:hidden">
   <div style="display:flex;flex:1;gap:0;overflow:hidden;height:100%">
 
-    <!-- 左：大盘复盘 -->
-    <div id="daily-left" style="width:360px;min-width:320px;border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
-      <div style="padding:14px 16px;border-bottom:1px solid var(--b1);display:flex;align-items:center;justify-content:space-between">
-        <b style="font-size:15px">📊 大盘复盘</b>
-        <button class="btn" style="padding:3px 10px;font-size:12px" onclick="loadMarketReview()">刷新</button>
+    <!-- 左：市场情绪温度计 -->
+    <div style="width:330px;min-width:300px;border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--b1);display:flex;align-items:center;justify-content:space-between">
+        <b style="font-size:15px">🌡️ 市场情绪</b>
+        <button class="btn" style="padding:3px 10px;font-size:12px" onclick="loadReview(true)">刷新</button>
       </div>
-      <div id="market-review-body" style="flex:1;overflow-y:auto;padding:14px">
-        <div class="empty-hint">点击「刷新」获取大盘数据</div>
+      <div id="rv-left" style="flex:1;overflow-y:auto;padding:14px">
+        <div class="empty-hint">加载中…</div>
       </div>
     </div>
 
-    <!-- 右：决策仪表盘 -->
-    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
-      <!-- 顶部输入区 -->
-      <div style="padding:12px 16px;border-bottom:1px solid var(--b1);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <textarea id="dash-codes-input" placeholder="输入股票代码，逗号或换行分隔&#10;如：000657,600105,300260"
-          style="flex:1;min-width:200px;height:52px;resize:none;padding:6px 10px;border:1px solid var(--b1);border-radius:6px;background:var(--bg);color:var(--t1);font-size:13px"></textarea>
-        <div style="display:flex;flex-direction:column;gap:6px">
-          <label style="font-size:12px;color:var(--t2);display:flex;align-items:center;gap:4px">
-            <input type="checkbox" id="dash-with-ai" checked> AI摘要
-          </label>
-          <button class="btn btn-blue" style="padding:5px 16px;font-size:13px" onclick="generateDashboard()">生成报告</button>
-        </div>
-        <button class="btn" style="padding:5px 12px;font-size:12px;align-self:flex-end" onclick="dashFromQueue()">从队列导入</button>
+    <!-- 中：AI复盘总结 / 龙虎榜（Tab 切换） -->
+    <div style="flex:1;min-width:420px;display:flex;flex-direction:column;overflow:hidden">
+      <!-- 顶部 Tab 栏 -->
+      <div style="display:flex;border-bottom:1px solid var(--b1);flex-shrink:0">
+        <div id="rv-main-tab" class="rs-tab active" onclick="rvSwitchTab('review')" style="padding:10px 16px 9px">📝 复盘</div>
+        <div id="rv-lhb-tab"  class="rs-tab" onclick="rvSwitchTab('lhb')"    style="padding:10px 16px 9px">🔥 龙虎榜</div>
       </div>
-      <!-- 报告区 -->
-      <div id="dash-report-body" style="flex:1;overflow-y:auto;padding:14px">
-        <div class="empty-hint">输入股票代码后点击「生成报告」</div>
+      <!-- 复盘操作栏 -->
+      <div id="rv-review-ctrl" style="padding:8px 16px;border-bottom:1px solid var(--b1);display:flex;gap:10px;align-items:center;flex-wrap:wrap;flex-shrink:0">
+        <select id="rv-date" onchange="loadReview()" style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:4px 8px;color:var(--t1);font-size:12px"></select>
+        <span id="rv-phase" style="font-size:11px;color:var(--t3)"></span>
+        <button class="btn btn-blue" id="rv-gen-btn" style="margin-left:auto;padding:4px 14px;font-size:12px" onclick="generateReview()" title="采集最新数据并调用 AI 生成复盘总结与明日预案（约1-2分钟）">⚡ 生成AI复盘</button>
+      </div>
+      <!-- 龙虎榜操作栏 -->
+      <div id="rv-lhb-ctrl" style="display:none;padding:8px 12px;border-bottom:1px solid var(--b1);flex-shrink:0;align-items:center;gap:8px">
+        <select id="lhb-date" onchange="loadLhb()" style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:4px 8px;color:var(--t1);font-size:12px"></select>
+        <div class="lhb-sub-tabs" style="flex:1">
+          <div class="lhb-sub-tab active" id="lhb-sub-graph" onclick="lhbSubTab('graph')">游资图谱</div>
+          <div class="lhb-sub-tab" id="lhb-sub-list"  onclick="lhbSubTab('list')">龙虎榜单</div>
+        </div>
+        <button class="btn" onclick="loadLhb(true)" style="padding:3px 10px;font-size:12px;margin-left:auto">刷新</button>
+      </div>
+      <!-- 复盘内容 -->
+      <div id="rv-main" style="flex:1;overflow-y:auto;padding:14px">
+        <div class="empty-hint">加载中…</div>
+      </div>
+      <!-- 龙虎榜内容（分游资图谱 / 龙虎榜单两个子视图） -->
+      <div id="rv-lhb-area" style="display:none;flex:1;flex-direction:column;overflow:hidden">
+        <div id="lhb-graph-area" style="flex:1;overflow-y:auto;overflow-x:auto;padding:14px">
+          <div id="lhb-graph-canvas"><div class="empty-hint">切换到此页后自动加载当日数据</div></div>
+        </div>
+        <div id="lhb-list-area" style="flex:1;overflow-y:auto;padding:14px;display:none">
+          <div id="lhb-list-canvas"><div class="empty-hint">切换到此页后自动加载当日数据</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右：财经快讯时间线（盘中盯盘 / 盘后复盘素材 / 晚间预案）-->
+    <div style="width:350px;min-width:310px;border-left:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
+      <div style="padding:10px 14px;border-bottom:1px solid var(--b1)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <b style="font-size:15px">📰 财经快讯</b>
+          <span id="rv-news-count" style="font-size:11px;color:var(--t3)"></span>
+          <label style="margin-left:auto;font-size:11px;color:var(--t2);display:flex;gap:4px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="rv-news-imp" onchange="loadNews()">只看重要
+          </label>
+        </div>
+        <div style="display:flex;gap:6px">
+          <select id="rv-news-src" onchange="loadNews()" style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:4px 6px;color:var(--t1);font-size:12px;max-width:130px">
+            <option value="">全部来源</option>
+          </select>
+          <input id="rv-news-q" placeholder="关键词，回车过滤" onkeydown="if(event.key==='Enter')loadNews()"
+            style="flex:1;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:4px 8px;color:var(--t1);font-size:12px">
+        </div>
+      </div>
+      <div id="rv-news-body" style="flex:1;overflow-y:auto;padding:8px 14px">
+        <div class="empty-hint">加载中…</div>
       </div>
     </div>
   </div>
@@ -1578,6 +1674,74 @@ tr:hover td{background:var(--card)}
 .srch-news-card .nc-body{font-size:12px;color:var(--t2);line-height:1.6}
 .usage-bar{height:6px;border-radius:3px;background:var(--inp);overflow:hidden;margin-top:4px}
 .usage-bar-fill{height:100%;border-radius:3px;transition:.3s}
+/* 复盘页 */
+.rv-temp{height:10px;border-radius:5px;background:linear-gradient(90deg,#58a6ff,#3fb950,#e3b341,#f85149);position:relative;margin:10px 0 4px}
+.rv-temp i{position:absolute;top:-4px;width:4px;height:18px;background:#fff;border-radius:2px;box-shadow:0 0 4px rgba(0,0,0,.6)}
+.rv-row{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--t2);padding:3px 0}
+.rv-ladder-lv{display:flex;gap:8px;margin-bottom:10px;align-items:flex-start}
+.rv-ladder-h{min-width:46px;text-align:center;font-weight:700;font-size:13px;color:#f59e0b;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);border-radius:6px;padding:4px 0}
+.rv-ladder-stocks{flex:1;display:flex;flex-wrap:wrap;gap:4px}
+.rv-stock-tag{font-size:12px;padding:2px 8px;border-radius:4px;background:var(--hover);border:1px solid var(--b1)}
+.rv-stock-tag b{color:var(--t1);font-weight:600}
+.rv-stock-tag span{color:var(--t3);font-size:10px;margin-left:3px}
+.rv-news-item{padding:8px 0;border-bottom:1px solid var(--b1)}
+.rv-news-item:last-child{border-bottom:none}
+.rv-news-item.imp{border-left:3px solid #f85149;padding-left:8px;background:rgba(248,81,73,.04);margin:2px 0;border-radius:0 4px 4px 0}
+.rv-news-meta{font-size:11px;color:var(--t3);display:flex;align-items:center;gap:5px;margin-bottom:2px}
+.rv-news-title{font-size:13px;color:var(--t1);line-height:1.5}
+.rv-news-cnt{font-size:11px;color:var(--t3);line-height:1.5;margin-top:2px}
+.rv-src-badge{font-size:10px;padding:0 5px;border-radius:3px;background:rgba(88,166,255,.15);color:var(--bl)}
+.rv-imp-badge{font-size:10px;padding:0 5px;border-radius:3px;background:rgba(248,81,73,.18);color:#f85149;font-weight:700}
+.rv-sec-h{font-weight:700;font-size:13px;color:var(--bl);margin:12px 0 4px}
+.rv-ai-body{font-size:13px;line-height:1.8;color:var(--t1)}
+.rv-ai-body .rv-sec-h:first-child{margin-top:0}
+.rv-bars{display:flex;align-items:flex-end;gap:2px;height:54px;margin-top:8px}
+.rv-bars i{flex:1;background:var(--blue);opacity:.6;border-radius:2px 2px 0 0;min-height:2px}
+.rv-bars i.last{opacity:1;background:#f59e0b}
+/* 产业链分层表格(韭研产业库式) */
+.chain-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.chain-tbl th{background:var(--hover);color:var(--t3);font-size:11px;font-weight:600;padding:6px 8px;text-align:left;border:1px solid var(--b1)}
+.chain-tbl td{border:1px solid var(--b1);padding:6px 8px;vertical-align:middle}
+.chain-tbl .ct-stage{font-weight:700;font-size:13px;text-align:center;background:var(--hover);white-space:nowrap}
+.chain-tbl .ct-weight{font-size:10px;color:var(--t3);font-weight:400;margin-top:3px}
+.chain-tbl .ct-seg{background:rgba(88,166,255,.04)}
+.chain-tbl .ct-desc{font-size:11px;color:var(--t3);margin-top:2px;line-height:1.4}
+.chain-tbl .ct-stock{white-space:nowrap}
+.chain-tbl .ct-stock:hover{background:var(--hover)}
+.chain-tbl .ct-code{font-size:10px;color:var(--t3);font-family:monospace}
+.chain-tbl .ct-rel{color:var(--t2);line-height:1.5}
+.chain-tbl .ct-lv{font-weight:700;font-size:11px;margin-right:6px}
+/* 投研中心页签 */
+.rs-tab{padding:8px 18px 9px;font-size:13px;font-weight:600;color:var(--t3);cursor:pointer;border-bottom:2px solid transparent;transition:.15s;user-select:none}
+.rs-tab:hover{color:var(--t1)}
+.rs-tab.active{color:var(--bl);border-bottom-color:var(--blue)}
+/* ── 龙虎榜 ─────────────────────────────────────────── */
+.lhb-graph-wrap{position:relative;overflow:hidden}
+.lhb-col{position:absolute;top:0}
+.lhb-col-hd{font-size:11px;font-weight:700;color:var(--t3);padding:0 0 8px;letter-spacing:.5px;text-transform:uppercase}
+.lhb-br-item,.lhb-s-item,.lhb-yz-item{position:absolute;height:36px;display:flex;flex-direction:column;justify-content:center;padding:0 6px;border-radius:5px;cursor:default;background:var(--card);border:1px solid var(--b1);transition:border-color .15s}
+.lhb-s-item{cursor:pointer}
+.lhb-s-item:hover{border-color:var(--blue);background:var(--hover)}
+.lhb-br-item{width:258px;gap:2px}
+.lhb-s-item{width:218px;gap:2px}
+.lhb-yz-item{width:172px}
+.lhb-br-name{font-size:11px;color:var(--t2)}
+.lhb-s-name{font-size:12px;font-weight:600;color:var(--t1)}
+.lhb-amt-b{font-size:11px;font-weight:600;color:#f97316}
+.lhb-amt-s{font-size:11px;font-weight:600;color:#22c55e}
+.lhb-yz-badge{background:rgba(88,166,255,.15);color:#58a6ff;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;display:inline-block;white-space:nowrap}
+.lhb-svg .lhb-edge-buy{stroke:rgba(249,115,22,.35);stroke-width:1.5px}
+.lhb-svg .lhb-edge-yz{stroke:rgba(88,166,255,.35);stroke-width:1.5px}
+.lhb-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.lhb-tbl th{background:var(--hover);color:var(--t3);font-size:11px;font-weight:600;padding:7px 8px;text-align:left;border:1px solid var(--b1);position:sticky;top:0;z-index:1}
+.lhb-tbl td{border:1px solid var(--b1);padding:6px 8px;vertical-align:top}
+.lhb-tbl tr:hover td{background:var(--hover)}
+.lhb-code-link{color:var(--t1);cursor:pointer;text-decoration:none}
+.lhb-code-link:hover b{color:var(--blue)}
+.lhb-sub-tabs{display:flex;gap:0;padding:0 12px;border-bottom:1px solid var(--b1)}
+.lhb-sub-tab{padding:7px 16px;font-size:12px;font-weight:600;color:var(--t3);cursor:pointer;border-bottom:2px solid transparent}
+.lhb-sub-tab:hover{color:var(--t1)}
+.lhb-sub-tab.active{color:var(--bl);border-bottom-color:var(--blue)}
 /* 策略模板卡片 */
 .tpl-card{background:var(--card);border:1px solid var(--b1);border-radius:6px;padding:7px 9px;cursor:pointer;transition:.15s;font-size:12px;line-height:1.4}
 .tpl-card:hover{border-color:var(--blue);background:#1a2744}
@@ -3423,6 +3587,7 @@ function goBacktest(){ switchRTab('bt',document.querySelectorAll('.rtab')[2]) }
 let aiCfg = {}
 
 async function initAI(){
+  if(!(_currentUser && _currentUser.is_admin)){ aiCfg = {}; return }   // AI接口配置仅管理员可见(管理后台可改)
   aiCfg = await api('/ai/config') || {}
   renderProvGrid()
   document.getElementById('aiBaseUrl').value = aiCfg.base_url || ''
@@ -5198,6 +5363,7 @@ async function resetPaper(){
 let _aiGenMode = 'strat'   // 'strat' | 'factor'
 
 function _checkAiConfigured(){
+  if(!(_currentUser && _currentUser.is_admin)) return true   // 普通用户：AI配置由后端全局提供
   if(!aiCfg?.enabled || !aiCfg?.api_key_masked || aiCfg.api_key_masked==='未配置'){
     if(!confirm('AI功能尚未配置API Key。\n\n请先前往「策略中心 → ⚙ 设置」填写API Key并启用。\n\n是否前往设置？')) return false
     switchPage('strategy', document.querySelectorAll('.ntab')[1])
@@ -5608,6 +5774,10 @@ function updateNavUser(user){
   document.getElementById('navPoints').textContent   = user.points
   if(user.is_admin){
     document.getElementById('navAdminBtn').style.display = 'inline-flex'
+  }
+  if(!user.is_admin){
+    // AI接口配置仅管理员：隐藏策略中心「⚙ 设置」页签与各处入口按钮
+    document.querySelectorAll('[onclick*="aiset"]').forEach(el=>{ el.style.display = 'none' })
   }
 }
 
@@ -6048,235 +6218,784 @@ async function initSearchPage(){
 </script>
 
 <script>
-// ══ 日报页 ══════════════════════════════════════════════════════
+// ══ 投研中心：产业链 / 研报中心 / 智能搜索 三页签 ══════════════════
 
-let _dailyInited = false
+let _rsTab       = 'chain'
+let _rsInited    = false
+let _curConcept  = ''
+let _repTimer    = null
 
-async function initDailyPage(){
-  if(_dailyInited) return
-  _dailyInited = true
-  loadMarketReview()
+function rsInit(){
+  if(_rsInited) return
+  _rsInited = true
+  chainSearch('')
+  // 研报中心 5 分钟自动刷新（仅该页签激活时），保证始终是最新研报
+  if(!_repTimer) _repTimer = setInterval(()=>{
+    const pg = document.getElementById('page-search')
+    if(pg && pg.classList.contains('active') && _rsTab === 'report') loadReports()
+  }, 300000)
 }
 
-// ── 大盘复盘 ───────────────────────────────────────────────────
-async function loadMarketReview(){
-  const box = document.getElementById('market-review-body')
-  box.innerHTML = '<div class="empty-hint">加载中…（获取实时行情，请稍候）</div>'
-  try {
-    const ctrl = new AbortController()
-    const tid  = setTimeout(()=>ctrl.abort(), 25000)
-    const r    = await fetch('/api/market/review', {signal: ctrl.signal})
-    clearTimeout(tid)
-    const d    = await r.json()
-    if(!d.ok) throw new Error(d.error || '请求失败')
-    box.innerHTML = _renderMarketReview(d)
-  } catch(e) {
-    const msg = e.name==='AbortError' ? '请求超时（25s），请稍后重试' : e.message
-    box.innerHTML = `<div class="empty-hint" style="color:#f85149">获取失败：${msg}</div>`
+function rsSwitch(tab){
+  _rsTab = tab
+  document.querySelectorAll('.rs-tab').forEach(t=>t.classList.remove('active'))
+  const btn = document.getElementById('rsTab-' + tab)
+  if(btn) btn.classList.add('active')
+  document.getElementById('rsView-chain').style.display  = tab==='chain'  ? 'flex' : 'none'
+  document.getElementById('rsView-report').style.display = tab==='report' ? 'flex' : 'none'
+  document.getElementById('rsView-search').style.display = tab==='search' ? 'block' : 'none'
+  if(tab==='report') loadReports()      // 每次切入都重新拉取最新研报
+}
+
+// ── 产业链：概念列表 ───────────────────────────────────────────
+async function chainSearch(q){
+  const hint = document.getElementById('chainListHint')
+  const box  = document.getElementById('chainList')
+  hint.textContent = '加载中…'
+  try{
+    const r = await fetch('/api/chain/concepts?q=' + encodeURIComponent(q||''))
+    const d = await r.json()
+    const list = d.concepts||[]
+    hint.textContent = list.length ? `${q?'匹配':'热门'} ${list.length} 个概念` : '没找到，换个关键词试试'
+    box.innerHTML = list.map(c=>`
+      <div class="srch-result-item" onclick="openConcept('${_rvEsc(c.name)}',this)">
+        <div style="display:flex;align-items:center;gap:8px">
+          <b style="font-size:13px">${_rvEsc(c.name)}</b>
+          ${c.chg!=null ? `<span style="margin-left:auto;font-weight:700;font-size:12px;color:${(c.chg||0)>=0?'#3fb950':'#f85149'}">${(c.chg||0)>=0?'+':''}${c.chg}%</span>` : ''}
+        </div>
+        ${c.up!=null ? `<div style="font-size:11px;color:var(--t3);margin-top:2px">上涨 ${c.up} · 下跌 ${c.down}</div>` : ''}
+      </div>`).join('') || '<div style="padding:24px;text-align:center;color:var(--t4)">无结果</div>'
+  }catch(e){
+    hint.textContent = '加载失败：' + e.message
   }
 }
 
-function _renderMarketReview(d){
-  let html = `<div style="font-size:12px;color:var(--t3);margin-bottom:12px">${d.date} ${d.time} 更新</div>`
-
-  // 指数
-  const indices = d.indices || {}
-  if(Object.keys(indices).length){
-    html += `<div class="daily-card" style="margin-bottom:12px">`
-    html += `<div style="font-size:12px;color:var(--t3);margin-bottom:8px;font-weight:600">主要指数</div>`
-    for(const [name, idx] of Object.entries(indices)){
-      const up   = idx.change >= 0
-      const chgTxt = (up ? '+' : '') + idx.change + '%'
-      html += `<div class="mr-index-row">
-        <span class="mr-idx-name">${name}</span>
-        <span class="mr-idx-price">${idx.price}</span>
-        <span class="mr-idx-chg ${up?'up':'dn'}">${chgTxt}</span>
-      </div>`
-    }
-    html += `</div>`
-  }
-
-  // 市场宽度
-  const b = d.breadth || {}
-  if(b.total){
-    html += `<div class="daily-card" style="margin-bottom:12px">`
-    html += `<div style="font-size:12px;color:var(--t3);margin-bottom:8px;font-weight:600">市场概况</div>`
-    html += `<div class="mr-breadth">
-      <div class="mr-stat"><div class="mr-stat-val" style="color:#3fb950">${b.up||0}</div><div class="mr-stat-lbl">上涨</div></div>
-      <div class="mr-stat"><div class="mr-stat-val" style="color:#f85149">${b.down||0}</div><div class="mr-stat-lbl">下跌</div></div>
-      <div class="mr-stat"><div class="mr-stat-val" style="color:#3fb950">${b.limit_up||0}</div><div class="mr-stat-lbl">涨停</div></div>
-      <div class="mr-stat"><div class="mr-stat-val" style="color:#f85149">${b.limit_dn||0}</div><div class="mr-stat-lbl">跌停</div></div>
-    </div>
-    <div style="font-size:11px;color:var(--t3);text-align:right">共 ${b.total} 只</div>`
-    html += `</div>`
-  }
-
-  // 板块
-  const sec = d.sectors || {}
-  if((sec.top_gainers||[]).length || (sec.top_losers||[]).length){
-    html += `<div class="daily-card">`
-    html += `<div style="font-size:12px;color:var(--t3);margin-bottom:8px;font-weight:600">板块表现</div>`
-    if((sec.top_gainers||[]).length){
-      html += `<div style="margin-bottom:6px"><span style="font-size:12px;color:var(--t2)">领涨：</span>`
-      sec.top_gainers.forEach(s => html += `<span class="mr-sector-tag up">${s}</span>`)
-      html += `</div>`
-    }
-    if((sec.top_losers||[]).length){
-      html += `<div><span style="font-size:12px;color:var(--t2)">领跌：</span>`
-      sec.top_losers.forEach(s => html += `<span class="mr-sector-tag dn">${s}</span>`)
-      html += `</div>`
-    }
-    html += `</div>`
-  }
-
-  if(!Object.keys(indices).length && !b.total)
-    html += `<div class="empty-hint">暂无数据（TDX未连接且akshare请求失败）</div>`
-
-  return html
+// ── 产业链：概念详情(图谱 + 相关度成分股表) ────────────────────
+const _REL_STYLE = {
+  '核心': 'background:rgba(248,81,73,.15);color:#f85149;border:1px solid rgba(248,81,73,.4)',
+  '重要': 'background:rgba(245,158,11,.15);color:#f59e0b;border:1px solid rgba(245,158,11,.4)',
+  '一般': 'background:rgba(139,148,158,.12);color:var(--t3);border:1px solid var(--b1)',
 }
 
-// ── 决策仪表盘 ─────────────────────────────────────────────────
-async function generateDashboard(){
-  const raw    = document.getElementById('dash-codes-input').value
-  const withAI = document.getElementById('dash-with-ai').checked
-  const codes  = raw.split(/[\s,，]+/).map(c=>c.trim()).filter(c=>c)
-  if(!codes.length){ alert('请输入股票代码'); return }
-  if(codes.length > 20){ alert('最多20只股票'); return }
+async function openConcept(name, el){
+  _curConcept = name
+  document.querySelectorAll('#chainList .srch-result-item').forEach(i=>i.classList.remove('active'))
+  if(el) el.classList.add('active')
+  document.getElementById('chainTitle').textContent = '🧬 ' + name
+  document.getElementById('chainMeta').textContent  = '加载中…'
+  const gbtn = document.getElementById('chainGraphBtn')
+  gbtn.style.display = 'none'
+  const box = document.getElementById('chainDetail')
+  box.innerHTML = '<div class="empty-hint"><span class="spin">⟳</span> 加载成分股…</div>'
+  try{
+    const r = await fetch('/api/chain/stocks?name=' + encodeURIComponent(name))
+    const d = await r.json()
+    if(!d.ok) throw new Error(d.error||'加载失败')
+    document.getElementById('chainMeta').textContent =
+      `${d.stocks.length} 只成分股 · 按涨跌幅排序${d.stale ? ' · ⚠ 行情为缓存(源站限流中)' : ''}`
+    gbtn.style.display = ''
+    gbtn.textContent   = d.graph_exists ? '🔄 重新生成产业链图谱' : '🧬 AI生成产业链图谱'
 
-  const box = document.getElementById('dash-report-body')
-  box.innerHTML = `<div class="empty-hint">生成中，共 ${codes.length} 只股票…</div>`
+    const hasRel = d.stocks.some(s=>s.rel_level)
+    let html = `<div id="chainGraphBox"></div>`
+    html += `<div class="daily-card"><div style="font-size:12px;color:var(--t3);font-weight:600;margin-bottom:8px">成分股${hasRel ? '（相关度由 AI 产业链图谱标注）' : '（生成产业链图谱后将标注每只股票与概念的相关度）'}</div>
+      <table style="width:100%;font-size:12px;border-collapse:collapse">
+      <thead><tr style="color:var(--t3);text-align:left"><th style="padding:4px">代码</th><th>名称</th><th>相关度</th><th style="text-align:right">现价</th><th style="text-align:right">涨跌幅</th><th style="text-align:right">换手%</th><th style="text-align:right">市值(亿)</th><th></th></tr></thead><tbody>`
+    d.stocks.forEach(s=>{
+      const up  = (s.chg||0) >= 0
+      const rel = s.rel_level
+        ? `<span style="font-size:10px;padding:1px 7px;border-radius:9px;${_REL_STYLE[s.rel_level]||_REL_STYLE['一般']}" title="${_rvEsc(s.rel_reason||'')}">${s.rel_level}</span>`
+        : '<span style="color:var(--t4);font-size:11px">—</span>'
+      html += `<tr style="border-top:1px solid var(--b1)">
+        <td style="padding:5px 4px;font-family:monospace">${s.code}</td>
+        <td><b>${_rvEsc(s.name)}</b></td>
+        <td>${rel}</td>
+        <td style="text-align:right">${s.price ?? '—'}</td>
+        <td style="text-align:right;color:${up?'#3fb950':'#f85149'};font-weight:600">${up?'+':''}${s.chg}%</td>
+        <td style="text-align:right">${s.turnover ?? '—'}</td>
+        <td style="text-align:right">${s.mcap ?? '—'}</td>
+        <td style="text-align:right"><button class="btn btn-gray btn-xs" onclick="showKLine('${s.code}','${_rvEsc(s.name)}')">K线</button></td></tr>`
+    })
+    html += '</tbody></table></div>'
+    box.innerHTML = html
+    if(d.graph_exists) _loadChainGraph(name)
+  }catch(e){
+    document.getElementById('chainMeta').textContent = ''
+    box.innerHTML = `<div class="empty-hint" style="color:#f85149">加载失败：${e.message}</div>`
+  }
+}
 
-  try {
-    const r = await api('/dashboard/generate', 'POST', {codes, with_ai: withAI})
+async function _loadChainGraph(name){
+  try{
+    const r = await fetch('/api/chain/graph?name=' + encodeURIComponent(name))
+    const d = await r.json()
+    if(d.ok) _renderChainGraph(d, false)
+  }catch(e){}
+}
+
+async function genChainGraph(){
+  const name = _curConcept
+  if(!name) return
+  const btn = document.getElementById('chainGraphBtn')
+  if((document.getElementById('chainGraphBox')||{innerHTML:''}).innerHTML.trim()){
+    if(!confirm('重新生成「' + name + '」产业链图谱？（消耗积分）')) return
+  }
+  btn.disabled = true; btn.textContent = '⏳ AI 生成中（约1分钟）…'
+  try{
+    const r = await api('/chain/graph', 'POST', {name})
     if(!r) throw new Error('请求失败（可能需要先登录）')
-    if(!r.ok) throw new Error(r.error || '生成失败')
-    box.innerHTML = _renderDashboard(r)
-  } catch(e) {
-    box.innerHTML = `<div class="empty-hint" style="color:#f85149">生成失败：${e.message}</div>`
-  }
+    if(!r.ok) throw new Error(r.error||'生成失败')
+    _renderChainGraph(r, true)
+    openConcept(name)            // 重新拉成分股以合并相关度标注
+  }catch(e){ alert('生成失败：' + e.message) }
+  btn.disabled = false; btn.textContent = '🔄 重新生成产业链图谱'
 }
 
-function dashFromQueue(){
-  // 从策略扫描队列导入
-  const items = document.querySelectorAll('.queue-code, [data-code]')
-  const codes = []
-  items.forEach(el => {
-    const c = el.dataset.code || el.textContent.match(/\d{6}/)?.[0]
-    if(c && !codes.includes(c)) codes.push(c)
+function _renderChainGraph(d, scroll){
+  // 韭研产业库式分层表格：大类(占比) | 细分环节(说明) | 个股 | 相关性
+  const box = document.getElementById('chainGraphBox')
+  if(!box) return
+  const stageColor = {'上游':'#58a6ff', '中游':'#f59e0b', '下游':'#3fb950'}
+  const lvColor    = {'核心':'#f85149', '重要':'#f59e0b', '一般':'var(--t3)'}
+
+  let h = `<div class="daily-card" style="margin-bottom:12px;border-color:rgba(88,166,255,.4);padding:14px">
+    <div style="font-size:13px;font-weight:700;color:var(--bl);margin-bottom:6px">🧬 ${_rvEsc(d.name)} 产业链
+      <span style="font-size:10px;color:var(--t3);font-weight:400;margin-left:8px">${d.generated_at||''} · AI整理仅供参考</span></div>
+    ${d.summary ? `<div style="font-size:12px;color:var(--t2);margin-bottom:10px;line-height:1.6">${_rvEsc(d.summary)}</div>` : ''}
+    <table class="chain-tbl"><thead><tr><th style="width:74px">环节</th><th style="width:120px">细分</th><th style="width:108px">个股</th><th>相关性</th></tr></thead><tbody>`
+
+  ;(d.segments||[]).forEach(seg=>{
+    const items = (seg.items||[]).filter(it=>it.segment || (it.stocks||[]).length)
+    if(!items.length) return
+    const c = stageColor[seg.stage] || '#58a6ff'
+    const stageRows = items.reduce((n,it)=>n + Math.max(1,(it.stocks||[]).length), 0)
+    let stageCell = `<td rowspan="${stageRows}" class="ct-stage" style="color:${c};border-left:3px solid ${c}">
+      ${_rvEsc(seg.stage)}${seg.weight ? `<div class="ct-weight">${_rvEsc(seg.weight)}</div>` : ''}</td>`
+    items.forEach(it=>{
+      const stocks = (it.stocks||[]).length ? it.stocks : [null]
+      let segCell = `<td rowspan="${stocks.length}" class="ct-seg"><b>${_rvEsc(it.segment)}</b>
+        ${it.desc ? `<div class="ct-desc">${_rvEsc(it.desc)}</div>` : ''}</td>`
+      stocks.forEach(s=>{
+        h += '<tr>' + stageCell + segCell
+        stageCell = ''; segCell = ''
+        if(!s){ h += '<td class="ct-stock">—</td><td class="ct-rel">—</td></tr>'; return }
+        const isObj = typeof s === 'object'
+        const nm  = isObj ? s.name : String(s).split('(')[0]
+        const cd  = isObj ? (s.code||'') : (String(s).match(/\d{6}/)||[''])[0]
+        const rel = isObj ? (s.relation||'') : ''
+        const lv  = isObj ? (s.level||'') : ''
+        h += `<td class="ct-stock" ${cd?`onclick="showKLine('${cd}','${_rvEsc(nm)}')" style="cursor:pointer" title="点击看K线"`:''}>
+            <b>${_rvEsc(nm)}</b>${cd?`<div class="ct-code">${cd}</div>`:''}</td>
+          <td class="ct-rel">${lv?`<span class="ct-lv" style="color:${lvColor[lv]||'var(--t3)'}">${lv}</span>`:''}${_rvEsc(rel)||'—'}</td></tr>`
+      })
+    })
   })
-  if(codes.length){
-    document.getElementById('dash-codes-input').value = codes.join(',')
-  } else {
-    // 也尝试从 STOCK_POOL 显示区读取
-    const poolEl = document.getElementById('poolDisplay')
-    if(poolEl){
-      const m = poolEl.textContent.match(/\d{6}/g) || []
-      document.getElementById('dash-codes-input').value = m.slice(0,20).join(',')
+  h += '</tbody></table></div>'
+  box.innerHTML = h
+  if(scroll) box.scrollIntoView({behavior:'smooth'})
+}
+
+// ── 研报中心 ───────────────────────────────────────────────────
+async function loadReports(){
+  const qtype = document.getElementById('repType').value
+  const q     = document.getElementById('repQ').value.trim()
+  const hint  = document.getElementById('repHint')
+  const box   = document.getElementById('repBody')
+  hint.textContent = '查询中…'
+  box.innerHTML = '<div class="empty-hint"><span class="spin">⟳</span> 加载研报…</div>'
+  try{
+    const r = await fetch(`/api/reports/latest?qtype=${qtype}&q=${encodeURIComponent(q)}`)
+    const d = await r.json()
+    if(!d.ok) throw new Error(d.error||'查询失败')
+    const reps = d.reports||[]
+    hint.textContent = reps.length ? `${reps.length} 篇${d.code ? ` · ${d.code}` : ''}` : '无结果'
+    const ratingColor = {'买入':'#3fb950','增持':'#58a6ff','中性':'#e3b341','减持':'#f85149','卖出':'#f85149'}
+    // 评级分布
+    let html = ''
+    const cnt = {}
+    reps.forEach(x=>{ if(x.rating) cnt[x.rating] = (cnt[x.rating]||0) + 1 })
+    if(Object.keys(cnt).length){
+      html += `<div class="dash-summary" style="margin-bottom:12px">` + Object.entries(cnt).map(([k,v]) =>
+        `<div class="dash-sum-item"><div class="dash-sum-val" style="color:${ratingColor[k]||'#888'}">${v}</div><div class="dash-sum-lbl">${k}</div></div>`).join('') + `</div>`
     }
+    reps.forEach(x=>{
+      const rc  = ratingColor[x.rating] || '#888'
+      const tag = x.stock ? `<span class="srch-badge">${_rvEsc(x.stock)} ${x.code}</span>`
+                : x.industry ? `<span class="srch-badge">${_rvEsc(x.industry)}</span>` : ''
+      const title = x.url
+        ? `<a href="${_rvEsc(x.url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${_rvEsc(x.title)} <span style="font-size:10px;color:var(--bl)">↗ 阅读</span></a>`
+        : _rvEsc(x.title)
+      html += `<div class="srch-news-card" style="cursor:${x.url?'pointer':'default'}" ${x.url?`onclick="window.open('${_rvEsc(x.url)}','_blank')"`:''}>
+        <div class="nc-title">${title}</div>
+        <div class="nc-meta" onclick="event.stopPropagation()">${x.date} · ${_rvEsc(x.org)}${x.rating ? ` · <b style="color:${rc}">${x.rating}</b>` : ''} ${tag}</div>
+      </div>`
+    })
+    box.innerHTML = html || '<div class="empty-hint">暂无研报（源站可能限流，稍后重试）</div>'
+  }catch(e){
+    hint.textContent = ''
+    box.innerHTML = `<div class="empty-hint" style="color:#f85149">查询失败：${e.message}</div>`
   }
 }
 
-function _renderDashboard(d){
-  const sigColor = {'强烈买入':'#3fb950','买入':'#58a6ff','持有':'#e3b341','观望':'#bd561d','卖出':'#f85149'}
-  const sentColor = {'利好':'#3fb950','中性':'#e3b341','利空':'#f85149'}
+// ══ 复盘页 ══════════════════════════════════════════════════════
 
-  let html = `<div style="font-size:12px;color:var(--t3);margin-bottom:12px">${d.date} ${d.time} 生成</div>`
+let _reviewInited = false
+let _newsTimer    = null
 
-  // 汇总栏
-  html += `<div class="dash-summary">
-    <div class="dash-sum-item"><div class="dash-sum-val">${d.total}</div><div class="dash-sum-lbl">分析股票</div></div>
-    <div style="width:1px;background:var(--b1);align-self:stretch"></div>
-    <div class="dash-sum-item"><div class="dash-sum-val" style="color:#3fb950">${d.buy}</div><div class="dash-sum-lbl">买入</div></div>
-    <div class="dash-sum-item"><div class="dash-sum-val" style="color:#e3b341">${d.hold||0}</div><div class="dash-sum-lbl">持有</div></div>
-    <div class="dash-sum-item"><div class="dash-sum-val" style="color:#bd561d">${d.watch}</div><div class="dash-sum-lbl">观望</div></div>
-    <div class="dash-sum-item"><div class="dash-sum-val" style="color:#f85149">${d.sell}</div><div class="dash-sum-lbl">卖出</div></div>
-  </div>`
+function initReviewPage(){
+  if(_reviewInited) return
+  _reviewInited = true
+  loadReviewDates().then(()=>loadReview())
+  loadNews()
+  _loadNewsSources()
+  // 新闻 30 秒自动刷新（仅复盘页处于激活时）
+  if(!_newsTimer) _newsTimer = setInterval(()=>{
+    const pg = document.getElementById('page-review')
+    if(pg && pg.classList.contains('active')) loadNews(true)
+  }, 30000)
+  // 盘中每 2 分钟静默刷新复盘数据（涨停天梯/情绪跟着盘面走）
+  if(!_rvLiveTimer) _rvLiveTimer = setInterval(()=>{
+    const pg = document.getElementById('page-review')
+    if(!pg || !pg.classList.contains('active')) return
+    const sel   = document.getElementById('rv-date')
+    const today = new Date().toISOString().slice(0,10)
+    if(sel && sel.value && sel.value !== today) return   // 看历史日期时不打扰
+    const now = new Date(), day = now.getDay(), hm = now.getHours()*100 + now.getMinutes()
+    if(day >= 1 && day <= 5 && hm >= 925 && hm <= 1505) loadReview(true, true)
+  }, 120000)
+}
+let _rvLiveTimer = null
 
-  // 结果摘要列表
-  html += `<div class="daily-card" style="margin-bottom:14px">`
-  html += `<div style="font-size:12px;color:var(--t3);margin-bottom:10px;font-weight:600">分析结果摘要</div>`
-  ;(d.stocks||[]).forEach(s => {
-    const sc   = sigColor[s.signal] || '#888'
-    const sent = sentColor[s.sentiment] || '#888'
-    html += `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--b1)">
-      <span style="font-size:8px;color:${sc}">●</span>
-      <span style="font-size:14px;font-weight:600">${s.name}</span>
-      <span style="font-size:12px;color:var(--t3)">(${s.code})</span>
-      <span style="font-size:12px;color:${sc};margin-left:4px">${s.signal}</span>
-      <span style="font-size:12px;color:var(--t3)">|</span>
-      <span style="font-size:12px">评分 <b>${s.score||'N/A'}</b></span>
-      <span style="font-size:12px;color:var(--t3)">|</span>
-      <span style="font-size:12px;color:${sent}">${s.sentiment}</span>
+// ══════════════════════════════════════════════════════════════
+// 龙虎榜 + 游资图谱
+// ══════════════════════════════════════════════════════════════
+let _lhbTab   = 'graph'   // 当前子 tab
+let _lhbCache = null      // 当前加载的数据
+let _lhbInited = false
+
+function rvSwitchTab(tab){
+  const isLhb = tab === 'lhb'
+  document.getElementById('rv-main-tab').classList.toggle('active', !isLhb)
+  document.getElementById('rv-lhb-tab').classList.toggle('active',  isLhb)
+  document.getElementById('rv-review-ctrl').style.display = isLhb ? 'none'  : 'flex'
+  document.getElementById('rv-lhb-ctrl').style.display    = isLhb ? 'flex'  : 'none'
+  document.getElementById('rv-main').style.display        = isLhb ? 'none'  : ''
+  document.getElementById('rv-lhb-area').style.display    = isLhb ? 'flex'  : 'none'
+  if(isLhb && !_lhbInited){
+    _lhbInited = true
+    _initLhbDates().then(()=>loadLhb())
+  }
+}
+
+function lhbSubTab(sub){
+  _lhbTab = sub
+  document.getElementById('lhb-sub-graph').classList.toggle('active', sub==='graph')
+  document.getElementById('lhb-sub-list').classList.toggle('active',  sub==='list')
+  document.getElementById('lhb-graph-area').style.display = sub==='graph' ? 'block' : 'none'
+  document.getElementById('lhb-list-area').style.display  = sub==='list'  ? 'block' : 'none'
+  // 已有数据则直接重渲染，不重新请求
+  if(_lhbCache){
+    if(sub==='graph') renderYouzaiGraph(_lhbCache, document.getElementById('lhb-graph-canvas'))
+    else              renderLhbList(_lhbCache,     document.getElementById('lhb-list-canvas'))
+  }
+}
+
+async function _initLhbDates(){
+  try{
+    const r = await fetch('/api/lhb/dates')
+    const d = await r.json()
+    const sel   = document.getElementById('lhb-date')
+    const today = new Date().toISOString().slice(0,10)
+    const dates = (d.dates||[]).slice()
+    if(!dates.includes(today)) dates.unshift(today)
+    sel.innerHTML = dates.map(x=>`<option value="${x}">${x===today?x+'（今天）':x}</option>`).join('')
+  }catch(e){}
+}
+
+async function loadLhb(force){
+  const sel  = document.getElementById('lhb-date')
+  const date = sel && sel.value ? sel.value : ''
+  const gc   = document.getElementById('lhb-graph-canvas')
+  const lc   = document.getElementById('lhb-list-canvas')
+  gc.innerHTML = '<div class="empty-hint">加载中…</div>'
+  lc.innerHTML = '<div class="empty-hint">加载中…</div>'
+  try{
+    const r = await fetch(`/api/lhb/data?date=${date}`)
+    const d = await r.json()
+    _lhbCache = d
+    renderYouzaiGraph(d, gc)
+    renderLhbList(d, lc)
+    // 若当前子 tab 是榜单则切回显示
+    if(_lhbTab === 'list'){
+      document.getElementById('lhb-graph-area').style.display = 'none'
+      document.getElementById('lhb-list-area').style.display  = 'block'
+    }
+  }catch(e){
+    gc.innerHTML = `<div class="empty-hint">加载失败: ${e.message}</div>`
+    lc.innerHTML = `<div class="empty-hint">加载失败: ${e.message}</div>`
+  }
+}
+
+// ── 游资图谱渲染 ───────────────────────────────────────────────
+function renderYouzaiGraph(data, container){
+  if(!data.ok || !data.stocks?.length){
+    container.innerHTML = `<div class="empty-hint">${data.error||'暂无数据（非交易日或数据未发布）'}</div>`
+    return
+  }
+  const stocks  = data.stocks.slice(0,30)
+  const ROW_H   = 40, PAD_TOP = 28, COL_GAP = 32
+
+  // ── 构建买方营业部节点 ──────────────────────────────────────
+  const brMap = {}
+  stocks.forEach(s=>{
+    ;(s.branches||[]).filter(b=>b.net>0).forEach(b=>{
+      if(!brMap[b.name]) brMap[b.name]={name:b.name,tag:b.tag||'',total:0,codes:new Set()}
+      brMap[b.name].total += b.net
+      brMap[b.name].codes.add(s.code)
+    })
+  })
+  // ── 构建游资节点 ────────────────────────────────────────────
+  const yzMap = {}
+  stocks.forEach(s=>{
+    ;(s.youzai||[]).forEach(yz=>{
+      if(!yzMap[yz]) yzMap[yz]={name:yz,codes:new Set(),total:0}
+      yzMap[yz].codes.add(s.code)
+      yzMap[yz].total += Math.abs(s.net_amt||0)
+    })
+  })
+
+  const branches  = Object.values(brMap).sort((a,b)=>b.total-a.total).slice(0,22)
+  const youzaiList= Object.values(yzMap).sort((a,b)=>b.total-a.total)
+
+  // Y 坐标
+  stocks.forEach((s,i)  => s._y = PAD_TOP + i * ROW_H)
+  branches.forEach((b,i)=> b._y = PAD_TOP + i * ROW_H)
+  youzaiList.forEach((y,i)=>y._y = PAD_TOP + i * ROW_H)
+
+  const totalH = Math.max(stocks.length, branches.length, youzaiList.length) * ROW_H + PAD_TOP + 20
+  // 列宽
+  const C1W=262, C2X=300, C2W=224, C3X=558, C3W=178, TOTAL_W=C3X+C3W+10
+
+  let svgPaths = ''
+
+  // ── Column 1: 买方营业部 ────────────────────────────────────
+  let col1 = `<div class="lhb-col" style="left:0;width:${C1W}px">
+    <div class="lhb-col-hd">买方营业部</div>`
+  branches.forEach(b=>{
+    const amt = Math.abs(b.total)>=10000 ? (b.total/10000).toFixed(1)+'亿' : b.total.toFixed(0)+'万'
+    const tag = b.tag ? `<span class="lhb-yz-badge" style="font-size:9px;padding:1px 5px;margin-right:3px">${b.tag}</span>` : ''
+    const nm  = b.name.length>13 ? b.name.slice(0,13)+'…' : b.name
+    col1 += `<div class="lhb-br-item" style="top:${b._y}px" title="${b.name}">
+      <div style="display:flex;align-items:center;gap:2px">${tag}<span class="lhb-br-name">${nm}</span></div>
+      <span class="lhb-amt-b">净买 +${amt}</span>
+    </div>`
+    // 连线: 营业部 → 股票
+    Array.from(b.codes).forEach(code=>{
+      const s = stocks.find(x=>x.code===code); if(!s) return
+      const y1=b._y+ROW_H/2, y2=s._y+ROW_H/2
+      const x1=C1W, x2=C2X, mx=(x1+x2)/2
+      svgPaths+=`<path d="M${x1},${y1} C${mx+16},${y1} ${mx-16},${y2} ${x2},${y2}" class="lhb-edge-buy" fill="none"/>`
+    })
+  })
+  col1 += '</div>'
+
+  // ── Column 2: 股票 ──────────────────────────────────────────
+  let col2 = `<div class="lhb-col" style="left:${C2X}px;width:${C2W}px">
+    <div class="lhb-col-hd">龙虎榜股票</div>`
+  stocks.forEach(s=>{
+    const net=s.net_amt||0
+    const ns = Math.abs(net)>=10000?(net/10000).toFixed(1)+'亿':net.toFixed(0)+'万'
+    const cls= net>=0?'clr-up':'clr-dn'
+    const chg= s.chg!=null ? `${s.chg>=0?'+':''}${s.chg}%` : ''
+    const border = net>=0 ? 'var(--red)' : 'var(--green)'
+    const tags = (s.youzai||[]).map(y=>`<span class="lhb-yz-badge" style="font-size:9px;padding:1px 5px">${y}</span>`).join('')
+    col2 += `<div class="lhb-s-item" style="top:${s._y}px;border-left:3px solid ${border}"
+      onclick="loadKline('${s.code}')" title="${s.reason||''}">
+      <div style="display:flex;align-items:center;gap:4px">
+        <span class="lhb-s-name">${s.name}</span>
+        <span class="${cls}" style="font-size:11px">${chg}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:3px;flex-wrap:wrap">
+        <span class="${cls}" style="font-weight:700;font-size:12px">${net>=0?'+':''}${ns}</span>${tags}
+      </div>
+    </div>`
+    // 连线: 股票 → 游资
+    ;(s.youzai||[]).forEach(yz=>{
+      const y = youzaiList.find(x=>x.name===yz); if(!y) return
+      const y1=s._y+ROW_H/2, y2=y._y+ROW_H/2
+      const x1=C2X+C2W, x2=C3X, mx=(x1+x2)/2
+      svgPaths+=`<path d="M${x1},${y1} C${mx+16},${y1} ${mx-16},${y2} ${x2},${y2}" class="lhb-edge-yz" fill="none"/>`
+    })
+  })
+  col2 += '</div>'
+
+  // ── Column 3: 游资汇总 ──────────────────────────────────────
+  let col3 = `<div class="lhb-col" style="left:${C3X}px;width:${C3W}px">
+    <div class="lhb-col-hd">游资动向</div>`
+  youzaiList.forEach(y=>{
+    const ns = y.total>=10000?(y.total/10000).toFixed(1)+'亿':y.total.toFixed(0)+'万'
+    col3 += `<div class="lhb-yz-item" style="top:${y._y}px">
+      <span class="lhb-yz-badge">${y.name}</span>
+      <div style="font-size:10px;color:var(--t3);margin-top:3px">${y.codes.size}只 · +${ns}</div>
     </div>`
   })
-  html += `</div>`
+  col3 += '</div>'
 
-  // 逐只详情卡片
-  ;(d.stocks||[]).forEach((s,i) => {
-    const sc   = sigColor[s.signal] || '#888'
-    const sent = sentColor[s.sentiment] || '#888'
-    html += `<div class="daily-card">
-      <div class="daily-card-hd" onclick="toggleDcDetail('dc-${i}')">
-        <span class="dc-name">${s.name}</span>
-        <span class="dc-code">${s.code}</span>
-        <span class="dc-signal" style="background:${sc}22;color:${sc}">${s.signal}</span>
-        <span class="dc-sent" style="background:${sent}22;color:${sent}">${s.sentiment}</span>
-        <span class="dc-score" style="color:${sc}">${s.score||'—'}</span>
-        <span style="color:var(--t3);font-size:13px;margin-left:6px">▾</span>
-      </div>`
+  // 顶部摘要
+  const yzStat = (data.youzai_stat||[]).slice(0,6)
+    .map(y=>`<span class="lhb-yz-badge" style="font-size:11px">${y.name}<b style="margin-left:4px;color:var(--t2)">${y.stocks.length}只</b></span>`)
+    .join(' ')
+  const summary = `<div style="margin-bottom:12px;font-size:12px;color:var(--t3);display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+    <span>${data.date} · <b style="color:var(--t1)">${data.total}</b>只上榜</span>
+    ${yzStat}
+  </div>`
 
-    if(s.latest){
-      html += `<div style="font-size:12px;color:var(--t3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-        最新：${s.latest}</div>`
-    }
+  container.innerHTML = summary + `
+  <div style="overflow-x:auto">
+    <div class="lhb-graph-wrap" style="height:${totalH}px;min-width:${TOTAL_W}px;position:relative">
+      ${col1}${col2}${col3}
+      <svg class="lhb-svg" style="position:absolute;left:0;top:0;width:${TOTAL_W}px;height:${totalH}px;pointer-events:none">
+        ${svgPaths}
+      </svg>
+    </div>
+  </div>`
+}
 
-    html += `<div class="dc-detail" id="dc-${i}">`
+// ── 龙虎榜单渲染 ───────────────────────────────────────────────
+function renderLhbList(data, container){
+  if(!data.ok || !data.stocks?.length){
+    container.innerHTML = `<div class="empty-hint">${data.error||'暂无数据'}</div>`
+    return
+  }
+  const yzStat = (data.youzai_stat||[]).slice(0,8)
+    .map(y=>`<span class="lhb-yz-badge">${y.name}<b style="color:var(--t2);margin-left:3px">×${y.stocks.length}</b></span>`).join(' ')
+  let html = `<div style="margin-bottom:10px;font-size:12px;color:var(--t3);display:flex;flex-wrap:wrap;gap:5px;align-items:center">
+    <span>${data.date} 共 <b style="color:var(--t1)">${data.total}</b> 只上榜</span>
+    ${yzStat}
+  </div>
+  <table class="lhb-tbl">
+    <thead><tr>
+      <th style="min-width:130px">股票 / 席位明细</th>
+      <th>涨幅</th><th>净买(万)</th><th>买入(万)</th><th>卖出(万)</th>
+      <th>换手</th><th>上榜原因</th><th>游资</th>
+    </tr></thead><tbody>`
 
-    if(s.ai_summary){
-      html += `<div class="dc-section">
-        <div class="dc-section-title">舆情情绪</div>
-        <div class="dc-section-body">${s.ai_summary}</div>
-      </div>`
-    }
-    if(s.ai_outlook){
-      html += `<div class="dc-section">
-        <div class="dc-section-title">业绩预期</div>
-        <div class="dc-section-body">${s.ai_outlook}</div>
-      </div>`
-    }
-    if((s.risks||[]).length){
-      html += `<div class="dc-section">
-        <div class="dc-section-title">⚠ 风险警报</div>
-        <div class="dc-section-body">`
-      s.risks.forEach((r,ri) => html += `<div>风险点${ri+1}：${r}</div>`)
-      html += `</div></div>`
-    }
-    if((s.catalysts||[]).length){
-      html += `<div class="dc-section">
-        <div class="dc-section-title">✦ 利好催化</div>
-        <div class="dc-section-body">`
-      s.catalysts.forEach((c,ci) => html += `<div>利好${ci+1}：${c}</div>`)
-      html += `</div></div>`
-    }
-    if((s.news||[]).length){
-      html += `<div class="dc-section">
-        <div class="dc-section-title">最新动态</div>`
-      s.news.slice(0,4).forEach(n => {
-        const link = n.url ? `<a href="${n.url}" target="_blank" style="color:inherit;text-decoration:none">${n.title}</a>` : n.title
-        html += `<div class="dc-news-item">${link}
-          <span style="color:var(--t3);margin-left:4px">[${n.source||''} ${n.time||''}]</span></div>`
-      })
-      html += `</div>`
-    }
-    html += `</div></div>`  // .dc-detail + .daily-card
+  data.stocks.forEach(s=>{
+    const net=s.net_amt||0
+    const cc = net>=0?'clr-up':'clr-dn'
+    const cc2= (s.chg||0)>=0?'clr-up':'clr-dn'
+    const tags= (s.youzai||[]).map(y=>`<span class="lhb-yz-badge">${y}</span>`).join(' ')
+    // 前3条席位
+    const seats= (s.branches||[]).slice(0,3).map(b=>{
+      const bc= b.net>=0?'#f97316':'#22c55e'
+      const nm= b.name.length>11?b.name.slice(0,11)+'…':b.name
+      const tg= b.tag?` <span style="font-size:9px;color:var(--t3)">(${b.tag})</span>`:''
+      return `<div style="font-size:10px;color:${bc};line-height:1.6">${nm}${tg} ${b.net>=0?'+':''}${b.net.toFixed(0)}万</div>`
+    }).join('')
+    html+=`<tr>
+      <td>
+        <a class="lhb-code-link" onclick="loadKline('${s.code}')">
+          <b>${s.name}</b> <span style="font-size:10px;color:var(--t3)">${s.code}</span>
+        </a>${seats}
+      </td>
+      <td class="${cc2}" style="font-weight:700;white-space:nowrap">${s.chg!=null?(s.chg>=0?'+':'')+s.chg+'%':''}</td>
+      <td class="${cc}"  style="font-weight:700;white-space:nowrap">${net>=0?'+':''}${net.toFixed(0)}</td>
+      <td>${s.buy_amt!=null?s.buy_amt.toFixed(0):''}</td>
+      <td>${s.sell_amt!=null?s.sell_amt.toFixed(0):''}</td>
+      <td style="white-space:nowrap">${s.turnover!=null?s.turnover+'%':''}</td>
+      <td style="font-size:11px;color:var(--t2);min-width:80px">${s.reason||''}</td>
+      <td>${tags}</td>
+    </tr>`
   })
+  html += '</tbody></table>'
+  container.innerHTML = html
+}
 
+// ── 复盘数据 ───────────────────────────────────────────────────
+async function loadReviewDates(){
+  try{
+    const r = await fetch('/api/review/dates')
+    const d = await r.json()
+    const sel   = document.getElementById('rv-date')
+    const today = new Date().toISOString().slice(0,10)
+    const dates = (d.dates||[]).slice()
+    if(!dates.includes(today)) dates.unshift(today)
+    sel.innerHTML = dates.map(x=>`<option value="${x}">${x===today ? x+'（今天）' : x}</option>`).join('')
+  }catch(e){}
+}
+
+async function loadReview(force, silent){
+  const sel  = document.getElementById('rv-date')
+  const date = sel && sel.value ? sel.value : ''
+  const left = document.getElementById('rv-left')
+  const main = document.getElementById('rv-main')
+  if(silent !== true){   // 静默刷新（盘中自动）不清空旧内容，避免闪屏
+    left.innerHTML = '<div class="empty-hint">加载中…（盘中实时采集约需10-30秒）</div>'
+    main.innerHTML = '<div class="empty-hint">加载中…</div>'
+  }
+  try{
+    const ctrl = new AbortController()
+    const tid  = setTimeout(()=>ctrl.abort(), 60000)
+    const r    = await fetch(`/api/review/daily?date=${date}${force===true?'&refresh=1':''}`, {signal: ctrl.signal})
+    clearTimeout(tid)
+    const d = await r.json()
+    if(!d.ok) throw new Error(d.error || '请求失败')
+    const phaseTxt = {live:'盘中实时', close:'收盘版', evening:'晚间版', manual:'手动生成'}[d.phase] || d.phase
+    document.getElementById('rv-phase').textContent = `${phaseTxt} · ${d.generated_at||''}`
+    left.innerHTML = _renderSentiment(d.data||{})
+    main.innerHTML = _renderReviewMain(d)
+  }catch(e){
+    if(silent === true) return   // 静默刷新失败不打扰，保留旧内容
+    const msg = e.name==='AbortError' ? '请求超时（60s），请稍后重试' : e.message
+    left.innerHTML = `<div class="empty-hint" style="color:#f85149">获取失败：${msg}</div>`
+    main.innerHTML = ''
+  }
+}
+
+async function generateReview(){
+  // 异步模式：POST 立即返回，后台采集+AI约1-2分钟，前端每4秒轮询状态
+  const btn = document.getElementById('rv-gen-btn')
+  const sel = document.getElementById('rv-date')
+  btn.disabled = true; btn.textContent = '⏳ 启动中…'
+  try{
+    const r = await api('/review/generate', 'POST', {date: sel ? sel.value : undefined})
+    if(!r) throw new Error('请求失败（可能需要先登录）')
+    if(!r.ok) throw new Error(r.error || '启动失败')
+    // 轮询直到后台完成（最多8分钟）
+    const t0 = Date.now()
+    while(Date.now() - t0 < 480000){
+      await new Promise(res=>setTimeout(res, 4000))
+      const el = Math.round((Date.now()-t0)/1000)
+      btn.textContent = `⏳ 生成中 ${el}s（采集+AI约1-2分钟）`
+      try{
+        const st = await (await fetch('/api/review/status')).json()
+        if(!st.running){
+          if(st.success === false) throw new Error(st.error || '生成失败')
+          if(st.error) alert('提示：' + st.error)   // 数据归档成功但AI部分失败
+          await loadReviewDates()
+          if(sel && st.date) sel.value = st.date
+          await loadReview()
+          break
+        }
+      }catch(pe){ if(pe.message && !/fetch/i.test(pe.message)) throw pe }
+    }
+  }catch(e){
+    alert('生成失败：' + e.message)
+  }
+  btn.disabled = false; btn.textContent = '⚡ 生成AI复盘'
+}
+
+// ── 渲染：左栏情绪温度计 ───────────────────────────────────────
+function _rvEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+function _rvChg(v){
+  const up = (v||0) >= 0
+  return `<b style="color:${up?'#3fb950':'#f85149'}">${up?'+':''}${v}%</b>`
+}
+
+// 涨跌结构卡片内的领涨/领跌板块行（板块接口拉不到时降级：从涨停天梯统计涨停集中行业）
+function _rvBoardRows(data){
+  const sec = data.sectors||{}
+  let h = ''
+  const top = (sec.industry_top||[]).slice(0,3)
+  const bot = (sec.industry_bottom||[]).slice(-3)
+  if(top.length){
+    h += `<div class="rv-row" style="align-items:flex-start"><span style="flex-shrink:0">领涨板块</span><span style="text-align:right">`
+    h += top.map(s=>`<span class="mr-sector-tag up" style="margin:1px 0 1px 4px">${_rvEsc(s.name)} +${s.chg}%</span>`).join('')
+    h += `</span></div>`
+  } else {
+    const cnt = {}
+    ;((data.zt||{}).ladder||[]).forEach(lv=>(lv.stocks||[]).forEach(s=>{
+      if(s.industry) cnt[s.industry] = (cnt[s.industry]||0) + 1
+    }))
+    const tops = Object.entries(cnt).sort((a,b)=>b[1]-a[1]).slice(0,3)
+    if(tops.length){
+      h += `<div class="rv-row" style="align-items:flex-start"><span style="flex-shrink:0">涨停集中</span><span style="text-align:right">`
+      h += tops.map(([name,n])=>`<span class="mr-sector-tag up" style="margin:1px 0 1px 4px">${_rvEsc(name)} ×${n}</span>`).join('')
+      h += `</span></div>`
+    }
+  }
+  if(bot.length){
+    h += `<div class="rv-row" style="align-items:flex-start"><span style="flex-shrink:0">领跌板块</span><span style="text-align:right">`
+    h += bot.map(s=>`<span class="mr-sector-tag dn" style="margin:1px 0 1px 4px">${_rvEsc(s.name)} ${s.chg}%</span>`).join('')
+    h += `</span></div>`
+  }
+  return h
+}
+
+function _renderSentiment(data){
+  const zt = data.zt||{}, mk = data.market||{}, b = mk.breadth||{}, tv = data.turnover||{}
+  let html = ''
+
+  if(data.sentiment_score !== null && data.sentiment_score !== undefined){
+    const sc  = data.sentiment_score
+    const lbl = sc>=70?'亢奋':sc>=55?'偏暖':sc>=45?'中性':sc>=30?'偏冷':'冰点'
+    html += `<div class="daily-card">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <span style="font-size:12px;color:var(--t3);font-weight:600">情绪温度</span>
+        <span style="font-size:22px;font-weight:700">${sc}<span style="font-size:12px;color:var(--t3)"> / 100 · ${lbl}</span></span>
+      </div>
+      <div class="rv-temp"><i style="left:calc(${sc}% - 2px)"></i></div>
+    </div>`
+  }
+
+  const idx = mk.indices||{}
+  if(Object.keys(idx).length){
+    html += `<div class="daily-card"><div style="font-size:12px;color:var(--t3);margin-bottom:6px;font-weight:600">主要指数</div>`
+    for(const [name, v] of Object.entries(idx)){
+      const up = (v.change||0) >= 0
+      html += `<div class="mr-index-row"><span class="mr-idx-name">${name}</span>
+        <span class="mr-idx-price">${v.price}</span>
+        <span class="mr-idx-chg ${up?'up':'dn'}">${up?'+':''}${v.change}%</span></div>`
+    }
+    html += `</div>`
+  }
+
+  html += `<div class="daily-card"><div style="font-size:12px;color:var(--t3);margin-bottom:6px;font-weight:600">涨跌结构</div>
+    <div class="mr-breadth">
+      <div class="mr-stat"><div class="mr-stat-val" style="color:#3fb950">${b.up ?? '—'}</div><div class="mr-stat-lbl">上涨</div></div>
+      <div class="mr-stat"><div class="mr-stat-val" style="color:#f85149">${b.down ?? '—'}</div><div class="mr-stat-lbl">下跌</div></div>
+      <div class="mr-stat"><div class="mr-stat-val" style="color:#3fb950">${zt.zt_count ?? '—'}</div><div class="mr-stat-lbl">涨停</div></div>
+      <div class="mr-stat"><div class="mr-stat-val" style="color:#f85149">${zt.dt_count ?? '—'}</div><div class="mr-stat-lbl">跌停</div></div>
+    </div>
+    <div class="rv-row"><span>炸板率</span><b>${zt.zb_rate!=null ? zt.zb_rate+'%' : '—'}</b></div>
+    <div class="rv-row"><span>最高连板</span><b>${zt.max_height ? zt.max_height+' 板' : '—'}</b></div>
+    <div class="rv-row"><span>昨涨停今表现</span>${zt.prev_zt_avg!=null ? _rvChg(zt.prev_zt_avg) : '<b>—</b>'}</div>
+    <div class="rv-row"><span>昨涨停红盘率</span><b>${zt.prev_zt_red_rate!=null ? zt.prev_zt_red_rate+'%' : '—'}</b></div>
+    ${_rvBoardRows(data)}
+  </div>`
+
+  if(tv.today || (tv.trend||[]).length){   // 趋势拉不到（代理环境）时也要显示今日成交额
+    const trend = tv.trend||[]
+    const max   = trend.length ? Math.max(...trend.map(x=>x.amount)) : 0
+    html += `<div class="daily-card">
+      <div style="display:flex;justify-content:space-between"><span style="font-size:12px;color:var(--t3);font-weight:600">两市成交额</span>
+      <b>${tv.today ? tv.today+' 亿' : '—'}</b></div>`
+    if(trend.length){
+      html += `<div class="rv-bars">${trend.map((x,i)=>`<i class="${i===trend.length-1?'last':''}" style="height:${Math.max(3,Math.round(x.amount/max*100))}%" title="${x.date}  ${x.amount}亿"></i>`).join('')}</div>
+      <div style="font-size:10px;color:var(--t3);text-align:right;margin-top:2px">近${trend.length}个交易日</div>`
+    }
+    html += `</div>`
+  }
+
+  const sec = data.sectors||{}
+  if((sec.industry_top||[]).length){
+    html += `<div class="daily-card"><div style="font-size:12px;color:var(--t3);margin-bottom:6px;font-weight:600">板块快览</div><div>`
+    sec.industry_top.slice(0,5).forEach(s=> html += `<span class="mr-sector-tag up">${_rvEsc(s.name)} +${s.chg}%</span>`)
+    ;(sec.industry_bottom||[]).slice(0,5).forEach(s=> html += `<span class="mr-sector-tag dn">${_rvEsc(s.name)} ${s.chg}%</span>`)
+    html += `</div></div>`
+  }
+
+  return html || '<div class="empty-hint">暂无数据</div>'
+}
+
+// ── 渲染：中栏 AI总结 + 天梯 + 轮动 ───────────────────────────
+function _renderReviewMain(d){
+  const data = d.data||{}
+  let html = ''
+
+  html += `<div class="daily-card" style="border-color:rgba(88,166,255,.4)">
+    <div style="font-size:12px;color:var(--bl);font-weight:700;margin-bottom:8px">🤖 AI 复盘总结
+      ${d.phase==='evening' ? '<span style="font-size:10px;color:var(--t3)">（晚间版 · 含新闻联播与晚间要闻）</span>' : ''}</div>
+    ${d.ai_summary
+      ? `<div class="rv-ai-body">${_renderAiText(d.ai_summary)}</div>`
+      : `<div class="empty-hint">尚未生成 AI 总结 —— 交易日 15:10 自动生成收盘版、19:50 晚间版；也可点右上角「⚡ 生成AI复盘」立即生成</div>`}
+  </div>`
+
+  const ladder = (data.zt||{}).ladder||[]
+  if(ladder.length){
+    html += `<div class="daily-card"><div style="font-size:12px;color:var(--t3);font-weight:600;margin-bottom:10px">🪜 涨停天梯（${(data.zt||{}).zt_count||0} 家）</div>`
+    ladder.forEach(lv=>{
+      html += `<div class="rv-ladder-lv"><div class="rv-ladder-h">${lv.height}板</div><div class="rv-ladder-stocks">`
+      ;(lv.stocks||[]).forEach(s=>{
+        html += `<span class="rv-stock-tag" title="${_rvEsc(s.code)}"><b>${_rvEsc(s.name)}</b>${s.industry?`<span>${_rvEsc(s.industry)}</span>`:''}</span>`
+      })
+      html += `</div></div>`
+    })
+    html += `</div>`
+  }
+
+  const sec = data.sectors||{}
+  if((sec.industry_top||[]).length || (sec.concept_top||[]).length){
+    html += `<div class="daily-card"><div style="font-size:12px;color:var(--t3);font-weight:600;margin-bottom:8px">🔄 板块轮动</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">`
+    html += `<div><div style="font-size:11px;color:var(--t3);margin-bottom:4px">行业涨幅榜</div>`
+    ;(sec.industry_top||[]).forEach(s=> html += `<div class="rv-row"><span>${_rvEsc(s.name)}</span>${_rvChg(s.chg)}</div>`)
+    html += `</div><div><div style="font-size:11px;color:var(--t3);margin-bottom:4px">概念涨幅榜</div>`
+    ;(sec.concept_top||[]).forEach(s=> html += `<div class="rv-row"><span>${_rvEsc(s.name)}</span>${_rvChg(s.chg)}</div>`)
+    html += `</div></div></div>`
+  }
+
+  const news = (data.news||[]).filter(n=>n.important).slice(0,8)
+  if(news.length){
+    html += `<div class="daily-card"><div style="font-size:12px;color:var(--t3);font-weight:600;margin-bottom:6px">⭐ 当日要闻</div>`
+    news.forEach(n=> html += `<div class="rv-news-item imp">
+      <div class="rv-news-meta"><span>${(n.ts||'').slice(5,16)}</span><span class="rv-src-badge">${_rvEsc(n.source)}</span></div>
+      <div class="rv-news-title">${_rvEsc(n.title)}</div></div>`)
+    html += `</div>`
+  }
   return html
 }
 
-function toggleDcDetail(id){
-  const el = document.getElementById(id)
-  if(el) el.classList.toggle('open')
+function _renderAiText(t){
+  let h = _rvEsc(t)
+  h = h.replace(/【([^】]+)】/g, '<div class="rv-sec-h">【$1】</div>')
+  h = h.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+  h = h.replace(/\n+/g, '<br>')
+  h = h.replace(/(<div class="rv-sec-h">[^<]*<\/div>)<br>/g, '$1')
+  return h
+}
+
+// ── 财经快讯 ───────────────────────────────────────────────────
+let _newsBusy = false
+
+async function loadNews(silent){
+  if(_newsBusy) return
+  _newsBusy = true
+  const box = document.getElementById('rv-news-body')
+  if(silent !== true) box.innerHTML = '<div class="empty-hint">加载中…</div>'
+  try{
+    const src = document.getElementById('rv-news-src').value
+    const q   = document.getElementById('rv-news-q').value.trim()
+    const imp = document.getElementById('rv-news-imp').checked
+    const ps  = new URLSearchParams({limit:'100', fetch:'1'})   // fetch=1: 顺带触发服务端增量抓取(限频60s)
+    if(src) ps.set('source', src)
+    if(q)   ps.set('q', q)
+    if(imp) ps.set('important', '1')
+    const r = await fetch('/api/news/feed?' + ps.toString())
+    const d = await r.json()
+    const items = d.items||[]
+    document.getElementById('rv-news-count').textContent = items.length ? `${items.length} 条` : ''
+    box.innerHTML = items.length
+      ? items.map(_renderNewsItem).join('')
+      : '<div class="empty-hint">暂无新闻（后台正在抓取，30秒后自动刷新）</div>'
+  }catch(e){
+    if(silent !== true) box.innerHTML = `<div class="empty-hint" style="color:#f85149">获取失败：${e.message}</div>`
+  }
+  _newsBusy = false
+}
+
+function _renderNewsItem(n){
+  const t     = (n.ts||'').slice(5,16)
+  const title = n.url
+    ? `<a href="${_rvEsc(n.url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${_rvEsc(n.title)}</a>`
+    : _rvEsc(n.title)
+  const body  = n.content && n.content !== n.title
+    ? `<div class="rv-news-cnt">${_rvEsc(n.content.slice(0,120))}${n.content.length>120?'…':''}</div>` : ''
+  return `<div class="rv-news-item${n.important?' imp':''}">
+    <div class="rv-news-meta"><span>${t}</span><span class="rv-src-badge">${_rvEsc(n.source)}</span>${n.important?'<span class="rv-imp-badge">重要</span>':''}</div>
+    <div class="rv-news-title">${title}</div>${body}</div>`
+}
+
+async function _loadNewsSources(){
+  try{
+    const r = await fetch('/api/news/sources')
+    const d = await r.json()
+    const sel = document.getElementById('rv-news-src')
+    const cur = sel.value
+    sel.innerHTML = '<option value="">全部来源</option>' +
+      (d.sources||[]).map(s=>`<option value="${_rvEsc(s.source)}">${_rvEsc(s.source)}（${s.count}）</option>`).join('')
+    sel.value = cur
+  }catch(e){}
 }
 </script>
 <!-- ══════════ 问题反馈入口（自成一体，复用主题类）══════════ -->
@@ -6337,7 +7056,7 @@ function toggleDcDetail(id){
 // 问题反馈：自成一体，仅依赖已有的 api() 封装与 .rename-modal 主题
 const FB_PAGE_LABELS = {
   'page-monitor':'监控中心','page-strategy':'策略中心','page-paper':'模拟盘',
-  'page-search':'智能搜索','page-daily':'日报'
+  'page-search':'产业链研报','page-review':'复盘'
 };
 const FB_STATUS_LABELS = {open:'待处理',read:'已读',in_progress:'处理中',resolved:'已解决'};
 const FB_STATUS_COLORS = {
@@ -6429,7 +7148,15 @@ async function loadMyFeedback(){
 }
 function _fbEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
 </script>
-<link rel="stylesheet" href="/static/lib/theme-candy.css">
 <script src="/static/lib/jianwei-mascot.js"></script>
+<!-- ══════════ ICP / 公安联网备案（工信部+公安部合规：主页底部中央展示并链接官方系统）══════════ -->
+<div id="beianFooter" style="position:fixed;left:0;right:0;bottom:0;z-index:99999;display:flex;justify-content:center;align-items:center;gap:16px;padding:2px 0 3px;font-size:11px;line-height:1;color:var(--t3,#8a8378);background:var(--bg,#FBF7F0);border-top:1px solid var(--b1,#EADFD0);pointer-events:none">
+  <a href="https://beian.miit.gov.cn" target="_blank" rel="noreferrer"
+     style="color:inherit;text-decoration:none;pointer-events:auto">赣ICP备2026011468号</a>
+  <a href="https://beian.mps.gov.cn/#/query/webSearch?code=36102102000155" target="_blank" rel="noreferrer"
+     style="color:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:4px;pointer-events:auto">
+    <img src="/static/beian-gongan.png" alt="公安备案" style="width:13px;height:13px;vertical-align:middle">赣公网安备36102102000155号
+  </a>
+</div>
 </body>
 </html>

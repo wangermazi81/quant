@@ -127,6 +127,23 @@ def admin_delete_user(uid):
     return jsonify(um.delete_user(uid))
 
 
+# ── AI/功能调用积分设置 ───────────────────────────────────────
+@bp.route("/api/admin/point_costs", methods=["GET"])
+@require_admin
+def admin_get_point_costs():
+    """各功能调用积分消耗（0=免费）。"""
+    return jsonify({"ok": True, "costs": um.get_point_costs(),
+                    "labels": um.POINT_COST_LABELS})
+
+
+@bp.route("/api/admin/point_costs", methods=["POST"])
+@require_admin
+def admin_set_point_costs():
+    """保存积分消耗配置：内存即时生效 + data/point_costs.json 持久化。"""
+    d = request.json or {}
+    return jsonify(um.set_point_costs(d.get("costs", d)))
+
+
 # ── 邀请码管理（邀请制注册）──────────────────────────────────
 @bp.route("/api/admin/invite_codes", methods=["GET"])
 @require_admin

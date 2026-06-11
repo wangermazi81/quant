@@ -139,6 +139,9 @@ from web.ai import bp as _ai_bp
 from web.search import bp as _search_bp
 from web.notify import bp as _notify_bp
 from web.feedback import bp as _feedback_bp
+from web.review import bp as _review_bp
+from web.research import bp as _research_bp
+from web.lhb import bp as _lhb_bp
 app.register_blueprint(_auth_bp)
 app.register_blueprint(_user_bp)
 app.register_blueprint(_admin_bp)
@@ -149,6 +152,9 @@ app.register_blueprint(_ai_bp)
 app.register_blueprint(_search_bp)
 app.register_blueprint(_notify_bp)
 app.register_blueprint(_feedback_bp)
+app.register_blueprint(_review_bp)
+app.register_blueprint(_research_bp)
+app.register_blueprint(_lhb_bp)
 
 
 
@@ -234,6 +240,64 @@ def execute_sell(uid: int, code: str, price: float, sell_reason: str = "手动�
         signal_id = um.add_trade_signal(uid, code, name, "SELL", price, shares)
         _add_log(uid, f"⏳ 实盘卖出信号已发送队列: {code} {name} {shares}股 @{price:.2f}", "info")
         return {"ok": True, "msg": "已生成实盘卖出信号，等待本地执行...", "signal_id": signal_id}
+
+
+# ── 加仓逻辑（涨幅到9%时以涨停价追板）──────────────────────
+_ADD_POSITION_LAYERS: dict = {}  # (uid, code) -> 已加仓层数
+
+def _check_add_position(uid: int, s: dict, broker_type: str, base_cash: float):
+    """检查持仓票是否涨到9%，触发加仓。每次扫描时调用。"""
+    positions = s.get("positions", {})
+    if not positions:
+        return
+    try:
+        import ths_quote as tq
+        client = tq.get_client()
+        if not client or not client._ok:
+            return
+        codes = list(positions.keys())
+        quotes = client.get_quotes(codes) or []
+        for q in quotes:
+            try:
+                code = q.get("code", "")
+                if not code:
+                    continue
+                price = float(q.get("price", 0) or 0)
+                last_close = float(q.get("last_close", 0) or 0)
+                limit_up = float(q.get("limit_up", 0) or 0)
+                if price <= 0 or last_close <= 0 or limit_up <= 0:
+                    continue
+                change_pct = (price - last_close) / last_close * 100
+                # 涨幅到9%触发加仓
+                if change_pct < 9.0:
+                    continue
+                # 检查已加仓层数（最多2.5层）
+                key = (uid, code)
+                current_layers = _ADD_POSITION_LAYERS.get(key, 1.0)  # 初始1层
+                if current_layers >= 3.0:
+                    continue
+                # 计算加仓金额（从当前层加到3层=25%）
+                target_ratio = 0.25
+                current_ratio = current_layers * 0.08
+                add_ratio = target_ratio - current_ratio
+                add_amount = base_cash * add_ratio
+                add_shares = max(int(add_amount / limit_up / 100) * 100, 100)
+                if add_shares <= 0:
+                    continue
+                # 以涨停价挂单
+                _add_log(uid, f"?? 加仓触发: {code} 涨幅{change_pct:.1f}% ≥ 9%，以涨停价{limit_up:.2f}追板，加仓至25%", "buy")
+                name = positions[code].get("name", code)
+                res = execute_buy(uid, code, name, limit_up, add_shares, reason="加仓追板")
+                if res.get("ok"):
+                    _ADD_POSITION_LAYERS[key] = 3.0  # 加到3层=25%
+                    _add_log(uid, f"?? 加仓成功: {code} 已加至3层(25%)", "info")
+                else:
+                    _add_log(uid, f"? 加仓失败: {code} {res.get('msg', '')}", "error")
+            except Exception as _e:
+                _logger.debug(f"加仓检查异常 {q.get('code')}: {_e}")
+                continue
+    except Exception as e:
+        _logger.debug(f"加仓检查整体异常: {e}")
 
 
 def _auto_buy(uid: int, item: dict):
@@ -489,6 +553,27 @@ def do_scan(uid: int):
     _check_paper_risk(uid)        # 模拟盘持仓风控/Ride 自动卖出
     _check_live_daban_ride(uid)   # 实盘打板持仓 Ride 自动卖出（生成卖出信号）
 
+    # ★ 每日20%兜底检查：总仓位超过80%时停止开新仓
+    _broker_cfg = um.get_user_broker_config(uid)
+    _broker_type = _broker_cfg.get("broker_type", "paper")
+    if _broker_type == "live" and not DRY_RUN:
+        _live_cash = float((_broker_cfg.get("config") or {}).get("live_cash") or 0)
+        if _live_cash > 0:
+            _base_cash = _live_cash
+        else:
+            _base_cash = s["capital"]
+    else:
+        _base_cash = s["capital"]
+    _pending_total = um.get_pending_buy_total(uid)
+    _used_ratio = _pending_total / _base_cash if _base_cash > 0 else 1.0
+    if _used_ratio >= 0.80:
+        _add_log(uid, f"?? 兜底检查：已用仓位{_used_ratio*100:.0f}% ≥ 80%，停止开新仓，保留20%现金", "info")
+        s["scan_progress"] = {"running": False, "stage": "仓位已满", "current": 0, "total": 0}
+        return
+
+    # ★ 加仓检查：已持仓的票涨到9%时以涨停价追板
+    _check_add_position(uid, s, _broker_type, _base_cash)
+
     active    = s.get("active_strategy")
     is_daban  = (active == "da_ban")
     scan_label = "全市场"
@@ -540,6 +625,15 @@ def do_scan(uid: int):
     else:
         _base_cash = s["capital"]
 
+    # ★ 资金检查：扣掉未完成买单占用的资金，避免重复下单超出可用额度
+    _pending_buy_total = um.get_pending_buy_total(uid)
+    _available_cash = _base_cash - _pending_buy_total
+    if _available_cash < price * 100:  # 至少够买100股
+        _add_log(uid, f"⏭ 资金不足：总额¥{_base_cash:,.0f} - 待成交¥{_pending_buy_total:,.0f} = 可用¥{_available_cash:,.0f}，本轮跳过", "info")
+        s["scan_progress"] = {"running": False, "stage": "资金不足", "current": 0, "total": 0}
+        return
+    _base_cash = _available_cash  # 用实际可用资金计算仓位
+
     # ── 仓位护栏（防一次大面腰斩）：最多持仓数 + 单笔上限 ─────────────
     # 优先用用户在前端设置的值，缺失时回落到 config 默认。
     try:
@@ -573,6 +667,9 @@ def do_scan(uid: int):
         price = r["price"] or 1
         if code in _occupied:
             continue   # 已持有 / 已在队列 → 不重复开仓
+        # ★ 数据库去重：如果该股已有未完成的买单信号，跳过
+        if um.has_pending_signal(uid, code, "BUY"):
+            continue
         # 护栏①：最多持仓数 —— 名额满则停止开新仓（含待成交队列）
         if len(_occupied) >= _MAX_POS:
             if not _guard_full_logged:
@@ -582,8 +679,10 @@ def do_scan(uid: int):
                 _guard_full_logged = True
             continue
         if not any(q["code"] == code for q in s["queue"]):
-            # 护栏②：单笔上限
-            budget = _base_cash * _eff_ratio
+            # 护栏②：单笔上限（优先用策略返回的分层仓位）
+            _strat_ratio = float(r.get("position_ratio", 0) or 0)
+            _use_ratio = min(_strat_ratio if _strat_ratio > 0 else _eff_ratio, _SP_RATIO)
+            budget = _base_cash * _use_ratio
             shares = max(int(budget / price / 100) * 100, 100)
             # ★ 实盘模式：提前检查是否超 MAX_ORDER_AMOUNT 护栏，避免桥接器层无谓拒单 ★
             _est = price * shares
@@ -2829,6 +2928,24 @@ def _start_background_services():
     threading.Thread(target=run_scheduler, daemon=True).start()
     # Vibe Alpha 因子激活调度器（独立线程，每 60s 检查，5 分钟跑一次扫描）
     threading.Thread(target=run_vibe_scheduler, daemon=True, name="vibe-scheduler").start()
+    # 财经新闻聚合（盘中每3分钟拉快讯，19:40 抓新闻联播）
+    try:
+        import news_center
+        threading.Thread(target=news_center.run_news_scheduler, daemon=True, name="news-center").start()
+    except Exception as _ne:
+        logger.warning(f"新闻聚合调度器启动失败: {_ne}")
+    # 每日复盘（交易日 15:10 收盘版 → 19:50 晚间版，含 AI 总结归档）
+    try:
+        import review_engine
+        threading.Thread(target=review_engine.run_review_scheduler, daemon=True, name="review-engine").start()
+    except Exception as _re:
+        logger.warning(f"复盘调度器启动失败: {_re}")
+    # 产业概念日更（08:30/15:10 自动刷新并过滤交易信号类，保证每日新概念可见）
+    try:
+        import research_center
+        research_center.run_concept_scheduler()
+    except Exception as _rc:
+        logger.warning(f"概念日更调度器启动失败: {_rc}")
     logger.info(f"后台调度已启动 DRY_RUN={'开启' if DRY_RUN else '关闭'}")
 
 

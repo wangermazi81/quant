@@ -351,6 +351,41 @@ def _price_history_text(df: pd.DataFrame, days: int = 15) -> str:
 # ══════════════════════════════════════════════════════
 # LLM 调用封装
 # ══════════════════════════════════════════════════════
+_prefer_direct = False   # 记住上次成功的链路，避免每次调用都双试
+
+
+def _urlopen_smart(req, timeout):
+    """系统代理失败时自动降级直连（并记住成功链路）。
+
+    本机常开 v2ray/clash 系统代理（注册表 127.0.0.1:10809），国内 LLM 服务
+    （小米MiMo/DeepSeek 等）经海外出口会被服务端掐 TLS → urllib 报
+    `SSL: UNEXPECTED_EOF_WHILE_READING`；绕过代理直连反而通（2026-06-10 实测）。
+    HTTP 错误码说明链路是通的，直接抛出不换路径。
+    """
+    global _prefer_direct
+    import urllib.request
+    import urllib.error
+    last = None
+    order = [True, False] if _prefer_direct else [False, True]
+    for is_direct in order:
+        try:
+            opener = (urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                      if is_direct else urllib.request.build_opener())
+            # ProxyHandler 会原地改写 Request.host 指向代理 → 换链路必须用全新 Request，
+            # 否则第二次"直连"实际仍发往代理（修 SSL EOF 降级不生效的坑）
+            fresh = urllib.request.Request(
+                req.full_url, data=req.data,
+                headers=dict(req.header_items()), method=req.get_method())
+            resp = opener.open(fresh, timeout=timeout)
+            _prefer_direct = is_direct
+            return resp
+        except urllib.error.HTTPError:
+            raise
+        except Exception as e:
+            last = e
+    raise last
+
+
 def _call_llm(cfg: dict, messages: list, temperature: float = 0.3,
               max_tokens: int = 1200, timeout: int = 180) -> str:
     """
@@ -391,7 +426,7 @@ def _call_llm(cfg: dict, messages: list, temperature: float = 0.3,
         #   200-空 重试一次（HTTP/网络错误仍立即抛出，不重试）。
         for _attempt in range(3):
             try:
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                with _urlopen_smart(req, timeout=timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     _content = (data["choices"][0]["message"]["content"] or "").strip()
             except urllib.error.HTTPError as e:

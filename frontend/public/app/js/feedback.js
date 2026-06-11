@@ -2,7 +2,7 @@
 // 问题反馈：自成一体，仅依赖已有的 api() 封装与 .rename-modal 主题
 const FB_PAGE_LABELS = {
   'page-monitor':'监控中心','page-strategy':'策略中心','page-paper':'模拟盘',
-  'page-search':'智能搜索','page-daily':'日报'
+  'page-search':'智能搜索'
 };
 const FB_STATUS_LABELS = {open:'待处理',read:'已读',in_progress:'处理中',resolved:'已解决'};
 const FB_STATUS_COLORS = {
