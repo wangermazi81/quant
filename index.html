@@ -6328,8 +6328,20 @@ async function openConcept(name, el){
     gbtn.textContent   = d.graph_exists ? '🔄 重新生成产业链图谱' : '🧬 AI生成产业链图谱'
 
     const hasRel = d.stocks.some(s=>s.rel_level)
+    const relNote = hasRel ? '（相关度由 AI 产业链图谱标注）'
+      : d.graph_generating ? '（相关度图谱后台生成中，约1分钟后自动刷新…）'
+      : '（生成产业链图谱后将标注每只股票与概念的相关度）'
+    // 后台生成中 → 60秒后自动刷新一次（最多重试3次，避免无限轮询）
+    if(d.graph_generating && !hasRel){
+      window._chainRelRetry = window._chainRelRetry || {}
+      const n = window._chainRelRetry[name] || 0
+      if(n < 3){
+        window._chainRelRetry[name] = n + 1
+        setTimeout(()=>{ if(_curConcept === name) openConcept(name) }, 60000)
+      }
+    }
     let html = `<div id="chainGraphBox"></div>`
-    html += `<div class="daily-card"><div style="font-size:12px;color:var(--t3);font-weight:600;margin-bottom:8px">成分股${hasRel ? '（相关度由 AI 产业链图谱标注）' : '（生成产业链图谱后将标注每只股票与概念的相关度）'}</div>
+    html += `<div class="daily-card"><div style="font-size:12px;color:var(--t3);font-weight:600;margin-bottom:8px">成分股${relNote}</div>
       <table style="width:100%;font-size:12px;border-collapse:collapse">
       <thead><tr style="color:var(--t3);text-align:left"><th style="padding:4px">代码</th><th>名称</th><th>相关度</th><th style="text-align:right">现价</th><th style="text-align:right">涨跌幅</th><th style="text-align:right">换手%</th><th style="text-align:right">市值(亿)</th><th></th></tr></thead><tbody>`
     d.stocks.forEach(s=>{

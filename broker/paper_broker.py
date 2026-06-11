@@ -205,6 +205,22 @@ class PaperBroker:
                 "SELECT code,shares,cost_price FROM paper_positions WHERE user_id=?",
                 (self._uid,),
             ).fetchall()
+            # 未传实时价时主动拉一次 TDX 行情。否则快照按成本价计市值，
+            # 净值曲线永远不含浮动盈亏（且会覆盖当天已有的正确快照）。
+            if not cur_prices and positions:
+                try:
+                    import sys, os
+                    _mkt = os.path.join(os.path.dirname(os.path.dirname(__file__)), "market")
+                    if _mkt not in sys.path:
+                        sys.path.insert(0, _mkt)
+                    import ths_quote as _tq
+                    _cli = _tq.get_client()
+                    if _cli and getattr(_cli, "_ok", False):
+                        _qs = _cli.get_quotes([p["code"] for p in positions])
+                        cur_prices = {q["code"]: float(q.get("price") or 0)
+                                      for q in _qs if float(q.get("price") or 0) > 0}
+                except Exception:
+                    pass
             mval = sum(
                 (cur_prices or {}).get(p["code"], p["cost_price"]) * p["shares"]
                 for p in positions
@@ -748,9 +764,18 @@ class PaperBroker:
                     max_dd = dd
         total_ret = round((equities[-1] - initial) / initial * 100, 4) if equities else 0.0
 
+        # Sharpe：优先用净值曲线的日收益序列年化（正确口径）；
+        # 净值点不足时退回单笔收益近似（仅作参考）
         sharpe = 0.0
-        if len(pnl_pcts) >= 2:
-            import statistics
+        import statistics
+        if len(equities) >= 3:
+            rets = [(equities[i] - equities[i-1]) / equities[i-1]
+                    for i in range(1, len(equities)) if equities[i-1] > 0]
+            if len(rets) >= 2:
+                mu, std = statistics.mean(rets), statistics.stdev(rets)
+                if std > 0:
+                    sharpe = round(mu / std * (252 ** 0.5), 4)
+        elif len(pnl_pcts) >= 2:
             mu  = statistics.mean(pnl_pcts)
             std = statistics.stdev(pnl_pcts)
             if std > 0:

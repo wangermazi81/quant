@@ -1014,6 +1014,66 @@ def resolve_code(q: str) -> str:
 
 
 # ──────────────────────────────────────────────────────────────
+# 产业链图谱后台自动生成（用户浏览概念时无图谱 → 排队生成，无需手动点按钮）
+# ──────────────────────────────────────────────────────────────
+_autogen_lock = threading.Lock()
+_autogen_pending: list = []       # FIFO 待生成队列
+_autogen_inflight: set = set()    # 排队中 + 生成中（去重）
+_autogen_failed: dict = {}        # name -> 上次失败时间戳（30分钟冷却防止死循环烧token）
+_autogen_thread = None
+
+
+def enqueue_chain_autogen(name: str) -> bool:
+    """概念无图谱时排队后台生成。返回 True=已在生成队列（前端可提示'生成中'）。"""
+    global _autogen_thread
+    if not name or load_chain(name):
+        return False
+    try:
+        import ai_analyst as aa
+        if not aa.resolve_config().get("api_key"):
+            return False              # 未配置 AI，静默跳过
+    except Exception:
+        return False
+    with _autogen_lock:
+        if name in _autogen_inflight:
+            return True
+        if time.time() - _autogen_failed.get(name, 0) < 1800:
+            return False
+        if len(_autogen_pending) >= 50:
+            return False
+        _autogen_pending.append(name)
+        _autogen_inflight.add(name)
+        if _autogen_thread is None or not _autogen_thread.is_alive():
+            _autogen_thread = threading.Thread(
+                target=_autogen_worker, daemon=True, name="chain-autogen")
+            _autogen_thread.start()
+    return True
+
+
+def _autogen_worker():
+    while True:
+        with _autogen_lock:
+            if not _autogen_pending:
+                return                # 队列空，线程退出（下次入队再拉起）
+            name = _autogen_pending.pop(0)
+        ok = False
+        try:
+            r = generate_chain(name)
+            ok = bool(r.get("ok"))
+            if not ok:
+                logger.warning(f"[chain-autogen] {name} 失败: {r.get('error', '')[:60]}")
+        except Exception as e:
+            logger.warning(f"[chain-autogen] {name} 异常: {e}")
+        with _autogen_lock:
+            _autogen_inflight.discard(name)
+            if not ok:
+                _autogen_failed[name] = time.time()
+        if ok:
+            logger.info(f"[chain-autogen] {name} 图谱生成完成")
+        time.sleep(3)                 # 队列间隔，避免连环打满 AI 接口
+
+
+# ──────────────────────────────────────────────────────────────
 # 概念日更调度器
 # ──────────────────────────────────────────────────────────────
 def run_concept_scheduler():

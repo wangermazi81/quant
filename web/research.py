@@ -31,6 +31,9 @@ def api_chain_stocks():
         return jsonify({"ok": False, "error": "缺少概念名称"})
     result = rc.get_concept_stocks(name)
     result["graph_exists"] = rc.load_chain(name) is not None
+    if not result["graph_exists"]:
+        # 无图谱 → 后台自动排队生成（AI key 已配置时），前端提示"生成中"并稍后自动刷新
+        result["graph_generating"] = rc.enqueue_chain_autogen(name)
     return jsonify(result)
 
 

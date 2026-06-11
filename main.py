@@ -626,9 +626,11 @@ def do_scan(uid: int):
         _base_cash = s["capital"]
 
     # ★ 资金检查：扣掉未完成买单占用的资金，避免重复下单超出可用额度
+    # （此处尚未遍历候选股，price 不可用——曾因引用未定义的 price 导致每轮扫描
+    #   NameError 崩溃、自动买入完全失效。改用固定最小建仓金额判断。）
     _pending_buy_total = um.get_pending_buy_total(uid)
     _available_cash = _base_cash - _pending_buy_total
-    if _available_cash < price * 100:  # 至少够买100股
+    if _available_cash < 1000:  # 最小一手金额估算（不足则本轮不开新仓）
         _add_log(uid, f"⏭ 资金不足：总额¥{_base_cash:,.0f} - 待成交¥{_pending_buy_total:,.0f} = 可用¥{_available_cash:,.0f}，本轮跳过", "info")
         s["scan_progress"] = {"running": False, "stage": "资金不足", "current": 0, "total": 0}
         return
@@ -2841,9 +2843,33 @@ def _scan_thread_worker(uid: int):
             pass
 
 
+def _snap_all_paper_equity():
+    """收盘后为所有模拟盘用户拍一张净值快照（实时收盘价）。
+
+    没有这一步，净值曲线只在'有成交的那天'才落点，不交易的日子全是空洞；
+    且盘中快照可能被成本价覆盖。收盘统一补一张含浮盈的快照。"""
+    try:
+        import sqlite3 as _sq
+        con = _sq.connect(str(pb.DB_PATH), timeout=10)
+        all_uids = [r[0] for r in con.execute(
+            "SELECT DISTINCT user_id FROM paper_positions")]
+        con.close()
+    except Exception as e:
+        logger.warning(f"[收盘快照] 读取模拟盘用户失败: {e}")
+        return
+    for uid in all_uids:
+        try:
+            pb.get_broker(uid)._snap_equity()   # 不传价 → 内部自动拉实时行情
+        except Exception as e:
+            logger.debug(f"[收盘快照 uid={uid}] {e}")
+    if all_uids:
+        logger.info(f"[收盘快照] 已为 {len(all_uids)} 个模拟盘用户落净值点")
+
+
 def _on_market_close():
     """收盘(15:00)自动终止所有用户的自动交易：停 running + 清残留未执行信号 + 持久化。
     避免收盘后桥接器还在拉 pending 信号去下单。仅在下午真收盘触发（午休 11:30 不触发）。"""
+    _snap_all_paper_equity()    # 先落净值快照（与是否有用户在自动交易无关）
     with _user_state_lock:
         uids = [uid for uid, s in user_states.items() if s.get("running")]
     if not uids:
