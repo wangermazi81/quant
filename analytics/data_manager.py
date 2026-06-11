@@ -53,6 +53,36 @@ def _tx_symbol(code: str) -> str:
     return "sz" + code
 
 
+# ── K线数据清洗（下载后 / 读取时统一过一遍）─────────────────
+def _clean_kline(df: pd.DataFrame) -> pd.DataFrame:
+    """清洗日线数据，保证回测输入干净：
+
+    1. OHLCV 全部转数值，无法解析的置 NaN
+    2. 丢弃 close/open 缺失或 ≤0 的行（停牌占位、脏数据）
+    3. 日期去重（保留最后一条）+ 按日期升序
+    4. high/low 自洽修正：high=max(O,H,L,C)，low=min(O,H,L,C)
+    5. volume 负值归零
+    """
+    if df is None or df.empty:
+        return df
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    for c in ("open", "high", "low", "close", "volume"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["date", "close", "open"])
+    df = df[(df["close"] > 0) & (df["open"] > 0)]
+    df = df.drop_duplicates(subset=["date"], keep="last")
+    df = df.sort_values("date").reset_index(drop=True)
+    if not df.empty:
+        ohlc = df[["open", "high", "low", "close"]]
+        df["high"] = ohlc.max(axis=1)
+        df["low"]  = ohlc.min(axis=1)
+        if "volume" in df.columns:
+            df["volume"] = df["volume"].clip(lower=0).fillna(0)
+    return df
+
+
 # ── 元数据 ────────────────────────────────────────
 def _load_meta() -> dict:
     if META_FILE.exists():
@@ -271,7 +301,10 @@ def _download_one(code: str, start_date: str) -> dict:
         src = "腾讯"
         try:
             try:
-                df = ak.stock_zh_a_hist_tx(symbol=symbol, start_date=start, end_date=end)
+                # adjust="qfq" 前复权 —— 必须与 baostock(adjustflag=2)/优矿(AdjGet) 口径一致；
+                # 不复权数据在除权日有价格断崖，回测会误触发止损、收益完全失真
+                df = ak.stock_zh_a_hist_tx(symbol=symbol, start_date=start, end_date=end,
+                                           adjust="qfq")
             except Exception as _te:
                 logger.info(f"[{code}] 腾讯源失败({_te})，降级 baostock")
                 df = None
@@ -291,8 +324,6 @@ def _download_one(code: str, start_date: str) -> dict:
             logger.info(f"[{code}] 已用降级数据源: {src}")
 
         df = df.rename(columns={"amount": "volume"})
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.sort_values("date").reset_index(drop=True)
 
         required = ["date", "open", "close", "high", "low", "volume"]
         missing  = [c for c in required if c not in df.columns]
@@ -300,9 +331,13 @@ def _download_one(code: str, start_date: str) -> dict:
             return {"ok": False, "code": code,
                     "msg": f"缺少列: {missing}，实际: {list(df.columns)}"}
 
+        df = _clean_kline(df)
+        if df is None or df.empty:
+            return {"ok": False, "code": code, "msg": "清洗后无有效数据"}
+
         csv_path = DATA_DIR / f"{code}.csv"
         df[required].to_csv(csv_path, index=False, encoding="utf-8")
-        logger.info(f"已保存 {csv_path} ({len(df)} 行)")
+        logger.info(f"已保存 {csv_path} ({len(df)} 行, 前复权+已清洗)")
 
         # 优先用缓存名称，无则写入 code
         name = get_stock_name(code) or code
@@ -313,6 +348,7 @@ def _download_one(code: str, start_date: str) -> dict:
             "start":   str(df["date"].iloc[0].date()),
             "end":     str(df["date"].iloc[-1].date()),
             "rows":    len(df),
+            "adjust":  "qfq",   # 标记前复权，区分旧的不复权数据
             "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
         _save_meta(meta)
@@ -368,7 +404,8 @@ def get_local(code: str) -> pd.DataFrame:
     if not p.exists():
         return pd.DataFrame()
     df = pd.read_csv(p, parse_dates=["date"])
-    return df.sort_values("date").reset_index(drop=True)
+    # 读取时防御性清洗（兼容旧版下载的脏数据）
+    return _clean_kline(df)
 
 def delete_stock(code: str) -> dict:
     p = DATA_DIR / f"{code}.csv"

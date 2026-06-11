@@ -1,0 +1,36 @@
+<svg width="290" height="90" viewBox="0 0 290 90" fill="none" xmlns="http://www.w3.org/2000/svg" id="svg-prism"><style>
+                svg {
+                    --primary: #EF5B78;
+                    --secondary: #6366F1;
+                    --text: #1E1E2E;
+                }
+            </style>
+                                <g>
+                                    <!-- Icon Part -->
+                                    <g transform="translate(15, 10)">
+                                        <!-- Prism Triangle representing algorithms -->
+                                        <polygon points="35,10 15,50 55,50" stroke="var(--secondary, #6366F1)" stroke-width="3.5" fill="none" stroke-linejoin="round"/>
+                                        <polygon points="35,14 18,48 52,48" stroke="var(--secondary, #6366F1)" stroke-width="1" fill="none" opacity="0.3"/>
+
+                                        <!-- Messy inputs of micro dots on the left -->
+                                        <circle cx="5" cy="40" r="1.5" fill="var(--primary, #EF5B78)" opacity="0.5"/>
+                                        <circle cx="10" cy="42" r="2.5" fill="var(--primary, #EF5B78)"/>
+                                        <circle cx="6" cy="46" r="1" fill="var(--primary, #EF5B78)" opacity="0.3"/>
+
+                                        <!-- Direct laser beam entering -->
+                                        <line x1="10" y1="42" x2="27" y2="35" stroke="var(--primary, #EF5B78)" stroke-width="2" stroke-dasharray="1 2"/>
+
+                                        <!-- Refracted Alpha ray bursting out to the right (representing Alpha breakout) -->
+                                        <path d="M35 28C40 38 48 46 54 44C58 42 61 36 65 30C69 24 74 22 78 21" stroke="var(--primary, #EF5B78)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+                                        <!-- A glowing peak particle at the end of the alpha trend -->
+                                        <circle cx="78" cy="21" r="3.5" fill="var(--primary, #EF5B78)"/>
+                                    </g>
+
+                                    <!-- Text Part -->
+                                    <g transform="translate(100, 23)">
+                                        <text x="0" y="30" fill="var(--text, #1E1E2E)" font-family="'Noto Sans SC'" font-weight="900" font-size="28" letter-spacing="3">见微Alpha</text>
+                                        <text x="2" y="48" fill="var(--primary, #EF5B78)" font-family="'Montserrat'" font-weight="700" font-size="11" letter-spacing="5">J I A N W E I  A L P H A</text>
+                                    </g>
+                                </g>
+                            </svg>

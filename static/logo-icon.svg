@@ -1,0 +1,11 @@
+<svg width="84" height="50" viewBox="0 4 82 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <!-- 见微Alpha 图标版（棱镜+Alpha射线），用作 favicon / 侧边栏图标 -->
+    <polygon points="35,10 15,50 55,50" stroke="#6366F1" stroke-width="3.5" fill="none" stroke-linejoin="round"/>
+    <polygon points="35,14 18,48 52,48" stroke="#6366F1" stroke-width="1" fill="none" opacity="0.3"/>
+    <circle cx="5" cy="40" r="1.5" fill="#EF5B78" opacity="0.5"/>
+    <circle cx="10" cy="42" r="2.5" fill="#EF5B78"/>
+    <circle cx="6" cy="46" r="1" fill="#EF5B78" opacity="0.3"/>
+    <line x1="10" y1="42" x2="27" y2="35" stroke="#EF5B78" stroke-width="2" stroke-dasharray="1 2"/>
+    <path d="M35 28C40 38 48 46 54 44C58 42 61 36 65 30C69 24 74 22 78 21" stroke="#EF5B78" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="78" cy="21" r="3.5" fill="#EF5B78"/>
+</svg>

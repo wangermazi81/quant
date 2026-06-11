@@ -130,14 +130,29 @@ YOUZAI_TAGS: dict[str, str] = {
 }
 
 
+_COMPANY_NOISE_RE = re.compile(
+    r"股份有限公司|有限责任公司|有限公司|证券营业部|营业部|证券交易|分公司|分支机构")
+
+
+def _norm_branch(branch: str) -> str:
+    """营业部全称 → 归一化短名。
+
+    东财返回全称如"国泰海通证券股份有限公司武汉紫阳东路证券营业部"，
+    去掉公司后缀噪声词后变成"国泰海通证券武汉紫阳东路"，才能跟标签库短键匹配。
+    """
+    return _COMPANY_NOISE_RE.sub("", branch or "").strip()
+
+
 def _tag_branch(branch: str) -> str:
-    """营业部名称 → 游资标签（精确匹配 → 包含匹配）。"""
+    """营业部名称 → 游资标签（精确匹配 → 归一化包含匹配）。"""
     if not branch:
         return ""
     if branch in YOUZAI_TAGS:
         return YOUZAI_TAGS[branch]
+    nb = _norm_branch(branch)
     for k, v in YOUZAI_TAGS.items():
-        if len(k) >= 6 and (k in branch or branch in k):
+        nk = _norm_branch(k)
+        if len(nk) >= 6 and (nk in nb or nb in nk):
             return v
     return ""
 
@@ -248,7 +263,8 @@ def _fetch_lhb_stocks(yyyymmdd: str) -> list:
 def _fetch_seat_detail(code: str, date_str: str) -> list:
     """东财席位明细 API：一只股票当日所有营业部买卖数据。
 
-    尝试顺序：datacenter-web v1 → 老版 getLHBDetail → akshare 备源。
+    主源：datacenter-web RPT_BILLBOARD_DAILYDETAILSBUY/SELL（买卖榜分开拉再合并）
+    备源：akshare stock_lhb_stock_detail_em(flag=买入/卖出)
     """
     import requests
     hdrs = {
@@ -257,71 +273,69 @@ def _fetch_seat_detail(code: str, date_str: str) -> list:
         "Accept": "application/json",
     }
 
-    # ── 方法1: 新版 datacenter-web API ───────────────────────
-    for report_name in ("RPT_BILLBOARD_YJLHB_DETAIL", "RPT_LHB_DETAIL",
-                        "RPT_LHB_STOCK_SEAT", "RPT_BILLBOARD_LHBINFO"):
+    # ── 方法1: datacenter-web 买/卖榜明细（实测有效的报表名）──────
+    seats: dict = {}   # name -> {name,buy,sell,net,dir}
+    for report_name, side in (("RPT_BILLBOARD_DAILYDETAILSBUY",  "B"),
+                              ("RPT_BILLBOARD_DAILYDETAILSSELL", "S")):
         try:
             r = requests.get(
                 "https://datacenter-web.eastmoney.com/api/data/v1/get",
                 params={
                     "reportName": report_name,
-                    "columns": "OPERATEDEPT_NAME,BILLBOARD_NET_AMT,BILLBOARD_BUY_AMT,"
-                               "BILLBOARD_SELL_AMT,BILLBOARD_DIRECTION",
-                    "filter":  f"(SECURITY_CODE='{code}')(TRADE_DATE='{date_str}')",
-                    "pageNumber": 1, "pageSize": 20,
-                    "sortTypes": -1, "sortColumns": "BILLBOARD_NET_AMT",
+                    "columns": "ALL",
+                    "filter":  f'(SECURITY_CODE="{code}")(TRADE_DATE=\'{date_str}\')',
+                    "pageNumber": 1, "pageSize": 50,
+                    "sortTypes": -1,
+                    "sortColumns": "BUY" if side == "B" else "SELL",
                     "source": "WEB", "client": "WEB",
                 },
                 headers=hdrs, timeout=8,
             )
             data = ((r.json() or {}).get("result") or {}).get("data") or []
-            if data:
-                return [{"name": _clean_text(d.get("OPERATEDEPT_NAME", "")),
-                         "buy":  (_num(d.get("BILLBOARD_BUY_AMT"))  or 0) / 10000,
-                         "sell": (_num(d.get("BILLBOARD_SELL_AMT")) or 0) / 10000,
-                         "net":  (_num(d.get("BILLBOARD_NET_AMT"))  or 0) / 10000,
-                         "dir":  str(d.get("BILLBOARD_DIRECTION", ""))} for d in data]
+            for d in data:
+                nm = _clean_text(d.get("OPERATEDEPT_NAME", ""))
+                if not nm:
+                    continue
+                buy  = (_num(d.get("BUY"))  or 0) / 10000
+                sell = (_num(d.get("SELL")) or 0) / 10000
+                ent = seats.setdefault(nm, {"name": nm, "buy": 0.0, "sell": 0.0,
+                                            "net": 0.0, "dir": side})
+                # 同一营业部可能同时在买/卖榜出现，字段值相同，取最大即可
+                ent["buy"]  = max(ent["buy"], buy)
+                ent["sell"] = max(ent["sell"], sell)
+                ent["net"]  = ent["buy"] - ent["sell"]
+                ent["dir"]  = "B" if ent["buy"] >= ent["sell"] else "S"
         except Exception:
             pass
+    if seats:
+        return sorted(seats.values(), key=lambda x: x["net"], reverse=True)
 
-    # ── 方法2: 老版 getLHBDetail ──────────────────────────────
-    try:
-        r = requests.get(
-            "https://data.eastmoney.com/DataCenter_V3/stock2016/getLHBDetail.ashx",
-            params={"security_code": code, "trade_date": date_str, "type": "0"},
-            headers=hdrs, timeout=8,
-        )
-        seats = (r.json() or {}).get("data") or []
-        if seats:
-            out = []
-            for s in seats:
-                nm   = _clean_text(s.get("OPERATEDEPT_NAME") or s.get("yyb_name") or "")
-                buy  = (_num(s.get("BILLBOARD_BUY_AMT")  or s.get("buy_amt"))  or 0) / 10000
-                sell = (_num(s.get("BILLBOARD_SELL_AMT") or s.get("sell_amt")) or 0) / 10000
-                out.append({"name": nm, "buy": buy, "sell": sell, "net": buy - sell,
-                            "dir": "B" if buy >= sell else "S"})
-            return out
-    except Exception:
-        pass
-
-    # ── 方法3: akshare stock_lhb_stock_statistic_em ──────────
+    # ── 方法2: akshare 个股席位明细（买入榜+卖出榜）──────────────
     try:
         with no_proxy():
             import akshare as ak
-            df = ak.stock_lhb_stock_statistic_em(
-                symbol=code, start_date=date_str.replace("-", ""),
-                end_date=date_str.replace("-", ""))
-        if df is not None and not df.empty:
-            out = []
-            for _, r in df.iterrows():
-                # 列名因版本而异，尽力提取
-                nm = _clean_text(r.get("营业部名称", r.get("席位名称", "")))
-                b  = (_num(r.get("买入额", 0)) or 0) / 10000
-                s  = (_num(r.get("卖出额", 0)) or 0) / 10000
-                if nm:
-                    out.append({"name": nm, "buy": b, "sell": s,
-                                "net": b - s, "dir": "B" if b >= s else "S"})
-            return out
+            ymd = date_str.replace("-", "")
+            for flag in ("买入", "卖出"):
+                try:
+                    df = ak.stock_lhb_stock_detail_em(symbol=code, date=ymd, flag=flag)
+                except Exception:
+                    continue
+                if df is None or df.empty:
+                    continue
+                for _, r in df.iterrows():
+                    nm = _clean_text(r.get("交易营业部名称", r.get("营业部名称", "")))
+                    if not nm:
+                        continue
+                    b = (_num(r.get("买入金额", 0)) or 0) / 10000
+                    s = (_num(r.get("卖出金额", 0)) or 0) / 10000
+                    ent = seats.setdefault(nm, {"name": nm, "buy": 0.0, "sell": 0.0,
+                                                "net": 0.0, "dir": "B"})
+                    ent["buy"]  = max(ent["buy"], b)
+                    ent["sell"] = max(ent["sell"], s)
+                    ent["net"]  = ent["buy"] - ent["sell"]
+                    ent["dir"]  = "B" if ent["buy"] >= ent["sell"] else "S"
+        if seats:
+            return sorted(seats.values(), key=lambda x: x["net"], reverse=True)
     except Exception:
         pass
 
