@@ -253,6 +253,23 @@ def _fetch_lhb_stocks(yyyymmdd: str) -> list:
                 "youzai":  [],
                 "branches":[]
             })
+        # 同一股票可能因多个"上榜原因"被东财列成多行（如"连续三日偏离"+"日涨幅偏离7%"）
+        # → 按代码去重：保留净额绝对值最大的主榜行，把其余原因合并进来，
+        #   避免榜单重复显示同一股、图谱出现重复节点和重复连线。
+        merged: dict = {}
+        for it in out:
+            code = it["code"]
+            cur = merged.get(code)
+            if cur is None:
+                merged[code] = it
+                continue
+            main, extra = ((cur, it) if abs(cur.get("net_amt") or 0) >= abs(it.get("net_amt") or 0)
+                           else (it, cur))
+            rs, er = main.get("reason", ""), extra.get("reason", "")
+            if er and er not in rs:
+                main["reason"] = (rs + " / " + er)[:60] if rs else er
+            merged[code] = main
+        out = list(merged.values())
         out.sort(key=lambda x: x.get("net_amt") or -9e9, reverse=True)
         return out
     except Exception as e:
