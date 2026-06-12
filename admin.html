@@ -1856,11 +1856,29 @@ const ANN_TYPE_LABELS = {
   warning:'⚠️ 注意事项', danger:'🚨 紧急公告'
 };
 
-async function _annFetch(method, path, body){
+async function _annFetch(method, path, body, timeoutMs){
+  // 永不抛异常：HTTP错误/非JSON响应/超时都返回 {ok:false,error:...}，
+  // 调用方不会因未捕获异常卡在"加载中"状态
   const opts = {method, credentials:'include', headers:{'Content-Type':'application/json'}};
   if(body) opts.body = JSON.stringify(body);
-  const r = await fetch(`${API}${path}`, opts);
-  return r.json();
+  const ctl = new AbortController();
+  const tid = setTimeout(()=>ctl.abort(), timeoutMs || 60000);
+  opts.signal = ctl.signal;
+  try{
+    const r = await fetch(`${API}${path}`, opts);
+    clearTimeout(tid);
+    let j;
+    try{ j = await r.json() }
+    catch(_){
+      if(r.status === 401) return {ok:false, error:'登录已失效（后台重启过），请刷新页面重新登录'};
+      return {ok:false, error:`HTTP ${r.status}：接口返回了非JSON内容${r.status===404?'（后端版本过旧，请重启平台）':''}`};
+    }
+    if(r.status === 401 && j && !j.ok && !j.error) j.error = '登录已失效，请刷新页面重新登录';
+    return j;
+  }catch(e){
+    clearTimeout(tid);
+    return {ok:false, error: e.name==='AbortError' ? '请求超时（后端无响应）' : ('网络错误：'+(e.message||e))};
+  }
 }
 
 // ================================================================
@@ -1910,15 +1928,7 @@ async function aicDetect(){
   const body = { base_url: document.getElementById('aic-base').value.trim() };
   const key = document.getElementById('aic-key').value.trim();
   if(key) body.api_key = key;
-  let r;
-  try{
-    r = await _annFetch('POST', '/ai/detect_models', body);
-  }catch(e){
-    // 404=后端进程还在跑旧代码（路由不存在），返回HTML导致json()抛异常
-    msg.style.color = 'var(--red)';
-    msg.textContent = '❌ 检测接口不可用——后端尚未重启，请以管理员身份重启平台后再试';
-    return;
-  }
+  const r = await _annFetch('POST', '/ai/detect_models', body, 30000);
   if(r && r.ok){
     // 自动回填：识别出的服务商 + 官方 Base URL（仅当对应输入框为空/可覆盖时）
     if(r.base_url && !document.getElementById('aic-base').value.trim())

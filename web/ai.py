@@ -331,7 +331,9 @@ def ai_detect_models():
                             "error": "无法从 Key 前缀识别服务商（中转站 Key 多为通用 sk- 前缀），"
                                      "请填写中转站的 Base URL（如 https://xxx.com/v1）再检测"})
 
-    r = ai.detect_models(base_url, api_key)
+    # timeout=10：本机开代理时 urllib 可能先走代理路径，卡满超时才降级直连；
+    # 10 秒让"代理失败→直连成功"的总耗时控制在前端 30 秒超时之内
+    r = ai.detect_models(base_url, api_key, timeout=10)
     if not r.get("ok"):
         return jsonify({"ok": False, "error": r.get("error", "探测失败"),
                         "base_url": base_url, "provider_guess": provider_guess})
