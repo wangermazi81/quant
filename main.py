@@ -406,10 +406,12 @@ def _daban_ride_decision(code: str, cost: float, cur: float, last_close: float,
 
 
 def _check_live_daban_ride(uid: int):
-    """实盘打板 Ride 自动卖出：对 live_positions 里 da_ban 买入的持仓套 Ride 规则，
-    触发则生成 SELL 信号（桥接器在 xiadan 执行）。这是真钱账户打板买卖闭环的卖出端。
+    """实盘自动卖出（覆盖台账全部持仓，不再只管 da_ban）：
+      - strategy=da_ban 的持仓 → 打板 Ride 卖法（吃连板+紧止损+回落卖）；
+      - 其他持仓（含无策略标签的历史买入）→ 账户默认止损/止盈/超期。
+        旧版只过滤 da_ban，无标签持仓从来不会被自动卖出（-17%还躺着就是这个原因）。
 
-    仅实盘模式 + 交易时段调用。遵守 T+1（buy_date=今天则跳过）。已发卖出信号但未成交的
+    触发则生成 SELL 信号（桥接器在 xiadan 执行）。遵守 T+1。已发卖出信号未成交的
     持仓不重复发（_LIVE_SELL_PENDING 去重，卖出成交/失败时在 report 处清除）。
     """
     try:
@@ -417,9 +419,17 @@ def _check_live_daban_ride(uid: int):
     except Exception as e:
         logger.warning(f"[实盘Ride uid={uid}] 读台账失败: {e}")
         return
-    positions = [p for p in positions if (p.get("strategy") or "") == "da_ban"]
     if not positions:
         return
+    # 账户默认风控参数（非打板持仓用；与模拟盘 check_risk_rules 同一套设置）
+    try:
+        _bcfg = (um.get_user_broker_config(uid) or {}).get("config") or {}
+    except Exception:
+        _bcfg = {}
+    _acct_stop = float(_bcfg.get("stop_loss") or -0.05)
+    _acct_take = float(_bcfg.get("take_profit") or 0.10)
+    _acct_hold = int(_bcfg.get("max_hold_days") or 10)
+
     codes = [p["code"] for p in positions]
     qmap = {}
     try:
@@ -444,6 +454,8 @@ def _check_live_daban_ride(uid: int):
         cur = float(q.get("price") or 0)
         last_close = float(q.get("last_close") or 0)
         cost = float(p.get("buy_price", 0) or 0)
+        if cur <= 0 or cost <= 0:
+            continue
         try:
             bd = _dt.datetime.strptime(str(p.get("buy_date"))[:10], "%Y-%m-%d").date()
             hold = (today - bd).days
@@ -451,25 +463,39 @@ def _check_live_daban_ride(uid: int):
             hold = 1
         if hold < 1:                                  # T+1：当天买入不卖
             continue
-        sell, reason, new_peak = _daban_ride_decision(
-            code, cost, cur, last_close, hold, float(p.get("peak") or cost))
-        if new_peak > float(p.get("peak") or 0):
-            try:
-                um.update_live_peak(uid, code, new_peak)
-            except Exception:
-                pass
+
+        is_daban = (p.get("strategy") or "") == "da_ban"
+        if is_daban:
+            sell, reason, new_peak = _daban_ride_decision(
+                code, cost, cur, last_close, hold, float(p.get("peak") or cost))
+            if new_peak > float(p.get("peak") or 0):
+                try:
+                    um.update_live_peak(uid, code, new_peak)
+                except Exception:
+                    pass
+        else:
+            # 账户默认止损/止盈/超期（用户设置的买卖规则，旧版实盘从不执行）
+            pnl = (cur - cost) / cost
+            sell, reason = False, None
+            if pnl <= _acct_stop:
+                sell, reason = True, f"止损({pnl*100:.1f}%≤{_acct_stop*100:.0f}%)"
+            elif pnl >= _acct_take:
+                sell, reason = True, f"止盈({pnl*100:.1f}%≥{_acct_take*100:.0f}%)"
+            elif hold >= _acct_hold:
+                sell, reason = True, f"超期({hold}天≥{_acct_hold}天)"
         if not sell:
             continue
         shares = int(p.get("shares", 0) or 0)
         if shares <= 0:
             continue
         try:
+            tag = "实盘Ride" if is_daban else "实盘风控"
             sid = um.add_trade_signal(uid, code, p.get("name", ""), "SELL", cur, shares)
             _LIVE_SELL_PENDING.add((uid, code))
-            _add_log(uid, f"📤 [实盘Ride] {code} {p.get('name','')} {reason} → 生成卖出信号"
+            _add_log(uid, f"📤 [{tag}] {code} {p.get('name','')} {reason} → 生成卖出信号"
                           f"(#{sid}, {shares}股 @{cur:.2f})，等桥接器执行", "info")
         except Exception as e:
-            logger.warning(f"[实盘Ride uid={uid}] 生成卖出信号失败 {code}: {e}")
+            logger.warning(f"[实盘风控 uid={uid}] 生成卖出信号失败 {code}: {e}")
 
 
 def _check_daban_ride(uid: int, broker, positions: list, qmap: dict):
@@ -656,16 +682,16 @@ def do_scan(uid: int):
     else:
         _base_cash = s["capital"]
 
-    # ★ 资金检查：扣掉未完成买单占用的资金，避免重复下单超出可用额度
-    # （此处尚未遍历候选股，price 不可用——曾因引用未定义的 price 导致每轮扫描
-    #   NameError 崩溃、自动买入完全失效。改用固定最小建仓金额判断。）
+    # ★ 资金检查：可用资金只做"够不够下这一单"的闸门，不再作为仓位比例基数。
+    # 旧逻辑 _base_cash = 可用资金 → 每仓 = 可用×比例，越买后面的仓越小
+    # （实测5仓变成 45k/45k/10k/10k/9k，完全不是"平均仓位"）。
+    # 现在：每仓 = 全仓总资金 × 比例，所有仓位等大；可用不足该仓金额时停止开仓。
     _pending_buy_total = um.get_pending_buy_total(uid)
     _available_cash = _base_cash - _pending_buy_total
     if _available_cash < 1000:  # 最小一手金额估算（不足则本轮不开新仓）
         _add_log(uid, f"⏭ 资金不足：总额¥{_base_cash:,.0f} - 待成交¥{_pending_buy_total:,.0f} = 可用¥{_available_cash:,.0f}，本轮跳过", "info")
         s["scan_progress"] = {"running": False, "stage": "资金不足", "current": 0, "total": 0}
         return
-    _base_cash = _available_cash  # 用实际可用资金计算仓位
 
     # ── 仓位规则：策略 META 优先，账户面板设置兜底 ─────────────────────
     # 策略声明了 position 字段（如打板=每日5个平均仓）时以策略为准；
@@ -704,6 +730,7 @@ def do_scan(uid: int):
                 f"🛡 单笔护栏：仓位比 {s['position_ratio']*100:.0f}% 超过单笔上限 "
                 f"{_SP_RATIO*100:.0f}%，本轮按 {_eff_ratio*100:.0f}% 建仓", "info")
     _guard_full_logged = False
+    _avail_left = _available_cash    # 剩余可用资金（含扣除在途买单），逐仓递减
 
     for r in buy_candidates:
         code  = r["code"]
@@ -730,8 +757,15 @@ def do_scan(uid: int):
                 _use_ratio = _eff_ratio       # 策略 META 规定的平均仓位，不再被护栏二次夹
             else:
                 _use_ratio = min(_eff_ratio, _SP_RATIO)
-            budget = _base_cash * _use_ratio
+            budget = _base_cash * _use_ratio    # 基数=全仓总资金，各仓等大
             shares = max(int(budget / price / 100) * 100, 100)
+            # 可用资金闸门：剩余可用不够本仓金额 → 停止开新仓（不缩仓，保持等大）
+            if price * shares > _avail_left:
+                if not _guard_full_logged:
+                    _add_log(uid, f"⏭ 可用资金不足：剩余¥{_avail_left:,.0f} < 本仓¥{price*shares:,.0f}，"
+                                  f"本轮不再开新仓", "info")
+                    _guard_full_logged = True
+                continue
             # ★ 实盘模式：提前检查是否超 MAX_ORDER_AMOUNT 护栏，避免桥接器层无谓拒单 ★
             _est = price * shares
             if _broker_type == "live":
@@ -761,6 +795,7 @@ def do_scan(uid: int):
             }
             s["queue"].append(item)
             _occupied.add(code)   # 占用一个名额，后续信号据此判断是否已满
+            _avail_left -= price * shares   # 扣减剩余可用，防止本轮超买
             _add_log(uid,
                 f"📌 {code} {r['name']} 进入队列 | 计划买入{shares}股 预算¥{budget:,.0f} "
                 f"| 名额 {len(_occupied)}/{_MAX_POS}", "buy")

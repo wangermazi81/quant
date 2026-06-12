@@ -30,19 +30,43 @@
     '<path d="M 50 63 Q 50 67, 47 68 M 50 63 Q 50 67, 53 68" fill="none" stroke="#4A3525" stroke-width="1.8" stroke-linecap="round"/>'+
     '<path d="M 22 74 C 22 74, 50 86, 78 74 C 82 68, 78 66, 78 66 C 78 66, 50 76, 22 66 C 22 66, 18 68, 22 74 Z" fill="#4A7C59" stroke="#4A3525" stroke-width="2"/>'+
     '<path d="M 64 73 C 64 85, 72 92, 72 92 L 79 88 C 79 88, 73 80, 73 72" fill="#385F43" stroke="#4A3525" stroke-width="2" stroke-linejoin="round"/></svg>';
+  /* 5 档行情状态 × 多条台词轮换：强度分驱动，行情好转/恶化时牛熊和台词都跟着换 */
   var ST={
-    bull:{svg:BULL,tag:'🚀 牛市突围 · 情绪拉满',cls:'mas-bull',msg:'多头气势如虹！牛牛已启动 L2 高频扫单与超额获利模式，盯紧封板强度别恋战~ 🐂'},
-    neutral:{svg:BULL,tag:'🌤️ 震荡分歧 · 谨慎观望',cls:'mas-neutral',msg:'行情分歧、量能未定。牛牛建议轻仓试错、等待方向选择，别在中枢里追高杀跌。'},
-    bear:{svg:BEAR,tag:'🛡️ 熊市避险 · 防御模式',cls:'mas-bear',msg:'熊熊观测到行情承压，防御因子全面亮起。缩减波动暴露、守护好钱袋子 🧣'}
+    bull:{svg:BULL,tag:'🚀 牛市突围 · 情绪拉满',cls:'mas-bull',msgs:[
+      '多头气势如虹！牛牛已启动高频扫单与超额获利模式，盯紧封板强度别恋战~ 🐂',
+      '趋势全面走多、量价齐升！牛牛建议聚焦主线龙头，强者恒强但记得带好止盈 🎯',
+      '情绪高潮期，连板梯队完整。牛牛提醒：鱼吃身段，最后一段留给别人 🐟']},
+    bull2:{svg:BULL,tag:'🌞 震荡偏多 · 顺势而为',cls:'mas-bull',msgs:[
+      '行情回暖，赚钱效应扩散中。牛牛建议顺势低吸强势股，不追高、不重仓单票 🌱',
+      '多头略占上风，板块轮动加快。牛牛提示跟紧热点主线，弱势股反弹坚决换仓 🔄',
+      '反弹窗口开启！牛牛把仓位系数上调一档：先锋打首板、稳健等回踩 📈']},
+    neutral:{svg:BULL,tag:'🌤️ 震荡分歧 · 谨慎观望',cls:'mas-neutral',msgs:[
+      '行情分歧、量能未定。牛牛建议轻仓试错、等待方向选择，别在中枢里追高杀跌',
+      '多空拉锯，指数上下两难。牛牛提醒控制频率：少动多看，留够子弹等机会 🧊',
+      '结构性行情，赚指数不赚钱。牛牛建议只做最强主线，杂毛票一律不碰 🎯']},
+    bear2:{svg:BEAR,tag:'⛅ 震荡偏弱 · 控制仓位',cls:'mas-bear',msgs:[
+      '行情承压但未失控，熊熊建议降低仓位、只留底仓观察，反弹是减仓的机会 ⚖️',
+      '空头略占上风，亏钱效应蔓延。熊熊提醒：现金也是仓位，活下来才有下一波 💰',
+      '弱势震荡别抄底摸顶，熊熊已收紧风控阈值：破位票坚决止损不犹豫 ✂️']},
+    bear:{svg:BEAR,tag:'🛡️ 熊市避险 · 防御模式',cls:'mas-bear',msgs:[
+      '熊熊观测到行情承压，防御因子全面亮起。缩减波动暴露、守护好钱袋子 🧣',
+      '空头主导，普跌格局。熊熊建议空仓观望，等右侧信号确认再进场，别接飞刀 🔪',
+      '至暗时刻更要守纪律：熊熊已锁紧开仓闸门。留得现金在，不怕没行情 🔒']}
   };
   function pick(){
+    // 数值强度分5档优先（后端已含当日实时行情修正）
+    var s=parseInt((document.getElementById('mktStrengthNumMon')||{}).textContent,10);
+    if(!isNaN(s)){
+      if(s>=70)return'bull';
+      if(s>=55)return'bull2';
+      if(s>=45)return'neutral';
+      if(s>=30)return'bear2';
+      return'bear';
+    }
     var t=document.getElementById('mktTrendMon'),c=t?t.className:'';
     if(c.indexOf('mkt-bull')>=0)return'bull';
     if(c.indexOf('mkt-bear')>=0)return'bear';
-    if(c.indexOf('mkt-neutral')>=0)return'neutral';
-    var s=parseInt((document.getElementById('mktStrengthNumMon')||{}).textContent,10);
-    if(!isNaN(s))return s>=70?'bull':s>=45?'neutral':'bear';
-    return'bull';
+    return'neutral';
   }
   function build(){
     var page=document.getElementById('page-monitor');
@@ -64,12 +88,15 @@
     var k=pick(),st=ST[k];
     var s=(document.getElementById('mktStrengthNumMon')||{}).textContent||'—';
     var a=(document.getElementById('mktAdviceMon')||{}).textContent||'';
-    var sig=k+'|'+s+'|'+a;if(sig===last)return;last=sig;
+    // 台词轮换：同一状态每 5 分钟换一条，状态切换立即换
+    var idx=Math.floor(Date.now()/300000)%st.msgs.length;
+    var msg=st.msgs[idx];
+    var sig=k+'|'+s+'|'+a+'|'+idx;if(sig===last)return;last=sig;
     b.className='mas-banner '+st.cls;
     document.getElementById('masAvatar').innerHTML=st.svg;
     document.getElementById('masPill').textContent=st.tag;
     document.getElementById('masStrength').textContent=s;
-    document.getElementById('masMsg').textContent=a?(st.msg+'　｜　'+a):st.msg;
+    document.getElementById('masMsg').textContent=a?(msg+'　｜　'+a):msg;
   }
   function init(){
     if(!build()){var n=0,t=setInterval(function(){if(build()||++n>20){clearInterval(t);update();}},300);}

@@ -158,11 +158,24 @@ def get_market_regime(force_refresh: bool = False) -> dict:
                              / float(close.iloc[-21]) * 100, 2)
         result["sh_ret20"] = sh_ret20
 
-        # 实时涨跌加权修正
+        # 当日实时行情强修正：趋势分只看历史K线（20日下跌后即使当天大涨1.5%
+        # 也只+5分，吉祥物永远是熊）。盘中涨跌按 ±8分/% 计入（封顶±18），
+        # 让牛熊状态跟着当天行情切换。
         changes = [v.get("change", 0) for v in indices.values()]
         avg_chg = sum(changes) / len(changes) if changes else 0
-        if   avg_chg > 1:  strength = min(100, strength + 5)
-        elif avg_chg < -1: strength = max(0,   strength - 5)
+        strength = int(strength + max(-18.0, min(18.0, avg_chg * 8)))
+
+        # 市场宽度修正（涨跌家数比，±8分）：普涨日加分、普跌日减分
+        try:
+            import strategy_manager as _sm
+            _qs = _sm._get_market_quotes_cached()
+            if _qs:
+                _ups = sum(1 for q in _qs if float(q.get("change_pct") or 0) > 0)
+                _ratio = _ups / max(len(_qs), 1)
+                strength = int(strength + max(-8.0, min(8.0, (_ratio - 0.5) * 32)))
+        except Exception:
+            pass
+        strength = max(0, min(100, strength))
 
         # ── 市场判断 ────────────────────────────────
         if strength >= 70:

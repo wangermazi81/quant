@@ -6141,7 +6141,7 @@ function _renderStockDetail(r){
   const q = r.quote||{}
   if(q.price){
     quoteEl.style.display=''
-    const chgColor = (q.change_pct||0)>=0?'var(--gl)':'var(--rl)'
+    const chgColor = (q.change_pct||0)>=0?'var(--rl)':'var(--gl)'   // A股红涨绿跌
     quoteCt.innerHTML = `
       <div style="display:flex;gap:20px;flex-wrap:wrap">
         <div><div style="font-size:24px;font-weight:700;color:var(--t1)">${q.price?.toFixed(2)||'—'}</div>
@@ -6292,7 +6292,7 @@ async function chainSearch(q){
       <div class="srch-result-item" onclick="openConcept('${_rvEsc(c.name)}',this)">
         <div style="display:flex;align-items:center;gap:8px">
           <b style="font-size:13px">${_rvEsc(c.name)}</b>
-          ${c.chg!=null ? `<span style="margin-left:auto;font-weight:700;font-size:12px;color:${(c.chg||0)>=0?'#3fb950':'#f85149'}">${(c.chg||0)>=0?'+':''}${c.chg}%</span>` : ''}
+          ${c.chg!=null ? `<span style="margin-left:auto;font-weight:700;font-size:12px;color:${(c.chg||0)>=0?'#f85149':'#3fb950'}">${(c.chg||0)>=0?'+':''}${c.chg}%</span>` : ''}
         </div>
         ${c.up!=null ? `<div style="font-size:11px;color:var(--t3);margin-top:2px">上涨 ${c.up} · 下跌 ${c.down}</div>` : ''}
       </div>`).join('') || '<div style="padding:24px;text-align:center;color:var(--t4)">无结果</div>'
@@ -6354,7 +6354,7 @@ async function openConcept(name, el){
         <td><b>${_rvEsc(s.name)}</b></td>
         <td>${rel}</td>
         <td style="text-align:right">${s.price ?? '—'}</td>
-        <td style="text-align:right;color:${up?'#3fb950':'#f85149'};font-weight:600">${up?'+':''}${s.chg}%</td>
+        <td style="text-align:right;color:${up?'#f85149':'#3fb950'};font-weight:600">${up?'+':''}${s.chg}%</td>
         <td style="text-align:right">${s.turnover ?? '—'}</td>
         <td style="text-align:right">${s.mcap ?? '—'}</td>
         <td style="text-align:right"><button class="btn btn-gray btn-xs" onclick="showKLine('${s.code}','${_rvEsc(s.name)}')">K线</button></td></tr>`
@@ -6832,7 +6832,7 @@ async function generateReview(){
 function _rvEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
 function _rvChg(v){
   const up = (v||0) >= 0
-  return `<b style="color:${up?'#3fb950':'#f85149'}">${up?'+':''}${v}%</b>`
+  return `<b style="color:${up?'#f85149':'#3fb950'}">${up?'+':''}${v}%</b>`   // A股红涨绿跌
 }
 
 // 涨跌结构卡片内的领涨/领跌板块行（板块接口拉不到时降级：从涨停天梯统计涨停集中行业）
