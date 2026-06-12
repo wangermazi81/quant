@@ -713,6 +713,11 @@ def do_scan(uid: int):
             _occupied = {p["code"] for p in um.get_live_positions(uid)}
         except Exception:
             _occupied = set()
+        # OCR 实际持仓（查实盘账户时缓存，当日有效）：实际已买入的票绝不再次买入，
+        # 即使买入回传丢失/误报失败、台账里没有
+        _ocr = s.get("live_ocr_pos") or {}
+        if _ocr.get("date") == datetime.now().strftime("%Y-%m-%d"):
+            _occupied |= {c for c in (_ocr.get("codes") or []) if c}
     else:
         _occupied = set((s.get("positions") or {}).keys())
     # 仅计 pending（待执行）买单：done 的买单已落到持仓/台账，由上面持仓侧统计，
@@ -1017,6 +1022,17 @@ def bridge_today_orders():
                     nm = dm.get_stock_name(c)
                     if nm and nm != c:
                         it["name"] = nm
+        # ★ 缓存 OCR 实际持仓（当日有效）：自动扫描把这些票算"已持有"不再买入。
+        #   兜住"实际已买入但回传丢失/误报失败"的票——只要查过一次实盘账户就拦得住。
+        try:
+            if r.get("ok") and r.get("positions"):
+                _s = get_user_state(session["user_id"])
+                _s["live_ocr_pos"] = {
+                    "date":  datetime.now().strftime("%Y-%m-%d"),
+                    "codes": [p.get("code") for p in r["positions"] if p.get("code")],
+                }
+        except Exception:
+            pass
         return jsonify(r)
     except Exception as e:
         logger.exception(f"读当日委托失败: {e}")

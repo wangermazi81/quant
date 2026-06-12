@@ -1910,7 +1910,15 @@ async function aicDetect(){
   const body = { base_url: document.getElementById('aic-base').value.trim() };
   const key = document.getElementById('aic-key').value.trim();
   if(key) body.api_key = key;
-  const r = await _annFetch('POST', '/ai/detect_models', body);
+  let r;
+  try{
+    r = await _annFetch('POST', '/ai/detect_models', body);
+  }catch(e){
+    // 404=后端进程还在跑旧代码（路由不存在），返回HTML导致json()抛异常
+    msg.style.color = 'var(--red)';
+    msg.textContent = '❌ 检测接口不可用——后端尚未重启，请以管理员身份重启平台后再试';
+    return;
+  }
   if(r && r.ok){
     // 自动回填：识别出的服务商 + 官方 Base URL（仅当对应输入框为空/可覆盖时）
     if(r.base_url && !document.getElementById('aic-base').value.trim())

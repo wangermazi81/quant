@@ -1004,15 +1004,17 @@ def has_pending_signal(user_id: int, code: str, action: str) -> bool:
 
 
 def has_today_buy_signal(user_id: int, code: str) -> bool:
-    """该股今天是否发过买入信号——【不论状态】。
+    """该股今天是否有【活跃】买入信号：在途（pending/sent/submitted）或已成交（executed）。
 
-    实盘"当日一码一买"护栏：xiadan GUI 偶发把实际已挂到柜台的单误报 failed
-    （OCR 读到弹窗残留文本等），旧去重只看未完成状态 → failed 立即放行 →
-    下轮扫描对同一只票再次下单 → 已买的股票反复挂单重复买入。
-    当天给某只票发过任何买入信号后就不再自动重发（手动买入不受限）。"""
+    实盘自动扫描去重：
+      - 在途单：已报给柜台、还没结论 → 不能重发（重发=重复挂单）
+      - executed：今天已实际买入 → 不能再买
+      - failed/cancelled：确认失败/已撤 → 放行，符合策略条件可重新发单
+    已成交后续日的持仓由 live_positions 台账在 _occupied 里拦截。"""
     with _lock, _conn() as c:
         row = c.execute(
             "SELECT 1 FROM trade_signals WHERE user_id=? AND code=? AND action='BUY' "
+            "AND status IN ('pending','sent','submitted','executed') "
             "AND date(created_at) = date('now','localtime') LIMIT 1",
             (user_id, code),
         ).fetchone()
