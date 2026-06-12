@@ -1003,6 +1003,22 @@ def has_pending_signal(user_id: int, code: str, action: str) -> bool:
         return row is not None
 
 
+def has_today_buy_signal(user_id: int, code: str) -> bool:
+    """该股今天是否发过买入信号——【不论状态】。
+
+    实盘"当日一码一买"护栏：xiadan GUI 偶发把实际已挂到柜台的单误报 failed
+    （OCR 读到弹窗残留文本等），旧去重只看未完成状态 → failed 立即放行 →
+    下轮扫描对同一只票再次下单 → 已买的股票反复挂单重复买入。
+    当天给某只票发过任何买入信号后就不再自动重发（手动买入不受限）。"""
+    with _lock, _conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM trade_signals WHERE user_id=? AND code=? AND action='BUY' "
+            "AND date(created_at) = date('now','localtime') LIMIT 1",
+            (user_id, code),
+        ).fetchone()
+        return row is not None
+
+
 def get_trade_signal(signal_id: int) -> dict | None:
     """查询单条交易信号的当前状态（前端轮询用）"""
     with _conn() as c:

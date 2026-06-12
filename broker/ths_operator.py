@@ -2123,23 +2123,51 @@ class THSOperator:
         return True, hwnd, "ok"
 
     def _confirm_cancel_dialog(self, pyautogui) -> bool:
-        """撤单后若弹确认框（#32770，含 撤单/撤销/确认/是否）按 Y+Enter 确认。无框返回 False。
-        仅在检测到撤单相关确认框时才按键，避免无框时误按到别处。"""
+        """撤单后确认弹窗（#32770，"您确认要撤销这N笔委托吗? 是(&Y)/否(&N)"）。
+
+        修复：旧版盲按 y+Enter —— 弹窗未聚焦时按键落到别的窗口，撤单永远卡在
+        确认框上（日志里"您确认要撤销这(2)笔委托吗"原样回传就是这样来的）。
+        现在：①优先直接点弹窗里的「是/确定」按钮（BM_CLICK 消息，无需焦点）；
+              ②找不到按钮再 set_focus 后按 y+Enter 兜底；
+              ③弹窗可能慢出，轮询最多 4 次（约 2 秒）。"""
         try:
             from pywinauto import Desktop
-            dialogs = Desktop(backend="win32").windows(class_name="#32770", visible_only=True)
-            for d in dialogs:
-                try:
-                    t = d.window_text() or ""
-                    body = " ".join((c.window_text() or "") for c in d.descendants())
-                except Exception:
-                    continue
-                if any(k in (t + body) for k in ("撤单", "撤销", "撤回", "确认", "是否")):
-                    pyautogui.press("y")
-                    time.sleep(0.2)
-                    pyautogui.press("enter")
-                    logger.info(f"已确认撤单对话框: {t}")
+            for _try in range(4):
+                dialogs = Desktop(backend="win32").windows(class_name="#32770", visible_only=True)
+                for d in dialogs:
+                    try:
+                        t = d.window_text() or ""
+                        body = " ".join((c.window_text() or "") for c in d.descendants())
+                    except Exception:
+                        continue
+                    if not any(k in (t + body) for k in ("撤单", "撤销", "撤回", "确认", "是否")):
+                        continue
+                    clicked = False
+                    try:
+                        for c in d.descendants(class_name="Button"):
+                            bt = (c.window_text() or "").replace("&", "").strip()
+                            if bt in ("是", "是(Y)", "确定", "确认", "Yes", "OK") or bt.startswith("是"):
+                                try:
+                                    c.click()          # 发 BM_CLICK 消息，无需窗口聚焦
+                                except Exception:
+                                    c.click_input()    # 降级：真实鼠标点击
+                                clicked = True
+                                break
+                    except Exception:
+                        pass
+                    if not clicked:
+                        try:
+                            d.set_focus()
+                            time.sleep(0.15)
+                        except Exception:
+                            pass
+                        pyautogui.press("y")
+                        time.sleep(0.2)
+                        pyautogui.press("enter")
+                    logger.info(f"已确认撤单对话框: {t}（按钮点击={clicked}）")
+                    time.sleep(0.4)
                     return True
+                time.sleep(0.5)    # 弹窗未出现，等一会再查
         except Exception as e:
             logger.debug(f"撤单确认框处理异常: {e}")
         return False

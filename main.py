@@ -737,8 +737,14 @@ def do_scan(uid: int):
         price = r["price"] or 1
         if code in _occupied:
             continue   # 已持有 / 已在队列 → 不重复开仓
-        # ★ 数据库去重：如果该股已有未完成的买单信号，跳过
-        if um.has_pending_signal(uid, code, "BUY"):
+        # ★ 数据库去重：
+        #   实盘 = 当日一码一买（不论信号最终状态）。GUI 偶发把实际已挂单误报 failed，
+        #   只看未完成状态的旧去重会立即放行 → 已买的票反复挂单重复买入。
+        #   模拟 = 仍按未完成信号去重（模拟即时成交，持仓本身就能挡重复）。
+        if _broker_type == "live" and not DRY_RUN:
+            if um.has_today_buy_signal(uid, code):
+                continue
+        elif um.has_pending_signal(uid, code, "BUY"):
             continue
         # 护栏①：最多持仓数 —— 名额满则停止开新仓（含待成交队列）
         if len(_occupied) >= _MAX_POS:
