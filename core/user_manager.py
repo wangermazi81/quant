@@ -895,16 +895,39 @@ def list_all_announcements(page: int = 1, per_page: int = 100) -> list:
 
 # ── 实盘信号同步队列 ──────────────────────────────────────────────
 
+# ⚠️ 信号时效约定：交易信号只在生成当天有效。
+# 隔日未完成（pending/sent/submitted）的信号视为僵尸信号 —— 交易机已不会再执行，
+# 但旧版查询不带时间界限，导致：①资金检查把历史信号金额无限累加
+# （曾出现"已用仓位9848%"封死开仓）；②同名票永久去重屏蔽；③重连后按过期价格补单。
+# 因此：所有未完成态查询一律限定当天 + expire_stale_signals() 把隔日遗留批量置 expired。
+
+def expire_stale_signals(user_id: int = None) -> int:
+    """把今天以前仍处于 pending/sent/submitted 的僵尸信号批量置为 expired。
+    user_id=None 时清理全部用户。返回清理条数。"""
+    with _lock, _conn() as c:
+        sql = ("UPDATE trade_signals SET status='expired', "
+               "msg='隔日自动过期（未成交）', updated_at=datetime('now','localtime') "
+               "WHERE status IN ('pending','sent','submitted') "
+               "AND date(created_at) < date('now','localtime')")
+        if user_id is not None:
+            cur = c.execute(sql + " AND user_id=?", (user_id,))
+        else:
+            cur = c.execute(sql)
+        c.commit()
+        return cur.rowcount
+
+
 def add_trade_signal(user_id: int, code: str, name: str, action: str,
                      price: float, shares: int, status: str = "pending",
                      msg: str = "") -> int:
     """写入一条新的交易信号，返回其自增 ID。
-    去重：同一只股如果有 pending/sent/submitted 状态的同方向信号，跳过不重复写入。"""
+    去重：同一只股当天如有 pending/sent/submitted 状态的同方向信号，跳过不重复写入。"""
     with _lock, _conn() as c:
-        # 去重检查：同 code + 同 action + 未完成状态 → 跳过
+        # 去重检查：同 code + 同 action + 当天未完成状态 → 跳过（历史僵尸信号不参与去重）
         dup = c.execute(
             "SELECT id FROM trade_signals WHERE user_id=? AND code=? AND action=? "
-            "AND status IN ('pending','sent','submitted') LIMIT 1",
+            "AND status IN ('pending','sent','submitted') "
+            "AND date(created_at) = date('now','localtime') LIMIT 1",
             (user_id, code, action.upper()),
         ).fetchone()
         if dup:
@@ -919,10 +942,12 @@ def add_trade_signal(user_id: int, code: str, name: str, action: str,
 
 
 def get_pending_signals(user_id: int) -> list:
-    """拉取用户所有处于 pending 状态的实盘信号，并原子性地标记为 sent 防止重复拉取"""
+    """拉取用户当天处于 pending 状态的实盘信号，并原子性地标记为 sent 防止重复拉取。
+    只发当天的：隔日遗留信号价格已失效，绝不能补发给交易机执行。"""
     with _lock, _conn() as c:
         rows = c.execute(
-            "SELECT * FROM trade_signals WHERE user_id=? AND status='pending' ORDER BY id",
+            "SELECT * FROM trade_signals WHERE user_id=? AND status='pending' "
+            "AND date(created_at) = date('now','localtime') ORDER BY id",
             (user_id,),
         ).fetchall()
         res = [dict(r) for r in rows]
@@ -939,22 +964,25 @@ def get_pending_signals(user_id: int) -> list:
 
 
 def get_pending_buy_total(user_id: int) -> float:
-    """统计该用户所有未完成买单（pending/sent/submitted）的总金额，用于资金检查"""
+    """统计该用户当天未完成买单（pending/sent/submitted）的总金额，用于资金检查。
+    限定当天：历史僵尸信号曾把比率累加到9848%，把开新仓永久封死。"""
     with _lock, _conn() as c:
         row = c.execute(
             "SELECT COALESCE(SUM(price * shares), 0) FROM trade_signals "
-            "WHERE user_id=? AND action='BUY' AND status IN ('pending','sent','submitted')",
+            "WHERE user_id=? AND action='BUY' AND status IN ('pending','sent','submitted') "
+            "AND date(created_at) = date('now','localtime')",
             (user_id,),
         ).fetchone()
         return float(row[0]) if row else 0.0
 
 
 def has_pending_signal(user_id: int, code: str, action: str) -> bool:
-    """检查该股是否已有未完成的同方向信号（去重用）"""
+    """检查该股当天是否已有未完成的同方向信号（去重用）"""
     with _lock, _conn() as c:
         row = c.execute(
             "SELECT 1 FROM trade_signals WHERE user_id=? AND code=? AND action=? "
-            "AND status IN ('pending','sent','submitted') LIMIT 1",
+            "AND status IN ('pending','sent','submitted') "
+            "AND date(created_at) = date('now','localtime') LIMIT 1",
             (user_id, code, action.upper()),
         ).fetchone()
         return row is not None

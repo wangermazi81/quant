@@ -163,13 +163,21 @@ app.register_blueprint(_lhb_bp)
 # 核心交易逻辑（per-user）
 # ══════════════════════════════════════════════════════════════
 def _reset_daily_if_needed(uid: int):
-    """每个交易日开始时清零今日计数。"""
+    """每个交易日开始时清零今日计数 + 过期清理隔日遗留信号。"""
     today = datetime.now().strftime("%Y-%m-%d")
     s = get_user_state(uid)
     if s["today_date"] != today:
         s["today_date"]   = today
         s["today_trades"] = 0
         _add_log(uid, f"📅 新交易日 {today}，今日开仓次数已清零")
+        # 隔日未成交的 pending/sent/submitted 信号批量置 expired，
+        # 否则会累进资金检查（曾出现"已用仓位9848%"封死开仓）且永久阻塞同名票去重
+        try:
+            n = um.expire_stale_signals(uid)
+            if n:
+                _add_log(uid, f"🧹 清理隔日遗留信号 {n} 条（已置为过期）")
+        except Exception as _ee:
+            logger.warning(f"[uid={uid}] 清理隔日信号失败: {_ee}")
 
 
 def execute_buy(uid: int, code: str, name: str, price: float, shares: int,
@@ -2972,6 +2980,14 @@ def _start_background_services():
         research_center.run_concept_scheduler()
     except Exception as _rc:
         logger.warning(f"概念日更调度器启动失败: {_rc}")
+    # 启动时全量清理隔日遗留信号（兜底：内存态 today_date 初始化即今天时，
+    # _reset_daily_if_needed 不触发，僵尸信号会继续累进资金检查）
+    try:
+        _n_expired = um.expire_stale_signals()
+        if _n_expired:
+            logger.info(f"启动清理：{_n_expired} 条隔日遗留交易信号已置为过期")
+    except Exception as _ex:
+        logger.warning(f"启动清理隔日信号失败: {_ex}")
     logger.info(f"后台调度已启动 DRY_RUN={'开启' if DRY_RUN else '关闭'}")
 
 
