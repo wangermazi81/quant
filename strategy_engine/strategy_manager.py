@@ -119,6 +119,27 @@ def get_meta(filename: str) -> dict:
     return {"name": filename, "desc": "", "author": "用户", "builtin": False}
 
 
+# ── 策略仓位规则（仓位规定写在策略 META 的 "position" 字段，下单链路据此执行）──
+DEFAULT_POSITION_CONFIG = {
+    "max_daily": 0,     # 每日最多开仓数；0 = 不限（沿用账户面板设置）
+    "max_hold":  0,     # 最多同时持仓只数；0 = 沿用账户面板设置
+    "sizing":    "equal",  # equal = 平均仓位（每仓 = 可用资金 / max_daily）
+    "add_on":    False,    # 是否允许涨9%加仓追板；默认禁止（只有策略显式声明才开）
+}
+
+
+def get_position_config(filename: str) -> dict:
+    """读取策略的仓位规则。示例 META：
+    # META: {"name":"打板策略", ..., "position": {"max_daily":5,"max_hold":5,"sizing":"equal","add_on":false}}
+    未声明 position 的策略返回默认值（不限额、不加仓，沿用账户面板设置）。"""
+    cfg = dict(DEFAULT_POSITION_CONFIG)
+    if filename:
+        pc = get_meta(filename).get("position")
+        if isinstance(pc, dict):
+            cfg.update(pc)
+    return cfg
+
+
 _AST_BANNED_IMPORTS = {"os", "sys", "subprocess", "shutil", "socket", "requests",
                         "urllib", "http", "ftplib", "smtplib", "paramiko"}
 _AST_BANNED_CALLS   = {"eval", "exec", "open", "compile", "__import__",

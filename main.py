@@ -309,7 +309,13 @@ def _check_add_position(uid: int, s: dict, broker_type: str, base_cash: float):
 
 
 def _auto_buy(uid: int, item: dict):
-    """自动买入（信号触发后立即执行）。"""
+    """自动买入（信号触发后立即执行）。
+
+    队列状态必须反映真实情况：
+      模拟盘成交即 done（已买-模拟）；
+      实盘只是生成了信号 → submitted（已报实盘，等交易机回传），
+      成交确认后由 bridge_report 把队列项推进到 executed。
+    """
     code   = item["code"]
     name   = item.get("name", "")
     price  = item["price"]
@@ -317,9 +323,14 @@ def _auto_buy(uid: int, item: dict):
     try:
         _add_log(uid, f"🤖 自动买入触发: {code} {name} {shares}股 @{price}", "buy")
         res = execute_buy(uid, code, name, price, shares, reason="自动买入")
-        item["status"] = "done" if res.get("ok") else "error"
         if not res.get("ok"):
+            item["status"] = "error"
             item["error_msg"] = res.get("msg", "")
+        elif res.get("signal_id"):
+            item["status"] = "submitted"          # 实盘：已报，未确认成交
+            item["signal_id"] = res["signal_id"]
+        else:
+            item["status"] = "done"               # 模拟：即时成交
     except Exception as e:
         item["status"]    = "error"
         item["error_msg"] = str(e)
@@ -561,26 +572,38 @@ def do_scan(uid: int):
     _check_paper_risk(uid)        # 模拟盘持仓风控/Ride 自动卖出
     _check_live_daban_ride(uid)   # 实盘打板持仓 Ride 自动卖出（生成卖出信号）
 
-    # ★ 每日20%兜底检查：总仓位超过80%时停止开新仓
+    # ── 仓位规定跟随策略（写在策略 META 的 position 字段）────────────
+    # 原硬编码"80%兜底+保留20%现金"已移除：它按金额累加待成交信号，实盘信号
+    # 卡在已报状态时每轮扫描刷屏"已用仓位90%"且与策略口径冲突。
+    # 现在：策略声明 max_daily（如打板=每日最多5个平均仓）→ 按当日开仓「数量」限额。
     _broker_cfg = um.get_user_broker_config(uid)
     _broker_type = _broker_cfg.get("broker_type", "paper")
     if _broker_type == "live" and not DRY_RUN:
         _live_cash = float((_broker_cfg.get("config") or {}).get("live_cash") or 0)
-        if _live_cash > 0:
-            _base_cash = _live_cash
-        else:
-            _base_cash = s["capital"]
+        _base_cash = _live_cash if _live_cash > 0 else s["capital"]
     else:
         _base_cash = s["capital"]
-    _pending_total = um.get_pending_buy_total(uid)
-    _used_ratio = _pending_total / _base_cash if _base_cash > 0 else 1.0
-    if _used_ratio >= 0.80:
-        _add_log(uid, f"?? 兜底检查：已用仓位{_used_ratio*100:.0f}% ≥ 80%，停止开新仓，保留20%现金", "info")
-        s["scan_progress"] = {"running": False, "stage": "仓位已满", "current": 0, "total": 0}
-        return
 
-    # ★ 加仓检查：已持仓的票涨到9%时以涨停价追板
-    _check_add_position(uid, s, _broker_type, _base_cash)
+    _pos_cfg = sm.get_position_config(s.get("active_strategy") or "")
+    _max_daily = int(_pos_cfg.get("max_daily") or 0)
+    if _max_daily > 0:
+        if _broker_type == "live" and not DRY_RUN:
+            _opened_today = um.count_today_open_codes(uid)   # 已报未成交的也占名额
+        else:
+            _opened_today = int(s.get("today_trades") or 0)
+        if _opened_today >= _max_daily:
+            _today_str = datetime.now().strftime("%Y-%m-%d")
+            if s.get("_daily_limit_logged") != _today_str:    # 只提示一次，不刷屏
+                _add_log(uid, f"🛡 策略日内限额：今日已开 {_opened_today}/{_max_daily} 仓，"
+                              f"按策略规定不再开新仓（明日自动重置）", "info")
+                s["_daily_limit_logged"] = _today_str
+            s["scan_progress"] = {"running": False, "stage": "今日仓位已满", "current": 0, "total": 0}
+            return
+
+    # ★ 加仓追板：仅当策略 META 显式声明 add_on=true 才启用。
+    #   打板策略=每日5个平均仓位，不加仓 —— 原无条件加仓到25%与策略口径冲突，已停用。
+    if _pos_cfg.get("add_on"):
+        _check_add_position(uid, s, _broker_type, _base_cash)
 
     active    = s.get("active_strategy")
     is_daban  = (active == "da_ban")
@@ -644,14 +667,20 @@ def do_scan(uid: int):
         return
     _base_cash = _available_cash  # 用实际可用资金计算仓位
 
-    # ── 仓位护栏（防一次大面腰斩）：最多持仓数 + 单笔上限 ─────────────
-    # 优先用用户在前端设置的值，缺失时回落到 config 默认。
+    # ── 仓位规则：策略 META 优先，账户面板设置兜底 ─────────────────────
+    # 策略声明了 position 字段（如打板=每日5个平均仓）时以策略为准；
+    # 未声明的策略沿用前端面板/config 默认值。
     try:
         from config import MAX_POSITIONS as _CFG_POS, SINGLE_POSITION_MAX_RATIO as _CFG_RATIO
     except Exception:
         _CFG_POS, _CFG_RATIO = 5, 0.20
-    _MAX_POS  = int(s.get("max_positions") or _CFG_POS)
+    _q_pos_cfg = sm.get_position_config(s.get("active_strategy") or "")
+    _q_max_daily = int(_q_pos_cfg.get("max_daily") or 0)
+    _MAX_POS  = int(_q_pos_cfg.get("max_hold") or 0) or int(s.get("max_positions") or _CFG_POS)
     _SP_RATIO = float(s.get("single_position_max_ratio") or _CFG_RATIO)
+    # 平均仓位：每仓 = 可用资金 / max_daily（策略规定的口径，优先于面板仓位比）
+    _strat_ratio_equal = (1.0 / _q_max_daily) if (
+        _q_max_daily > 0 and (_q_pos_cfg.get("sizing") or "equal") == "equal") else 0.0
     # 已占用的持仓名额 = 实际持仓 + 队列里待成交/已下单的买单（按 code 去重，避免双算）
     if _broker_type == "live":
         try:
@@ -664,12 +693,16 @@ def do_scan(uid: int):
     # 再从队列计会在"会话内买入又卖出"后被 done 残留记录永久错占名额。
     _occupied |= {q["code"] for q in s["queue"]
                   if q.get("action") == "buy" and q.get("status") == "pending"}
-    # 单笔上限：把 position_ratio 夹到护栏比例内（用户调更高也不超过）
-    _eff_ratio = min(float(s["position_ratio"]), _SP_RATIO)
-    if _eff_ratio < float(s["position_ratio"]):
-        _add_log(uid,
-            f"🛡 单笔护栏：仓位比 {s['position_ratio']*100:.0f}% 超过单笔上限 "
-            f"{_SP_RATIO*100:.0f}%，本轮按 {_eff_ratio*100:.0f}% 建仓", "info")
+    # 单笔仓位：策略平均仓位优先（策略明确规定的口径不再被面板/护栏夹），
+    # 策略未声明时用面板 position_ratio 并夹到护栏上限内
+    if _strat_ratio_equal > 0:
+        _eff_ratio = _strat_ratio_equal
+    else:
+        _eff_ratio = min(float(s["position_ratio"]), _SP_RATIO)
+        if _eff_ratio < float(s["position_ratio"]):
+            _add_log(uid,
+                f"🛡 单笔护栏：仓位比 {s['position_ratio']*100:.0f}% 超过单笔上限 "
+                f"{_SP_RATIO*100:.0f}%，本轮按 {_eff_ratio*100:.0f}% 建仓", "info")
     _guard_full_logged = False
 
     for r in buy_candidates:
@@ -689,9 +722,14 @@ def do_scan(uid: int):
                 _guard_full_logged = True
             continue
         if not any(q["code"] == code for q in s["queue"]):
-            # 护栏②：单笔上限（优先用策略返回的分层仓位）
+            # 单笔金额：信号自带分层仓位 > 策略平均仓位（原样执行）> 面板比例（夹护栏）
             _strat_ratio = float(r.get("position_ratio", 0) or 0)
-            _use_ratio = min(_strat_ratio if _strat_ratio > 0 else _eff_ratio, _SP_RATIO)
+            if _strat_ratio > 0:
+                _use_ratio = min(_strat_ratio, _SP_RATIO)
+            elif _strat_ratio_equal > 0:
+                _use_ratio = _eff_ratio       # 策略 META 规定的平均仓位，不再被护栏二次夹
+            else:
+                _use_ratio = min(_eff_ratio, _SP_RATIO)
             budget = _base_cash * _use_ratio
             shares = max(int(budget / price / 100) * 100, 100)
             # ★ 实盘模式：提前检查是否超 MAX_ORDER_AMOUNT 护栏，避免桥接器层无谓拒单 ★
@@ -1019,9 +1057,9 @@ def bridge_report_signal(signal_id):
                                         float(res["price"]), int(res["shares"]), strategy=stg)
             except Exception as _e:
                 logger.warning(f"[live台账 uid={uid}] 记录买入失败（不影响下单）: {_e}")
-            # 同步执行队列状态：找到这条队列项，标记 executed
+            # 同步执行队列状态：找到这条队列项，标记 executed（含旧版误标 done 的）
             for q in s.get("queue", []):
-                if q.get("code") == code and q.get("status") in ("pending", "submitted"):
+                if q.get("code") == code and q.get("status") in ("pending", "submitted", "sent", "done"):
                     q["status"] = "executed"
                     break
         elif res["action"] == "SELL":
@@ -1034,6 +1072,12 @@ def bridge_report_signal(signal_id):
                 logger.warning(f"[live台账 uid={uid}] 移除持仓失败: {_e}")
             _DABAN_PEAKS.pop((uid, code), None)
             _LIVE_SELL_PENDING.discard((uid, code))
+    elif status == "submitted":
+        # 已报未成交：同步队列为 submitted，前端如实显示"已报实盘"而非"已买"
+        for q in s.get("queue", []):
+            if q.get("code") == code and q.get("status") in ("pending", "sent", "done"):
+                q["status"] = "submitted"
+                break
     elif status == "failed":
         # 卖出失败：解锁去重，下轮可重发；若失败原因是"无持仓"说明买单其实没成交=幽灵→清台账
         if res["action"] == "SELL":
@@ -1085,9 +1129,14 @@ def execute():
         name   = item.get("name", code)
         shares = item.get("shares", 100)
         res = execute_buy(uid, code, name, price, shares, reason="队列买入")
-        item["status"] = "done" if res.get("ok") else "error"
         if not res.get("ok"):
+            item["status"] = "error"
             item["error_msg"] = res.get("msg", "")
+        elif res.get("signal_id"):
+            item["status"] = "submitted"          # 实盘：已报，等交易机回传成交确认
+            item["signal_id"] = res["signal_id"]
+        else:
+            item["status"] = "done"               # 模拟：即时成交
 
     return jsonify({"ok": True})
 

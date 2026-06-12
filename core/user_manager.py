@@ -976,6 +976,21 @@ def get_pending_buy_total(user_id: int) -> float:
         return float(row[0]) if row else 0.0
 
 
+def count_today_open_codes(user_id: int) -> int:
+    """今日已开仓（或在途开仓）的股票数：当天 BUY 信号里
+    pending/sent/submitted/executed 状态按 code 去重计数。
+    供策略"每日最多开 N 仓"限额使用——已报未成交的也占名额，防止超开。"""
+    with _lock, _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(DISTINCT code) FROM trade_signals "
+            "WHERE user_id=? AND action='BUY' "
+            "AND status IN ('pending','sent','submitted','executed') "
+            "AND date(created_at) = date('now','localtime')",
+            (user_id,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+
 def has_pending_signal(user_id: int, code: str, action: str) -> bool:
     """检查该股当天是否已有未完成的同方向信号（去重用）"""
     with _lock, _conn() as c:
