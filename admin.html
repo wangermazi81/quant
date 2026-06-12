@@ -1939,9 +1939,9 @@ async function aicDetect(){
       document.getElementById('aic-provider').value = 'custom';
     const models = r.models || [];
     document.getElementById('aic-model-list').innerHTML =
-      models.map(m=>`<option value="${escapeHtml(m)}">`).join('');
+      models.map(m=>`<option value="${esc(m)}">`).join('');
     const sel = document.getElementById('aic-model-sel');
-    sel.innerHTML = models.map(m=>`<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+    sel.innerHTML = models.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
     sel.style.display = models.length ? '' : 'none';
     const mi = document.getElementById('aic-model');
     if(!mi.value.trim() && models.length) mi.value = models[0];
