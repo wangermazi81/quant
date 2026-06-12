@@ -6603,18 +6603,14 @@ function renderYouzaiGraph(data, container){
       brMap[b.name].codes.add(s.code)
     })
   })
-  // ── 构建游资节点 ────────────────────────────────────────────
-  const yzMap = {}
-  stocks.forEach(s=>{
-    ;(s.youzai||[]).forEach(yz=>{
-      if(!yzMap[yz]) yzMap[yz]={name:yz,codes:new Set(),total:0}
-      yzMap[yz].codes.add(s.code)
-      yzMap[yz].total += Math.abs(s.net_amt||0)
-    })
-  })
-
+  // ── 游资节点：直接用后端权威统计 youzai_stat（覆盖全部上榜股，
+  //    与顶部徽章同源），避免前端只按 top30 重算导致数量对不上、整组缺失 ──
   const branches  = Object.values(brMap).sort((a,b)=>b.total-a.total).slice(0,22)
-  const youzaiList= Object.values(yzMap).sort((a,b)=>b.total-a.total)
+  const youzaiList= (data.youzai_stat||[]).map(y=>({
+    name:  y.name,
+    count: (y.stocks||[]).length,
+    total: y.total_net||0
+  }))
 
   // Y 坐标
   stocks.forEach((s,i)  => s._y = PAD_TOP + i * ROW_H)
@@ -6682,17 +6678,18 @@ function renderYouzaiGraph(data, container){
   let col3 = `<div class="lhb-col" style="left:${C3X}px;width:${C3W}px">
     <div class="lhb-col-hd">游资动向</div>`
   youzaiList.forEach(y=>{
-    const ns = y.total>=10000?(y.total/10000).toFixed(1)+'亿':y.total.toFixed(0)+'万'
+    const t = y.total, at = Math.abs(t)
+    const ns = at>=10000?(at/10000).toFixed(1)+'亿':at.toFixed(0)+'万'
     col3 += `<div class="lhb-yz-item" style="top:${y._y}px">
       <span class="lhb-yz-badge">${y.name}</span>
-      <div style="font-size:10px;color:var(--t3);margin-top:3px">${y.codes.size}只 · +${ns}</div>
+      <div style="font-size:10px;color:var(--t3);margin-top:3px">${y.count}只 · ${t>=0?'+':'-'}${ns}</div>
     </div>`
   })
   col3 += '</div>'
 
-  // 顶部摘要
-  const yzStat = (data.youzai_stat||[]).slice(0,6)
-    .map(y=>`<span class="lhb-yz-badge" style="font-size:11px">${y.name}<b style="margin-left:4px;color:var(--t2)">${y.stocks.length}只</b></span>`)
+  // 顶部摘要（与游资动向列同源，数量一致）
+  const yzStat = youzaiList.slice(0,6)
+    .map(y=>`<span class="lhb-yz-badge" style="font-size:11px">${y.name}<b style="margin-left:4px;color:var(--t2)">${y.count}只</b></span>`)
     .join(' ')
   const summary = `<div style="margin-bottom:12px;font-size:12px;color:var(--t3);display:flex;flex-wrap:wrap;gap:6px;align-items:center">
     <span>${data.date} · <b style="color:var(--t1)">${data.total}</b>只上榜</span>
