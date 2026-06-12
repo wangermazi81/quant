@@ -758,12 +758,19 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
         </div>
         <div class="form-group"><label class="form-label">服务商</label>
           <select id="aic-provider" class="form-input" onchange="aicPreset()"></select></div>
-        <div class="form-group"><label class="form-label">Base URL</label>
-          <input id="aic-base" class="form-input" placeholder="https://api.deepseek.com/v1"></div>
-        <div class="form-group"><label class="form-label">模型</label>
-          <input id="aic-model" class="form-input" placeholder="deepseek-chat"></div>
-        <div class="form-group"><label class="form-label">API Key（留空 = 保持不变）</label>
-          <input id="aic-key" class="form-input" type="password" placeholder="sk-..." autocomplete="new-password"></div>
+        <div class="form-group"><label class="form-label">Base URL（中转站填它的接口地址，一般以 /v1 结尾）</label>
+          <input id="aic-base" class="form-input" placeholder="https://api.deepseek.com/v1 或 https://你的中转站.com/v1"></div>
+        <div class="form-group"><label class="form-label">API Key（留空 = 保持不变；输入后自动识别服务商并拉取模型列表）</label>
+          <input id="aic-key" class="form-input" type="password" placeholder="sk-..." autocomplete="new-password" onchange="aicAutoDetect()"></div>
+        <div class="form-group"><label class="form-label">模型（点「检测可用模型」后可下拉选择，也可手动输入）</label>
+          <div style="display:flex;gap:8px">
+            <input id="aic-model" class="form-input" list="aic-model-list" placeholder="deepseek-chat" style="flex:1">
+            <datalist id="aic-model-list"></datalist>
+            <button class="btn btn-outline" style="white-space:nowrap" onclick="aicDetect()" title="调 /models 接口列出该 Key 可用的全部模型">🔍 检测可用模型</button>
+          </div>
+          <select id="aic-model-sel" class="form-input" style="display:none;margin-top:8px" size="8"
+                  onchange="document.getElementById('aic-model').value=this.value"></select>
+        </div>
         <div class="form-group" style="display:flex;align-items:center;gap:8px">
           <input id="aic-enabled" type="checkbox" style="width:auto">
           <label for="aic-enabled" style="margin:0;cursor:pointer">启用 AI 功能</label>
@@ -1895,6 +1902,44 @@ async function aicSave(){
   const r = await _annFetch('POST', '/ai/config', body);
   if(r && r.ok){ showToast('已保存，全部AI功能即时生效','success'); loadAiConfig(); }
   else showToast((r&&r.error)||'保存失败','error');
+}
+
+async function aicDetect(){
+  const msg = document.getElementById('aic-msg');
+  msg.style.color = 'var(--text2)'; msg.textContent = '🔍 检测可用模型中…';
+  const body = { base_url: document.getElementById('aic-base').value.trim() };
+  const key = document.getElementById('aic-key').value.trim();
+  if(key) body.api_key = key;
+  const r = await _annFetch('POST', '/ai/detect_models', body);
+  if(r && r.ok){
+    // 自动回填：识别出的服务商 + 官方 Base URL（仅当对应输入框为空/可覆盖时）
+    if(r.base_url && !document.getElementById('aic-base').value.trim())
+      document.getElementById('aic-base').value = r.base_url;
+    if(r.provider_guess && _aicPresets[r.provider_guess])
+      document.getElementById('aic-provider').value = r.provider_guess;
+    else if(!r.provider_guess && _aicPresets['custom'])
+      document.getElementById('aic-provider').value = 'custom';
+    const models = r.models || [];
+    document.getElementById('aic-model-list').innerHTML =
+      models.map(m=>`<option value="${escapeHtml(m)}">`).join('');
+    const sel = document.getElementById('aic-model-sel');
+    sel.innerHTML = models.map(m=>`<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+    sel.style.display = models.length ? '' : 'none';
+    const mi = document.getElementById('aic-model');
+    if(!mi.value.trim() && models.length) mi.value = models[0];
+    msg.style.color = 'var(--green)';
+    msg.textContent = `✅ 检测到 ${models.length} 个可用模型${r.total>models.length?`（已过滤非对话模型，原始 ${r.total} 个）`:''}，下方列表点击即可选用`;
+  }else{
+    document.getElementById('aic-model-sel').style.display = 'none';
+    msg.style.color = 'var(--red)';
+    msg.textContent = '❌ ' + ((r&&r.error)||'检测失败');
+  }
+}
+
+function aicAutoDetect(){
+  // key 输入完成（blur/回车）后自动探测；短于 8 位视为没填完不打扰
+  const key = document.getElementById('aic-key').value.trim();
+  if(key.length >= 8) aicDetect();
 }
 
 async function aicTest(){

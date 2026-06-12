@@ -305,6 +305,40 @@ def ai_analyze_result(task_id):
     return jsonify({"ok": False, "status": task["status"], "msg": "分析进行中"})
 
 
+@bp.route("/api/ai/detect_models", methods=["POST"])
+@require_admin
+def ai_detect_models():
+    """探测 Base URL + Key 下可用的全部模型（中转站/官方 OpenAI 兼容端点通用）。
+
+    body: {api_key?, base_url?}
+    - key 不传则用已保存配置的 key
+    - base_url 不传则先按 key 前缀猜服务商（sk-or-/gsk_/sk-ant-/AIza/xai-/nvapi-），
+      猜中自动带出官方 Base URL；猜不中（裸 sk- 的中转站）要求填 Base URL
+    """
+    d = request.json or {}
+    saved = ai.load_config()
+    api_key  = (d.get("api_key") or "").strip() or saved.get("api_key", "")
+    base_url = (d.get("base_url") or "").strip()
+    if not api_key:
+        return jsonify({"ok": False, "error": "请先填写 API Key"})
+
+    provider_guess = ai.guess_provider_by_key(api_key)
+    if not base_url:
+        if provider_guess:
+            base_url = ai.PROVIDER_PRESETS[provider_guess]["base_url"]
+        else:
+            return jsonify({"ok": False,
+                            "error": "无法从 Key 前缀识别服务商（中转站 Key 多为通用 sk- 前缀），"
+                                     "请填写中转站的 Base URL（如 https://xxx.com/v1）再检测"})
+
+    r = ai.detect_models(base_url, api_key)
+    if not r.get("ok"):
+        return jsonify({"ok": False, "error": r.get("error", "探测失败"),
+                        "base_url": base_url, "provider_guess": provider_guess})
+    return jsonify({"ok": True, "models": r["models"], "total": r.get("total", len(r["models"])),
+                    "base_url": base_url, "provider_guess": provider_guess})
+
+
 @bp.route("/api/ai/test", methods=["POST"])
 @require_admin
 def ai_test_conn():

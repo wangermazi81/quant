@@ -164,15 +164,102 @@ DEFAULT_CONFIG = {
 }
 
 PROVIDER_PRESETS = {
-    "deepseek":  {"base_url": "https://api.deepseek.com/v1",             "model": "deepseek-chat"},
-    "openai":    {"base_url": "https://api.openai.com/v1",               "model": "gpt-4o-mini"},
-    "anthropic": {"base_url": "https://api.anthropic.com/v1",            "model": "claude-3-5-haiku-20241022"},
-    "qwen":      {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen-plus"},
-    "zhipu":     {"base_url": "https://open.bigmodel.cn/api/paas/v4",    "model": "glm-4-flash"},
-    "nvidia":    {"base_url": "https://integrate.api.nvidia.com/v1",     "model": "nvidia/llama-3.1-nemotron-70b-instruct"},
-    "xiaomimimo":{"base_url": "https://token-plan-cn.xiaomimimo.com/v1", "model": "mimo-v2.5-pro"},
-    "custom":    {"base_url": "",                                         "model": ""},
+    # ── 国产直连 ──────────────────────────────────────────────
+    "deepseek":   {"name": "DeepSeek 深度求索", "base_url": "https://api.deepseek.com/v1",             "model": "deepseek-chat"},
+    "qwen":       {"name": "通义千问（阿里）",   "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen-plus"},
+    "zhipu":      {"name": "智谱 GLM",          "base_url": "https://open.bigmodel.cn/api/paas/v4",    "model": "glm-4-flash"},
+    "moonshot":   {"name": "Kimi（月之暗面）",  "base_url": "https://api.moonshot.cn/v1",              "model": "kimi-latest"},
+    "doubao":     {"name": "豆包（火山方舟）",  "base_url": "https://ark.cn-beijing.volces.com/api/v3","model": ""},
+    "siliconflow":{"name": "硅基流动",          "base_url": "https://api.siliconflow.cn/v1",           "model": "deepseek-ai/DeepSeek-V3"},
+    "hunyuan":    {"name": "腾讯混元",          "base_url": "https://api.hunyuan.cloud.tencent.com/v1","model": "hunyuan-turbo"},
+    "minimax":    {"name": "MiniMax",          "base_url": "https://api.minimaxi.com/v1",             "model": "MiniMax-Text-01"},
+    "baichuan":   {"name": "百川智能",          "base_url": "https://api.baichuan-ai.com/v1",          "model": "Baichuan4-Air"},
+    "yi":         {"name": "零一万物",          "base_url": "https://api.lingyiwanwu.com/v1",          "model": "yi-lightning"},
+    "stepfun":    {"name": "阶跃星辰",          "base_url": "https://api.stepfun.com/v1",              "model": "step-2-mini"},
+    "spark":      {"name": "讯飞星火",          "base_url": "https://spark-api-open.xf-yun.com/v1",    "model": "generalv3.5"},
+    "xiaomimimo": {"name": "小米 MiMo",        "base_url": "https://token-plan-cn.xiaomimimo.com/v1", "model": "mimo-v2.5-pro"},
+    # ── 海外直连 ──────────────────────────────────────────────
+    "openai":     {"name": "OpenAI",           "base_url": "https://api.openai.com/v1",               "model": "gpt-4o-mini"},
+    "anthropic":  {"name": "Anthropic Claude", "base_url": "https://api.anthropic.com/v1",            "model": "claude-3-5-haiku-20241022"},
+    "gemini":     {"name": "Google Gemini",    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "gemini-2.0-flash"},
+    "xai":        {"name": "xAI Grok",         "base_url": "https://api.x.ai/v1",                     "model": "grok-3-mini"},
+    "groq":       {"name": "Groq",             "base_url": "https://api.groq.com/openai/v1",          "model": "llama-3.3-70b-versatile"},
+    "nvidia":     {"name": "NVIDIA NIM",       "base_url": "https://integrate.api.nvidia.com/v1",     "model": "nvidia/llama-3.1-nemotron-70b-instruct"},
+    # ── 聚合 / 中转 / 本地 ────────────────────────────────────
+    "openrouter": {"name": "OpenRouter 聚合",  "base_url": "https://openrouter.ai/api/v1",            "model": "deepseek/deepseek-chat"},
+    "ollama":     {"name": "Ollama 本地",      "base_url": "http://127.0.0.1:11434/v1",               "model": ""},
+    "custom":     {"name": "自定义中转站（OneAPI/NewAPI等）", "base_url": "", "model": ""},
 }
+
+# key 前缀 → 服务商猜测（自动识别填充用）。
+# 注意：裸 "sk-" 太普遍（OpenAI/DeepSeek/Moonshot/各中转站都用），不能据此判断。
+_KEY_PREFIX_MAP = [
+    ("sk-or-",  "openrouter"),
+    ("sk-ant-", "anthropic"),
+    ("gsk_",    "groq"),
+    ("AIza",    "gemini"),
+    ("xai-",    "xai"),
+    ("nvapi-",  "nvidia"),
+]
+
+
+def guess_provider_by_key(api_key: str) -> str:
+    """按 key 前缀猜服务商，猜不出返回空串。"""
+    k = (api_key or "").strip()
+    for prefix, provider in _KEY_PREFIX_MAP:
+        if k.startswith(prefix):
+            return provider
+    return ""
+
+
+def detect_models(base_url: str, api_key: str, timeout: int = 20) -> dict:
+    """调 OpenAI 兼容接口 GET {base_url}/models 列出该 key 可用的全部模型。
+
+    OneAPI/NewAPI 等中转站、以及绝大多数官方 OpenAI 兼容端点都支持。
+    Anthropic 官方 API 用 x-api-key 头，单独处理。
+    返回 {"ok": bool, "models": [str], "error": str}
+    """
+    import urllib.request
+    base_url = (base_url or "").rstrip("/")
+    if not base_url:
+        return {"ok": False, "error": "缺少 Base URL", "models": []}
+    if not api_key:
+        return {"ok": False, "error": "缺少 API Key", "models": []}
+
+    is_anthropic = "anthropic" in base_url or api_key.startswith("sk-ant-")
+    if is_anthropic:
+        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    else:
+        headers = {"Authorization": f"Bearer {api_key}"}
+    headers["Accept"] = "application/json"
+
+    req = urllib.request.Request(f"{base_url}/models", headers=headers, method="GET")
+    try:
+        with _urlopen_smart(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        import urllib.error
+        if isinstance(e, urllib.error.HTTPError):
+            try:
+                detail = e.read().decode("utf-8", errors="ignore")[:200]
+            except Exception:
+                detail = str(e.reason)
+            return {"ok": False, "error": f"HTTP {e.code} — {detail}", "models": []}
+        return {"ok": False, "error": f"请求失败: {e}", "models": []}
+
+    items = data.get("data") or data.get("models") or []
+    ids = []
+    for it in items:
+        mid = (it.get("id") or it.get("name") or "") if isinstance(it, dict) else str(it)
+        if mid:
+            ids.append(str(mid))
+    # 过滤非对话模型（embedding/语音/图像/重排等），中转站列表动辄几百个
+    _skip = ("embedding", "embed-", "whisper", "tts", "dall-e", "stable-", "flux",
+             "rerank", "bge-", "moderation", "audio", "image", "vision-only",
+             "text-davinci", "babbage", "ada")
+    chat_ids = [m for m in ids if not any(s in m.lower() for s in _skip)]
+    chat_ids = sorted(set(chat_ids or ids))[:500]
+    return {"ok": True, "models": chat_ids, "total": len(ids)}
 
 
 def load_config() -> dict:
