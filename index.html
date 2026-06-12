@@ -5299,7 +5299,13 @@ async function loadPaperOrders(){
 
 async function loadPaperEquity(){
   const rows = await api('/paper/equity?days=90')
-  if(!Array.isArray(rows)||!rows.length) return
+  if(!Array.isArray(rows)||!rows.length){
+    // 重置后净值表为空：必须销毁旧图，否则画布上一直留着重置前的曲线
+    if(_equityChart){ _equityChart.destroy(); _equityChart = null }
+    const cv = document.getElementById('equityChart')
+    if(cv){ const c = cv.getContext('2d'); c.clearRect(0,0,cv.width,cv.height) }
+    return
+  }
   const labels = rows.map(r=>r.snap_date?.slice(5))
   const data   = rows.map(r=>r.equity)
   const ctx    = document.getElementById('equityChart').getContext('2d')

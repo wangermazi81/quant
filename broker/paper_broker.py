@@ -799,6 +799,14 @@ class PaperBroker:
                     "INSERT OR REPLACE INTO paper_config(user_id,key,value) VALUES(?,?,?)",
                     (self._uid, k, str(v)),
                 )
+            # 立刻写入重置当天的起点快照：净值曲线从新本金重新开始，
+            # 而不是空表（前端旧版对空数据不重绘，曲线看起来"没重置"）
+            today = datetime.now().strftime("%Y-%m-%d")
+            con.execute(
+                "INSERT OR REPLACE INTO paper_equity"
+                "(user_id,snap_date,cash,market_val,equity,drawdown) VALUES(?,?,?,?,?,?)",
+                (self._uid, today, round(float(cap), 2), 0.0, round(float(cap), 2), 0.0),
+            )
             con.commit()
             con.close()
         logger.info(f"[PB uid={self._uid}] 模拟盘已重置，初始资金¥{cap:,.0f}")
