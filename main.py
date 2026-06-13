@@ -26,6 +26,7 @@ import factor_manager as fm
 import paper_broker as pb
 import user_manager as um
 import notification_manager as nm
+import order_sizing  # 下单仓位/手数纯函数（从 do_scan 抽出，有回归测试 tests/test_order_sizing.py）
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -768,15 +769,13 @@ def do_scan(uid: int):
             continue
         if not any(q["code"] == code for q in s["queue"]):
             # 单笔金额：信号自带分层仓位 > 策略平均仓位（原样执行）> 面板比例（夹护栏）
+            # 决策逻辑见 core/order_sizing.pick_ratio（与原内联 if/elif/else 严格等价，有等价性测试）
             _strat_ratio = float(r.get("position_ratio", 0) or 0)
-            if _strat_ratio > 0:
-                _use_ratio = min(_strat_ratio, _SP_RATIO)
-            elif _strat_ratio_equal > 0:
-                _use_ratio = _eff_ratio       # 策略 META 规定的平均仓位，不再被护栏二次夹
-            else:
-                _use_ratio = min(_eff_ratio, _SP_RATIO)
+            _use_ratio = order_sizing.pick_ratio(
+                float(s["position_ratio"]), _SP_RATIO,
+                strat_ratio=_strat_ratio, strat_equal=_strat_ratio_equal)
             budget = _base_cash * _use_ratio    # 基数=全仓总资金，各仓等大
-            shares = max(int(budget / price / 100) * 100, 100)
+            shares = order_sizing.lot_shares(budget, price)   # 整手取整、最少1手（等价于原 max(int(budget/price/100)*100,100)）
             # 可用资金闸门：剩余可用不够本仓金额 → 停止开新仓（不缩仓，保持等大）
             if price * shares > _avail_left:
                 if not _guard_full_logged:
