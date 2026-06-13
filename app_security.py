@@ -40,6 +40,19 @@ def client_ip() -> str:
     return request.remote_addr or "0.0.0.0"
 
 
+def user_key() -> str:
+    """限流键：优先按登录用户 ID（每用户独立配额），未登录回退 IP。
+
+    用于给 AI 等高成本接口加「按用户」的速率上限——积分是主闸，这是防止
+    单个高余额/被盗号账号短时间狂刷、烧光全局 AI key 预算的兜底。
+    """
+    try:
+        uid = session.get("user_id")
+    except Exception:
+        uid = None
+    return f"uid:{uid}" if uid else f"ip:{client_ip()}"
+
+
 # ══════════════════════════════════════════════════════════════
 # 安全初始化：Cookie 硬化 + 安全响应头
 # ══════════════════════════════════════════════════════════════

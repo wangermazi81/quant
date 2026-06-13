@@ -12,7 +12,7 @@ bp = Blueprint("auth", __name__)
 def auth_register():
     d = request.json or {}
     r = um.register(d.get("username", ""), d.get("email", ""), d.get("password", ""),
-                    d.get("invite_code", ""))
+                    d.get("invite_code", ""), ip=client_ip())
     return jsonify(r)
 
 

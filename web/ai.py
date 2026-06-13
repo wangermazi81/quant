@@ -10,7 +10,7 @@ import data_manager as dm
 import stock_scorer as scorer
 import user_manager as um
 from app_state import BASE_DIR, require_auth, require_admin, _add_log, _deduct
-from app_security import rate_limit
+from app_security import rate_limit, user_key
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,7 @@ def api_stock_score():
 
 
 @bp.route("/api/ai/analyze", methods=["POST"])
+@rate_limit(60, 3600, scope="ai", key_func=user_key, message="AI 调用过于频繁，请稍后再试")
 @require_auth
 def ai_analyze():
     err = _deduct("ai_analysis", f"AI分析 {(request.json or {}).get('code','')}")
@@ -194,6 +195,7 @@ def ai_analyze():
 
 
 @bp.route("/api/ai/analyze_async", methods=["POST"])
+@rate_limit(60, 3600, scope="ai", key_func=user_key, message="AI 调用过于频繁，请稍后再试")
 @require_auth
 def ai_analyze_async():
     """异步 AI 分析：立即返回 task_id，前端轮询进度和结果。"""
@@ -370,6 +372,7 @@ def ai_test_conn():
 
 
 @bp.route("/api/ai/generate_strategy", methods=["POST"])
+@rate_limit(60, 3600, scope="ai", key_func=user_key, message="AI 调用过于频繁，请稍后再试")
 @require_auth
 def ai_gen_strategy():
     uid  = session["user_id"]

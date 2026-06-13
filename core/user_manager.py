@@ -73,6 +73,19 @@ _load_point_costs()
 
 REGISTER_BONUS = 100    # 新用户注册赠送积分
 
+# ── 防薅羊毛 ──────────────────────────────────────────────
+# 同一注册 IP 超过此数后：新号不送注册积分、邀请人不发邀请奖励，并 flagged=1 待管理员审核。
+# 软策略（账号仍可创建、邀请名额仍消费），避免误伤 NAT 共享 IP 的真实用户；管理员可手动补分。
+MAX_BONUS_ACCOUNTS_PER_IP = int(os.environ.get("MAX_BONUS_ACCOUNTS_PER_IP", "3"))
+# 常见一次性/临时邮箱域名，注册即拒（降低批量假号）
+_DISPOSABLE_EMAIL_DOMAINS = {
+    "mailinator.com", "guerrillamail.com", "10minutemail.com", "temp-mail.org",
+    "tempmail.com", "throwawaymail.com", "yopmail.com", "getnada.com", "sharklasers.com",
+    "trashmail.com", "maildrop.cc", "fakeinbox.com", "mailnesia.com", "dispostable.com",
+    "minuteinbox.com", "mohmal.com", "tempinbox.com", "spam4.me", "mvrht.net", "emltmp.com",
+    "guerrillamail.info", "grr.la", "tmpmail.org", "linshiyouxiang.net", "1secmail.com",
+}
+
 _lock = threading.Lock()
 
 
@@ -98,7 +111,9 @@ def init_db():
             is_active     INTEGER DEFAULT 1,
             created_at    TEXT    DEFAULT (datetime('now','localtime')),
             last_login    TEXT,
-            invited_by    INTEGER DEFAULT NULL
+            invited_by    INTEGER DEFAULT NULL,
+            register_ip   TEXT    DEFAULT NULL,
+            flagged       INTEGER DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS point_transactions (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,21 +175,24 @@ def _verify_password(pw: str, stored: str) -> bool:
 
 
 def _create_user(c, username, email, password,
-                 is_admin=0, points=REGISTER_BONUS, invited_by=None):
+                 is_admin=0, points=REGISTER_BONUS, invited_by=None,
+                 register_ip=None, flagged=0):
     c.execute(
-        "INSERT INTO users (username,email,password_hash,points,is_admin,invited_by)"
-        " VALUES (?,?,?,?,?,?)",
-        (username, email, _hash_password(password), points, is_admin, invited_by)
+        "INSERT INTO users (username,email,password_hash,points,is_admin,invited_by,register_ip,flagged)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        (username, email, _hash_password(password), points, is_admin,
+         invited_by, register_ip, flagged)
     )
     c.commit()
     uid = c.execute("SELECT id FROM users WHERE username=?",
                     (username,)).fetchone()["id"]
-    c.execute(
-        "INSERT INTO point_transactions"
-        " (user_id,amount,type,description,balance) VALUES (?,?,?,?,?)",
-        (uid, points, "register", "注册赠送", points)
-    )
-    c.commit()
+    if points:   # 仅在确有赠分时记流水，避免 0 分噪声（被风控拦下的号 points=0）
+        c.execute(
+            "INSERT INTO point_transactions"
+            " (user_id,amount,type,description,balance) VALUES (?,?,?,?,?)",
+            (uid, points, "register", "注册赠送", points)
+        )
+        c.commit()
 
 
 # ── 邀请制注册 ────────────────────────────────────────────
@@ -274,7 +292,8 @@ def get_invite_summary(creator_uid: int) -> dict:
 
 
 # ── 公开接口 ──────────────────────────────────────────────
-def register(username: str, email: str, password: str, invite_code: str = "") -> dict:
+def register(username: str, email: str, password: str, invite_code: str = "",
+             ip: str = None) -> dict:
     username    = username.strip()
     email       = email.strip().lower()
     invite_code = (invite_code or "").strip().upper()
@@ -284,6 +303,8 @@ def register(username: str, email: str, password: str, invite_code: str = "") ->
         return {"ok": False, "error": "密码至少 6 位"}
     if "@" not in email:
         return {"ok": False, "error": "邮箱格式错误"}
+    if email.rsplit("@", 1)[-1] in _DISPOSABLE_EMAIL_DOMAINS:
+        return {"ok": False, "error": "请使用常用邮箱注册（不支持临时/一次性邮箱）"}
     if not invite_code:
         return {"ok": False, "error": "请输入邀请码（本平台仅限邀请注册）"}
     try:
@@ -301,13 +322,32 @@ def register(username: str, email: str, password: str, invite_code: str = "") ->
             if ic["used_count"] >= ic["max_uses"]:
                 return {"ok": False, "error": "邀请码名额已用完"}
             inviter = ic["created_by"]
-            # 创建用户（记录邀请人）
-            _create_user(c, username, email, password, invited_by=inviter)
+
+            # ── 防薅羊毛：同一注册 IP 多开账号去重 ──
+            bonus, flagged = REGISTER_BONUS, 0
+            if ip:
+                n_ip = c.execute("SELECT COUNT(*) AS n FROM users WHERE register_ip=?",
+                                 (ip,)).fetchone()["n"]
+                if n_ip >= MAX_BONUS_ACCOUNTS_PER_IP:
+                    bonus, flagged = 0, 1
+                    logger.warning(f"[anti-farm] IP={ip} 已有 {n_ip} 个账号，"
+                                   f"新号「{username}」不送注册积分并标记待审")
+
+            # 创建用户（记录邀请人 + 注册 IP + 风控标记）
+            _create_user(c, username, email, password, points=bonus,
+                         invited_by=inviter, register_ip=ip, flagged=flagged)
             # 消费一个名额
             c.execute("UPDATE invite_codes SET used_count=used_count+1 WHERE id=?", (ic["id"],))
-            # 奖励邀请人积分
+
+            # ── 邀请奖励：被标记号不发；邀请人与新号同 IP（自邀刷分）不发 ──
             reward = int(ic["reward"] or 0)
-            if reward > 0 and inviter:
+            grant  = reward > 0 and inviter and not flagged
+            if grant and ip:
+                inv = c.execute("SELECT register_ip FROM users WHERE id=?", (inviter,)).fetchone()
+                if inv and inv["register_ip"] and inv["register_ip"] == ip:
+                    grant = False
+                    logger.warning(f"[anti-farm] 邀请人(uid={inviter})与新号同 IP={ip}，不发邀请奖励")
+            if grant:
                 prow = c.execute("SELECT points FROM users WHERE id=?", (inviter,)).fetchone()
                 if prow:
                     new_bal = prow["points"] + reward
@@ -318,7 +358,7 @@ def register(username: str, email: str, password: str, invite_code: str = "") ->
                         (inviter, reward, "invite_reward", f"邀请新用户「{username}」奖励", new_bal)
                     )
             c.commit()
-        return {"ok": True}
+        return {"ok": True, "flagged": bool(flagged)}
     except sqlite3.IntegrityError as e:
         msg = "用户名已存在" if "username" in str(e) else "邮箱已注册"
         return {"ok": False, "error": msg}
@@ -521,7 +561,7 @@ def list_users(page: int = 1, per_page: int = 20,
         ).fetchone()[0]
         rows = c.execute(
             f"SELECT id,username,email,points,is_admin,is_active,"
-            f"created_at,last_login FROM users {where}"
+            f"created_at,last_login,register_ip,flagged FROM users {where}"
             f" ORDER BY id DESC LIMIT ? OFFSET ?",
             (*params, per_page, (page - 1) * per_page)
         ).fetchall()

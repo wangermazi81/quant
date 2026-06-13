@@ -249,6 +249,11 @@ def migrate_users_db():
         # 补列迁移（对已存在的旧库）
         _safe_add_column(c, "announcements", "expires_at", "TEXT DEFAULT NULL")
         _safe_add_column(c, "users", "invited_by", "INTEGER DEFAULT NULL")
+        # 防薅羊毛：记录注册来源 IP + 可疑账号标记（同 IP 多开 → 不送分并标记待审）
+        _safe_add_column(c, "users", "register_ip", "TEXT DEFAULT NULL")
+        _safe_add_column(c, "users", "flagged", "INTEGER DEFAULT 0")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_users_register_ip ON users(register_ip)")
+        c.commit()
         logger.info("[users.db] 新表创建/迁移完成 ✓")
     finally:
         c.close()
