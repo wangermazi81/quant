@@ -244,6 +244,19 @@ def migrate_users_db():
         );
         CREATE INDEX IF NOT EXISTS idx_ic_code    ON invite_codes(code);
         CREATE INDEX IF NOT EXISTS idx_ic_creator ON invite_codes(created_by);
+
+        -- 密码重置 token（找回密码，2026-06-13）。库只存 token 的 SHA256，原文仅在邮件链接里。
+        CREATE TABLE IF NOT EXISTS password_resets (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            token_hash TEXT    NOT NULL,
+            created_at TEXT    DEFAULT (datetime('now','localtime')),
+            expires_at TEXT    NOT NULL,
+            used       INTEGER DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pwreset_token ON password_resets(token_hash);
+        CREATE INDEX IF NOT EXISTS idx_pwreset_uid   ON password_resets(user_id);
         """)
         c.commit()
         # 补列迁移（对已存在的旧库）

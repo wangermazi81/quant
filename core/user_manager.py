@@ -433,6 +433,80 @@ def admin_reset_password(user_id: int, new_password: str) -> dict:
         return {"ok": True, "username": row["username"]}
 
 
+# ── 找回密码（邮箱自助重置）────────────────────────────────────
+PW_RESET_TTL_MIN = 30   # 重置 token 有效期（分钟）
+
+
+def _now_str() -> str:
+    from datetime import datetime
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def create_password_reset(ident: str):
+    """按 邮箱或用户名 生成密码重置 token。
+
+    返回 (user_dict, raw_token)；用户不存在/被禁用则返回 (None, None)。
+    库只存 token 的 sha256，原文 token 仅由本函数返回（用于拼邮件链接）。
+    """
+    key = (ident or "").strip().lower()
+    if not key:
+        return None, None
+    with _lock, _conn() as c:
+        row = c.execute(
+            "SELECT id,username,email,is_active FROM users"
+            " WHERE lower(email)=? OR lower(username)=?", (key, key)
+        ).fetchone()
+        if not row or not row["is_active"]:
+            return None, None
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        from datetime import datetime, timedelta
+        expires = (datetime.now() + timedelta(minutes=PW_RESET_TTL_MIN)).strftime("%Y-%m-%d %H:%M:%S")
+        # 作废该用户此前未用的 token（一次只允许一个有效链接）
+        c.execute("UPDATE password_resets SET used=1 WHERE user_id=? AND used=0", (row["id"],))
+        c.execute("INSERT INTO password_resets (user_id,token_hash,expires_at) VALUES (?,?,?)",
+                  (row["id"], token_hash, expires))
+        c.commit()
+        return dict(row), token
+
+
+def verify_reset_token(token: str):
+    """校验 token 是否有效（存在/未用/未过期）。有效返回含 username 的 dict，否则 None。"""
+    token_hash = hashlib.sha256((token or "").encode()).hexdigest()
+    with _conn() as c:
+        row = c.execute(
+            "SELECT pr.id, pr.user_id, pr.expires_at, pr.used, u.username"
+            " FROM password_resets pr JOIN users u ON u.id=pr.user_id"
+            " WHERE pr.token_hash=?", (token_hash,)
+        ).fetchone()
+        if not row or row["used"]:
+            return None
+        if str(row["expires_at"]) < _now_str():
+            return None
+        return {"user_id": row["user_id"], "username": row["username"]}
+
+
+def reset_password_with_token(token: str, new_password: str) -> dict:
+    """凭 token 重置密码。成功后该 token 立即作废。"""
+    if len(new_password or "") < 6:
+        return {"ok": False, "error": "新密码至少 6 位"}
+    token_hash = hashlib.sha256((token or "").encode()).hexdigest()
+    with _lock, _conn() as c:
+        row = c.execute(
+            "SELECT id, user_id, expires_at, used FROM password_resets WHERE token_hash=?",
+            (token_hash,)
+        ).fetchone()
+        if not row or row["used"]:
+            return {"ok": False, "error": "重置链接无效或已使用，请重新申请"}
+        if str(row["expires_at"]) < _now_str():
+            return {"ok": False, "error": "重置链接已过期，请重新申请"}
+        c.execute("UPDATE users SET password_hash=? WHERE id=?",
+                  (_hash_password(new_password), row["user_id"]))
+        c.execute("UPDATE password_resets SET used=1 WHERE id=?", (row["id"],))
+        c.commit()
+        return {"ok": True}
+
+
 def get_points(user_id: int) -> int:
     with _conn() as c:
         row = c.execute("SELECT points FROM users WHERE id=?",

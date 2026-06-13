@@ -1,8 +1,17 @@
-"""认证 API 蓝图：注册 / 登录 / 登出 / 当前用户。"""
+"""认证 API 蓝图：注册 / 登录 / 登出 / 当前用户 / 找回密码。"""
+import os
+import logging
+
 from flask import Blueprint, request, jsonify, session
 
 import user_manager as um
+import email_sender as mailer
 from app_security import rate_limit, client_ip, login_locked, login_fail, login_ok
+
+logger = logging.getLogger(__name__)
+
+# 重置链接的站点根地址（生产 .env 里设 APP_BASE_URL=https://jwalpha.top）
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://jwalpha.top").rstrip("/")
 
 bp = Blueprint("auth", __name__)
 
@@ -45,6 +54,51 @@ def auth_login():
 def auth_logout():
     session.clear()
     return jsonify({"ok": True})
+
+
+# ── 找回密码（邮箱自助重置）────────────────────────────────────
+@bp.route("/api/auth/forgot", methods=["POST"])
+@rate_limit(5, 3600, scope="auth", message="操作过于频繁，请稍后再试")  # 同 IP 每小时最多 5 次，防刷别人邮箱
+def auth_forgot():
+    """申请重置：按邮箱/用户名找到用户→生成 token→发邮件。
+
+    无论邮箱是否存在都统一返回成功，防止用此接口枚举注册邮箱。
+    """
+    d = request.json or {}
+    ident = (d.get("email") or d.get("username") or "").strip()
+    generic = {"ok": True, "msg": "若该邮箱/用户名已注册，重置链接已发送至对应邮箱，请查收（30 分钟内有效）。"}
+    if not ident:
+        return jsonify({"ok": False, "error": "请输入注册邮箱或用户名"})
+    try:
+        user, token = um.create_password_reset(ident)
+        if user and token:
+            link = f"{APP_BASE_URL}/?pwreset={token}"
+            html = mailer.render_reset_email(user["username"], link, um.PW_RESET_TTL_MIN)
+            if mailer.smtp_configured():
+                r = mailer.send_email(user["email"], "见微 Alpha 密码重置", html)
+                if not r.get("ok"):
+                    logger.warning(f"[forgot] 邮件发送失败 user={user['username']}: {r.get('error')}")
+            else:
+                logger.warning("[forgot] SMTP 未配置，无法发送重置邮件（请在 .env 配置 SMTP_*）")
+    except Exception as e:
+        logger.warning(f"[forgot] 异常: {e}")
+    return jsonify(generic)
+
+
+@bp.route("/api/auth/reset/validate")
+@rate_limit(30, 600, scope="auth")
+def auth_reset_validate():
+    """前端打开重置页时先校验 token 是否有效（决定显示表单还是失效提示）。"""
+    info = um.verify_reset_token(request.args.get("token", ""))
+    return jsonify({"ok": bool(info), "username": info["username"] if info else ""})
+
+
+@bp.route("/api/auth/reset", methods=["POST"])
+@rate_limit(10, 3600, scope="auth", message="操作过于频繁，请稍后再试")
+def auth_reset():
+    """凭 token 设置新密码。"""
+    d = request.json or {}
+    return jsonify(um.reset_password_with_token(d.get("token", ""), d.get("new_password", "")))
 
 
 @bp.route("/api/auth/me")
