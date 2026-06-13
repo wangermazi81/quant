@@ -108,6 +108,30 @@ def admin_reset_password(uid):
     return jsonify(um.admin_reset_password(uid, new_pw))
 
 
+# ── 找回密码申请（后台审批重置）────────────────────────────────
+@bp.route("/api/admin/reset_requests", methods=["GET"])
+@require_admin
+def admin_list_reset_requests():
+    """列出找回密码申请（默认仅 pending）。"""
+    status = request.args.get("status", "pending")
+    return jsonify({"ok": True, "requests": um.list_reset_requests(status),
+                    "pending": um.count_pending_reset_requests()})
+
+
+@bp.route("/api/admin/reset_requests/<int:req_id>/resolve", methods=["POST"])
+@require_admin
+def admin_resolve_reset_request(req_id):
+    """审批通过：生成临时密码并重置，返回临时密码供管理员转告用户。"""
+    return jsonify(um.resolve_reset_request(req_id, session.get("user_id", 0)))
+
+
+@bp.route("/api/admin/reset_requests/<int:req_id>/reject", methods=["POST"])
+@require_admin
+def admin_reject_reset_request(req_id):
+    """驳回申请（不重置密码）。"""
+    return jsonify(um.reject_reset_request(req_id, session.get("user_id", 0)))
+
+
 @bp.route("/api/admin/users/<int:uid>/set_points", methods=["POST"])
 @require_admin
 def admin_set_points(uid):

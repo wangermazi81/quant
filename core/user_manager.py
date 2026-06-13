@@ -507,6 +507,89 @@ def reset_password_with_token(token: str, new_password: str) -> dict:
         return {"ok": True}
 
 
+# ── 找回密码：后台审批重置（无邮件依赖）──────────────────────
+_TEMP_PW_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789ABCDEFGHJKLMNPQRSTUVWXYZ"  # 去易混字符
+
+
+def _gen_temp_password(n: int = 10) -> str:
+    return "".join(secrets.choice(_TEMP_PW_ALPHABET) for _ in range(n))
+
+
+def create_reset_request(user_id: int, username: str = "", email: str = "") -> bool:
+    """登记一条找回密码申请（pending）。同一用户已有 pending 则只刷新时间，避免刷屏。"""
+    with _lock, _conn() as c:
+        existing = c.execute(
+            "SELECT id FROM password_reset_requests WHERE user_id=? AND status='pending'",
+            (user_id,)
+        ).fetchone()
+        if existing:
+            c.execute("UPDATE password_reset_requests SET created_at=datetime('now','localtime')"
+                      " WHERE id=?", (existing["id"],))
+        else:
+            c.execute(
+                "INSERT INTO password_reset_requests (user_id,username,email) VALUES (?,?,?)",
+                (user_id, username, email)
+            )
+        c.commit()
+        return True
+
+
+def list_reset_requests(status: str = "pending", limit: int = 100) -> list:
+    """列出找回密码申请（默认仅 pending），含用户当前邮箱/积分便于核对身份。"""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT r.*, u.email AS current_email, u.is_active"
+            " FROM password_reset_requests r LEFT JOIN users u ON u.id=r.user_id"
+            " WHERE r.status=? ORDER BY r.id DESC LIMIT ?", (status, limit)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def count_pending_reset_requests() -> int:
+    with _conn() as c:
+        return c.execute("SELECT COUNT(*) AS n FROM password_reset_requests"
+                         " WHERE status='pending'").fetchone()["n"]
+
+
+def resolve_reset_request(req_id: int, admin_uid: int) -> dict:
+    """管理员审批通过：生成临时密码、重置该用户、标记 resolved。返回临时密码供管理员转告。"""
+    with _lock, _conn() as c:
+        req = c.execute("SELECT * FROM password_reset_requests WHERE id=?", (req_id,)).fetchone()
+        if not req:
+            return {"ok": False, "error": "申请不存在"}
+        if req["status"] != "pending":
+            return {"ok": False, "error": "该申请已处理"}
+        user = c.execute("SELECT username FROM users WHERE id=?", (req["user_id"],)).fetchone()
+        if not user:
+            c.execute("UPDATE password_reset_requests SET status='rejected',"
+                      " resolved_at=datetime('now','localtime'), resolved_by=? WHERE id=?",
+                      (admin_uid, req_id))
+            c.commit()
+            return {"ok": False, "error": "用户已不存在，申请已关闭"}
+        temp_pw = _gen_temp_password()
+        c.execute("UPDATE users SET password_hash=? WHERE id=?",
+                  (_hash_password(temp_pw), req["user_id"]))
+        # 作废该用户残留的邮件重置 token，避免双通道
+        c.execute("UPDATE password_resets SET used=1 WHERE user_id=? AND used=0", (req["user_id"],))
+        c.execute("UPDATE password_reset_requests SET status='resolved',"
+                  " resolved_at=datetime('now','localtime'), resolved_by=? WHERE id=?",
+                  (admin_uid, req_id))
+        c.commit()
+        return {"ok": True, "username": user["username"], "temp_password": temp_pw}
+
+
+def reject_reset_request(req_id: int, admin_uid: int) -> dict:
+    """管理员驳回申请（不重置密码）。"""
+    with _lock, _conn() as c:
+        cur = c.execute("UPDATE password_reset_requests SET status='rejected',"
+                        " resolved_at=datetime('now','localtime'), resolved_by=?"
+                        " WHERE id=? AND status='pending'", (admin_uid, req_id))
+        c.commit()
+        if cur.rowcount == 0:
+            return {"ok": False, "error": "申请不存在或已处理"}
+    return {"ok": True}
+
+
 def get_points(user_id: int) -> int:
     with _conn() as c:
         row = c.execute("SELECT points FROM users WHERE id=?",

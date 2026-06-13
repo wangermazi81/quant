@@ -66,20 +66,22 @@ def auth_forgot():
     """
     d = request.json or {}
     ident = (d.get("email") or d.get("username") or "").strip()
-    generic = {"ok": True, "msg": "若该邮箱/用户名已注册，重置链接已发送至对应邮箱，请查收（30 分钟内有效）。"}
+    # 统一文案：无论邮箱/用户名是否存在都一样返回，防止借此枚举注册账号。
+    generic = {"ok": True, "msg": "已提交找回申请。管理员审核后会重置你的密码，并通过原渠道（QQ/微信等）告知临时密码。"}
     if not ident:
         return jsonify({"ok": False, "error": "请输入注册邮箱或用户名"})
     try:
         user, token = um.create_password_reset(ident)
-        if user and token:
-            link = f"{APP_BASE_URL}/?pwreset={token}"
-            html = mailer.render_reset_email(user["username"], link, um.PW_RESET_TTL_MIN)
-            if mailer.smtp_configured():
+        if user:
+            # 主路径：登记到后台审批队列（无邮件依赖）
+            um.create_reset_request(user["id"], user["username"], user["email"])
+            # 可选增强：若将来在 .env 配了 SMTP，则同时发一封自助重置邮件
+            if token and mailer.smtp_configured():
+                link = f"{APP_BASE_URL}/?pwreset={token}"
+                html = mailer.render_reset_email(user["username"], link, um.PW_RESET_TTL_MIN)
                 r = mailer.send_email(user["email"], "见微 Alpha 密码重置", html)
                 if not r.get("ok"):
                     logger.warning(f"[forgot] 邮件发送失败 user={user['username']}: {r.get('error')}")
-            else:
-                logger.warning("[forgot] SMTP 未配置，无法发送重置邮件（请在 .env 配置 SMTP_*）")
     except Exception as e:
         logger.warning(f"[forgot] 异常: {e}")
     return jsonify(generic)

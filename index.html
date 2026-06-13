@@ -540,8 +540,8 @@ tr:hover td{background:var(--card)}
           <input class="auth-inp" id="forgotIdent" placeholder="输入注册邮箱或用户名"
                  onkeydown="if(event.key==='Enter')doForgot()">
         </div>
-        <button class="auth-btn" onclick="doForgot()" id="forgotBtn">发送重置邮件</button>
-        <div class="auth-hint">我们会向你的注册邮箱发送重置链接（30 分钟内有效）。</div>
+        <button class="auth-btn" onclick="doForgot()" id="forgotBtn">提交找回申请</button>
+        <div class="auth-hint">提交后由管理员核实身份并重置，临时密码会通过你与管理员的原渠道（QQ/微信等）告知；登录后请及时改密。</div>
         <div class="auth-msg" id="forgotMsg"></div>
         <div style="text-align:center;margin-top:10px">
           <span onclick="backToLogin()" style="font-size:12px;color:var(--t3,#888);cursor:pointer">← 返回登录</span>
@@ -5863,11 +5863,11 @@ async function doForgot(){
   const btn=document.getElementById('forgotBtn'), msg=document.getElementById('forgotMsg')
   const ident=document.getElementById('forgotIdent').value.trim()
   if(!ident){ setAuthMsg(msg,'请输入注册邮箱或用户名','err'); return }
-  btn.disabled=true; btn.textContent='发送中...'
+  btn.disabled=true; btn.textContent='提交中...'
   const r=await api('/auth/forgot','POST',{email:ident})
-  btn.disabled=false; btn.textContent='发送重置邮件'
-  if(r?.ok){ setAuthMsg(msg, r.msg||'重置链接已发送，请查收邮箱', 'ok') }
-  else{ setAuthMsg(msg, r?.error||'发送失败', 'err') }
+  btn.disabled=false; btn.textContent='提交找回申请'
+  if(r?.ok){ setAuthMsg(msg, r.msg||'已提交找回申请，请联系管理员处理', 'ok') }
+  else{ setAuthMsg(msg, r?.error||'提交失败', 'err') }
 }
 async function showResetForm(token){
   _resetToken = token

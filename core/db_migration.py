@@ -257,6 +257,21 @@ def migrate_users_db():
         );
         CREATE INDEX IF NOT EXISTS idx_pwreset_token ON password_resets(token_hash);
         CREATE INDEX IF NOT EXISTS idx_pwreset_uid   ON password_resets(user_id);
+
+        -- 找回密码申请队列（后台审批重置，2026-06-13）。无邮件依赖：用户提交→管理员一键重置。
+        CREATE TABLE IF NOT EXISTS password_reset_requests (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL,
+            username    TEXT,
+            email       TEXT,
+            status      TEXT    DEFAULT 'pending',   -- pending | resolved | rejected
+            created_at  TEXT    DEFAULT (datetime('now','localtime')),
+            resolved_at TEXT,
+            resolved_by INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pwreq_status ON password_reset_requests(status);
+        CREATE INDEX IF NOT EXISTS idx_pwreq_uid    ON password_reset_requests(user_id);
         """)
         c.commit()
         # 补列迁移（对已存在的旧库）

@@ -734,6 +734,30 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
       </div>
     </div>
 
+    <!-- ===== 找回密码申请 ===== -->
+    <div class="page" id="page-reset-requests">
+      <div class="card" id="resetResultBox" style="margin-bottom:16px;display:none"></div>
+      <div class="card">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+          <span><i class="fas fa-key"></i> 待处理的找回密码申请</span>
+          <button class="btn btn-outline" onclick="loadResetRequests()" style="padding:4px 12px;font-size:12px">
+            <i class="fas fa-sync-alt"></i> 刷新
+          </button>
+        </div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:10px">
+          用户在登录页提交「忘记密码」后会出现在这里。核实身份后点「重置并生成临时密码」，把临时密码通过 QQ/微信等原渠道告知用户，并叮嘱其登录后到「个人中心」立即改密。
+        </div>
+        <table>
+          <thead><tr>
+            <th>用户名</th><th>注册邮箱</th><th>申请时间</th><th>账号状态</th><th>操作</th>
+          </tr></thead>
+          <tbody id="resetReqBody">
+            <tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text3)">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- ===== 积分设置 ===== -->
     <div class="page" id="page-point-costs">
       <div class="card">
@@ -1026,6 +1050,7 @@ const MENU = [
   {id:'point-costs', icon:'fas fa-sliders-h',     label:'积分设置', group:'系统管理'},
   {id:'ai-config',  icon:'fas fa-robot',          label:'AI接口设置', group:'系统管理'},
   {id:'invites',   icon:'fas fa-ticket-alt',      label:'邀请码',   group:'系统管理'},
+  {id:'reset-requests', icon:'fas fa-key',         label:'找回申请', group:'系统管理'},
   {id:'stats',         icon:'fas fa-chart-bar',       label:'使用统计',  group:'数据分析'},
   {id:'announcements', icon:'fas fa-bullhorn',         label:'公告管理',  group:'内容管理'},
   {id:'changelog',     icon:'fas fa-history',          label:'更新日志',  group:'内容管理'},
@@ -1035,7 +1060,7 @@ const MENU = [
 const PAGE_NAMES = {
   'dashboard':'工作台','users':'用户管理','roles':'角色权限',
   'points':'积分流水','stats':'使用统计','announcements':'公告管理',
-  'invites':'邀请码','feedback':'问题反馈','point-costs':'积分设置','ai-config':'AI接口设置',
+  'invites':'邀请码','reset-requests':'找回申请','feedback':'问题反馈','point-costs':'积分设置','ai-config':'AI接口设置',
   'user-center':'个人中心','change-pwd':'修改密码','notifications':'系统通知',
   'changelog':'更新日志',
 };
@@ -1131,6 +1156,7 @@ function navigate(id, addTabFlag=true){
   if(id==='stats') loadStats();
   if(id==='user-center') loadUserCenter();
   if(id==='invites') loadInvites();
+  if(id==='reset-requests') loadResetRequests();
   if(id==='point-costs') loadPointCosts();
   if(id==='ai-config') loadAiConfig();
   if(id==='notifications') renderNotifications();
@@ -2079,6 +2105,68 @@ const FB_STATUS_COLOR = {open:'var(--orange)', read:'var(--text3)', in_progress:
 // ══════════════════════════════════════════════════
 //  更新日志管理
 // ══════════════════════════════════════════════════
+// ================================================================
+// 找回密码申请（后台审批重置）
+// ================================================================
+async function loadResetRequests(){
+  const tb = document.getElementById('resetReqBody');
+  try{
+    const r = await _annFetch('GET', '/admin/reset_requests');
+    const list = (r && r.requests) || [];
+    if(!list.length){
+      tb.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text3)">暂无待处理的找回申请</td></tr>';
+      return;
+    }
+    tb.innerHTML = list.map(q=>`<tr>
+      <td><b>${esc(q.username)}</b></td>
+      <td>${esc(q.current_email || q.email || '—')}</td>
+      <td style="font-size:12px;color:var(--text3)">${esc(q.created_at || '')}</td>
+      <td>${q.is_active===0 ? '<span style="color:var(--red)">已禁用</span>' : '正常'}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-primary" style="padding:4px 10px;font-size:12px" onclick="resolveResetReq(${q.id}, '${esc(q.username)}')">重置并生成临时密码</button>
+        <button class="btn btn-outline" style="padding:4px 10px;font-size:12px" onclick="rejectResetReq(${q.id})">驳回</button>
+      </td></tr>`).join('');
+  }catch(e){
+    tb.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--red)">加载失败（后端需重启一次才生效）</td></tr>';
+  }
+}
+
+function resolveResetReq(id, uname){
+  showConfirm(`确定为用户 <b>${esc(uname)}</b> 生成临时密码并重置吗？`, 'btn-primary', async()=>{
+    const r = await _annFetch('POST', '/admin/reset_requests/'+id+'/resolve');
+    if(r && r.ok){
+      showResetResult(r.username, r.temp_password);
+      loadResetRequests();
+    } else {
+      showToast((r && r.error) || '操作失败', 'error');
+    }
+  });
+}
+
+function rejectResetReq(id){
+  showConfirm('确定驳回此找回申请吗？（不会重置密码）', 'btn-danger', async()=>{
+    const r = await _annFetch('POST', '/admin/reset_requests/'+id+'/reject');
+    if(r && r.ok){ showToast('已驳回', 'success'); loadResetRequests(); }
+    else showToast((r && r.error) || '操作失败', 'error');
+  });
+}
+
+function showResetResult(uname, pw){
+  const box = document.getElementById('resetResultBox');
+  box.style.display = 'block';
+  box.innerHTML = `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <i class="fas fa-check-circle" style="color:var(--green);font-size:20px"></i>
+    <span>已重置 <b>${esc(uname)}</b> 的密码，临时密码（请通过 QQ/微信告知该用户，并让其登录后立即改密）：</span>
+    <span id="tempPwVal" style="font-family:monospace;font-size:18px;font-weight:700;letter-spacing:1px;background:var(--theme-light,#eee);color:#222;padding:4px 12px;border-radius:6px">${esc(pw)}</span>
+    <button class="btn btn-outline" style="padding:4px 12px;font-size:12px" onclick="copyTempPw('${esc(pw)}')"><i class="fas fa-copy"></i> 复制</button>
+  </div>`;
+}
+
+function copyTempPw(pw){
+  if(navigator.clipboard){ navigator.clipboard.writeText(pw).then(()=>showToast('已复制临时密码','success'),()=>showToast('复制失败，请手动选中','warning')); }
+  else { showToast('请手动选中复制','warning'); }
+}
+
 async function loadChangelogAdmin(){
   const box = document.getElementById('cl-list-body')
   box.innerHTML = '<div class="empty" style="padding:30px">加载中…</div>'
