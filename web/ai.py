@@ -10,6 +10,7 @@ import data_manager as dm
 import stock_scorer as scorer
 import user_manager as um
 from app_state import BASE_DIR, require_auth, require_admin, _add_log, _deduct
+from app_security import rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,8 @@ def ai_save_config():
 
 
 @bp.route("/api/stocks/score", methods=["POST"])
+@rate_limit(30, 60, scope="score")   # 同一 IP 每分钟最多 30 次，挡匿名刷算力
+@require_auth                         # 原为无鉴权公开接口（前端无调用方），收紧为需登录
 def api_stock_score():
     d    = request.json
     code = d.get("code", "").strip()

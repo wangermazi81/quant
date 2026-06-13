@@ -75,8 +75,15 @@ else:
     CORS(app, supports_credentials=True, origins=[])
     logger.info("CORS 未配置跨域来源，仅允许同源访问（设 CORS_ORIGINS 可放行指定来源）")
 
-# ── Swagger / flasgger ────────────────────────────────────────
-try:
+# ── 安全加固：Cookie 硬化 + 安全响应头（详见 app_security.py）──
+from app_security import init_security
+init_security(app)
+logger.info("安全加固已启用（Cookie 硬化 / 安全响应头 / 限流就绪）"
+            + ("；HTTPS Secure Cookie 已开启" if _os.environ.get("SESSION_COOKIE_SECURE", "0") in ("1", "true", "True") else "；SESSION_COOKIE_SECURE 未开（HTTPS 就绪后再开）"))
+
+# ── Swagger / flasgger（生产默认关闭，设 ENABLE_SWAGGER=1 才暴露）──
+if _os.environ.get("ENABLE_SWAGGER", "0").strip().lower() in ("1", "true", "yes", "on"):
+  try:
     from flasgger import Swagger
     swagger_cfg = {
         "title": "见微 Alpha API",
@@ -91,7 +98,7 @@ try:
     }], "static_url_path": "/flasgger_static", "swagger_ui": True,
         "specs_route": "/apidocs/"}, template={"info": swagger_cfg})
     logger.info("Swagger UI 已启用: /apidocs/")
-except ImportError:
+  except ImportError:
     logger.info("flasgger 未安装，跳过 Swagger UI")
 
 # ── 初始化数据库 ──────────────────────────────────────────────
