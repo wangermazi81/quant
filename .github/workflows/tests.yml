@@ -1,0 +1,30 @@
+name: tests
+
+# 每次推送 main / 提 PR 自动跑关键路径单元测试，挡住认证/积分/风控/安全的回归。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test deps (轻量：仅单测所需，不装行情/AI 重依赖)
+        run: |
+          python -m pip install --upgrade pip
+          pip install flask flask-cors pytest
+
+      - name: Run critical-path unit tests
+        run: |
+          python -m pytest \
+            tests/test_user_manager.py \
+            tests/test_risk.py \
+            tests/test_app_security.py \
+            -v
