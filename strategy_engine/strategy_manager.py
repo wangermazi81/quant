@@ -481,7 +481,16 @@ def _refresh_market_cache() -> list:
         cache_file = Path(__file__).parent.parent / "data" / "market_universe.json"
         if cache_file.exists():
             import json as _json
-            data = _json.loads(cache_file.read_text(encoding="utf-8"))
+            try:
+                data = _json.loads(cache_file.read_text(encoding="utf-8"))
+            except ValueError:
+                # 损坏的兜底文件（历史非原子写残留，报 "Extra data"）→ 删除待原子重建
+                logger.warning("[SM] 磁盘兜底 universe 损坏，已删除待下次刷新重建")
+                try:
+                    cache_file.unlink()
+                except OSError:
+                    pass
+                data = {}
             active = data.get("quotes", [])
             saved_ts = data.get("ts", 0)
             age_h = (_time.time() - saved_ts) / 3600
@@ -506,14 +515,23 @@ def _persist_universe_to_disk(quotes: list) -> None:
         return
     try:
         from pathlib import Path
-        import json as _json
+        import json as _json, os as _os, tempfile as _tempfile
         cache_file = Path(__file__).parent.parent / "data" / "market_universe.json"
         cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(
-            _json.dumps({"ts": _time.time(), "quotes": quotes},
-                        ensure_ascii=False),
-            encoding="utf-8"
-        )
+        payload = _json.dumps({"ts": _time.time(), "quotes": quotes}, ensure_ascii=False)
+        # 原子写：先写唯一临时文件，再 os.replace 原子改名。
+        # 之前直接 write_text，多个扫描线程并发写同一文件 → 字节交错 → 读取报 "Extra data"。
+        fd, tmp = _tempfile.mkstemp(dir=str(cache_file.parent), prefix=".universe.", suffix=".tmp")
+        try:
+            with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            _os.replace(tmp, cache_file)   # 同盘原子改名，最后一个写者整份生效，绝不交错
+        finally:
+            if _os.path.exists(tmp):
+                try:
+                    _os.remove(tmp)
+                except OSError:
+                    pass
         logger.debug(f"[SM] universe 已持久化到 {cache_file.name} ({len(quotes)} 只)")
     except Exception as e:
         logger.debug(f"[SM] universe 持久化失败（不致命）: {e}")
