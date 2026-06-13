@@ -20,9 +20,14 @@ PORT="${PORT:-5000}"
 
 cd "$APP_DIR"
 
+# 仓库已 chown 给非 root 服务用户(降权后)，root 运行 git 需加 safe.directory 白名单。
+git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+# 服务实际运行用户（systemd User=），拉取后据此恢复属主、以其身份跑迁移。
+RUN_USER=$(systemctl show "$SERVICE" -p User --value 2>/dev/null); RUN_USER="${RUN_USER:-root}"
+
 echo "▶ [1/5] 拉取最新代码 (gitee)"
-# 保留本地未提交改动（如服务器侧改过 .env）
-git fetch --all --prune
+# 仅 fetch origin（已指向可用 SSH 远端），避免 --all 触发历史遗留坏远端导致中止
+git fetch origin --prune
 LOCAL=$(git rev-parse HEAD)
 git pull --ff-only origin "$(git branch --show-current)" || {
     echo "❌ git pull 失败。常见原因：服务器侧有未提交改动覆盖了 tracked 文件"
@@ -35,6 +40,11 @@ if [ "$LOCAL" = "$REMOTE" ]; then
     exit 0
 fi
 echo "  $LOCAL → $REMOTE"
+# 拉取的文件以 root 写入，恢复属主给服务用户（app 非 root 需能读新文件）
+if [ "$RUN_USER" != "root" ]; then
+    chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
+    echo "  已恢复属主 $RUN_USER:$RUN_USER"
+fi
 
 echo ""
 echo "▶ [2/5] 检查依赖是否变化"
@@ -49,7 +59,9 @@ fi
 
 echo ""
 echo "▶ [3/5] 运行数据库迁移（幂等）"
-python3 core/db_migration.py || echo "  ⚠️  migration 报错（可能是兼容 try/except，不致命）"
+# 以服务用户身份跑，避免迁移产生的 -wal/-shm 文件归 root → app(非root) 写不动
+sudo -u "$RUN_USER" "$APP_DIR/venv/bin/python" core/db_migration.py \
+    || echo "  ⚠️  migration 报错（可能是兼容 try/except，不致命）"
 
 echo ""
 echo "▶ [4/5] 重启服务"
