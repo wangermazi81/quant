@@ -783,21 +783,22 @@ def do_scan(uid: int):
                                   f"本轮不再开新仓", "info")
                     _guard_full_logged = True
                 continue
-            # ★ 实盘模式：提前检查是否超 MAX_ORDER_AMOUNT 护栏，避免桥接器层无谓拒单 ★
-            _est = price * shares
+            # ★ 实盘模式：单笔金额护栏（超 MAX_ORDER_AMOUNT 自动缩仓；连 1 手都超则跳过）★
+            #   缩仓/拒单决策见 core/order_sizing.clamp_to_max_order —— 修复了原内联实现的 bug
+            #   （单价×100 股已超上限时仍会强制 100 股照下单，靠 broker 层硬拒兜底）。
             if _broker_type == "live":
                 try:
                     from config import MAX_ORDER_AMOUNT as _MAX_ORD
                 except Exception:
                     _MAX_ORD = 50000
-                if _est > _MAX_ORD:
-                    # 自动缩到护栏内（按 100 股向下取整）
-                    safe_shares = max(int(_MAX_ORD / price / 100) * 100, 100)
-                    if safe_shares < 100:
+                _est = price * shares
+                _safe_shares, _clamped = order_sizing.clamp_to_max_order(shares, price, _MAX_ORD)
+                if _clamped:
+                    if _safe_shares == 0:
                         _add_log(uid, f"⏭ {code} 单股 @¥{price:.2f} × 100股 = ¥{price*100:.0f} 已超 ¥{_MAX_ORD} 护栏，跳过", "error")
                         continue
-                    _add_log(uid, f"⚠️ {code} 预估 ¥{_est:,.0f} > 护栏 ¥{_MAX_ORD}，自动缩仓 {shares}→{safe_shares} 股", "info")
-                    shares = safe_shares
+                    _add_log(uid, f"⚠️ {code} 预估 ¥{_est:,.0f} > 护栏 ¥{_MAX_ORD}，自动缩仓 {shares}→{_safe_shares} 股", "info")
+                    shares = _safe_shares
                     budget = price * shares
             item = {
                 "code":       code,
