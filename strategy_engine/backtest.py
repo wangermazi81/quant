@@ -34,6 +34,10 @@ import numpy as np
 import pandas as pd
 
 DATA_DIR = Path(__file__).parent.parent / "data" / "daily"
+
+# 全市场回测 TDX 补充标的上限（资居内存与此成正比）。小内存机器(如 1.6GB 云主机)
+# 可设环境变量 BACKTEST_MAX_CODES=400 降低全市场回测内存峰值，避免 worker 被 OOM kill。
+BACKTEST_MAX_CODES = int(os.environ.get("BACKTEST_MAX_CODES", "800") or "800")
 logger   = logging.getLogger(__name__)
 
 # ── 异步回测任务注册表 ──────────────────────────────────
@@ -739,8 +743,8 @@ def _load_full_market_data(start_date: str, end_date: str, logs: list,
                   and q.get("last_close", 0) > 0]
         active.sort(key=lambda q: q.get("vol", 0), reverse=True)
 
-        # 取前 800 只中本地尚无数据的
-        top_codes = [q["code"] for q in active[:800] if q["code"] not in all_data]
+        # 取前 N 只（BACKTEST_MAX_CODES，默认 800）中本地尚无数据的
+        top_codes = [q["code"] for q in active[:BACKTEST_MAX_CODES] if q["code"] not in all_data]
         logs.append({"level": "INFO",
                      "msg": f"[全市场] TDX补充标的: {len(top_codes)} 只（排除本地已有）"})
 
@@ -918,8 +922,12 @@ def run_backtest(strategy_code: str, codes: list,
             stop_loss     = stop_loss,
             take_profit   = take_profit,
         )
-        for code, df in all_data.items():
-            cerebro.add_data(code, df)
+        # 边加边释放：pop 出原 df 交给 add_data（内部排序成新副本存入 cerebro），
+        # 原 df 随即无引用被回收 → 避免 all_data 与 cerebro.data_feeds 同时各存一份
+        # （小内存机器上全市场回测的资居内存峰值约减半，是 OOM 的主因之一）。
+        for code in actual_codes:
+            cerebro.add_data(code, all_data.pop(code))
+        all_data = None
         cerebro.logs = logs
         cerebro.set_scan(mod.scan)
 
