@@ -103,32 +103,50 @@ if _os.environ.get("ENABLE_SWAGGER", "0").strip().lower() in ("1", "true", "yes"
   except ImportError:
     logger.info("flasgger 未安装，跳过 Swagger UI")
 
-# ── 初始化数据库 ──────────────────────────────────────────────
-um.init_db()
-# 问题反馈表（与 users.db 同库，幂等建表）
-import feedback_manager as fbm
-fbm.init_db()
-import changelog_manager as clm
-clm.init_db()
-# 迁移必须在 pb.init_paper_db() 之前，先给旧表加 user_id 列
-try:
-    import db_migration as _dbm
-    _dbm.migrate_paper_trading_db()
-    _dbm.migrate_users_db()
-except Exception as _e:
-    logger.warning(f"[db_migration] {_e}")
-pb.init_paper_db()
-
+# import platform 必须留模块级：多个路由（查实盘账户/资金/账户快照）用 platform.system()
 import platform
-if platform.system() == "Windows":
+# operator 始终是模块全局（路由层引用）。纯导入测试时保持 None。
+operator = None
+# 纯导入标志（测试/工具）：跳过建表/迁移/operator/调度等 import 时副作用，使 main 可被安全 import。
+# 生产（gunicorn / python main.py）不设此环境变量 → 一切照常初始化，行为与原内联完全一致。
+_TEST_IMPORT = _os.environ.get("QUANT_TEST_IMPORT") == "1"
+
+
+def _init_runtime():
+    """import 时的运行态初始化：建表 / 迁移 / 模拟盘库 / 同花顺操作器。
+
+    与原内联初始化逐句等价，仅多一层函数封装 + `global operator`。
+    """
+    global operator
+    # ── 初始化数据库 ──
+    um.init_db()
+    # 问题反馈表（与 users.db 同库，幂等建表）
+    import feedback_manager as fbm
+    fbm.init_db()
+    import changelog_manager as clm
+    clm.init_db()
+    # 迁移必须在 pb.init_paper_db() 之前，先给旧表加 user_id 列
     try:
-        operator = THSOperator()
-    except Exception as _ope:
-        logger.warning(f"本地同花顺操作器初始化失败: {_ope}")
+        import db_migration as _dbm
+        _dbm.migrate_paper_trading_db()
+        _dbm.migrate_users_db()
+    except Exception as _e:
+        logger.warning(f"[db_migration] {_e}")
+    pb.init_paper_db()
+
+    if platform.system() == "Windows":
+        try:
+            operator = THSOperator()
+        except Exception as _ope:
+            logger.warning(f"本地同花顺操作器初始化失败: {_ope}")
+            operator = None
+    else:
+        logger.info("云端 Linux 环境，跳过同花顺 GUI 操作器初始化")
         operator = None
-else:
-    logger.info("云端 Linux 环境，跳过同花顺 GUI 操作器初始化")
-    operator = None
+
+
+if not _TEST_IMPORT:
+    _init_runtime()
 
 # ── 共享运行态/通用辅助（见 app_state.py，与各 web 蓝图共用同一份内存状态）──
 from app_state import (
@@ -3080,8 +3098,8 @@ def _start_background_services():
 
 
 # 模块级启动：gunicorn 导入 main:app 时不进入 __main__，必须在此启动。
-# 设 THS_NO_SCHEDULER=1 可禁用（供测试/纯导入场景）。
-if _os.environ.get("THS_NO_SCHEDULER") != "1":
+# 设 THS_NO_SCHEDULER=1 或 QUANT_TEST_IMPORT=1 可禁用（供测试/纯导入场景）。
+if _os.environ.get("THS_NO_SCHEDULER") != "1" and not _TEST_IMPORT:
     _start_background_services()
 
 
