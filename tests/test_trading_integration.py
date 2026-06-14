@@ -108,3 +108,78 @@ class TestDoScanSmoke:
         s = get_user_state(uid)
         s["running"] = False
         main.do_scan(uid)                                 # 不抛即通过（证明 do_scan 可被测试驱动）
+
+
+class TestDoScanQueue:
+    """do_scan 选股→入队全流程集成测试（验证已部署的 order_sizing 接入 + 仓位护栏在实跑时的行为）。"""
+
+    @pytest.fixture
+    def scan(self, uid, monkeypatch):
+        import strategy_manager as sm
+        import notification_manager as nm
+        import ths_quote
+        # 交易时段=True；无行情客户端(避网络)；通知 no-op(避线程)；策略仓位配置取默认(走面板比例路径)
+        monkeypatch.setattr(main, "is_trading_time", lambda: True)
+        monkeypatch.setattr(ths_quote, "get_client", lambda *a, **k: None)
+        monkeypatch.setattr(nm, "send_notification", lambda *a, **k: {"ok": True})
+        monkeypatch.setattr(sm, "get_position_config", lambda *a, **k: {})
+        return uid, sm, monkeypatch
+
+    @staticmethod
+    def _state(_uid, capital=500000, ratio=0.2, sp=0.2, maxpos=5):
+        s = get_user_state(_uid)
+        s.update(running=True, active_strategy="test_strat", capital=capital,
+                 position_ratio=ratio, single_position_max_ratio=sp,
+                 max_positions=maxpos, auto_execute=False, queue=[], positions={})
+        return s
+
+    @staticmethod
+    def _mock_results(sm, mp, cands):
+        mp.setattr(sm, "run", lambda *a, **k: {"results": cands, "scanned": len(cands)})
+
+    def test_scan_queues_correctly_sized_orders(self, scan):
+        uid, sm, mp = scan
+        cands = [
+            {"code": "000001", "name": "A", "price": 10.0, "change": 3.0},
+            {"code": "600000", "name": "B", "price": 12.5, "change": 2.0},
+            {"code": "000002", "name": "C", "price": 20.0, "change": 4.0},
+        ]
+        self._mock_results(sm, mp, cands)
+        s = self._state(uid, capital=500000, ratio=0.2, sp=0.2, maxpos=5)
+        main.do_scan(uid)
+        from order_sizing import lot_shares
+        q = {it["code"]: it for it in s["queue"]}
+        assert set(q) == {"000001", "600000", "000002"}
+        # 每笔手数 = lot_shares(全仓 × 比例, 价)，验证 order_sizing 在 do_scan 实跑中生效
+        assert q["000001"]["shares"] == lot_shares(100000, 10.0)   # 10000
+        assert q["600000"]["shares"] == lot_shares(100000, 12.5)   # 8000
+        assert q["000002"]["shares"] == lot_shares(100000, 20.0)   # 5000
+
+    def test_max_positions_guardrail(self, scan):
+        uid, sm, mp = scan
+        cands = [{"code": f"00000{i}", "name": str(i), "price": 10.0, "change": 3.0}
+                 for i in range(1, 5)]                       # 4 只候选
+        self._mock_results(sm, mp, cands)
+        s = self._state(uid, capital=500000, ratio=0.1, sp=0.2, maxpos=2)
+        main.do_scan(uid)
+        assert len(s["queue"]) == 2                          # 持仓名额上限 2，多余信号不入队
+
+    def test_available_cash_gate(self, scan):
+        uid, sm, mp = scan
+        cands = [{"code": f"00000{i}", "name": str(i), "price": 10.0, "change": 3.0}
+                 for i in range(1, 4)]                       # 3 只候选
+        self._mock_results(sm, mp, cands)
+        # 每仓=200000×0.5=100000，可用 200000 → 只够 2 仓，第 3 只被可用资金闸门挡下
+        s = self._state(uid, capital=200000, ratio=0.5, sp=0.5, maxpos=5)
+        main.do_scan(uid)
+        assert len(s["queue"]) == 2
+
+    def test_single_position_guardrail_caps_ratio(self, scan):
+        uid, sm, mp = scan
+        cands = [{"code": "000001", "name": "A", "price": 10.0, "change": 3.0}]
+        self._mock_results(sm, mp, cands)
+        # 面板仓位 50% 但单笔护栏 20% → 实际按 20% 建仓
+        s = self._state(uid, capital=500000, ratio=0.5, sp=0.2, maxpos=5)
+        main.do_scan(uid)
+        from order_sizing import lot_shares
+        assert s["queue"][0]["shares"] == lot_shares(500000 * 0.2, 10.0)   # 护栏夹到 20%
