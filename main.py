@@ -27,6 +27,7 @@ import paper_broker as pb
 import user_manager as um
 import notification_manager as nm
 import order_sizing  # 下单仓位/手数纯函数（从 do_scan 抽出，有回归测试 tests/test_order_sizing.py）
+import daban_ride    # 打板 Ride 卖出决策纯函数（从本文件抽出，有回归测试 tests/test_daban_ride.py）
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -376,41 +377,15 @@ def _save_daban_peaks():
 _load_daban_peaks()
 
 
-def _daban_board_rate(code: str) -> float:
-    if code.startswith(("300", "301", "688", "689")):
-        return 0.20
-    if code.startswith(("4", "8")):
-        return 0.30
-    return 0.10
-
+# 打板涨停幅度 / Ride 卖出决策已抽到 core/daban_ride.py（纯函数，测试见 tests/test_daban_ride.py）
 
 _LIVE_SELL_PENDING: set = set()   # (uid, code) 已生成卖出信号、等成交确认，避免每轮重复发
 
 
 def _daban_ride_decision(code: str, cost: float, cur: float, last_close: float,
                          hold_days: int, peak: float):
-    """打板 Ride 卖出决策（纯函数，模拟盘/实盘共用）。
-    返回 (should_sell: bool, reason: str|None, new_peak: float)。
-      - 当日仍封板(连板) → 持有，让利润奔跑；
-      - 跌破成本 DABAN_STOP_LOSS → 止损；
-      - 从持仓期最高回落 ≥ DABAN_TRAIL → 卖；
-      - 持有 ≥ DABAN_MAX_HOLD 天 → 卖。
-    """
-    new_peak = max(peak or cost, cur)
-    if cost <= 0 or cur <= 0:
-        return False, None, new_peak
-    limit_up = round(last_close * (1 + _daban_board_rate(code)), 2) if last_close > 0 else 0
-    if DABAN_HOLD_LIMITUP and limit_up > 0 and cur >= limit_up - 0.001:
-        return False, None, new_peak          # 连板，持有
-    pnl = (cur - cost) / cost
-    ddp = (new_peak - cur) / new_peak if new_peak > 0 else 0.0
-    if pnl <= DABAN_STOP_LOSS:
-        return True, f"打板止损({pnl*100:.1f}%≤{DABAN_STOP_LOSS*100:.0f}%)", new_peak
-    if ddp >= DABAN_TRAIL:
-        return True, f"高位回落({ddp*100:.1f}%≥{DABAN_TRAIL*100:.0f}%,峰¥{new_peak:.2f})", new_peak
-    if hold_days >= DABAN_MAX_HOLD:
-        return True, f"超期({hold_days}天≥{DABAN_MAX_HOLD}天)", new_peak
-    return False, None, new_peak
+    """打板 Ride 卖出决策（薄包装；逻辑与默认阈值见 core/daban_ride.ride_decision）。"""
+    return daban_ride.ride_decision(code, cost, cur, last_close, hold_days, peak)
 
 
 def _check_live_daban_ride(uid: int):
