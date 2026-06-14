@@ -28,6 +28,7 @@ import user_manager as um
 import notification_manager as nm
 import order_sizing  # 下单仓位/手数纯函数（从 do_scan 抽出，有回归测试 tests/test_order_sizing.py）
 import daban_ride    # 打板 Ride 卖出决策纯函数（从本文件抽出，有回归测试 tests/test_daban_ride.py）
+import sell_rules     # 账户默认止损/止盈/超期决策纯函数（与 paper_broker 共用，tests/test_sell_rules.py）
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -475,15 +476,10 @@ def _check_live_daban_ride(uid: int):
                 except Exception:
                     pass
         else:
-            # 账户默认止损/止盈/超期（用户设置的买卖规则，旧版实盘从不执行）
+            # 账户默认止损/止盈/超期（决策见 core/sell_rules.account_exit；与 paper_broker 同源）
             pnl = (cur - cost) / cost
-            sell, reason = False, None
-            if pnl <= _acct_stop:
-                sell, reason = True, f"止损({pnl*100:.1f}%≤{_acct_stop*100:.0f}%)"
-            elif pnl >= _acct_take:
-                sell, reason = True, f"止盈({pnl*100:.1f}%≥{_acct_take*100:.0f}%)"
-            elif hold >= _acct_hold:
-                sell, reason = True, f"超期({hold}天≥{_acct_hold}天)"
+            sell, reason = sell_rules.account_exit(
+                pnl, hold, _acct_stop, _acct_take, _acct_hold, thr_decimals=0)
         if not sell:
             continue
         shares = int(p.get("shares", 0) or 0)

@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict
 
+import sell_rules   # 账户默认止损/止盈/超期决策（纯函数，与 main 实盘共用，测试见 tests/test_sell_rules.py）
+
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent.parent / "data" / "paper_trading.db"
@@ -571,13 +573,8 @@ class PaperBroker:
             buy_dt  = datetime.strptime(pos["buy_time"][:10], "%Y-%m-%d")
             hold    = (datetime.now() - buy_dt).days
 
-            reason = None
-            if pnl_pct <= stop_loss:
-                reason = f"止损({pnl_pct*100:.1f}%≤{stop_loss*100:.1f}%)"
-            elif pnl_pct >= take_profit:
-                reason = f"止盈({pnl_pct*100:.1f}%≥{take_profit*100:.1f}%)"
-            elif hold >= max_hold:
-                reason = f"超期({hold}天≥{max_hold}天)"
+            _, reason = sell_rules.account_exit(
+                pnl_pct, hold, stop_loss, take_profit, max_hold, thr_decimals=1)
 
             if reason:
                 result = self.submit_sell(code, cur_price, sell_reason=reason)
