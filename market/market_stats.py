@@ -1,0 +1,270 @@
+# -*- coding: utf-8 -*-
+"""Reliable market breadth and turnover statistics.
+
+These helpers keep market-wide statistics separate from strategy quote scans.
+Strategy quote batches may be incomplete under TDX fallback, so callers should
+prefer official/aggregate sources and carry source metadata for diagnostics.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+from typing import Iterable
+
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+MIN_QUOTE_COVERAGE = 0.98
+DEFAULT_EXPECTED_STOCK_COUNT = 5190
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(round(float(value)))
+    except Exception:
+        return default
+
+
+def _find_col(df: pd.DataFrame, *names: str):
+    for name in names:
+        for col in df.columns:
+            if str(col) == name:
+                return col
+    for name in names:
+        for col in df.columns:
+            if name in str(col):
+                return col
+    return None
+
+
+def _row_value_by_label(df: pd.DataFrame, row_label: str, value_col: str, label_col=None):
+    label_col = label_col if label_col is not None else df.columns[0]
+    for _, row in df.iterrows():
+        if str(row.get(label_col, "")) == row_label:
+            return row.get(value_col)
+    raise KeyError(row_label)
+
+
+def _date_ymd(date_text: str) -> str:
+    digits = "".join(ch for ch in str(date_text) if ch.isdigit())
+    if len(digits) >= 8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    return str(date_text)
+
+
+def parse_legu_activity(df: pd.DataFrame) -> dict:
+    if df is None or df.empty:
+        raise ValueError("empty legu activity frame")
+    item_col = _find_col(df, "item") or df.columns[0]
+    value_col = _find_col(df, "value") or df.columns[1]
+    values = {str(row[item_col]).strip(): row[value_col] for _, row in df.iterrows()}
+
+    up = _safe_int(values.get("上涨"))
+    down = _safe_int(values.get("下跌"))
+    flat = _safe_int(values.get("平盘"))
+    suspended = _safe_int(values.get("停牌"))
+    stat_time = str(values.get("统计日期", ""))
+    limit_up = _safe_int(values.get("真实涨停", values.get("涨停")))
+    limit_dn = _safe_int(values.get("真实跌停", values.get("跌停")))
+    active_total = up + down + flat
+
+    return {
+        "up": up,
+        "down": down,
+        "flat": flat,
+        "suspended": suspended,
+        "limit_up": limit_up,
+        "limit_dn": limit_dn,
+        "total": active_total,
+        "listed_total": active_total + suspended,
+        "source": "legu",
+        "stat_time": stat_time,
+        "degraded": False,
+    }
+
+
+def breadth_from_quotes(quotes: Iterable[dict], expected_count: int | None = None) -> dict:
+    items = list(quotes or [])
+    expected = expected_count or len(items) or DEFAULT_EXPECTED_STOCK_COUNT
+
+    def cp(q):
+        return _safe_float(q.get("change_pct"), 0.0)
+
+    coverage = round(len(items) / expected, 3) if expected else 1.0
+    degraded = coverage < MIN_QUOTE_COVERAGE
+    result = {
+        "up": sum(1 for q in items if cp(q) > 0),
+        "down": sum(1 for q in items if cp(q) < 0),
+        "flat": sum(1 for q in items if cp(q) == 0),
+        "limit_up": sum(1 for q in items if cp(q) >= 9.9),
+        "limit_dn": sum(1 for q in items if cp(q) <= -9.9),
+        "total": len(items),
+        "expected_count": expected,
+        "coverage": coverage,
+        "source": "tdx_quotes",
+        "degraded": degraded,
+    }
+    if degraded:
+        result["reason"] = f"quote coverage {coverage:.1%} below {MIN_QUOTE_COVERAGE:.0%}"
+    return result
+
+
+def official_turnover_from_frames(date_text: str, sse_df: pd.DataFrame, szse_df: pd.DataFrame) -> dict:
+    if sse_df is None or sse_df.empty or szse_df is None or szse_df.empty:
+        raise ValueError("empty official turnover frame")
+
+    sse_main_a_col = _find_col(sse_df, "主板A")
+    sse_star_col = _find_col(sse_df, "科创板")
+    if not sse_main_a_col or not sse_star_col:
+        raise KeyError("SSE A-share columns missing")
+    sse_main_a = _safe_float(_row_value_by_label(sse_df, "成交金额", sse_main_a_col))
+    sse_star = _safe_float(_row_value_by_label(sse_df, "成交金额", sse_star_col))
+
+    szse_type_col = _find_col(szse_df, "证券类别") or szse_df.columns[0]
+    szse_amount_col = _find_col(szse_df, "成交金额")
+    if not szse_amount_col:
+        raise KeyError("SZSE amount column missing")
+    szse_main_a = _safe_float(_row_value_by_label(szse_df, "主板A股", szse_amount_col, szse_type_col)) / 1e8
+    szse_chinext = _safe_float(_row_value_by_label(szse_df, "创业板A股", szse_amount_col, szse_type_col)) / 1e8
+
+    amount = round(sse_main_a + sse_star + szse_main_a + szse_chinext, 2)
+    return {
+        "today": round(amount, 0),
+        "amount": amount,
+        "source": "official_exchange",
+        "stat_date": _date_ymd(date_text),
+        "degraded": False,
+    }
+
+
+def turnover_from_index_quotes(quotes: Iterable[dict]) -> dict:
+    by_code = {str(q.get("code", "")): q for q in (quotes or [])}
+    missing = [code for code in ("000001", "399106") if code not in by_code]
+    if missing:
+        raise ValueError(f"missing index quotes: {','.join(missing)}")
+    amount = round(sum(_safe_float(by_code[code].get("amount")) for code in ("000001", "399106")) / 1e8, 2)
+    return {
+        "today": round(amount, 0),
+        "amount": amount,
+        "source": "tdx_index",
+        "degraded": False,
+    }
+
+
+def _latest_sse_report_date() -> str:
+    import akshare as ak
+
+    df = ak.stock_sse_summary()
+    if df is None or df.empty:
+        raise ValueError("empty SSE summary frame")
+    item_col = df.columns[0]
+    for _, row in df.iterrows():
+        if str(row.get(item_col, "")) == "报告时间":
+            value = row.iloc[1]
+            digits = "".join(ch for ch in str(value) if ch.isdigit())
+            if len(digits) >= 8:
+                return digits[:8]
+    raise ValueError("SSE report date missing")
+
+
+def _turnover_from_official_exchange(date_text: str | None = None) -> dict:
+    import akshare as ak
+
+    compact = date_text or _latest_sse_report_date()
+    sse_df = ak.stock_sse_deal_daily(date=compact)
+    szse_df = ak.stock_szse_summary(date=compact)
+    return official_turnover_from_frames(compact, sse_df, szse_df)
+
+
+def _turnover_from_tdx_index() -> dict:
+    import ths_quote as tq
+
+    client = tq.get_client()
+    if not (client and client._ok):
+        raise RuntimeError("TDX unavailable")
+    quotes = client.get_index_quotes([(1, "000001"), (0, "399106")])
+    return turnover_from_index_quotes(quotes)
+
+
+def _turnover_trend_from_index_daily(limit: int = 20) -> list[dict]:
+    import akshare as ak
+
+    amounts = {}
+    for sym in ("sh000001", "sz399106"):
+        df = ak.stock_zh_index_daily_em(symbol=sym)
+        if df is None or df.empty:
+            continue
+        for _, row in df.tail(limit).iterrows():
+            day = str(row.get("date", ""))[:10]
+            if not day:
+                continue
+            amounts[day] = amounts.get(day, 0.0) + _safe_float(row.get("amount"))
+    return [{"date": day, "amount": round(amounts[day] / 1e8, 0)} for day in sorted(amounts.keys())[-limit:]]
+
+
+def get_market_breadth(expected_count: int | None = None) -> dict:
+    try:
+        import akshare as ak
+
+        parsed = parse_legu_activity(ak.stock_market_activity_legu())
+        return parsed
+    except Exception as exc:
+        logger.warning(f"[market_stats] legu breadth failed: {exc}")
+
+    try:
+        import strategy_manager as sm
+
+        quotes = sm._get_full_market_snapshot()
+        if quotes:
+            result = breadth_from_quotes(quotes, expected_count=expected_count)
+            if not result.get("degraded"):
+                return result
+            logger.warning(f"[market_stats] degraded breadth fallback: {result.get('reason')}")
+            return result
+    except Exception as exc:
+        logger.warning(f"[market_stats] quote breadth failed: {exc}")
+
+    return {"source": "none", "degraded": True, "reason": "no breadth source available"}
+
+
+def get_market_turnover(date_text: str | None = None, prefer_official: bool | None = None) -> dict:
+    prefer_official = (not _is_trading_time()) if prefer_official is None else prefer_official
+    sources = (_turnover_from_official_exchange, _turnover_from_tdx_index) if prefer_official else (_turnover_from_tdx_index, _turnover_from_official_exchange)
+    errors = []
+    for source in sources:
+        try:
+            result = source(date_text) if source is _turnover_from_official_exchange else source()
+            break
+        except Exception as exc:
+            errors.append(f"{source.__name__}: {exc}")
+    else:
+        result = {"today": None, "trend": [], "source": "none", "degraded": True, "reason": "; ".join(errors)}
+
+    try:
+        trend = _turnover_trend_from_index_daily()
+    except Exception as exc:
+        logger.debug(f"[market_stats] turnover trend failed: {exc}")
+        trend = []
+    if result.get("today") is not None and trend:
+        trend[-1]["amount"] = result["today"]
+    result["trend"] = trend
+    return result
+
+
+def _is_trading_time() -> bool:
+    now = datetime.now()
+    if now.weekday() >= 5:
+        return False
+    t = now.hour * 100 + now.minute
+    return (930 <= t <= 1130) or (1300 <= t <= 1500)

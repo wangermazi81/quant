@@ -109,55 +109,13 @@ def _collect_zt(compact: str) -> dict:
 
 
 def _collect_turnover() -> dict:
-    """两市成交额：今日 + 近20日趋势（单位：亿元）。
-
-    东财历史接口在部分网络环境（代理）下不通，做三级降级：
-    em 历史K线(趋势+今日) → em 指数快照(仅今日) → TDX 全市场快照求和(仅今日)。
-    """
-    import akshare as ak
-    out = {"today": None, "trend": []}
+    """两市成交额：今日 + 近20日趋势（单位：亿元）。"""
     try:
-        amounts = {}
-        for sym in ("sh000001", "sz399001"):
-            df = ak.stock_zh_index_daily_em(symbol=sym)
-            if df is None or df.empty:
-                continue
-            df = df.tail(20)
-            for _, r in df.iterrows():
-                d = str(r.get("date", ""))[:10]
-                amounts[d] = amounts.get(d, 0.0) + _safe_float(r.get("amount", 0))
-        days = sorted(amounts.keys())[-20:]
-        out["trend"] = [{"date": d, "amount": round(amounts[d] / 1e8, 0)} for d in days]
-        if out["trend"]:
-            out["today"] = out["trend"][-1]["amount"]
+        import market_stats as _mstats
+        return _mstats.get_market_turnover()
     except Exception as e:
-        logger.debug(f"[review] 成交额趋势失败: {e}")
-
-    if out["today"] is None:
-        try:    # 降级1：em 指数实时快照的成交额（上证+深证成指近似两市）
-            df = ak.stock_zh_index_spot_em()
-            if df is not None and not df.empty:
-                amt_col  = next((c for c in df.columns if "成交额" in str(c)), None)
-                code_col = next((c for c in df.columns if "代码" in str(c)), None)
-                if amt_col and code_col:
-                    total = sum(_safe_float(r[amt_col]) for _, r in df.iterrows()
-                                if str(r[code_col]) in ("000001", "399001"))
-                    if total > 0:
-                        out["today"] = round(total / 1e8, 0)
-        except Exception as e:
-            logger.debug(f"[review] 成交额快照失败: {e}")
-
-    if out["today"] is None:
-        try:    # 降级2：TDX 全市场快照逐股求和（不走东财，代理环境最稳）
-            import strategy_manager as _sm
-            quotes = _sm._get_market_quotes_cached()
-            if quotes:
-                total = sum(_safe_float(q.get("amount") or 0) for q in quotes)
-                if total > 0:
-                    out["today"] = round(total / 1e8, 0)
-        except Exception as e:
-            logger.debug(f"[review] TDX成交额求和失败: {e}")
-    return out
+        logger.debug(f"[review] market_stats 成交额失败: {e}")
+        return {"today": None, "trend": [], "source": "none", "degraded": True, "reason": str(e)}
 
 
 def _collect_sectors() -> dict:
