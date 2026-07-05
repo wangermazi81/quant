@@ -28,6 +28,7 @@ import user_manager as um
 import notification_manager as nm
 import order_sizing  # 下单仓位/手数纯函数（从 do_scan 抽出，有回归测试 tests/test_order_sizing.py）
 import daban_ride    # 打板 Ride 卖出决策纯函数（从本文件抽出，有回归测试 tests/test_daban_ride.py）
+import daban_strategy_runtime as daban_runtime
 import sell_rules     # 账户默认止损/止盈/超期决策纯函数（与 paper_broker 共用，tests/test_sell_rules.py）
 from pathlib import Path
 
@@ -402,9 +403,12 @@ _LIVE_SELL_PENDING: set = set()   # (uid, code) 已生成卖出信号、等成�
 
 
 def _daban_ride_decision(code: str, cost: float, cur: float, last_close: float,
-                         hold_days: int, peak: float):
+                         hold_days: int, peak: float, strategy: str = "da_ban"):
     """打板 Ride 卖出决策（薄包装；逻辑与默认阈值见 core/daban_ride.ride_decision）。"""
-    return daban_ride.ride_decision(code, cost, cur, last_close, hold_days, peak)
+    return daban_ride.ride_decision(
+        code, cost, cur, last_close, hold_days, peak,
+        **daban_runtime.ride_params_for_strategy(strategy)
+    )
 
 
 def _check_live_daban_ride(uid: int):
@@ -466,10 +470,11 @@ def _check_live_daban_ride(uid: int):
         if hold < 1:                                  # T+1：当天买入不卖
             continue
 
-        is_daban = (p.get("strategy") or "") == "da_ban"
+        strategy = p.get("strategy") or ""
+        is_daban = daban_runtime.is_daban_ride_strategy(strategy)
         if is_daban:
             sell, reason, new_peak = _daban_ride_decision(
-                code, cost, cur, last_close, hold, float(p.get("peak") or cost))
+                code, cost, cur, last_close, hold, float(p.get("peak") or cost), strategy)
             if new_peak > float(p.get("peak") or 0):
                 try:
                     um.update_live_peak(uid, code, new_peak)
@@ -506,6 +511,7 @@ def _check_daban_ride(uid: int, broker, positions: list, qmap: dict):
     遵守 T+1（当天买入不卖，submit_sell 也会兜底拒绝）。
     """
     s = get_user_state(uid)
+    strategy = s.get("active_strategy") or "da_ban"
     for p in positions:
         code = p.get("code", "")
         cost = float(p.get("cost_price", 0) or 0)
@@ -521,7 +527,7 @@ def _check_daban_ride(uid: int, broker, positions: list, qmap: dict):
             continue
         key  = (uid, code)
         sell, reason, new_peak = _daban_ride_decision(
-            code, cost, cur, last_close, hold, _DABAN_PEAKS.get(key, cost))
+            code, cost, cur, last_close, hold, _DABAN_PEAKS.get(key, cost), strategy)
         if _DABAN_PEAKS.get(key) != new_peak:
             _DABAN_PEAKS[key] = new_peak
             _save_daban_peaks()          # 峰值变化即持久化（跟实盘一致，重启不丢）
@@ -569,7 +575,7 @@ def _check_paper_risk(uid: int):
             logger.debug(f"[风控 uid={uid}] 实时行情获取失败: {_qe}")
 
         s = get_user_state(uid)
-        if s.get("active_strategy") == "da_ban":
+        if daban_runtime.is_daban_ride_strategy(s.get("active_strategy")):
             _check_daban_ride(uid, broker, positions, qmap)   # 打板 Ride 卖法
             return
         # 其它策略：账户默认止损/止盈/超期
@@ -629,7 +635,7 @@ def do_scan(uid: int):
         _check_add_position(uid, s, _broker_type, _base_cash)
 
     active    = s.get("active_strategy")
-    is_daban  = (active == "da_ban")
+    is_daban  = daban_runtime.is_daban_ride_strategy(active)
     scan_label = "全市场"
     _add_log(uid, f"扫描 {scan_label} 策略=[{active or '默认'}]...")
 
@@ -3035,7 +3041,7 @@ def run_scheduler():
         for uid in active_uids:
             s       = user_states.get(uid, {})
             active  = s.get("active_strategy")
-            is_dbn  = (active == "da_ban")
+            is_dbn  = daban_runtime.is_daban_ride_strategy(active)
             interval = DABAN_INTERVAL if is_dbn else SCAN_INTERVAL
             last     = _last_scan.get(uid, 0)
             if now_ts - last >= interval:
