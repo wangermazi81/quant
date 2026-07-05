@@ -120,6 +120,23 @@ def breadth_from_quotes(quotes: Iterable[dict], expected_count: int | None = Non
     return result
 
 
+def breadth_from_spot_frame(df: pd.DataFrame, expected_count: int | None = None) -> dict:
+    if df is None or df.empty:
+        raise ValueError("empty spot frame")
+    chg_col = _find_col(df, "涨跌幅")
+    if not chg_col:
+        raise KeyError("spot change percent column missing")
+
+    changes = pd.to_numeric(df[chg_col], errors="coerce").dropna()
+    result = breadth_from_quotes(({"change_pct": value} for value in changes), expected_count=expected_count or len(changes))
+    result["source"] = "eastmoney_spot"
+    result.pop("expected_count", None)
+    result.pop("coverage", None)
+    result.pop("reason", None)
+    result["degraded"] = False
+    return result
+
+
 def official_turnover_from_frames(date_text: str, sse_df: pd.DataFrame, szse_df: pd.DataFrame) -> dict:
     if sse_df is None or sse_df.empty or szse_df is None or szse_df.empty:
         raise ValueError("empty official turnover frame")
@@ -221,6 +238,13 @@ def get_market_breadth(expected_count: int | None = None) -> dict:
         return parsed
     except Exception as exc:
         logger.warning(f"[market_stats] legu breadth failed: {exc}")
+
+    try:
+        import akshare as ak
+
+        return breadth_from_spot_frame(ak.stock_zh_a_spot_em(), expected_count=expected_count)
+    except Exception as exc:
+        logger.warning(f"[market_stats] eastmoney spot breadth failed: {exc}")
 
     try:
         import strategy_manager as sm

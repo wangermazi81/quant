@@ -1,4 +1,5 @@
 import sys
+import types
 from pathlib import Path
 
 import pandas as pd
@@ -52,6 +53,36 @@ def test_quote_breadth_marks_low_coverage_as_degraded():
     assert breadth["coverage"] == 0.908
     assert breadth["degraded"] is True
     assert "coverage" in breadth["reason"]
+
+
+def test_breadth_falls_back_to_spot_when_legu_and_strategy_snapshot_unavailable(monkeypatch):
+    spot = pd.DataFrame(
+        {
+            "\u4ee3\u7801": ["000001", "000002", "000003", "000004", "000005"],
+            "\u6da8\u8dcc\u5e45": [1.2, -0.5, 0.0, 10.1, -10.0],
+        }
+    )
+
+    def legu_down():
+        raise RuntimeError("legu unavailable")
+
+    fake_ak = types.SimpleNamespace(
+        stock_market_activity_legu=legu_down,
+        stock_zh_a_spot_em=lambda: spot,
+    )
+    monkeypatch.setitem(sys.modules, "akshare", fake_ak)
+    monkeypatch.setitem(sys.modules, "strategy_manager", types.SimpleNamespace())
+
+    breadth = market_stats.get_market_breadth(expected_count=5)
+
+    assert breadth["source"] == "eastmoney_spot"
+    assert breadth["up"] == 2
+    assert breadth["down"] == 2
+    assert breadth["flat"] == 1
+    assert breadth["limit_up"] == 1
+    assert breadth["limit_dn"] == 1
+    assert breadth["total"] == 5
+    assert breadth["degraded"] is False
 
 
 def test_official_turnover_combines_sse_yi_and_szse_yuan_units():

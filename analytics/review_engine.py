@@ -108,11 +108,11 @@ def _collect_zt(compact: str) -> dict:
     return out
 
 
-def _collect_turnover() -> dict:
+def _collect_turnover(compact: str | None = None) -> dict:
     """两市成交额：今日 + 近20日趋势（单位：亿元）。"""
     try:
         import market_stats as _mstats
-        return _mstats.get_market_turnover()
+        return _mstats.get_market_turnover(compact)
     except Exception as e:
         logger.debug(f"[review] market_stats 成交额失败: {e}")
         return {"today": None, "trend": [], "source": "none", "degraded": True, "reason": str(e)}
@@ -187,7 +187,7 @@ def collect(date_str: str = None) -> dict:
             data["market"] = {}
 
         data["zt"]       = _collect_zt(compact)
-        data["turnover"] = _collect_turnover()
+        data["turnover"] = _collect_turnover(compact)
         data["sectors"]  = _collect_sectors()
 
     try:
