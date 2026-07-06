@@ -93,13 +93,14 @@ def api_review_daily():
 
     archived = re_.load(date_str)
     today    = datetime.now().strftime("%Y-%m-%d")
-    # 历史日期：只认归档
+    # Verified historical snapshots must override archived files because old
+    # archives may have been generated from degraded intraday sources.
     if date_str != today:
-        if archived:
-            return jsonify(archived)
         verified = _verified_snapshot_archive(date_str)
         if verified:
             return jsonify(verified)
+        if archived:
+            return jsonify(archived)
         return jsonify({"ok": False, "error": "该日期无复盘归档", "date": date_str})
 
     # 当天：已有收盘/晚间归档直接用；否则实时采集（无 AI，5分钟缓存）

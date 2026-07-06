@@ -147,7 +147,7 @@ def parse_legu_activity(df: pd.DataFrame) -> dict:
 
 def breadth_from_quotes(quotes: Iterable[dict], expected_count: int | None = None) -> dict:
     items = list(quotes or [])
-    expected = expected_count or len(items) or DEFAULT_EXPECTED_STOCK_COUNT
+    expected = expected_count or DEFAULT_EXPECTED_STOCK_COUNT
 
     def cp(q):
         return _safe_float(q.get("change_pct"), 0.0)

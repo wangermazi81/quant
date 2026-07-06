@@ -28,6 +28,44 @@ def test_daily_review_api_uses_verified_snapshot_when_historical_archive_missing
     assert payload["data"]["zt"]["zt_count"] == 160
 
 
+def test_daily_review_api_verified_snapshot_overrides_stale_historical_archive(monkeypatch):
+    from flask import Flask
+    from web.review import bp
+
+    stale_archive = {
+        "ok": True,
+        "date": "2026-07-03",
+        "phase": "manual",
+        "data": {
+            "date": "2026-07-03",
+            "market": {
+                "date": "2026-07-06",
+                "breadth": {"up": 3527, "down": 1584, "flat": 82, "total": 5193},
+            },
+            "turnover": {"today": 31853.0, "amount": 31852.82},
+            "zt": {"zt_count": 108, "dt_count": 19},
+        },
+        "ai_summary": "old summary with stale market numbers",
+    }
+    monkeypatch.setattr(review_engine, "load", lambda date_str: stale_archive)
+    monkeypatch.setitem(sys.modules, "review_engine", review_engine)
+
+    app = Flask(__name__)
+    app.register_blueprint(bp)
+
+    response = app.test_client().get("/api/review/daily?date=2026-07-03")
+    payload = response.get_json()
+
+    assert payload["ok"] is True
+    assert payload["phase"] == "verified_snapshot"
+    assert payload["data"]["market"]["date"] == "2026-07-03"
+    assert payload["data"]["turnover"]["today"] == 32055
+    assert payload["data"]["market"]["breadth"]["up"] == 3804
+    assert payload["data"]["market"]["breadth"]["down"] == 1628
+    assert payload["data"]["zt"]["zt_count"] == 160
+    assert payload["data"]["zt"]["dt_count"] == 24
+
+
 def test_collect_turnover_uses_requested_compact_date(monkeypatch):
     calls = []
 
@@ -66,3 +104,26 @@ def test_collect_passes_requested_date_to_market_review(monkeypatch):
 
     assert calls == ["20260703"]
     assert data["market"]["breadth"]["up"] == 3804
+
+
+def test_market_review_api_passes_requested_date(monkeypatch):
+    from flask import Flask
+    import web.market as market_web
+
+    calls = []
+
+    def fake_market_review(date_text=None):
+        calls.append(date_text)
+        return {"date": "2026-07-03", "breadth": {"up": 3804}}
+
+    monkeypatch.setattr(market_web, "_get_market_review", fake_market_review)
+
+    app = Flask(__name__)
+    app.register_blueprint(market_web.bp)
+
+    response = app.test_client().get("/api/market/review?date=2026-07-03")
+    payload = response.get_json()
+
+    assert payload["ok"] is True
+    assert calls == ["2026-07-03"]
+    assert payload["breadth"]["up"] == 3804

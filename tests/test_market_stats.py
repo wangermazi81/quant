@@ -55,6 +55,17 @@ def test_quote_breadth_marks_low_coverage_as_degraded():
     assert "coverage" in breadth["reason"]
 
 
+def test_quote_breadth_uses_default_expected_count_when_unspecified():
+    quotes = [{"change_pct": 1.0}] * 4634
+
+    breadth = market_stats.breadth_from_quotes(quotes)
+
+    assert breadth["total"] == 4634
+    assert breadth["expected_count"] == market_stats.DEFAULT_EXPECTED_STOCK_COUNT
+    assert breadth["coverage"] == round(4634 / market_stats.DEFAULT_EXPECTED_STOCK_COUNT, 3)
+    assert breadth["degraded"] is True
+
+
 def test_breadth_falls_back_to_spot_when_legu_and_strategy_snapshot_unavailable(monkeypatch):
     spot = pd.DataFrame(
         {

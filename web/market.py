@@ -143,6 +143,7 @@ def _get_market_review(date_text: str | None = None) -> dict:
 def api_market_review():
     """大盘复盘（公开接口）"""
     try:
-        return jsonify({"ok": True, **_get_market_review()})
+        date_text = (request.args.get("date") or "").strip() or None
+        return jsonify({"ok": True, **_get_market_review(date_text)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
