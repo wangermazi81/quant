@@ -6,6 +6,8 @@
 - GET  /api/news/feed            新闻时间线（source/q/important/limit/offset）
 - GET  /api/news/sources         新闻来源列表
 """
+from __future__ import annotations
+
 import logging
 import threading
 import time

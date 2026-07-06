@@ -27,6 +27,8 @@ AI 多智能体分析引擎 v2
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import math

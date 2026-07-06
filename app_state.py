@@ -4,6 +4,8 @@
 设计要点：本模块不创建 Flask app、不导入 main，因此不会产生循环依赖。
 路由蓝图与后台调度器都从这里取同一份内存状态（user_states / SSE 订阅等）。
 """
+from __future__ import annotations
+
 import threading
 import logging
 from functools import wraps

@@ -1,4 +1,6 @@
 """市场环境 / 大盘复盘 API 蓝图。"""
+from __future__ import annotations
+
 from flask import Blueprint, request, jsonify
 
 import market_context as mctx

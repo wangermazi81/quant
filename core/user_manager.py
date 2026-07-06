@@ -2,6 +2,8 @@
 用户管理系统 — 注册 / 登录 / 积分管理
 数据库: data/users.db  (SQLite，WAL 模式)
 """
+from __future__ import annotations
+
 import sqlite3, hashlib, hmac, os, secrets, threading, logging
 from typing import Optional, Dict
 

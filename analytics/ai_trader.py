@@ -26,6 +26,8 @@ AI 自主交易引擎 (AI Autonomous Trading) —— 本地模块，不同步云
 与 ai_analyst.py 的关系：复用其 _call_llm / 指标计算 / 评分 / 基本面，不重复造轮子。
 ═══════════════════════════════════════════════════════════════════
 """
+from __future__ import annotations
+
 import json
 import logging
 import queue as _queue
@@ -41,6 +43,26 @@ logger = logging.getLogger("ai_trader")
 
 # 复用 ai_analyst 的 LLM / 指标 / 配置基建
 import ai_analyst as _ai
+
+try:
+    import ai_candidate_ranker
+except Exception:
+    ai_candidate_ranker = None
+
+try:
+    import ai_research_store
+except Exception:
+    ai_research_store = None
+
+try:
+    import ai_trade_plan
+except Exception:
+    ai_trade_plan = None
+
+try:
+    import ai_position_sizer
+except Exception:
+    ai_position_sizer = None
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -636,6 +658,22 @@ class _Engine:
             return []
         if not universe:
             return []
+        top = int(st.get("prescreen_top", 6) or 6)
+        if ai_candidate_ranker is not None:
+            try:
+                ranked = ai_candidate_ranker.rank_candidates(
+                    universe,
+                    qc,
+                    market_context={},
+                    top=top,
+                    as_of_date=datetime.now().strftime("%Y-%m-%d"),
+                )
+                if ranked:
+                    picks = [(r["code"], r.get("name") or r["code"]) for r in ranked[:top]]
+                    self._log(f"AI research prescreen: {len(universe)} -> {len(picks)}")
+                    return picks
+            except Exception as e:
+                logger.debug(f"ai_candidate_ranker fallback: {e}")
         scored = []
         for code in universe:
             q = qc.get(code) or {}
@@ -657,7 +695,6 @@ class _Engine:
             score = chg + (amount ** 0.5) / 1500.0
             scored.append((score, code, name))
         scored.sort(reverse=True)
-        top = int(st.get("prescreen_top", 6) or 6)
         picks = [(c, nm) for _, c, nm in scored[:top]]
         self._log(f"🧮 全市场初筛：扫描{len(universe)}只 → 入选{len(picks)}只 "
                   f"（{', '.join(c for c, _ in picks)}）交团队深析")
@@ -874,14 +911,59 @@ class _Engine:
 
     # ── 决策落地：风控硬闸 → 执行(模拟) / 待确认(实盘)──────
     def _handle_decision(self, d: dict, st: dict):
+        acct = None
+        if ai_trade_plan is not None or ai_position_sizer is not None:
+            try:
+                acct = self._account()
+                holding = d.get("code") in (acct.get("positions") or {})
+            except Exception:
+                holding = bool(d.get("holding"))
+            if ai_trade_plan is not None:
+                try:
+                    plan = ai_trade_plan.normalize_trade_plan(
+                        d,
+                        d.get("code", ""),
+                        d.get("name", d.get("code", "")),
+                        current_price=d.get("price"),
+                        as_of_date=datetime.now().strftime("%Y-%m-%d"),
+                        holding=holding,
+                    )
+                    d["plan"] = plan
+                    for key in ("action", "confidence", "entry", "stop_loss", "take_profit", "reason", "price", "holding"):
+                        d[key] = plan.get(key)
+                except Exception as e:
+                    logger.debug(f"ai_trade_plan normalize skipped: {e}")
+            if ai_position_sizer is not None and d.get("action") == "BUY" and acct:
+                try:
+                    r = st.get("risk") or {}
+                    d["position_size"] = ai_position_sizer.suggest_position_size(
+                        acct.get("cash", 0),
+                        acct.get("capital", 0),
+                        d.get("price"),
+                        d.get("confidence"),
+                        {
+                            "per_trade_ratio": r.get("per_trade_ratio"),
+                            "single_max_ratio": r.get("single_max_ratio"),
+                        },
+                    )
+                except Exception as e:
+                    logger.debug(f"ai_position_sizer skipped: {e}")
         self.recent_decisions.append(d)
         self._push("ai_decision", d)
         self._audit({"type": "decision", **{k: d[k] for k in
                     ("code", "name", "action", "confidence", "reason")}})
+        if ai_research_store is not None:
+            try:
+                rec = dict(d)
+                rec.setdefault("as_of_date", datetime.now().strftime("%Y-%m-%d"))
+                rec.setdefault("features", {})
+                ai_research_store.record_decision(self.uid, rec)
+            except Exception as e:
+                logger.debug(f"ai_research_store record_decision skipped: {e}")
 
         if d["action"] == "HOLD":
             return
-        acct = self._account()
+        acct = acct or self._account()
         ok, why = self._risk_gate(d, st, acct)
         if not ok:
             d2 = {**d, "blocked": why}
@@ -940,8 +1022,11 @@ class _Engine:
         reason = f"AI交易·{d['reason']}"
         try:
             if d["action"] == "BUY":
-                budget = acct["capital"] * r["per_trade_ratio"]
-                shares = max(int(budget / price / 100) * 100, 100) if price > 0 else 100
+                sized = d.get("position_size") or {}
+                shares = int(sized.get("shares") or 0)
+                if shares <= 0:
+                    budget = acct["capital"] * r["per_trade_ratio"]
+                    shares = max(int(budget / price / 100) * 100, 100) if price > 0 else 100
                 if paper:
                     res = self._ai_broker().submit_buy(code, name, price, shares, reason=reason)
                 else:

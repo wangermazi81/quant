@@ -23,6 +23,8 @@
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
+from __future__ import annotations
+
 import math, os, tempfile, traceback, logging, importlib.util
 import threading as _bt_threading
 import uuid as _bt_uuid

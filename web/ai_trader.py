@@ -5,13 +5,23 @@
 所有路由 require_auth；按 session 的 user_id 取对应引擎实例。
 """
 import json
+import threading
+import time
+import uuid
 
 from flask import Blueprint, Response, jsonify, request, session
 
 from app_state import require_auth
 import ai_trader as engine
 
+try:
+    import ai_research_store as research_store
+except Exception:
+    research_store = None
+
 bp = Blueprint("ai_trader", __name__)
+_research_jobs = {}
+_research_jobs_lock = threading.Lock()
 
 
 def _uid():
@@ -170,6 +180,65 @@ def account_reset():
     except (TypeError, ValueError):
         cap = None
     return jsonify(engine.get_engine(_uid()).reset_ai_account(cap))
+
+
+@bp.route("/api/ai_trader/research/memory")
+@require_auth
+def research_memory():
+    code = str(request.args.get("code", "")).strip()
+    if not code:
+        return jsonify({"ok": False, "error": "missing code"}), 400
+    memories = []
+    if research_store is not None:
+        try:
+            memories = research_store.find_similar_memories(_uid(), code, {}, limit=10)
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "code": code, "memories": memories})
+
+
+def _run_research_backtest_job(job_id, uid, payload):
+    with _research_jobs_lock:
+        _research_jobs[job_id]["status"] = "running"
+        _research_jobs[job_id]["started_at"] = time.time()
+    try:
+        if research_store is None:
+            raise RuntimeError("research store unavailable")
+        result = research_store.backtest_summary(
+            uid,
+            start=str(payload.get("start") or ""),
+            end=str(payload.get("end") or ""),
+            top=int(payload.get("top") or 100),
+        )
+        with _research_jobs_lock:
+            _research_jobs[job_id].update({"status": "done", "result": result, "finished_at": time.time()})
+    except Exception as e:
+        with _research_jobs_lock:
+            _research_jobs[job_id].update({"status": "error", "error": str(e), "finished_at": time.time()})
+
+
+@bp.route("/api/ai_trader/research/backtest", methods=["POST"])
+@require_auth
+def research_backtest():
+    payload = request.json or {}
+    job_id = uuid.uuid4().hex[:12]
+    uid = _uid()
+    with _research_jobs_lock:
+        _research_jobs[job_id] = {"job_id": job_id, "uid": uid, "status": "queued", "created_at": time.time()}
+    threading.Thread(target=_run_research_backtest_job, args=(job_id, uid, payload), daemon=True).start()
+    with _research_jobs_lock:
+        data = dict(_research_jobs[job_id])
+    return jsonify({"ok": True, **data})
+
+
+@bp.route("/api/ai_trader/research/backtest/<job_id>")
+@require_auth
+def research_backtest_status(job_id):
+    with _research_jobs_lock:
+        data = dict(_research_jobs.get(job_id) or {})
+    if not data or data.get("uid") != _uid():
+        return jsonify({"ok": False, "error": "job not found"}), 404
+    return jsonify({"ok": True, **data})
 
 
 # ── SSE 实时流（团队思考 / 决策 / 执行 / 待确认）──────────

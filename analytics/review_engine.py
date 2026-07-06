@@ -17,6 +17,8 @@ phase: live(盘中实时) → close(15:10收盘版) → evening(19:50晚间版,�
 - 交易日 15:10 生成收盘版（失败每10分钟重试）
 - 交易日 19:50 重新生成晚间版（此时新闻联播/晚间公告已入库，预案更准）
 """
+from __future__ import annotations
+
 import json
 import logging
 import threading

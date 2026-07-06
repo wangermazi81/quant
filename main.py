@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os as _os
 import _pathsetup  # noqa: F401  # 必须在其它项目模块 import 之前
 # ── 清除系统代理（akshare 走国内接口，代理反而导致连接失败）──────────
