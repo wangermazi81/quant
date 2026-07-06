@@ -6,7 +6,8 @@ bind = "127.0.0.1:5000"
 # ⚠️ 必须单 worker：运行态(user_states/SSE 订阅)与扫描调度器都在进程内内存，
 #    多 worker 会各持一份互不相通的状态。等状态外置到 Redis/DB 后才能调大。
 workers = 1
-worker_class = "sync"
+worker_class = "gthread"
+threads = 8                    # SSE 长连接不能独占唯一请求通道；仍保持单进程共享内存状态
 timeout = 300                  # AI 分析最多等 5 分钟
 keepalive = 5
 # ⚠️ 必须关闭预加载：后台调度线程在 main 模块导入时启动，
