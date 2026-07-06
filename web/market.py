@@ -70,6 +70,20 @@ def _build_market_review(date_text: str | None = None) -> dict:
     from datetime import datetime as _dt
     digits = "".join(ch for ch in str(date_text or "") if ch.isdigit())
     stat_date = f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}" if len(digits) >= 8 else _dt.now().strftime("%Y-%m-%d")
+    if len(digits) >= 8:
+        try:
+            import market_stats as _mstats
+            snapshot = _mstats.get_verified_market_snapshot(date_text)
+            if snapshot:
+                return {
+                    "date": stat_date,
+                    "time": "15:00",
+                    "indices": {},
+                    "breadth": snapshot["breadth"],
+                    "sectors": {"top_gainers": [], "top_losers": []},
+                }
+        except Exception:
+            pass
     review = {
         "date":    stat_date,
         "time":    _dt.now().strftime("%H:%M"),

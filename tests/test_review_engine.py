@@ -59,6 +59,18 @@ def test_market_review_cache_does_not_miss_on_minute_boundary(monkeypatch):
     assert calls == [None]
 
 
+def test_market_review_historical_verified_snapshot_does_not_mix_live_indices():
+    import web.market as market_web
+
+    review = market_web._build_market_review("2026-07-03")
+
+    assert review["date"] == "2026-07-03"
+    assert review["time"] == "15:00"
+    assert review["indices"] == {}
+    assert review["breadth"]["up"] == 3804
+    assert review["breadth"]["source"] == "eastmoney_three_market_verified"
+
+
 def test_daily_review_api_uses_verified_snapshot_when_historical_archive_missing(monkeypatch):
     from flask import Flask
     from web.review import bp
