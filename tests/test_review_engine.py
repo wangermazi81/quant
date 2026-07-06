@@ -1,11 +1,42 @@
 import sys
 import types
 from pathlib import Path
+from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import _pathsetup  # noqa: F401
 
 import review_engine
+
+
+def test_daily_review_without_date_uses_latest_archive_before_market_open(monkeypatch):
+    from flask import Flask
+    import web.review as review_web
+
+    latest_archive = {"ok": True, "date": "2026-07-06", "phase": "evening", "data": {"date": "2026-07-06"}}
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 7, 0, 10, 0)
+
+    fake_review_engine = types.SimpleNamespace(
+        load=lambda date_str: latest_archive if date_str == "2026-07-06" else None,
+        list_dates=lambda: ["2026-07-06", "2026-07-03"],
+        collect=lambda date_str: (_ for _ in ()).throw(AssertionError("should not live collect before open")),
+    )
+    monkeypatch.setitem(sys.modules, "review_engine", fake_review_engine)
+    monkeypatch.setattr(review_web, "datetime", FakeDateTime)
+
+    app = Flask(__name__)
+    app.register_blueprint(review_web.bp)
+
+    response = app.test_client().get("/api/review/daily")
+    payload = response.get_json()
+
+    assert payload["ok"] is True
+    assert payload["date"] == "2026-07-06"
+    assert payload["phase"] == "evening"
 
 
 def test_market_review_api_reuses_short_cache(monkeypatch):

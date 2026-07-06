@@ -26,6 +26,32 @@ _live_lock = threading.Lock()
 _LIVE_TTL = 120   # 盘中天梯/情绪要跟得上盘面，2分钟缓存
 
 
+def _should_use_latest_archive(now: datetime, explicit_date: bool, force: bool, archived: dict | None) -> bool:
+    if explicit_date or force or archived:
+        return False
+    if now.weekday() >= 5:
+        return True
+    clock = now.hour * 100 + now.minute
+    return clock < 930
+
+
+def _load_latest_archive(re_) -> dict | None:
+    try:
+        dates = re_.list_dates(limit=10)
+    except TypeError:
+        dates = re_.list_dates()[:10]
+    except Exception:
+        return None
+    for date_str in dates:
+        try:
+            archived = re_.load(date_str)
+            if archived:
+                return archived
+        except Exception:
+            continue
+    return None
+
+
 def _verified_snapshot_archive(date_str: str) -> dict | None:
     try:
         import market_stats
@@ -88,11 +114,14 @@ def _verified_snapshot_archive(date_str: str) -> dict | None:
 @bp.route("/api/review/daily")
 def api_review_daily():
     import review_engine as re_
-    date_str = (request.args.get("date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
+    raw_date = (request.args.get("date") or "").strip()
+    explicit_date = bool(raw_date)
+    date_str = raw_date or now.strftime("%Y-%m-%d")
     force    = request.args.get("refresh", "0") == "1"
 
     archived = re_.load(date_str)
-    today    = datetime.now().strftime("%Y-%m-%d")
+    today    = now.strftime("%Y-%m-%d")
     # Verified historical snapshots must override archived files because old
     # archives may have been generated from degraded intraday sources.
     if date_str != today:
@@ -106,6 +135,10 @@ def api_review_daily():
     # 当天：已有收盘/晚间归档直接用；否则实时采集（无 AI，5分钟缓存）
     if archived and not force:
         return jsonify(archived)
+    if _should_use_latest_archive(now, explicit_date, force, archived):
+        latest = _load_latest_archive(re_)
+        if latest:
+            return jsonify(latest)
     with _live_lock:
         if not force and _live_cache["data"] and time.time() - _live_cache["ts"] < _LIVE_TTL:
             return jsonify(_live_cache["data"])
