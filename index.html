@@ -7233,6 +7233,7 @@ function _renderSentiment(data){
     <div class="rv-row"><span>最高连板</span><b>${zt.max_height ? zt.max_height+' 板' : '—'}</b></div>
     <div class="rv-row"><span>昨涨停今表现</span>${zt.prev_zt_avg!=null ? _rvChg(zt.prev_zt_avg) : '<b>—</b>'}</div>
     <div class="rv-row"><span>昨涨停红盘率</span><b>${zt.prev_zt_red_rate!=null ? zt.prev_zt_red_rate+'%' : '—'}</b></div>
+    ${_rvDataQuality(b, '涨跌结构')}
     ${_rvBoardRows(data)}
   </div>`
 
@@ -7246,6 +7247,7 @@ function _renderSentiment(data){
       html += `<div class="rv-bars">${trend.map((x,i)=>`<i class="${i===trend.length-1?'last':''}" style="height:${Math.max(3,Math.round(x.amount/max*100))}%" title="${x.date}  ${x.amount}亿"></i>`).join('')}</div>
       <div style="font-size:10px;color:var(--t3);text-align:right;margin-top:2px">近${trend.length}个交易日</div>`
     }
+    html += _rvDataQuality(tv, '成交额')
     html += `</div>`
   }
 
@@ -7258,6 +7260,27 @@ function _renderSentiment(data){
   }
 
   return html || '<div class="empty-hint">暂无数据</div>'
+}
+
+function _rvDataQuality(stat, label){
+  if(!stat) return ''
+  const sourceMap = {
+    eastmoney_three_market_verified: '东方财富三市校准',
+    official_exchange: '交易所官方',
+    eastmoney_spot: '东方财富实时',
+    legu: '乐咕市场温度',
+    tdx_quotes: 'TDX实时行情',
+    tdx_index: 'TDX指数行情'
+  }
+  const source = stat.source ? (sourceMap[stat.source] || stat.source) : ''
+  const parts = []
+  if(source) parts.push(`来源：${_rvEsc(source)}`)
+  if(stat.stat_date) parts.push(`日期：${_rvEsc(stat.stat_date)}`)
+  if(stat.coverage != null) parts.push(`覆盖率：${Math.round(Number(stat.coverage) * 1000) / 10}%`)
+  if(!parts.length && !stat.degraded) return ''
+  const degraded = !!stat.degraded
+  const reason = degraded && stat.reason ? ` · ${_rvEsc(stat.reason)}` : ''
+  return `<div style="margin-top:8px;font-size:10px;line-height:1.45;color:${degraded?'#d29922':'var(--t4)'}">${label}数据${degraded?'降级':'确认'} · ${parts.join(' · ')}${reason}</div>`
 }
 
 // ── 渲染：中栏 AI总结 + 天梯 + 轮动 ───────────────────────────

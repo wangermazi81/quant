@@ -8,6 +8,57 @@ import _pathsetup  # noqa: F401
 import review_engine
 
 
+def test_market_review_api_reuses_short_cache(monkeypatch):
+    from flask import Flask
+    import web.market as market_web
+
+    calls = []
+
+    def fake_build_review(date_text=None):
+        calls.append(date_text)
+        return {"date": "2026-07-06", "breadth": {"up": len(calls)}}
+
+    monkeypatch.setattr(market_web, "_MARKET_REVIEW_CACHE", {})
+    monkeypatch.setattr(market_web, "_MARKET_REVIEW_CACHE_TTL", 60)
+    monkeypatch.setattr(market_web, "_build_market_review", fake_build_review)
+
+    app = Flask(__name__)
+    app.register_blueprint(market_web.bp)
+    client = app.test_client()
+
+    first = client.get("/api/market/review").get_json()
+    second = client.get("/api/market/review").get_json()
+
+    assert first["breadth"]["up"] == 1
+    assert second["breadth"]["up"] == 1
+    assert calls == [None]
+
+
+def test_market_review_cache_does_not_miss_on_minute_boundary(monkeypatch):
+    import web.market as market_web
+
+    calls = []
+    now_values = iter([100.0, 110.0])
+    bucket_values = iter(["202607062359", "202607070000"])
+
+    def fake_build_review(date_text=None):
+        calls.append(date_text)
+        return {"date": "2026-07-06", "breadth": {"up": len(calls)}}
+
+    monkeypatch.setattr(market_web, "_MARKET_REVIEW_CACHE", {})
+    monkeypatch.setattr(market_web, "_MARKET_REVIEW_CACHE_TTL", 60)
+    monkeypatch.setattr(market_web, "time", lambda: next(now_values))
+    monkeypatch.setattr(market_web, "_dt_cache_bucket", lambda date_text: next(bucket_values))
+    monkeypatch.setattr(market_web, "_build_market_review", fake_build_review)
+
+    first = market_web._get_market_review()
+    second = market_web._get_market_review()
+
+    assert first["breadth"]["up"] == 1
+    assert second["breadth"]["up"] == 1
+    assert calls == [None]
+
+
 def test_daily_review_api_uses_verified_snapshot_when_historical_archive_missing(monkeypatch):
     from flask import Flask
     from web.review import bp
@@ -112,8 +163,8 @@ def test_market_review_api_passes_requested_date(monkeypatch):
 
     calls = []
 
-    def fake_market_review(date_text=None):
-        calls.append(date_text)
+    def fake_market_review(date_text=None, force_refresh=False):
+        calls.append((date_text, force_refresh))
         return {"date": "2026-07-03", "breadth": {"up": 3804}}
 
     monkeypatch.setattr(market_web, "_get_market_review", fake_market_review)
@@ -125,5 +176,5 @@ def test_market_review_api_passes_requested_date(monkeypatch):
     payload = response.get_json()
 
     assert payload["ok"] is True
-    assert calls == ["2026-07-03"]
+    assert calls == [("2026-07-03", False)]
     assert payload["breadth"]["up"] == 3804

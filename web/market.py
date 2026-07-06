@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 from flask import Blueprint, request, jsonify
+from copy import deepcopy
+from time import time
 
 import market_context as mctx
 from app_state import require_auth
 
 bp = Blueprint("market", __name__)
+
+_MARKET_REVIEW_CACHE_TTL = 60
+_MARKET_REVIEW_CACHE: dict[str, tuple[float, dict]] = {}
 
 
 @bp.route("/api/market/context")
@@ -59,7 +64,7 @@ def api_market_regime():
         return jsonify({"ok": False, "error": str(e)})
 
 
-def _get_market_review(date_text: str | None = None) -> dict:
+def _build_market_review(date_text: str | None = None) -> dict:
     """大盘复盘：指数行情 + 市场宽度 + 板块轮动（含缓存）"""
     import pandas as _pd
     from datetime import datetime as _dt
@@ -139,11 +144,40 @@ def _get_market_review(date_text: str | None = None) -> dict:
     return review
 
 
+def _get_market_review(date_text: str | None = None, force_refresh: bool = False) -> dict:
+    cache_key = _market_review_cache_key(date_text)
+    now = time()
+    if not force_refresh:
+        cached = _MARKET_REVIEW_CACHE.get(cache_key)
+        if cached and now - cached[0] <= _MARKET_REVIEW_CACHE_TTL:
+            result = deepcopy(cached[1])
+            result["cached"] = True
+            return result
+
+    review = _build_market_review(date_text)
+    _MARKET_REVIEW_CACHE[cache_key] = (now, deepcopy(review))
+    return review
+
+
+def _market_review_cache_key(date_text: str | None) -> str:
+    # Historical explicit dates are immutable enough to share one cache bucket;
+    # live calls are governed by TTL so boundary clicks do not refetch.
+    digits = "".join(ch for ch in str(date_text or "") if ch.isdigit())
+    if len(digits) >= 8:
+        return digits[:8]
+    return "live"
+
+
+def _dt_cache_bucket(date_text: str | None) -> str:
+    return _market_review_cache_key(date_text)
+
+
 @bp.route("/api/market/review")
 def api_market_review():
     """大盘复盘（公开接口）"""
     try:
         date_text = (request.args.get("date") or "").strip() or None
-        return jsonify({"ok": True, **_get_market_review(date_text)})
+        force = request.args.get("refresh", "0") == "1"
+        return jsonify({"ok": True, **_get_market_review(date_text, force_refresh=force)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
