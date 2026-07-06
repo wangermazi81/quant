@@ -53,6 +53,88 @@ def test_prescreen_falls_back_when_ranker_fails(monkeypatch):
     assert picks == [("000001", "Alpha")]
 
 
+def test_build_candidates_prioritizes_strategy_library_results(monkeypatch):
+    calls = []
+
+    class FakeStrategyManager:
+        @staticmethod
+        def run(filename, codes, max_codes=0):
+            calls.append((filename, tuple(codes), max_codes))
+            return {
+                "ok": True,
+                "results": [
+                    {"code": "000007", "name": "StrategyPick"},
+                    {"code": "000008", "name": "SecondPick"},
+                ],
+            }
+
+    monkeypatch.setitem(sys.modules, "strategy_manager", FakeStrategyManager)
+    monkeypatch.setattr(ai_trader._Engine, "_account", lambda self: {"positions": {}})
+    monkeypatch.setattr(ai_trader._Engine, "_user_state", lambda self: {"queue": [{"code": "000009", "name": "Queued"}]})
+    monkeypatch.setattr(ai_trader._Engine, "_prescreen", lambda self, st: [("000010", "Prescreen")])
+
+    engine = ai_trader._Engine(101)
+    picks = engine._build_candidates({
+        "strategy_candidates_enabled": True,
+        "strategy_candidate_strategies": ["daban_lianban_2plus_quality"],
+        "strategy_candidate_max_codes": 500,
+        "strategy_candidate_top": 2,
+        "watchlist": ["000011"],
+        "prescreen_enabled": True,
+        "prescreen_fallback_only": True,
+        "max_candidates": 6,
+    })
+
+    assert calls == [("daban_lianban_2plus_quality", tuple(), 500)]
+    assert picks[:2] == [("000007", "StrategyPick"), ("000008", "SecondPick")]
+    assert ("000009", "Queued") in picks
+    assert ("000010", "Prescreen") not in picks
+
+
+def test_prescreen_rejects_stub_market_quotes(monkeypatch):
+    class FakeStrategyManager:
+        @staticmethod
+        def _full_market_universe_with_quotes(max_codes=1200):
+            return ["000001", "000002", "000003"], {
+                "000001": {"code": "000001", "name": "000001", "price": 10.0, "change_pct": 0.0, "vol": 1000},
+                "000002": {"code": "000002", "name": "000002", "price": 10.0, "change_pct": 0.0, "vol": 1000},
+                "000003": {"code": "000003", "name": "000003", "price": 10.0, "change_pct": 0.0, "vol": 1000},
+            }
+
+    monkeypatch.setitem(sys.modules, "strategy_manager", FakeStrategyManager)
+
+    engine = ai_trader._Engine(101)
+    assert engine._prescreen({"prescreen_universe": 3, "prescreen_top": 2}) == []
+    assert engine.market_data_status["degraded"] is True
+
+
+def test_risk_gate_blocks_buy_when_market_data_is_degraded():
+    engine = ai_trader._Engine(101)
+    engine.market_data_status = {"degraded": True, "reason": "stub quotes"}
+    st = {
+        "block_buy_on_degraded_data": True,
+        "risk": {
+            "min_confidence": 60,
+            "daily_trade_limit": 10,
+            "max_positions": 5,
+            "per_trade_ratio": 0.2,
+        },
+    }
+    acct = {"positions": {"000002": {"name": "Held"}}, "cash": 100000, "capital": 100000}
+
+    buy_ok, buy_reason = engine._risk_gate(
+        {"code": "000001", "action": "BUY", "confidence": 90, "price": 10}, st, acct
+    )
+    sell_ok, sell_reason = engine._risk_gate(
+        {"code": "000002", "action": "SELL", "confidence": 90, "price": 10}, st, acct
+    )
+
+    assert buy_ok is False
+    assert "market data degraded" in buy_reason
+    assert sell_ok is True
+    assert sell_reason == ""
+
+
 def test_handle_decision_records_research_memory_without_blocking(monkeypatch, tmp_path):
     recorded = []
     fake_store = types.SimpleNamespace(

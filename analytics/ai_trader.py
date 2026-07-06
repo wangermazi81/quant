@@ -215,8 +215,14 @@ def _default_settings() -> dict:
         "ignore_market_time": False,  # 测试用：忽略交易时间，盘后也能跑
         # ── 全市场量化初筛（无LLM，先海选再交团队深析）──
         "prescreen_enabled":  True,   # 开启全市场初筛作为买入候选来源
+        "prescreen_fallback_only": True,
         "prescreen_universe": 1200,   # 初筛覆盖：按活跃度取全市场前 N 只
         "prescreen_top":      6,      # 初筛入选 top N 喂给团队
+        "strategy_candidates_enabled": True,
+        "strategy_candidate_strategies": ["daban_lianban_2plus_quality"],
+        "strategy_candidate_max_codes": 1200,
+        "strategy_candidate_top": 6,
+        "block_buy_on_degraded_data": True,
         "risk": {
             "max_positions":     5,      # 最多持仓只数
             "single_max_ratio":  0.20,   # 单票最大占比
@@ -371,6 +377,7 @@ class _Engine:
         self.recent_decisions = deque(maxlen=120)
         self.recent_execs = deque(maxlen=120)
         self.agent_cards = deque(maxlen=60)   # 最近角色发言，供快照
+        self.market_data_status = {"degraded": False, "reason": ""}
         self.lock = threading.Lock()
 
     # ── 控制 ──────────────────────────────────────────────
@@ -625,26 +632,86 @@ class _Engine:
     def _build_candidates(self, st: dict) -> list:
         s = self._user_state()
         seen, out = set(), []
+
+        def add(code, name=None):
+            code = str(code or "").strip()
+            if code and code not in seen:
+                seen.add(code)
+                out.append((code, name or code))
+
         # 1) 持仓（卖出/持有判断优先）—— 模拟盘读 AI 独立账户、实盘读用户账户
         for code, p in self._account()["positions"].items():
-            if code not in seen:
-                seen.add(code); out.append((code, p.get("name", code)))
-        # 2) 全市场量化初筛（无LLM海选 → top N 作买入候选）
-        if st.get("prescreen_enabled", True):
-            for code, name in self._prescreen(st):
-                if code not in seen:
-                    seen.add(code); out.append((code, name))
+            add(code, p.get("name", code))
+        # 2) 策略库候选优先：AI只做复核和风控，不裸奔全市场。
+        if st.get("strategy_candidates_enabled", True):
+            for code, name in self._strategy_candidates(st):
+                add(code, name)
         # 3) 自选买入候选（手动指定，优先保留）
         for code in st.get("watchlist", []):
-            code = str(code).strip()
-            if code and code not in seen:
-                seen.add(code); out.append((code, code))
+            add(code, code)
         # 4) 主程序选股结果兜底
         for q in (s.get("queue") or []):
-            code = q.get("code")
-            if code and code not in seen:
-                seen.add(code); out.append((code, q.get("name", code)))
+            add(q.get("code"), q.get("name") or q.get("code"))
+        # 5) 全市场初筛只作最后兜底，避免行情源异常时污染AI买入候选。
+        fallback_only = st.get("prescreen_fallback_only", True)
+        if st.get("prescreen_enabled", True) and (not fallback_only or len(out) == 0):
+            for code, name in self._prescreen(st):
+                add(code, name)
         return out[: st.get("max_candidates", 6)]
+
+    def _strategy_candidates(self, st: dict) -> list:
+        try:
+            import strategy_manager as sm
+        except Exception as e:
+            self._log(f"⚠ 策略库候选不可用：{e}", "warn")
+            return []
+        names = st.get("strategy_candidate_strategies") or []
+        if isinstance(names, str):
+            names = [x.strip() for x in names.split(",") if x.strip()]
+        top = int(st.get("strategy_candidate_top", st.get("max_candidates", 6)) or 6)
+        max_codes = int(st.get("strategy_candidate_max_codes", 1200) or 1200)
+        picks = []
+        seen = set()
+        for filename in names:
+            try:
+                res = sm.run(filename, [], max_codes=max_codes)
+            except Exception as e:
+                self._log(f"⚠ 策略候选 {filename} 执行失败：{e}", "warn")
+                continue
+            if not res or not res.get("ok"):
+                self._log(f"⚠ 策略候选 {filename} 无有效结果：{(res or {}).get('msg', '')}", "warn")
+                continue
+            for row in res.get("results") or []:
+                code = str((row or {}).get("code") or "").strip()
+                if not code or code in seen:
+                    continue
+                seen.add(code)
+                picks.append((code, (row or {}).get("name") or code))
+                if len(picks) >= top:
+                    self._log(f"AI strategy candidates: {filename} -> {len(picks)}")
+                    return picks
+        if picks:
+            self._log(f"AI strategy candidates: {len(picks)}")
+        return picks
+
+    def _market_snapshot_degraded(self, universe: list, qc: dict) -> tuple[bool, str]:
+        quotes = [qc.get(code) or {} for code in universe or []]
+        usable = [q for q in quotes if q]
+        if not usable:
+            return True, "empty market snapshot"
+        stub = 0
+        for q in usable:
+            code = str(q.get("code") or "")
+            name = str(q.get("name") or "")
+            price = _to_float(q.get("price"))
+            chg = _to_float(q.get("change_pct"))
+            amount = _to_float(q.get("amount")) or 0
+            vol = _to_float(q.get("vol")) or _to_float(q.get("volume")) or 0
+            if price == 10.0 and chg == 0.0 and amount <= 0 and vol <= 1000 and (not name or name == code):
+                stub += 1
+        if len(usable) >= 3 and stub / len(usable) >= 0.8:
+            return True, "stub market quotes"
+        return False, ""
 
     def _prescreen(self, st: dict) -> list:
         """全市场量化初筛（无 LLM）：从全市场行情快照按动量+流动性打分，取 top N。
@@ -654,9 +721,16 @@ class _Engine:
             n_uni = int(st.get("prescreen_universe", 1200) or 1200)
             universe, qc = sm._full_market_universe_with_quotes(max_codes=n_uni)
         except Exception as e:
+            self.market_data_status = {"degraded": True, "reason": str(e)[:120]}
             self._log(f"⚠ 全市场初筛取行情失败：{e}", "warn")
             return []
         if not universe:
+            self.market_data_status = {"degraded": True, "reason": "empty market snapshot"}
+            return []
+        degraded, reason = self._market_snapshot_degraded(universe, qc)
+        self.market_data_status = {"degraded": degraded, "reason": reason}
+        if degraded:
+            self._log(f"⚠ 全市场初筛行情源退化：{reason}，暂停使用全市场AI候选", "warn")
             return []
         top = int(st.get("prescreen_top", 6) or 6)
         if ai_candidate_ranker is not None:
@@ -990,6 +1064,9 @@ class _Engine:
             return False, f"当日交易已达上限{r['daily_trade_limit']}笔"
         positions = acct["positions"]
         if d["action"] == "BUY":
+            if st.get("block_buy_on_degraded_data", True) and self.market_data_status.get("degraded"):
+                reason = self.market_data_status.get("reason") or "unknown"
+                return False, f"market data degraded: {reason}; 已暂停AI新开仓"
             cons = d.get("consensus") or {}
             if cons and not cons.get("buy_ok", True):
                 return False, (f"团队未达成看多共识（个股看多{cons.get('long',0)}/看空{cons.get('short',0)}，"
