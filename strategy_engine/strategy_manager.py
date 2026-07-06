@@ -279,6 +279,34 @@ def _build_data_fns(universe: list):
             pass
         return pd.DataFrame()
 
+    def _rows_from_quote_records(records: list, requested: list) -> list:
+        requested_set = {str(code).split(".")[-1][-6:] for code in requested}
+        rows = []
+        for q in records or []:
+            code = str(q.get("code") or q.get("\u4ee3\u7801") or "").split(".")[-1][-6:]
+            if not code or code not in requested_set:
+                continue
+            last_close = q.get("last_close", q.get("\u6628\u6536", 0))
+            limit_up = q.get("limit_up")
+            if limit_up in (None, "", 0):
+                try:
+                    limit_up = round(float(last_close) * 1.10 + 1e-9, 2)
+                except Exception:
+                    limit_up = 0
+            rows.append({
+                "\u4ee3\u7801": code,
+                "\u540d\u79f0": q.get("name", q.get("\u540d\u79f0", "")),
+                "\u6700\u65b0\u4ef7": q.get("price", q.get("\u6700\u65b0\u4ef7", 0)),
+                "\u6da8\u8dcc\u5e45": q.get("change_pct", q.get("\u6da8\u8dcc\u5e45", 0)),
+                "\u6628\u6536": last_close,
+                "\u6210\u4ea4\u91cf": q.get("vol", q.get("\u6210\u4ea4\u91cf", 0)),
+                "\u91cf\u6bd4": q.get("volume_ratio", q.get("\u91cf\u6bd4", 1.0)),
+                "open": q.get("open", q.get("\u4eca\u5f00", q.get("\u5f00\u76d8", 0))),
+                "low": q.get("low", q.get("\u6700\u4f4e", q.get("\u6700\u4f4e\u4ef7", 0))),
+                "limit_up": limit_up,
+            })
+        return rows
+
     def _get_quotes(codes_list: list) -> pd.DataFrame:
         if not codes_list:
             return pd.DataFrame()
@@ -287,19 +315,15 @@ def _build_data_fns(universe: list):
             client = _tq.get_client()
             if client and client._ok:
                 qs = client.get_quotes(codes_list)
-                if qs:
-                    rows = [{
-                        "代码":  q["code"],
-                        "名称":  q.get("name", ""),
-                        "最新价": q.get("price", 0),
-                        "涨跌幅": q.get("change_pct", 0),
-                        "昨收":  q.get("last_close", 0),
-                        "成交量": q.get("vol", 0),
-                        "量比":  1.0,
-                    } for q in qs]
+                rows = _rows_from_quote_records(qs, codes_list)
+                if rows:
                     return pd.DataFrame(rows)
         except Exception:
             pass
+        rows = _rows_from_quote_records(_mkt_cache.get("sorted_quotes", []), codes_list)
+        if rows:
+            logger.info(f"[SM] strategy quotes reused market cache: {len(rows)}/{len(codes_list)}")
+            return pd.DataFrame(rows)
         return pd.DataFrame()
 
     return _get_kline, _get_quotes
