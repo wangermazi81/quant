@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -608,6 +608,7 @@ tr:hover td{background:var(--card)}
   <div class="ntab" onclick="switchPage('paper',this);loadPaperPage()">💹 模拟盘</div>
   <div class="ntab" onclick="switchPage('search',this);initSearchPage();rsInit()">🧬 产业链研报</div>
   <div class="ntab" onclick="switchPage('review',this);initReviewPage()">🔁 复盘</div>
+  <div class="ntab" onclick="switchPage('aitrader',this);initAiTrader()">🤖 AI交易</div>
   <div class="nav-r">
     <span id="runBadge" class="badge stop">已停止</span>
     <!-- 实盘/模拟总开关：点击切换，切到实盘需二次确认 -->
@@ -1078,6 +1079,176 @@ tr:hover td{background:var(--card)}
         <div class="empty-hint">加载中…</div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ════════════ 🤖 AI 交易模块（本地，不同步云端）════════════ -->
+<style>
+.ait-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--b1);flex-shrink:0}
+.ait-title{font-size:15px;font-weight:800;color:var(--t1);display:flex;align-items:center;gap:6px}
+.ait-spacer{flex:1}
+.ait-badge{font-size:12px;font-weight:700;padding:3px 11px;border-radius:20px;border:1px solid var(--b1);background:var(--card);color:var(--t2)}
+.ait-badge.run{background:var(--candy-mint-bg);color:#368B63;border-color:var(--candy-mint-bd)}
+.ait-badge.stop{background:var(--card);color:var(--t3)}
+.ait-badge.halt{background:var(--candy-pink-bg);color:#D6456A;border-color:var(--candy-pink-bd)}
+.ait-badge.live{background:var(--candy-pink-bg);color:#D6456A;border-color:var(--candy-pink-bd)}
+.ait-badge.paper{background:var(--candy-blue-bg);color:#3D6FD0;border-color:var(--candy-blue-bd)}
+.ait-grid{flex:1;min-height:0;display:grid;grid-template-columns:1.15fr 1fr 0.95fr;gap:10px;padding:10px 14px;overflow:hidden}
+.ait-pane{display:flex;flex-direction:column;min-height:0;background:var(--panel);border:1px solid var(--b1);border-radius:16px;overflow:hidden;box-shadow:0 8px 30px rgba(120,90,60,.045)}
+.ait-pane-hd{padding:10px 14px;border-bottom:1px solid var(--b1);font-weight:700;font-size:13px;color:var(--t1);display:flex;align-items:center;gap:6px;flex-shrink:0}
+.ait-pane-bd{flex:1;overflow-y:auto;min-height:0;padding:8px}
+.ait-agent{border:1px solid var(--b1);border-radius:12px;padding:9px 11px;margin-bottom:8px;background:var(--card);transition:.2s}
+.ait-agent.lead{border-color:var(--blue);background:var(--candy-pink-bg)}
+.ait-agent.active{box-shadow:0 0 0 2px rgba(255,123,147,.25)}
+.ait-agent-hd{display:flex;align-items:center;gap:7px;font-weight:700;font-size:13px;color:var(--t1)}
+.ait-agent-st{margin-left:auto;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px}
+.ait-st-think{background:var(--candy-amber-bg);color:#A9791C}
+.ait-st-done{background:var(--candy-mint-bg);color:#368B63}
+.ait-st-idle{background:var(--inp);color:var(--t3)}
+.ait-agent-sub{font-size:11px;color:var(--t3);margin-top:2px}
+.ait-agent-txt{font-size:12px;color:var(--t2);line-height:1.5;margin-top:6px;white-space:pre-wrap;max-height:130px;overflow-y:auto}
+.ait-agent-concl{font-size:12px;font-weight:600;color:var(--t1);margin-top:5px;padding-top:5px;border-top:1px dashed var(--b1)}
+.ait-dec{border:1px solid var(--b1);border-radius:10px;padding:8px 10px;margin-bottom:7px;background:var(--card)}
+.ait-dec-hd{display:flex;align-items:center;gap:7px;font-size:12px}
+.ait-act{font-size:11px;font-weight:800;padding:2px 9px;border-radius:8px}
+.ait-act.BUY{background:var(--candy-pink-bg);color:#D6456A}
+.ait-act.SELL{background:var(--candy-mint-bg);color:#368B63}
+.ait-act.HOLD{background:var(--inp);color:var(--t3)}
+.ait-dec-code{font-weight:700;color:var(--t1)}
+.ait-dec-name{color:var(--t3);font-size:11px}
+.ait-dec-conf{margin-left:auto;font-size:11px;color:var(--t2)}
+.ait-dec-reason{font-size:12px;color:var(--t2);margin-top:4px;line-height:1.5}
+.ait-dec.blocked{opacity:.72}
+.ait-dec-block{font-size:11px;color:#A9791C;margin-top:4px}
+.ait-dec-cons{font-size:11px;color:var(--t3);margin-top:4px}
+.ait-dec-cons .ok{color:#4A7C59}.ait-dec-cons .no{color:#E0536C}
+.ait-pend{border:1px solid var(--candy-pink-bd);background:var(--candy-pink-bg);border-radius:12px;padding:10px;margin-bottom:9px}
+.ait-pend-row{display:flex;gap:8px;margin-top:8px}
+.ait-exec{display:flex;align-items:center;gap:7px;font-size:12px;padding:6px 8px;border-bottom:1px solid var(--b2)}
+.ait-exec .ok{color:#368B63}.ait-exec .fail{color:#D6456A}
+.ait-empty{color:var(--t4);font-size:12px;text-align:center;padding:24px 8px}
+.ait-modal{display:none;position:fixed;inset:0;z-index:9998;background:rgba(58,44,34,.40);backdrop-filter:blur(3px);align-items:center;justify-content:center}
+.ait-modal.show{display:flex}
+.ait-modal-box{background:#fff;border:1px solid var(--b1);border-radius:18px;box-shadow:0 20px 60px rgba(120,90,60,.25);width:min(560px,92vw);max-height:88vh;overflow-y:auto;padding:18px 20px}
+.ait-modal-box h3{font-size:16px;margin-bottom:14px;color:var(--t1)}
+.ait-field{margin-bottom:11px}
+.ait-field label{display:block;font-size:12px;color:var(--t3);margin-bottom:4px;font-weight:600}
+.ait-field input,.ait-field select{width:100%;padding:8px 10px;border:1px solid var(--b1);border-radius:10px;background:var(--inp);color:var(--t1);font-size:13px}
+.ait-row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.ait-wl{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.ait-wl-tag{background:var(--candy-blue-bg);color:#3D6FD0;border:1px solid var(--candy-blue-bd);border-radius:8px;padding:3px 8px;font-size:12px;display:flex;align-items:center;gap:5px}
+.ait-wl-tag span{cursor:pointer;font-weight:800}
+/* 决策可追溯：展开各 agent 对该票的建议 */
+.ait-dec-hd{user-select:none}
+.ait-dec-exp{font-size:11px;color:var(--t3);width:12px;display:inline-block}
+.ait-dec-detail{margin-top:8px;padding-top:8px;border-top:1px dashed var(--b1)}
+.ait-dec-ag{padding:6px 0;border-bottom:1px dashed var(--b2)}
+.ait-dec-ag:last-child{border-bottom:none}
+.ait-dec-ag-h{font-size:12px;font-weight:700;color:var(--t1)}
+.ait-dec-ag-c{font-size:12px;color:var(--t2);margin-top:2px;line-height:1.5}
+.ait-dec-ag-t{font-size:11px;color:var(--t3);line-height:1.55;white-space:pre-wrap;margin-top:4px;max-height:150px;overflow-y:auto}
+.ait-dec-ag details summary{font-size:11px;color:var(--blue);cursor:pointer;margin-top:3px;list-style:none}
+.ait-dec-ag details summary::-webkit-details-marker{display:none}
+/* 右栏分区标题 + AI 模拟账户 */
+.ait-sec-hd{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--t2);margin:10px 4px 6px;padding-bottom:4px;border-bottom:1px solid var(--b1)}
+.ait-sec-hd:first-child{margin-top:2px}
+.ait-acct-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:4px}
+.ait-acct-grid > div{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--b1);border-radius:10px;padding:7px 10px}
+.ait-acct-grid span{font-size:11px;color:var(--t3)}
+.ait-acct-grid b{font-size:15px;color:var(--t1);margin-top:2px}
+.ait-pos-row{display:flex;align-items:center;gap:7px;font-size:12px;padding:6px 8px;border-bottom:1px solid var(--b2)}
+.ait-pos-row .ait-pos-nm{color:var(--t3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ait-acct .up,.ait-pos-row .up{color:#E0536C}
+.ait-acct .dn,.ait-pos-row .dn{color:#4A7C59}
+</style>
+<div class="page" id="page-aitrader" style="flex-direction:column;overflow:hidden">
+  <div class="ait-bar">
+    <div class="ait-title">🤖 AI 交易团队 <span style="font-size:11px;font-weight:600;color:var(--t3)">本地 · 主Agent调度子Agent</span></div>
+    <span id="aitStatus" class="ait-badge stop">● 已停止</span>
+    <span id="aitMode" class="ait-badge paper">模拟盘</span>
+    <span id="aitRound" class="ait-badge">第 0 轮</span>
+    <div class="ait-spacer"></div>
+    <button class="btn btn-green btn-sm" id="aitBtnStart" onclick="aitStart()">▶ 启动</button>
+    <button class="btn btn-gray btn-sm" id="aitBtnStop" onclick="aitStop()">⏸ 停止</button>
+    <button class="btn btn-red btn-sm" onclick="aitEmergency()">🛑 急停</button>
+    <button class="btn btn-gray btn-sm" id="aitBtnRunOnce" onclick="aitRunOnce()">🔄 单轮测试</button>
+    <button class="btn btn-red btn-sm" id="aitBtnStopOnce" onclick="aitStopOnce()" style="display:none">⏹ 停止单轮</button>
+    <button class="btn btn-gray btn-sm" onclick="aitOpenSettings()">⚙️ 风控/候选</button>
+    <button class="btn btn-gray btn-sm" onclick="aitOpenConfig()">🧠 模型</button>
+  </div>
+  <div class="ait-grid">
+    <div class="ait-pane">
+      <div class="ait-pane-hd">👥 交易团队（实时思考）<span id="aitCurStock" style="margin-left:auto;font-size:11px;color:var(--t3)"></span></div>
+      <div class="ait-pane-bd" id="aitAgents"></div>
+    </div>
+    <div class="ait-pane">
+      <div class="ait-pane-hd">🧭 决策时间线</div>
+      <div class="ait-pane-bd" id="aitDecisions"><div class="ait-empty">启动后，主Agent的裁决将在此实时显示</div></div>
+    </div>
+    <div class="ait-pane">
+      <div class="ait-pane-hd">🤖 AI 模拟盘 / 待确认 / 执行</div>
+      <div class="ait-pane-bd">
+        <div id="aitPending"></div>
+        <div class="ait-sec-hd">💰 AI 独立模拟账户<button class="btn btn-gray btn-xs" style="margin-left:auto" onclick="aitResetAccount()">重置</button></div>
+        <div id="aitAccount" class="ait-acct"><div class="ait-empty">加载中…</div></div>
+        <div class="ait-sec-hd">📦 AI 持仓</div>
+        <div id="aitPositions"><div class="ait-empty">暂无持仓</div></div>
+        <div class="ait-sec-hd">📜 执行记录</div>
+        <div id="aitExecs"><div class="ait-empty">暂无执行记录</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="ait-modal" id="aitDecModal" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="ait-modal-box" id="aitDecModalBox"></div>
+</div>
+<div class="ait-modal" id="aitConfigModal" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="ait-modal-box">
+    <h3>🧠 AI 交易模型（与分析模块独立配置）</h3>
+    <div class="ait-field"><label>服务商</label><select id="aitCfgProvider" onchange="aitProviderChange()"></select></div>
+    <div class="ait-field"><label>Base URL</label><input id="aitCfgBase" placeholder="https://...（中转站需手填）"></div>
+    <div class="ait-field"><label>API Key（留空=不修改；填入后自动识别服务商并拉取模型）</label>
+      <input id="aitCfgKey" type="password" placeholder="sk-..." onblur="aitAutoDetect()" onkeydown="if(event.key==='Enter')aitDetectModels()"></div>
+    <div class="ait-field"><label>模型 <button type="button" class="btn btn-gray btn-xs" style="margin-left:6px" onclick="aitDetectModels()">🔍 检测可用模型</button></label>
+      <select id="aitCfgModelSel" style="display:none;margin-bottom:6px" onchange="if(this.value)document.getElementById('aitCfgModel').value=this.value"></select>
+      <input id="aitCfgModel" list="aitCfgModelList" placeholder="模型名（可手填，或从上方下拉选择）">
+      <datalist id="aitCfgModelList"></datalist>
+    </div>
+    <div class="ait-field"><label><input type="checkbox" id="aitCfgEnabled" style="width:auto;margin-right:6px">启用 AI 交易模型</label></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+      <span id="aitCfgMsg" style="flex:1;font-size:12px;color:var(--t3);align-self:center"></span>
+      <button class="btn btn-gray btn-sm" onclick="aitTestConfig()">测试连接</button>
+      <button class="btn btn-green btn-sm" onclick="aitSaveConfig()">保存</button>
+    </div>
+  </div>
+</div>
+<div class="ait-modal" id="aitSettingsModal" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="ait-modal-box">
+    <h3>⚙️ 候选池 / 节奏 / 风控</h3>
+    <div class="ait-field"><label><input type="checkbox" id="aitSetPrescreen" style="width:auto;margin-right:6px">🧮 全市场量化初筛（无LLM海选 → top N 交团队深析）</label></div>
+    <div class="ait-row2">
+      <div class="ait-field"><label>初筛覆盖(活跃前N只)</label><input id="aitSetPreUni" type="number"></div>
+      <div class="ait-field"><label>初筛入选(top N)</label><input id="aitSetPreTop" type="number"></div>
+    </div>
+    <div class="ait-field"><label>自选买入候选（输入6位代码回车添加，与初筛合并）</label>
+      <input id="aitWlInput" placeholder="如 600519" onkeydown="if(event.key==='Enter')aitAddWatch()">
+      <div class="ait-wl" id="aitWlTags"></div>
+    </div>
+    <div class="ait-row2">
+      <div class="ait-field"><label>买入共识门(个股3票里≥N看多·弱市自动+1/强市-1)</label><input id="aitSetConsensus" type="number" min="1" max="3"></div>
+      <div class="ait-field"><label>　</label><div style="font-size:11px;color:var(--t3);padding-top:9px">4票=市场/技术/基本面/多空辩论</div></div>
+      <div class="ait-field"><label>每轮最多分析(只)</label><input id="aitSetMaxCand" type="number"></div>
+      <div class="ait-field"><label>决策轮间隔(秒)</label><input id="aitSetInterval" type="number"></div>
+      <div class="ait-field"><label>实时监控tick(秒)</label><input id="aitSetMonitor" type="number"></div>
+      <div class="ait-field"><label>信心阈值(≥才下单)</label><input id="aitSetMinConf" type="number"></div>
+      <div class="ait-field"><label>最多持仓(只)</label><input id="aitSetMaxPos" type="number"></div>
+      <div class="ait-field"><label>单笔买入占比(0~1)</label><input id="aitSetPerTrade" type="number" step="0.01"></div>
+      <div class="ait-field"><label>单票上限占比(0~1)</label><input id="aitSetSingleMax" type="number" step="0.01"></div>
+      <div class="ait-field"><label>当日交易上限(笔)</label><input id="aitSetDayLimit" type="number"></div>
+      <div class="ait-field"><label>当日回撤熔断(0~1)</label><input id="aitSetMaxLoss" type="number" step="0.01"></div>
+    </div>
+    <div class="ait-field"><label><input type="checkbox" id="aitSetIgnoreTime" style="width:auto;margin-right:6px">忽略交易时间（盘后测试用）</label></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-green btn-sm" onclick="aitSaveSettings()">保存</button></div>
   </div>
 </div>
 
@@ -1733,8 +1904,8 @@ tr:hover td{background:var(--card)}
 .mr-idx-name{font-size:14px;font-weight:600}
 .mr-idx-price{font-size:18px;font-weight:700}
 .mr-idx-chg{font-size:13px;padding:2px 8px;border-radius:4px}
-.mr-idx-chg.up{background:rgba(35,134,54,.15);color:#3fb950}
-.mr-idx-chg.dn{background:rgba(218,54,51,.15);color:#f85149}
+.mr-idx-chg.up{background:rgba(218,54,51,.15);color:#f85149}
+.mr-idx-chg.dn{background:rgba(35,134,54,.15);color:#3fb950}
 .mr-breadth{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}
 .mr-stat{background:var(--hover);border-radius:6px;padding:8px 10px;text-align:center}
 .mr-stat-val{font-size:20px;font-weight:700}
@@ -7053,10 +7224,10 @@ function _renderSentiment(data){
 
   html += `<div class="daily-card"><div style="font-size:12px;color:var(--t3);margin-bottom:6px;font-weight:600">涨跌结构</div>
     <div class="mr-breadth">
-      <div class="mr-stat"><div class="mr-stat-val" style="color:#3fb950">${b.up ?? '—'}</div><div class="mr-stat-lbl">上涨</div></div>
-      <div class="mr-stat"><div class="mr-stat-val" style="color:#f85149">${b.down ?? '—'}</div><div class="mr-stat-lbl">下跌</div></div>
-      <div class="mr-stat"><div class="mr-stat-val" style="color:#3fb950">${zt.zt_count ?? '—'}</div><div class="mr-stat-lbl">涨停</div></div>
-      <div class="mr-stat"><div class="mr-stat-val" style="color:#f85149">${zt.dt_count ?? '—'}</div><div class="mr-stat-lbl">跌停</div></div>
+      <div class="mr-stat"><div class="mr-stat-val" style="color:#f85149">${b.up ?? '—'}</div><div class="mr-stat-lbl">上涨</div></div>
+      <div class="mr-stat"><div class="mr-stat-val" style="color:#3fb950">${b.down ?? '—'}</div><div class="mr-stat-lbl">下跌</div></div>
+      <div class="mr-stat"><div class="mr-stat-val" style="color:#f85149">${zt.zt_count ?? '—'}</div><div class="mr-stat-lbl">涨停</div></div>
+      <div class="mr-stat"><div class="mr-stat-val" style="color:#3fb950">${zt.dt_count ?? '—'}</div><div class="mr-stat-lbl">跌停</div></div>
     </div>
     <div class="rv-row"><span>炸板率</span><b>${zt.zb_rate!=null ? zt.zb_rate+'%' : '—'}</b></div>
     <div class="rv-row"><span>最高连板</span><b>${zt.max_height ? zt.max_height+' 板' : '—'}</b></div>
@@ -7348,6 +7519,296 @@ async function loadMyFeedback(){
     }).join('');
 }
 function _fbEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
+</script>
+<script>
+/* ══════════════ 🤖 AI 交易模块（本地）前端驱动 ══════════════ */
+const aitS = { roles:[], agents:{}, decisions:[], execs:[], pending:{}, providers:{}, settings:null, es:null, inited:false, curStock:'' };
+
+async function initAiTrader(){
+  if(aitS.inited) return;
+  aitS.inited = true;
+  const meta = await api('/ai_trader/meta');
+  if(meta && meta.ok){ aitS.roles = meta.roles||[]; aitS.providers = meta.providers||{}; aitFillProviders(); }
+  await aitLoadConfig();
+  await aitLoadSettings();
+  const snap = await api('/ai_trader/snapshot');
+  if(snap && snap.ok) aitApplySnapshot(snap);
+  aitRenderAgents();
+  aitConnectSSE();
+  aitLoadAccount();
+  if(!aitS.acctTimer) aitS.acctTimer = setInterval(aitLoadAccount, 15000);
+}
+
+function aitConnectSSE(){
+  if(aitS.es){ try{aitS.es.close()}catch(e){} }
+  const es = new EventSource(API+'/ai_trader/stream');
+  aitS.es = es;
+  es.addEventListener('snapshot', e=> aitApplySnapshot(JSON.parse(e.data)));
+  es.addEventListener('ai_status', e=> aitApplyStatus(JSON.parse(e.data)));
+  es.addEventListener('ai_round', e=>{ const d=JSON.parse(e.data); if(d.phase==='start') document.getElementById('aitRound').textContent='第 '+d.round_no+' 轮'; });
+  es.addEventListener('ai_agent', e=> aitOnAgent(JSON.parse(e.data)));
+  es.addEventListener('ai_decision', e=> aitOnDecision(JSON.parse(e.data)));
+  es.addEventListener('ai_exec', e=> aitOnExec(JSON.parse(e.data)));
+  es.addEventListener('ai_pending', e=> aitOnPending(JSON.parse(e.data)));
+  es.addEventListener('ai_pending_resolved', e=>{ const d=JSON.parse(e.data); delete aitS.pending[d.id]; aitRenderPending(); });
+  es.addEventListener('ai_account', e=>{ const d=JSON.parse(e.data); aitRenderAccount(d.account, d.positions); });
+}
+
+function aitApplySnapshot(s){
+  if(s.roles && s.roles.length) aitS.roles = s.roles;
+  aitS.agents = {}; (s.agent_cards||[]).forEach(c=> aitS.agents[c.role]=c);
+  aitS.decisions = s.decisions||[];
+  aitS.execs = s.execs||[];
+  aitS.pending = {}; (s.pending||[]).forEach(p=> aitS.pending[p.id]=p);
+  aitApplyStatus(s);
+  aitRenderAgents(); aitRenderDecisions(); aitRenderExecs(); aitRenderPending();
+}
+
+function aitApplyStatus(s){
+  const sb=document.getElementById('aitStatus');
+  if(s.halted_reason){ sb.className='ait-badge halt'; sb.textContent='🔥 已熔断'; sb.title=s.halted_reason; }
+  else if(s.running){ sb.className='ait-badge run'; sb.textContent='● 运行中'; sb.title=''; }
+  else { sb.className='ait-badge stop'; sb.textContent='● 已停止'; sb.title=''; }
+  const mb=document.getElementById('aitMode'), live=(s.broker_mode==='live');
+  mb.className='ait-badge '+(live?'live':'paper');
+  mb.textContent = live?'实盘(需人工确认)':'模拟盘(自动)';
+  if(typeof s.round_no==='number') document.getElementById('aitRound').textContent='第 '+s.round_no+' 轮';
+  document.getElementById('aitBtnStart').disabled=!!s.running;
+  document.getElementById('aitBtnStop').disabled=!s.running;
+  const once=!!s.once_running;
+  const ro=document.getElementById('aitBtnRunOnce'); if(ro){ ro.disabled=once||!!s.running; ro.textContent=once?'⏳ 分析中…':'🔄 单轮测试'; }
+  const so=document.getElementById('aitBtnStopOnce'); if(so) so.style.display=once?'inline-flex':'none';
+}
+
+function aitOnAgent(c){
+  aitS.agents[c.role]=c;
+  if(c.code){ aitS.curStock=c.code; const el=document.getElementById('aitCurStock'); if(el)el.textContent='当前标的：'+c.code; }
+  aitRenderAgents();
+}
+function aitOnDecision(d){
+  const i=aitS.decisions.findIndex(x=>x.id===d.id);
+  if(i>=0) aitS.decisions[i]=d; else aitS.decisions.push(d);
+  aitS.decisions=aitS.decisions.slice(-60); aitRenderDecisions();
+}
+function aitOnExec(r){ aitS.execs.push(r); aitS.execs=aitS.execs.slice(-60); aitRenderExecs(); aitLoadAccount(); }
+function aitOnPending(p){ aitS.pending[p.id]=p; aitRenderPending(); }
+
+const AIT_ORDER=['lead','market','technical','fundamental','bull','bear','risk'];
+function aitRenderAgents(){
+  const box=document.getElementById('aitAgents'); if(!box) return;
+  const rm={}; aitS.roles.forEach(r=>rm[r.role]=r);
+  let html='';
+  AIT_ORDER.forEach(role=>{
+    const meta=rm[role]; if(!meta) return;
+    const c=aitS.agents[role]||{}, st=c.status||'idle';
+    const stCls=st==='thinking'?'ait-st-think':(st==='done'?'ait-st-done':'ait-st-idle');
+    const stTxt=st==='thinking'?'思考中…':(st==='done'?'已结论':'待命');
+    html+='<div class="ait-agent '+(meta.kind==='lead'?'lead':'')+(st==='thinking'?' active':'')+'">'
+      +'<div class="ait-agent-hd">'+(meta.icon||'🤖')+' '+esc(meta.name)
+      +'<span class="ait-agent-st '+stCls+'">'+stTxt+'</span></div>'
+      +(c.code?'<div class="ait-agent-sub">标的 '+esc(c.code)+'</div>':'')
+      +(c.text?'<div class="ait-agent-txt">'+esc(c.text)+'</div>':'')
+      +(c.conclusion?'<div class="ait-agent-concl">▸ '+esc(c.conclusion)+'</div>':'')
+      +'</div>';
+  });
+  box.innerHTML=html;
+}
+function aitRenderDecisions(){
+  const box=document.getElementById('aitDecisions'); if(!box) return;
+  if(!aitS.decisions.length){ box.innerHTML='<div class="ait-empty">启动后，主Agent的裁决将在此实时显示；点某只票可展开团队各角色对它的建议</div>'; return; }
+  let html='';
+  aitS.decisions.slice().reverse().forEach(d=>{
+    const hasAg=d.agents&&d.agents.length;
+    html+='<div class="ait-dec '+(d.blocked?'blocked':'')+'"'+(hasAg?' onclick="aitShowDec(\''+d.id+'\')" style="cursor:pointer" title="点击查看团队对该票的详细分析"':'')+'>'
+      +'<div class="ait-dec-hd">'
+      +'<span class="ait-act '+esc(d.action)+'">'+esc(d.action)+'</span>'
+      +'<span class="ait-dec-code">'+esc(d.code)+'</span><span class="ait-dec-name">'+esc(d.name||'')+'</span>'
+      +'<span class="ait-dec-conf">信心 '+(d.confidence||0)+' · '+esc(d.time||'')+(hasAg?' 🔍':'')+'</span></div>'
+      +(d.reason?'<div class="ait-dec-reason">'+esc(d.reason)+'</div>':'')
+      +(d.consensus?('<div class="ait-dec-cons">🗳️ 个股票 多'+(d.consensus.long||0)+'/空'+(d.consensus.short||0)+'/中'+(d.consensus.neutral||0)+(d.consensus.market_cn?' · 市场'+esc(d.consensus.market_cn):'')+' · '+(d.consensus.buy_ok?'<b class="ok">看多达标✓</b>':'<b class="no">看多未达标✗</b>')+'</div>'):'')
+      +(d.blocked?'<div class="ait-dec-block">🛡️ 风控拦截：'+esc(d.blocked)+'</div>':'')
+      +'</div>';
+  });
+  box.innerHTML=html;
+}
+function aitAgentsHtml(agents){
+  return (agents||[]).map(a=>'<div class="ait-dec-ag">'
+    +'<div class="ait-dec-ag-h">'+(a.icon||'🤖')+' '+esc(a.name||a.role||'')+'</div>'
+    +(a.conclusion?'<div class="ait-dec-ag-c">▸ '+esc(a.conclusion)+'</div>':'')
+    +(a.text?'<div class="ait-dec-ag-t">'+esc(a.text)+'</div>':'')
+    +'</div>').join('');
+}
+function aitShowDec(id){
+  const d=aitS.decisions.find(x=>x.id===id); if(!d) return;
+  const cons=d.consensus?('<div class="ait-dec-cons" style="margin:8px 0">🗳️ 个股方向票(技术/基本面/多空)：看多'+(d.consensus.long||0)+' / 看空'+(d.consensus.short||0)+' / 中性'+(d.consensus.neutral||0)+'｜市场环境：<b>'+esc(d.consensus.market_cn||'中性')+'</b> · '+(d.consensus.buy_ok?'<b class="ok">看多达标✓ 允许买入</b>':'<b class="no">看多未达标✗（'+esc(d.consensus.market_cn||'本')+'市买入需≥'+(d.consensus.eff_min||d.consensus.min||'?')+'票个股看多且多&gt;空）</b>')+'</div>'):'';
+  document.getElementById('aitDecModalBox').innerHTML=
+    '<h3 style="display:flex;align-items:center;gap:8px"><span class="ait-act '+esc(d.action)+'">'+esc(d.action)+'</span>'+esc(d.code)+' <span style="color:var(--t3);font-weight:600">'+esc(d.name||'')+'</span></h3>'
+    +'<div style="font-size:12px;color:var(--t3);margin-bottom:8px">信心 '+(d.confidence||0)+' · '+esc(d.time||'')+(d.holding?' · <b style="color:#3D6FD0">当前持仓</b>':'')+'</div>'
+    +(d.reason?'<div class="ait-dec-reason" style="margin-bottom:4px"><b>🎯 主Agent裁决：</b>'+esc(d.reason)+'</div>':'')
+    +cons
+    +(d.blocked?'<div class="ait-dec-block">🛡️ 风控拦截：'+esc(d.blocked)+'</div>':'')
+    +'<div class="ait-sec-hd" style="margin-top:12px">👥 团队各角色对该票的建议</div>'
+    +(aitAgentsHtml(d.agents)||'<div class="ait-empty">无角色留痕</div>')
+    +'<div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn btn-gray btn-sm" onclick="document.getElementById(\'aitDecModal\').classList.remove(\'show\')">关闭</button></div>';
+  document.getElementById('aitDecModal').classList.add('show');
+}
+function aitRenderExecs(){
+  const box=document.getElementById('aitExecs'); if(!box) return;
+  if(!aitS.execs.length){ box.innerHTML='<div class="ait-empty">暂无执行记录</div>'; return; }
+  let html='';
+  aitS.execs.slice().reverse().forEach(r=>{
+    html+='<div class="ait-exec"><span class="ait-act '+esc(r.action)+'">'+esc(r.action)+'</span>'
+      +'<b>'+esc(r.code)+'</b> '+esc(r.name||'')+' @'+(r.price||'-')
+      +'<span style="margin-left:auto" class="'+(r.ok?'ok':'fail')+'">'+(r.ok?'✅':'❌')+' '+esc(r.msg||'')+'</span></div>';
+  });
+  box.innerHTML=html;
+}
+function aitRenderPending(){
+  const box=document.getElementById('aitPending'); if(!box) return;
+  const arr=Object.values(aitS.pending);
+  if(!arr.length){ box.innerHTML=''; return; }
+  box.innerHTML=arr.map(p=>'<div class="ait-pend"><div style="font-weight:700">⏳ 实盘待确认 · '
+    +'<span class="ait-act '+esc(p.action)+'">'+esc(p.action)+'</span> '+esc(p.code)+' '+esc(p.name||'')+'</div>'
+    +'<div style="font-size:12px;color:var(--t2);margin-top:4px">价 '+(p.price||'-')+' · 信心 '+(p.confidence||0)+' · '+esc(p.reason||'')+'</div>'
+    +'<div class="ait-pend-row"><button class="btn btn-green btn-sm" onclick="aitConfirm(\''+p.id+'\',true)">✓ 确认下单</button>'
+    +'<button class="btn btn-gray btn-sm" onclick="aitConfirm(\''+p.id+'\',false)">✕ 拒绝</button></div></div>').join('');
+}
+
+async function aitStart(){ const r=await api('/ai_trader/start','POST'); fbToast((r&&r.msg)||'已请求', r&&!r.ok); }
+async function aitStop(){ const r=await api('/ai_trader/stop','POST'); fbToast((r&&r.msg)||'已停止', r&&!r.ok); }
+async function aitEmergency(){ if(!confirm('确定一键急停？将停止AI交易并清空待确认。')) return; const r=await api('/ai_trader/emergency_stop','POST'); fbToast((r&&r.msg)||'已急停', r&&!r.ok); }
+async function aitRunOnce(){ const r=await api('/ai_trader/run_once','POST'); fbToast((r&&r.msg)||'已触发', r&&!r.ok); }
+async function aitStopOnce(){ const r=await api('/ai_trader/stop_once','POST'); fbToast((r&&r.msg)||'已停止', r&&!r.ok); }
+
+/* 🤖 AI 独立模拟账户 */
+function aitFmt(n){ return (Number(n)||0).toLocaleString('zh-CN',{maximumFractionDigits:0}); }
+async function aitLoadAccount(){ const r=await api('/ai_trader/account'); if(r&&r.ok) aitRenderAccount(r.account, r.positions); }
+function aitRenderAccount(acc, poss){
+  const a=document.getElementById('aitAccount');
+  if(a&&acc){
+    const ret=acc.total_return||0, rc=ret>=0?'up':'dn';
+    a.innerHTML='<div class="ait-acct-grid">'
+      +'<div><span>账户权益</span><b>¥'+aitFmt(acc.equity)+'</b></div>'
+      +'<div><span>可用现金</span><b>¥'+aitFmt(acc.cash)+'</b></div>'
+      +'<div><span>累计收益率</span><b class="'+rc+'">'+(ret>=0?'+':'')+ret.toFixed(2)+'%</b></div>'
+      +'<div><span>持仓数</span><b>'+(acc.position_count||0)+' 只</b></div></div>';
+  }
+  const pb=document.getElementById('aitPositions');
+  if(pb){
+    if(!poss||!poss.length){ pb.innerHTML='<div class="ait-empty">AI 暂无持仓</div>'; }
+    else pb.innerHTML=poss.map(p=>{ const up=(p.pnl_pct||0)>=0;
+      return '<div class="ait-pos-row"><b>'+esc(p.code)+'</b><span class="ait-pos-nm">'+esc(p.name||'')+'</span>'
+        +'<span>'+(p.shares||0)+'股</span><span>现'+(p.cur_price||'-')+'</span>'
+        +'<span class="'+(up?'up':'dn')+'">'+(up?'+':'')+(p.pnl_pct||0).toFixed(2)+'%</span></div>';
+    }).join('');
+  }
+}
+async function aitResetAccount(){
+  const v=prompt('重置 AI 独立模拟账户 —— 输入初始资金（元）：','500000');
+  if(v===null) return;
+  const r=await api('/ai_trader/account/reset','POST',{initial_capital:parseFloat(v)||500000});
+  fbToast((r&&r.msg)||'已重置', r&&!r.ok); aitLoadAccount();
+}
+async function aitConfirm(id,ap){ const r=await api('/ai_trader/confirm','POST',{id:id,approve:ap}); fbToast((r&&r.msg)||'', r&&!r.ok); delete aitS.pending[id]; aitRenderPending(); }
+
+function aitFillProviders(){
+  const sel=document.getElementById('aitCfgProvider'); if(!sel) return;
+  sel.innerHTML=Object.entries(aitS.providers).map(([k,v])=>'<option value="'+k+'">'+esc(v.name)+'</option>').join('');
+}
+function aitProviderChange(){
+  const k=document.getElementById('aitCfgProvider').value, p=aitS.providers[k]; if(!p) return;
+  if(p.base_url) document.getElementById('aitCfgBase').value=p.base_url;
+  if(p.model) document.getElementById('aitCfgModel').value=p.model;
+}
+async function aitDetectModels(){
+  const msg=document.getElementById('aitCfgMsg');
+  msg.style.color='var(--t3)'; msg.textContent='🔍 检测可用模型中…';
+  const body={ base_url:document.getElementById('aitCfgBase').value.trim() };
+  const key=document.getElementById('aitCfgKey').value.trim(); if(key) body.api_key=key;
+  const r=await api('/ai_trader/detect_models','POST',body);
+  if(r&&r.ok){
+    if(r.base_url && !document.getElementById('aitCfgBase').value.trim()) document.getElementById('aitCfgBase').value=r.base_url;
+    if(r.provider_guess && aitS.providers[r.provider_guess]) document.getElementById('aitCfgProvider').value=r.provider_guess;
+    const models=r.models||[];
+    document.getElementById('aitCfgModelList').innerHTML=models.map(m=>'<option value="'+esc(m)+'">').join('');
+    const sel=document.getElementById('aitCfgModelSel');
+    sel.innerHTML='<option value="">— 选择模型（共 '+models.length+' 个）—</option>'+models.map(m=>'<option value="'+esc(m)+'">'+esc(m)+'</option>').join('');
+    sel.style.display=models.length?'':'none';
+    const mi=document.getElementById('aitCfgModel'); if(!mi.value.trim()&&models.length) mi.value=models[0];
+    msg.style.color='#368B63';
+    msg.textContent='✅ 检测到 '+models.length+' 个可用模型，下拉选择即可'+(r.total>models.length?'（已过滤非对话模型，原始 '+r.total+'）':'');
+  }else{
+    document.getElementById('aitCfgModelSel').style.display='none';
+    msg.style.color='#D6456A'; msg.textContent='❌ '+((r&&r.error)||'检测失败');
+  }
+}
+function aitAutoDetect(){
+  // Key 输入完成(blur/回车)后自动探测；短于 8 位视为没填完不打扰
+  const key=document.getElementById('aitCfgKey').value.trim();
+  if(key.length>=8) aitDetectModels();
+}
+async function aitLoadConfig(){
+  const r=await api('/ai_trader/config'); if(!r||!r.ok) return; const c=r.config;
+  if(c.provider) document.getElementById('aitCfgProvider').value=c.provider;
+  document.getElementById('aitCfgBase').value=c.base_url||'';
+  document.getElementById('aitCfgModel').value=c.model||'';
+  document.getElementById('aitCfgEnabled').checked=!!c.enabled;
+  document.getElementById('aitCfgKey').placeholder=c.has_key?('已配置 '+c.api_key_mask+'（留空不改）'):'sk-...';
+}
+function aitOpenConfig(){ document.getElementById('aitConfigModal').classList.add('show'); }
+async function aitTestConfig(){
+  document.getElementById('aitCfgMsg').textContent='测试中…';
+  const body={provider:document.getElementById('aitCfgProvider').value,base_url:document.getElementById('aitCfgBase').value,model:document.getElementById('aitCfgModel').value,api_key:document.getElementById('aitCfgKey').value};
+  const r=await api('/ai_trader/config/test','POST',body);
+  document.getElementById('aitCfgMsg').textContent=r?r.msg:'测试失败';
+}
+async function aitSaveConfig(){
+  const body={provider:document.getElementById('aitCfgProvider').value,base_url:document.getElementById('aitCfgBase').value,model:document.getElementById('aitCfgModel').value,enabled:document.getElementById('aitCfgEnabled').checked};
+  const k=document.getElementById('aitCfgKey').value; if(k) body.api_key=k;
+  const r=await api('/ai_trader/config','POST',body);
+  if(r&&r.ok){ fbToast('模型配置已保存'); document.getElementById('aitConfigModal').classList.remove('show'); document.getElementById('aitCfgKey').value=''; aitLoadConfig(); }
+  else fbToast('保存失败',true);
+}
+
+async function aitLoadSettings(){ const r=await api('/ai_trader/settings'); if(r&&r.ok){ aitS.settings=r.settings; aitFillSettings(); } }
+function aitFillSettings(){
+  const s=aitS.settings; if(!s) return; const r=s.risk||{};
+  const set=(id,v)=>{const el=document.getElementById(id); if(el)el.value=v;};
+  set('aitSetMaxCand',s.max_candidates); set('aitSetInterval',s.interval_sec); set('aitSetMonitor',s.monitor_sec);
+  set('aitSetMinConf',r.min_confidence); set('aitSetMaxPos',r.max_positions); set('aitSetPerTrade',r.per_trade_ratio);
+  set('aitSetSingleMax',r.single_max_ratio); set('aitSetDayLimit',r.daily_trade_limit); set('aitSetMaxLoss',r.daily_max_loss_pct);
+  set('aitSetPreUni',s.prescreen_universe); set('aitSetPreTop',s.prescreen_top); set('aitSetConsensus',r.consensus_min_votes);
+  const ig=document.getElementById('aitSetIgnoreTime'); if(ig) ig.checked=!!s.ignore_market_time;
+  const ps=document.getElementById('aitSetPrescreen'); if(ps) ps.checked=s.prescreen_enabled!==false;
+  aitRenderWatch();
+}
+function aitRenderWatch(){
+  const box=document.getElementById('aitWlTags'); if(!box||!aitS.settings) return;
+  box.innerHTML=(aitS.settings.watchlist||[]).map(c=>'<div class="ait-wl-tag">'+esc(c)+'<span onclick="aitRemoveWatch(\''+esc(c)+'\')">×</span></div>').join('')||'<span style="font-size:11px;color:var(--t4)">暂无自选，AI将只评估持仓</span>';
+}
+async function aitAddWatch(){
+  const inp=document.getElementById('aitWlInput'), code=inp.value.trim(); if(!code) return;
+  const r=await api('/ai_trader/watchlist','POST',{op:'add',code:code});
+  if(r&&r.ok){ aitS.settings.watchlist=r.watchlist; inp.value=''; aitRenderWatch(); }
+}
+async function aitRemoveWatch(code){
+  const r=await api('/ai_trader/watchlist','POST',{op:'remove',code:code});
+  if(r&&r.ok){ aitS.settings.watchlist=r.watchlist; aitRenderWatch(); }
+}
+function aitOpenSettings(){ aitFillSettings(); document.getElementById('aitSettingsModal').classList.add('show'); }
+async function aitSaveSettings(){
+  const num=id=>parseFloat(document.getElementById(id).value);
+  const body={ max_candidates:num('aitSetMaxCand'), interval_sec:num('aitSetInterval'), monitor_sec:num('aitSetMonitor'),
+    ignore_market_time:document.getElementById('aitSetIgnoreTime').checked,
+    prescreen_enabled:document.getElementById('aitSetPrescreen').checked,
+    prescreen_universe:num('aitSetPreUni'), prescreen_top:num('aitSetPreTop'),
+    risk:{ min_confidence:num('aitSetMinConf'), max_positions:num('aitSetMaxPos'), per_trade_ratio:num('aitSetPerTrade'),
+      single_max_ratio:num('aitSetSingleMax'), daily_trade_limit:num('aitSetDayLimit'), daily_max_loss_pct:num('aitSetMaxLoss'),
+      consensus_min_votes:num('aitSetConsensus') } };
+  const r=await api('/ai_trader/settings','POST',body);
+  if(r&&r.ok){ aitS.settings=r.settings; fbToast('设置已保存'); document.getElementById('aitSettingsModal').classList.remove('show'); }
+  else fbToast('保存失败',true);
+}
 </script>
 <script src="/static/lib/jianwei-mascot.js"></script>
 <!-- ══════════ ICP / 公安联网备案（工信部+公安部合规：主页底部中央展示并链接官方系统）══════════ -->

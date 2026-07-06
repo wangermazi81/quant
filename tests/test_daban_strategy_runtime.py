@@ -9,6 +9,7 @@ import daban_strategy_runtime as runtime
 
 def test_new_quality_strategy_is_managed_by_daban_ride():
     assert runtime.is_daban_ride_strategy("daban_lianban_2plus_quality") is True
+    assert runtime.is_daban_ride_strategy("lianban_2plus") is True
     assert runtime.is_daban_ride_strategy("da_ban") is True
     assert runtime.is_daban_ride_strategy("ma_cross") is False
 
@@ -22,6 +23,12 @@ def test_quality_strategy_uses_tighter_sell_parameters():
         "max_hold": 7,
         "hold_limitup": True,
     }
+
+
+def test_legacy_lianban_uses_same_two_three_board_sell_parameters():
+    assert runtime.ride_params_for_strategy("lianban_2plus") == runtime.ride_params_for_strategy(
+        "daban_lianban_2plus_quality"
+    )
 
 
 def test_default_daban_strategy_keeps_existing_global_parameters():

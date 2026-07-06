@@ -553,6 +553,65 @@ def _get_market_quotes_cached(force_refresh: bool = False) -> list:
     return quotes
 
 
+# ── 全市场【未过滤】快照：供涨跌家数 / 两市成交额等市场统计用 ──────────────
+# 注意：_get_market_quotes_cached() 返回的是**策略扫描用的过滤池**（price>3 且 vol>100，
+# 还可能不含北交所），用它统计全市场涨跌家数/成交额会系统性偏小。市场统计必须用全量。
+_full_mkt_cache = {"quotes": [], "ts": 0}
+
+
+def _get_full_market_snapshot(force_refresh: bool = False) -> list:
+    """全市场未过滤行情快照（含低价股，尽量含北交所），带 5 分钟缓存。
+    每项含 code/price/change_pct/amount 等。供 web/market 涨跌家数、review 成交额求和。"""
+    now = _time.time()
+    if not force_refresh and _full_mkt_cache["quotes"] and (now - _full_mkt_cache["ts"]) < _MKT_CACHE_TTL:
+        return _full_mkt_cache["quotes"]
+
+    quotes = []
+    # 路径 1：akshare 全量（东财 stock_zh_a_spot_em = 沪深京A股，与东财页面显示口径一致，
+    #         含北交所/全价格，最完整）。优先它，才能与东财的成交总额/涨跌家数对得上。
+    # ★务必用 research_center.no_proxy()：本机 v2ray 系统代理写在 Windows 注册表里，
+    #   只 pop 环境变量没用（requests 仍从注册表捡代理掐掉东财 → 长期回退 TDX 致少算北交所）。
+    try:
+        import research_center as _rc, akshare as ak
+        import pandas as pd
+        with _rc.no_proxy():
+            df = ak.stock_zh_a_spot_em()
+        if df is not None and not df.empty:
+            cm = {"代码": "code", "名称": "name", "最新价": "price", "涨跌幅": "change_pct",
+                  "昨收": "last_close", "成交额": "amount", "成交量": "vol"}
+            keep = [c for c in cm if c in df.columns]
+            d2 = df[keep].rename(columns=cm)
+            for c in ("price", "change_pct", "last_close", "amount", "vol"):
+                if c in d2.columns:
+                    d2[c] = pd.to_numeric(d2[c], errors="coerce").fillna(0.0)
+            quotes = d2.to_dict("records")
+            logger.info(f"[SM] 全市场快照（akshare 东财全量）：{len(quotes)} 只")
+    except Exception as e:
+        logger.warning(f"[SM] 全市场快照 akshare 失败: {e}")
+
+    # 路径 2：TDX 全量兜底（akshare 被东财风控/云端不可用时，不依赖东财仍能出数）
+    if not quotes:
+        try:
+            import ths_quote as _tq
+            client = _tq.get_client()
+            if client and client._ok:
+                all_codes = client.get_all_stock_codes()
+                if all_codes:
+                    quotes = client.get_quotes(all_codes) or []
+                    logger.info(f"[SM] 全市场快照（TDX 兜底）：{len(quotes)} 只")
+        except Exception as e:
+            logger.warning(f"[SM] 全市场快照 TDX 失败: {e}")
+
+    # 路径 3：退而求其次，用策略过滤池（至少不为空，仅作最后兜底）
+    if not quotes:
+        quotes = _get_market_quotes_cached()
+
+    if quotes:
+        _full_mkt_cache["quotes"] = quotes
+        _full_mkt_cache["ts"] = now
+    return quotes
+
+
 def _full_market_universe(max_codes: int = 0, force_refresh: bool = False) -> list:
     """
     两阶段全市场选股宇宙（带5分钟缓存）：

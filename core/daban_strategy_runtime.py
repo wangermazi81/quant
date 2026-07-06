@@ -17,15 +17,19 @@ DEFAULT_RIDE_PARAMS = {
 
 
 QUALITY_2PLUS = "daban_lianban_2plus_quality"
+LEGACY_2PLUS = "lianban_2plus"
+
+TWO_THREE_BOARD_PARAMS = {
+    "stop_loss": -0.05,
+    "trail": 0.04,
+    "max_hold": 7,
+    "hold_limitup": True,
+}
 
 STRATEGY_RIDE_PARAMS = {
     "da_ban": DEFAULT_RIDE_PARAMS,
-    QUALITY_2PLUS: {
-        "stop_loss": -0.05,
-        "trail": 0.04,
-        "max_hold": 7,
-        "hold_limitup": True,
-    },
+    QUALITY_2PLUS: TWO_THREE_BOARD_PARAMS,
+    LEGACY_2PLUS: TWO_THREE_BOARD_PARAMS,
 }
 
 

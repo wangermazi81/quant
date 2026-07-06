@@ -171,6 +171,7 @@ from web.feedback import bp as _feedback_bp
 from web.review import bp as _review_bp
 from web.research import bp as _research_bp
 from web.lhb import bp as _lhb_bp
+from web.ai_trader import bp as _aitrader_bp
 app.register_blueprint(_auth_bp)
 app.register_blueprint(_user_bp)
 app.register_blueprint(_admin_bp)
@@ -184,6 +185,7 @@ app.register_blueprint(_feedback_bp)
 app.register_blueprint(_review_bp)
 app.register_blueprint(_research_bp)
 app.register_blueprint(_lhb_bp)
+app.register_blueprint(_aitrader_bp)
 
 
 
@@ -210,7 +212,7 @@ def _reset_daily_if_needed(uid: int):
 
 
 def execute_buy(uid: int, code: str, name: str, price: float, shares: int,
-                reason: str = "") -> dict:
+                reason: str = "", strategy: str = "") -> dict:
     """统一买入入口（模拟盘 / 实盘）。返回 {"ok": bool, "msg": str, ...}"""
     s = get_user_state(uid)
     
@@ -221,13 +223,16 @@ def execute_buy(uid: int, code: str, name: str, price: float, shares: int,
     if DRY_RUN or broker_type == "paper":
         # ── 模拟盘逻辑 ──
         broker = pb.get_broker(uid)
-        result = broker.submit_buy(code, name, price, shares, reason=reason)
+        buy_strategy = strategy or s.get("active_strategy") or ""
+        result = broker.submit_buy(code, name, price, shares, reason=reason,
+                                   strategy=buy_strategy)
         if result.get("ok"):
             s["executed"]    += 1
             s["today_trades"] = s.get("today_trades", 0) + 1
             s["positions"][code] = {
                 "name": name, "shares": shares, "cost": result["exec_price"],
                 "date": datetime.now().strftime("%Y-%m-%d"),
+                "strategy": buy_strategy,
             }
             _add_log(uid,
                 f"✅ [模拟] 买入 {code} {name} {shares}股 @{result['exec_price']:.2f} "
@@ -351,7 +356,8 @@ def _auto_buy(uid: int, item: dict):
     shares = item.get("shares", 100)
     try:
         _add_log(uid, f"🤖 自动买入触发: {code} {name} {shares}股 @{price}", "buy")
-        res = execute_buy(uid, code, name, price, shares, reason="自动买入")
+        res = execute_buy(uid, code, name, price, shares, reason="自动买入",
+                          strategy=item.get("strategy") or "")
         if not res.get("ok"):
             item["status"] = "error"
             item["error_msg"] = res.get("msg", "")
@@ -511,9 +517,11 @@ def _check_daban_ride(uid: int, broker, positions: list, qmap: dict):
     遵守 T+1（当天买入不卖，submit_sell 也会兜底拒绝）。
     """
     s = get_user_state(uid)
-    strategy = s.get("active_strategy") or "da_ban"
     for p in positions:
         code = p.get("code", "")
+        strategy = p.get("strategy") or s.get("active_strategy") or ""
+        if not daban_runtime.is_daban_ride_strategy(strategy):
+            continue
         cost = float(p.get("cost_price", 0) or 0)
         q    = qmap.get(code)
         if not q or cost <= 0:
@@ -575,11 +583,27 @@ def _check_paper_risk(uid: int):
             logger.debug(f"[风控 uid={uid}] 实时行情获取失败: {_qe}")
 
         s = get_user_state(uid)
-        if daban_runtime.is_daban_ride_strategy(s.get("active_strategy")):
-            _check_daban_ride(uid, broker, positions, qmap)   # 打板 Ride 卖法
+        active_strategy = s.get("active_strategy") or ""
+        ride_positions = []
+        default_positions = []
+        for p in positions:
+            pos_strategy = p.get("strategy") or active_strategy
+            if daban_runtime.is_daban_ride_strategy(pos_strategy):
+                ride_positions.append(p)
+            else:
+                default_positions.append(p)
+
+        if ride_positions:
+            _check_daban_ride(uid, broker, ride_positions, qmap)   # 打板 Ride 卖法
+        if not default_positions:
             return
         # 其它策略：账户默认止损/止盈/超期
-        cur_prices = {c: float(q.get("price") or 0) for c, q in qmap.items()}
+        default_codes = {p.get("code") for p in default_positions}
+        cur_prices = {
+            c: float(q.get("price") or 0)
+            for c, q in qmap.items()
+            if c in default_codes
+        }
         triggered = broker.check_risk_rules(cur_prices)
         for t in triggered:
             pnl  = t.get("pnl", 0)
@@ -659,6 +683,7 @@ def do_scan(uid: int):
             "consec_limit": r.get("consec_limit", 0),
             "consec_label": r.get("consec_label", ""),
             "reason":      r.get("reason", ""),
+            "position_ratio": r.get("position_ratio", 0),
             "conditions":  {},
         } for r in ret.get("results", [])]
         s["scanned"] += ret.get("scanned", ret.get("count", 0))
@@ -801,6 +826,7 @@ def do_scan(uid: int):
                 "price":      price,
                 "shares":     shares,
                 "budget":     round(budget, 2),
+                "strategy":   active or "",
                 "pass_count": r.get("pass_count", 5),
                 "reason":     r.get("reason", ""),
                 "action":     "buy",
@@ -1187,7 +1213,8 @@ def execute():
         price  = item["price"]
         name   = item.get("name", code)
         shares = item.get("shares", 100)
-        res = execute_buy(uid, code, name, price, shares, reason="队列买入")
+        res = execute_buy(uid, code, name, price, shares, reason="队列买入",
+                          strategy=item.get("strategy") or "")
         if not res.get("ok"):
             item["status"] = "error"
             item["error_msg"] = res.get("msg", "")

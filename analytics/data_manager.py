@@ -5,7 +5,7 @@
 股票名称：ak.stock_info_a_code_name() 全量缓存，不走东方财富
 """
 
-import json, logging, threading, os
+import json, logging, threading, os, time
 from pathlib import Path
 from datetime import datetime
 
@@ -42,6 +42,11 @@ _progress: dict = {}
 _lock = threading.Lock()
 _name_cache: dict = {}          # code -> name
 _name_cache_lock = threading.Lock()
+_sector_cache_lock = threading.Lock()
+_SECTOR_CACHE_TTL = 86400
+_SECTOR_FAILURE_TTL = 900
+_MAX_CONCEPT_SCAN = 12
+_SECTOR_TIMEOUT_GUARD = 8.0
 
 
 # ── 市场前缀 ──────────────────────────────────────
@@ -160,54 +165,84 @@ def get_stock_name(code: str) -> str:
 # ── 概念板块查询 ──────────────────────────────────
 def get_stock_sector(code: str) -> dict:
     """
-    返回 {"industry": "银行", "concepts": ["大金融", "沪深300", ...]}
-    尝试多个接口，失败则返回空。
+    返回 {"industry": "银行", "concepts": ["大金融", "沪深300", ...]}。
+    优先使用本地缓存；远程概念查询做限流、超时保护和失败冷却，避免单接口拖死整个站点。
     """
+    now = time.time()
     result = {"industry": "", "concepts": []}
-    # 1. 从本地 meta 读取已缓存的行业信息
+
     meta = _load_meta()
     cached = meta.get(code, {})
+    sector_cached_at = float(cached.get("sector_cached_at") or 0)
+    sector_error_at = float(cached.get("sector_error_at") or 0)
+
     if cached.get("industry"):
         result["industry"] = cached["industry"]
     if cached.get("concepts"):
         result["concepts"] = cached["concepts"]
+
+    if result["industry"] and result["concepts"] and now - sector_cached_at < _SECTOR_CACHE_TTL:
+        return result
+    if sector_error_at and now - sector_error_at < _SECTOR_FAILURE_TTL:
         return result
 
-    # 2. 尝试获取行业/概念（可能被代理拦截，吃掉异常）
     try:
         info = ak.stock_individual_info_em(symbol=code)
         if info is not None and not info.empty:
             ind_row = info[info["item"] == "行业"]
             if not ind_row.empty:
                 result["industry"] = str(ind_row["value"].iloc[0])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"get_stock_sector industry failed for {code}: {e}")
 
-    # 3. 尝试获取概念板块
+    concepts = list(result["concepts"] or [])
+    started = time.monotonic()
+    remote_scan_ok = False
     try:
         df = ak.stock_board_concept_name_em()
         if df is not None and not df.empty:
-            concepts = []
-            for _, row in df.iterrows():
-                board = str(row.get("板块名称", ""))
+            remote_scan_ok = True
+            for _, row in df.head(_MAX_CONCEPT_SCAN).iterrows():
+                if time.monotonic() - started > _SECTOR_TIMEOUT_GUARD:
+                    logger.warning(f"get_stock_sector concept scan timed out for {code}")
+                    remote_scan_ok = False
+                    break
+                board = str(row.get("板块名称", "")).strip()
+                if not board:
+                    continue
                 try:
                     cons = ak.stock_board_concept_cons_em(symbol=board)
-                    if cons is not None and not cons.empty:
-                        if code in cons["代码"].astype(str).values:
-                            concepts.append(board)
-                        if len(concepts) >= 5:
-                            break
-                except Exception:
+                    if cons is None or cons.empty or "代码" not in cons.columns:
+                        continue
+                    codes = cons["代码"].astype(str)
+                    if code in codes.values and board not in concepts:
+                        concepts.append(board)
+                    if len(concepts) >= 5:
+                        break
+                except Exception as e:
+                    logger.debug(f"get_stock_sector concept board failed for {code}/{board}: {e}")
                     continue
-            result["concepts"] = concepts[:5]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"get_stock_sector concept list failed for {code}: {e}")
 
-    # 4. 写回 meta 缓存
+    result["concepts"] = concepts[:5]
+
+    cache_patch = {
+        "industry": result["industry"],
+        "concepts": result["concepts"],
+    }
     if result["industry"] or result["concepts"]:
-        meta[code] = meta.get(code, {})
-        meta[code].update(result)
-        _save_meta(meta)
+        cache_patch["sector_cached_at"] = now
+        cache_patch["sector_error_at"] = 0
+    elif not remote_scan_ok:
+        cache_patch["sector_error_at"] = now
+
+    if cache_patch:
+        with _sector_cache_lock:
+            meta = _load_meta()
+            meta[code] = meta.get(code, {})
+            meta[code].update(cache_patch)
+            _save_meta(meta)
 
     return result
 

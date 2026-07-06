@@ -17,6 +17,7 @@ env/
 
 # ── 敏感配置（绝对不能提交）──────────────────────
 data/ai_config.json
+data/ai_trader_config.json
 data/users.db
 data/users.db-wal
 data/users.db-shm
@@ -124,3 +125,4 @@ _inspect_research_out.txt
 _tail_bt_result.json
 _curl_body.json
 local_ui.png
+output/

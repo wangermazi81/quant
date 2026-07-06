@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 AI 多智能体分析引擎 v2
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -466,7 +466,13 @@ def _urlopen_smart(req, timeout):
             resp = opener.open(fresh, timeout=timeout)
             _prefer_direct = is_direct
             return resp
-        except urllib.error.HTTPError:
+        except urllib.error.HTTPError as e:
+            # 4xx（鉴权/参数等）= 请求本身的问题，换链路也没用 → 直接抛。
+            # 502/503/504/429 = 网关/过载/上游错误，可能与当前链路相关（境外中转站
+            # 直连常被 GFW 掐 TLS 或网关降级，而走系统代理 200）→ 记下并尝试另一条链路。
+            if e.code in (429, 502, 503, 504):
+                last = e
+                continue
             raise
         except Exception as e:
             last = e
@@ -519,22 +525,29 @@ def _call_llm(cfg: dict, messages: list, temperature: float = 0.3,
             except urllib.error.HTTPError as e:
                 try:
                     err_body = e.read().decode("utf-8", errors="ignore")
-                    try:
-                        err_obj = json.loads(err_body)
-                        api_msg = err_obj.get("error", {})
-                        if isinstance(api_msg, dict):
-                            api_msg = api_msg.get("message", str(api_msg))
-                        elif not api_msg:
-                            api_msg = err_body  # 直接显示原始body
-                    except json.JSONDecodeError:
-                        api_msg = err_body or e.reason
-                    raise RuntimeError(f"HTTP {e.code} — {api_msg}")
-                except RuntimeError:
-                    raise
                 except Exception:
-                    raise RuntimeError(f"HTTP {e.code} {e.reason}")
+                    err_body = ""
+                try:
+                    err_obj = json.loads(err_body)
+                    api_msg = err_obj.get("error", {})
+                    if isinstance(api_msg, dict):
+                        api_msg = api_msg.get("message", str(api_msg))
+                    elif not api_msg:
+                        api_msg = err_body  # 直接显示原始body
+                except (json.JSONDecodeError, ValueError):
+                    api_msg = err_body or e.reason
+                # 429/502/503/504 = 中转站/网关瞬时不可用（境外中转常秒级抖动）→ 退避重试；
+                # 其余(401鉴权/400参数/404模型不存在等)是确定性错误，立即抛。
+                if e.code in (429, 502, 503, 504) and _attempt < 2:
+                    _time.sleep(2.0 * (_attempt + 1))
+                    continue
+                raise RuntimeError(f"HTTP {e.code} — {api_msg}")
             except urllib.error.URLError as e:
-                raise RuntimeError(f"网络错误: {e.reason}（请检查 Base URL 是否正确）")
+                # 网络层错误（含 SSL/TLS 被掐断 UNEXPECTED_EOF）→ 退避重试，最后一次才抛。
+                if _attempt < 2:
+                    _time.sleep(2.0 * (_attempt + 1))
+                    continue
+                raise RuntimeError(f"网络错误: {e.reason}（请检查 Base URL / 网络 / 代理）")
             if _content:
                 return _content
             if _attempt < 2:

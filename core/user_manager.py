@@ -1114,6 +1114,28 @@ def expire_stale_signals(user_id: int = None) -> int:
         return cur.rowcount
 
 
+def cancel_pending_signals(user_id: int = None) -> int:
+    """Cancel today's unfinished cloud trade signals.
+
+    This releases cloud-side fund and duplicate guards for signals that have
+    not reached a terminal state. Real broker order cancellation is handled by
+    the local xiadan bridge monitor.
+    """
+    with _lock, _conn() as c:
+        sql = (
+            "UPDATE trade_signals SET status='cancelled', "
+            "msg='今日未完成信号已取消', updated_at=datetime('now','localtime') "
+            "WHERE status IN ('pending','sent','submitted') "
+            "AND date(created_at) = date('now','localtime')"
+        )
+        if user_id is not None:
+            cur = c.execute(sql + " AND user_id=?", (user_id,))
+        else:
+            cur = c.execute(sql)
+        c.commit()
+        return cur.rowcount
+
+
 def add_trade_signal(user_id: int, code: str, name: str, action: str,
                      price: float, shares: int, status: str = "pending",
                      msg: str = "") -> int:

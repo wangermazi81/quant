@@ -95,6 +95,7 @@ def init_paper_db():
         buy_time    TEXT    NOT NULL,
         buy_amount  REAL    NOT NULL,
         trade_id    INTEGER,
+        strategy    TEXT    DEFAULT '',
         PRIMARY KEY (user_id, code)
     );
 
@@ -111,6 +112,9 @@ def init_paper_db():
     con = sqlite3.connect(str(DB_PATH), timeout=10)
     con.execute("PRAGMA journal_mode=WAL")
     con.executescript(ddl)
+    cols = {row[1] for row in con.execute("PRAGMA table_info(paper_positions)")}
+    if "strategy" not in cols:
+        con.execute("ALTER TABLE paper_positions ADD COLUMN strategy TEXT DEFAULT ''")
     con.commit()
     con.close()
 
@@ -272,7 +276,7 @@ class PaperBroker:
 
     # ── 买入 ─────────────────────────────────────────
     def submit_buy(self, code: str, name: str, signal_price: float,
-                   shares: int, reason: str = "") -> dict:
+                   shares: int, reason: str = "", strategy: str = "") -> dict:
         if shares <= 0 or shares % 100 != 0:
             shares = (shares // 100) * 100
         if shares <= 0:
@@ -389,9 +393,10 @@ class PaperBroker:
 
             con.execute(
                 "INSERT INTO paper_positions"
-                "(user_id,code,name,shares,cost_price,buy_time,buy_amount,trade_id)"
-                " VALUES(?,?,?,?,?,?,?,?)",
-                (self._uid, code, name, shares, cost_price, now_str, round(total_cost, 2), trade_id),
+                "(user_id,code,name,shares,cost_price,buy_time,buy_amount,trade_id,strategy)"
+                " VALUES(?,?,?,?,?,?,?,?,?)",
+                (self._uid, code, name, shares, cost_price, now_str,
+                 round(total_cost, 2), trade_id, strategy or ""),
             )
             con.execute(
                 "INSERT INTO paper_orders"
@@ -667,6 +672,7 @@ class PaperBroker:
                 "market_value": round(cur_price * shares, 2),
                 "hold_days":    hold_days,
                 "buy_time":     r["buy_time"],
+                "strategy":     r["strategy"] or "",
             })
 
         # 一次性回写脏数据（仅在确实找到正确名称时）
