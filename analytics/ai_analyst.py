@@ -336,23 +336,13 @@ def save_config(cfg: dict):
 
 
 def resolve_config(user_cfg: dict = None) -> dict:
-    """统一解析"有效 AI 配置"，修复『网页改了 API 但分析仍报旧 key 401』。
+    """Resolve platform-level AI config for analysis and generation features.
 
-    取舍：以「全局配置」(data/ai_config.json —— 网页『AI 设置』页所编辑、且『测试连接』
-    所用的同一份) 为**权威来源**；仅当全局没填 api_key 时，才用 user_cfg（历史遗留的
-    per-user 配置）兜底。
-    背景：分析/选股/写策略原本优先用 per-user 配置，会被早年存下的旧 key 顶掉，导致
-    "测试连接成功(用全局新 key) 但实际分析 401(用了旧 per-user key)"。改为全局优先后，
-    网页里一改配置，分析/选股/写策略全部立即生效。
+    AI trading owns per-user model credentials. Other AI features intentionally
+    keep using the platform config so a user's trading key cannot become a hidden
+    fallback for analysis, strategy generation, or other shared AI entry points.
     """
-    cfg = load_config()
-    if not cfg.get("api_key") and user_cfg and user_cfg.get("api_key"):
-        for k in ("provider", "api_key", "base_url", "model"):
-            if user_cfg.get(k):
-                cfg[k] = user_cfg[k]
-        if user_cfg.get("enabled"):
-            cfg["enabled"] = True
-    return cfg
+    return load_config()
 
 
 # ══════════════════════════════════════════════════════

@@ -86,10 +86,55 @@ def save_trader_config(patch: dict) -> dict:
     return cfg
 
 
-def test_trader_config(cfg: dict) -> dict:
+def load_user_trader_config(uid: int) -> dict:
+    """Load the AI-trading model config owned by one logged-in user.
+
+    The platform/global trader config is intentionally not used as a fallback here:
+    cloud AI trading must never spend or expose the operator's model key for another
+    account.
+    """
+    cfg = dict(_DEFAULT_TRADER_CFG)
+    try:
+        import user_manager as um
+        saved = um.get_user_ai_config(uid) or {}
+        for k in ("provider", "api_key", "base_url", "model"):
+            if saved.get(k):
+                cfg[k] = saved[k]
+        cfg["enabled"] = bool(saved.get("enabled")) if saved else False
+    except Exception as e:
+        logger.warning(f"load_user_trader_config uid={uid}: {e}")
+    return cfg
+
+
+def save_user_trader_config(uid: int, patch: dict) -> dict:
+    cfg = load_user_trader_config(uid)
+    for k in ("provider", "base_url", "model", "enabled"):
+        if k in patch:
+            cfg[k] = patch[k]
+    if patch.get("clear_api_key"):
+        cfg["api_key"] = ""
+    elif patch.get("api_key"):
+        cfg["api_key"] = str(patch["api_key"]).strip()
+    try:
+        import user_manager as um
+        um.save_user_ai_config(
+            uid,
+            provider=cfg.get("provider", ""),
+            api_key=cfg.get("api_key", ""),
+            base_url=cfg.get("base_url", ""),
+            model=cfg.get("model", ""),
+            enabled=bool(cfg.get("enabled")),
+        )
+    except Exception as e:
+        logger.warning(f"save_user_trader_config uid={uid}: {e}")
+        raise
+    return cfg
+
+
+def test_trader_config(cfg: dict, uid: int | None = None) -> dict:
     """测试连接：发一句最小请求。返回 {ok, msg}。"""
     try:
-        use = load_trader_config()
+        use = load_user_trader_config(uid) if uid is not None else load_trader_config()
         use = {**use, **{k: v for k, v in cfg.items() if v}}
         if not use.get("api_key"):
             return {"ok": False, "msg": "未填写 API Key"}
@@ -106,7 +151,7 @@ def list_providers() -> dict:
     return _ai.PROVIDER_PRESETS
 
 
-def detect_models(api_key: str = "", base_url: str = "") -> dict:
+def detect_models(api_key: str = "", base_url: str = "", uid: int | None = None) -> dict:
     """探测 Key + Base URL 下可用的全部对话模型（沿用 ai_analyst 的实现，与后台一致）。
 
     - key 不传则用已保存配置的 key；
@@ -114,7 +159,7 @@ def detect_models(api_key: str = "", base_url: str = "") -> dict:
       Base URL；猜不中（裸 sk- 的中转站）要求填 Base URL。
     返回 {ok, models, total, base_url, provider_guess} 或 {ok:False, error}。
     """
-    saved = load_trader_config()
+    saved = load_user_trader_config(uid) if uid is not None else load_trader_config()
     api_key = (api_key or "").strip() or saved.get("api_key", "")
     base_url = (base_url or "").strip()
     if not api_key:
@@ -308,7 +353,7 @@ class _Engine:
 
     # ── 控制 ──────────────────────────────────────────────
     def start(self) -> dict:
-        cfg = load_trader_config()
+        cfg = load_user_trader_config(self.uid)
         if not cfg.get("enabled") or not cfg.get("api_key"):
             return {"ok": False, "msg": "请先在「⚙️ 模型设置」配置并启用 AI 交易模型"}
         if self.running:
@@ -343,7 +388,7 @@ class _Engine:
         """手动触发单轮团队分析（不进入常驻循环；盘后测试用）。"""
         if self.running:
             return {"ok": False, "msg": "AI 交易运行中，无需手动单轮"}
-        cfg = load_trader_config()
+        cfg = load_user_trader_config(self.uid)
         if not cfg.get("enabled") or not cfg.get("api_key"):
             return {"ok": False, "msg": "请先在「⚙️ 模型设置」配置并启用 AI 交易模型"}
 
@@ -525,7 +570,7 @@ class _Engine:
             self.stop_flag.wait(5)
 
     def _run_round(self, st: dict):
-        cfg = load_trader_config()
+        cfg = load_user_trader_config(self.uid)
         if not cfg.get("enabled") or not cfg.get("api_key"):
             return
         if self.halted_reason:

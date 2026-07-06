@@ -62,14 +62,6 @@ def ai_save_config():
     if d.get("api_key"):
         cfg["api_key"] = d["api_key"]
     ai.save_config(cfg)
-    # 以全局配置为唯一来源：保存时顺手清掉当前用户残留的 per-user 旧配置，
-    # 否则历史旧 key 会在分析/选股时顶掉这里刚存的新 key（曾导致"测试成功却 401"）。
-    try:
-        uid = session.get("user_id")
-        if uid:
-            um.delete_user_ai_config(uid)
-    except Exception:
-        pass
     return jsonify({"ok": True})
 
 

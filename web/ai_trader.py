@@ -36,7 +36,7 @@ def meta():
 @bp.route("/api/ai_trader/config", methods=["GET"])
 @require_auth
 def get_config():
-    cfg = engine.load_trader_config()
+    cfg = engine.load_user_trader_config(_uid())
     return jsonify({"ok": True, "config": {
         "provider": cfg.get("provider", ""),
         "base_url": cfg.get("base_url", ""),
@@ -50,7 +50,7 @@ def get_config():
 @bp.route("/api/ai_trader/config", methods=["POST"])
 @require_auth
 def set_config():
-    cfg = engine.save_trader_config(request.json or {})
+    cfg = engine.save_user_trader_config(_uid(), request.json or {})
     return jsonify({"ok": True, "config": {
         "provider": cfg.get("provider"), "base_url": cfg.get("base_url"),
         "model": cfg.get("model"), "enabled": cfg.get("enabled"),
@@ -61,7 +61,7 @@ def set_config():
 @bp.route("/api/ai_trader/config/test", methods=["POST"])
 @require_auth
 def test_config():
-    return jsonify(engine.test_trader_config(request.json or {}))
+    return jsonify(engine.test_trader_config(request.json or {}, uid=_uid()))
 
 
 @bp.route("/api/ai_trader/detect_models", methods=["POST"])
@@ -69,7 +69,7 @@ def test_config():
 def detect_models():
     """填 Key 后探测可用模型列表（与后台「AI接口设置」同款体验）。"""
     d = request.json or {}
-    return jsonify(engine.detect_models(d.get("api_key", ""), d.get("base_url", "")))
+    return jsonify(engine.detect_models(d.get("api_key", ""), d.get("base_url", ""), uid=_uid()))
 
 
 # ── 设置（候选池 / 节奏 / 风控）──────────────────────────
