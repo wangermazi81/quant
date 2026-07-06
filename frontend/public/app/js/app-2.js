@@ -117,6 +117,7 @@ openAiFactorGen = function(){
 let _notifyConfig = {}
 
 async function initNotifyConfig(){
+  if(!_currentUser) return
   const r = await api('/user/notify_config')
   if(!r?.ok) return
   _notifyConfig = r
@@ -252,8 +253,6 @@ async function checkAuthState(){
     _currentUser = r
     hideAuthOverlay()
     updateNavUser(r)
-    loadAnnouncements()   // 登录后拉取并弹出未读公告
-    refreshLiveTradeBadge()   // 同步实盘下单总闸状态
   } else {
     showAuthOverlay()
   }
@@ -365,7 +364,8 @@ async function doLogin(){
     _currentUser = r
     hideAuthOverlay()
     updateNavUser(r)
-    loadStratList(); loadDbList(); startPoll(); initAI(); initBrokerConfig(); initNotifyConfig(); loadMarketContext(); loadTradeMode()
+    initPublicShell()
+    initAuthenticatedShell()
   } else {
     setAuthMsg(msg, r?.error || '登录失败', 'err')
   }
@@ -390,7 +390,8 @@ async function doRegister(){
       setTimeout(()=>{
         hideAuthOverlay()
         updateNavUser(lr)
-        loadStratList(); loadDbList(); startPoll(); initAI(); initBrokerConfig(); initNotifyConfig(); loadMarketContext(); loadTradeMode()
+        initPublicShell()
+        initAuthenticatedShell()
       }, 800)
     }
   } else {

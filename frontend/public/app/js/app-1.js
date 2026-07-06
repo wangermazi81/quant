@@ -20,8 +20,24 @@ window.addEventListener('load', async ()=>{
   })
   editor.setSize('100%','100%')
   editor.on('change',()=>setEdSt('已修改（未保存）'))
-  loadStratList(); loadDbList(); startPoll(); initAI(); initBrokerConfig(); initNotifyConfig(); loadMarketContext(); loadTradeMode()
+  initPublicShell()
+  initAuthenticatedShell()
 })
+
+function initPublicShell(){
+  loadStratList(); loadDbList(); loadMarketContext()
+}
+
+function initAuthenticatedShell(){
+  if(!_currentUser) return
+  loadAnnouncements()
+  refreshLiveTradeBadge()
+  startPoll()
+  initAI()
+  initBrokerConfig()
+  initNotifyConfig()
+  loadTradeMode()
+}
 
 function setEdSt(s){ document.getElementById('edSt').textContent=s }
 
@@ -48,6 +64,7 @@ function pollEvery(fn, ms){
   return setInterval(run, ms)
 }
 function startPoll(){
+  if(!_currentUser) return
   if(_pollStarted) return
   _pollStarted = true
   pollEvery(fetchSt, 5000)
@@ -65,6 +82,7 @@ function startPoll(){
 let _availFunds = null
 let _fundsMode  = null   // 记录上次资金来源；'real' 时停止自动轮询（避免抢焦点）
 async function fetchFunds(){
+  if(!_currentUser) return
   if(_pollInflight.funds) return
   _pollInflight.funds = true
   try{
@@ -153,6 +171,7 @@ async function fetchSt(){
   }finally{ _pollInflight.status = false }
 }
 async function fetchPositions(){
+  if(!_currentUser) return
   if(_pollInflight.positions) return
   _pollInflight.positions = true
   try{
@@ -567,6 +586,7 @@ async function doRename(){
 let _tradeMode = 'paper'  // 'paper' | 'live'
 
 async function loadTradeMode(){
+  if(!_currentUser) return
   const r = await api('/user/broker_config')
   if(r?.ok){
     _tradeMode = (r.broker_type === 'live' || r.broker_type === 'real') ? 'live' : 'paper'
@@ -615,6 +635,7 @@ function closeLiveModeModal(ev){
 // ── 实盘自动化设置（下单确认 / 未成交自动撤单），运行时切换、后端持久化 ──
 // 两处共用：实盘切换弹窗(prefix='opt') 与 查实盘账户面板(prefix='ts')
 async function _fetchTradeSettings(){
+  if(!_currentUser) return null
   try{ const d = await api('/account/trade_settings'); return (d && d.ok) ? d : null }catch(e){ return null }
 }
 function _fillTradeRadios(prefix, s){
@@ -1916,6 +1937,7 @@ const BROKER_FIELDS = {
 }
 
 async function initBrokerConfig(){
+  if(!_currentUser) return
   const r = await api('/user/broker_config')
   if(!r?.ok) return
   _brokerCfg = { broker_type: r.broker_type || 'paper', config: r.config || {} }
