@@ -101,6 +101,7 @@ def test_breadth_falls_back_to_spot_when_legu_and_strategy_snapshot_unavailable(
         stock_market_activity_legu=legu_down,
         stock_zh_a_spot_em=lambda: spot,
     )
+    monkeypatch.setattr(market_stats, "fetch_eastmoney_three_market_snapshot", lambda date_text=None: (_ for _ in ()).throw(RuntimeError("three-market unavailable")))
     monkeypatch.setitem(sys.modules, "akshare", fake_ak)
     monkeypatch.setitem(sys.modules, "strategy_manager", types.SimpleNamespace())
 
@@ -163,6 +164,67 @@ def test_market_breadth_prefers_verified_three_market_snapshot_for_20260703():
     assert breadth["total"] == 5516
     assert breadth["source"] == "eastmoney_three_market_verified"
     assert breadth["degraded"] is False
+
+
+def test_three_market_snapshot_from_eastmoney_rows_aggregates_breadth_and_turnover():
+    rows = [
+        {"f3": 10.01, "f6": 1_200_000_000, "f12": "688001", "f124": 1783324800},
+        {"f3": 6.2, "f6": 600_000_000, "f12": "301001", "f124": 1783324800},
+        {"f3": 1.2, "f6": 400_000_000, "f12": "600001", "f124": 1783324800},
+        {"f3": 0.4, "f6": 300_000_000, "f12": "000001", "f124": 1783324800},
+        {"f3": 0.0, "f6": 100_000_000, "f12": "430001", "f124": 1783324800},
+        {"f3": -0.7, "f6": 200_000_000, "f12": "830001", "f124": 1783324800},
+        {"f3": -2.5, "f6": 500_000_000, "f12": "002001", "f124": 1783324800},
+        {"f3": -6.5, "f6": 700_000_000, "f12": "300001", "f124": 1783324800},
+        {"f3": -10.0, "f6": 900_000_000, "f12": "600002", "f124": 1783324800},
+        {"f3": "-", "f6": "-", "f12": "600003", "f124": 1783324800},
+    ]
+
+    snapshot = market_stats.three_market_snapshot_from_rows(rows, date_text="20260706", raw_total=10)
+
+    assert snapshot["source"] == "eastmoney_three_market"
+    assert snapshot["stat_date"] == "2026-07-06"
+    assert snapshot["turnover"]["today"] == 49
+    assert snapshot["turnover"]["amount"] == 49.0
+    assert snapshot["turnover"]["degraded"] is False
+    assert snapshot["breadth"]["up"] == 4
+    assert snapshot["breadth"]["flat"] == 1
+    assert snapshot["breadth"]["down"] == 4
+    assert snapshot["breadth"]["total"] == 9
+    assert snapshot["breadth"]["listed_total"] == 10
+    assert snapshot["breadth"]["coverage"] == 0.9
+    assert snapshot["breadth"]["limit_up"] == 1
+    assert snapshot["breadth"]["limit_dn"] == 1
+    assert snapshot["breadth"]["distribution"] == {
+        "limit_up": 1,
+        "up_5_to_limit": 1,
+        "up_1_to_5": 1,
+        "up_0_to_1": 1,
+        "flat": 1,
+        "down_0_to_1": 1,
+        "down_1_to_5": 1,
+        "down_5_to_limit": 1,
+        "limit_down": 1,
+    }
+
+
+def test_market_breadth_and_turnover_prefer_dynamic_three_market_snapshot(monkeypatch):
+    snapshot = {
+        "source": "eastmoney_three_market",
+        "stat_date": "2026-07-06",
+        "turnover": {"today": 31124, "amount": 31124.43, "source": "eastmoney_three_market", "degraded": False},
+        "breadth": {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
+    }
+    monkeypatch.setattr(market_stats, "fetch_eastmoney_three_market_snapshot", lambda date_text=None: snapshot, raising=False)
+    monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [])
+
+    breadth = market_stats.get_market_breadth(date_text="20260706")
+    turnover = market_stats.get_market_turnover("20260706")
+
+    assert breadth["source"] == "eastmoney_three_market"
+    assert breadth["total"] == 5519
+    assert turnover["source"] == "eastmoney_three_market"
+    assert turnover["today"] == 31124
 
 
 def test_official_turnover_combines_sse_yi_and_szse_yuan_units():

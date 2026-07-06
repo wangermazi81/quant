@@ -9,6 +9,7 @@ prefer official/aggregate sources and carry source metadata for diagnostics.
 from __future__ import annotations
 
 import logging
+import math
 from copy import deepcopy
 from datetime import datetime
 from typing import Iterable
@@ -19,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 MIN_QUOTE_COVERAGE = 0.98
 DEFAULT_EXPECTED_STOCK_COUNT = 5190
+EASTMONEY_THREE_MARKET_FS = "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048"
+EASTMONEY_THREE_MARKET_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
 
 VERIFIED_MARKET_SNAPSHOTS = {
     "20260703": {
@@ -188,6 +191,135 @@ def breadth_from_spot_frame(df: pd.DataFrame, expected_count: int | None = None)
     return result
 
 
+def _pct_bucket(pct: float) -> str:
+    if pct >= 9.9:
+        return "limit_up"
+    if pct >= 5:
+        return "up_5_to_limit"
+    if pct >= 1:
+        return "up_1_to_5"
+    if pct > 0:
+        return "up_0_to_1"
+    if pct == 0:
+        return "flat"
+    if pct > -1:
+        return "down_0_to_1"
+    if pct > -5:
+        return "down_1_to_5"
+    if pct > -9.9:
+        return "down_5_to_limit"
+    return "limit_down"
+
+
+def three_market_snapshot_from_rows(rows: Iterable[dict], date_text: str | None = None, raw_total: int | None = None) -> dict:
+    items = []
+    latest_ts = 0
+    for row in rows or []:
+        pct = _safe_float(row.get("f3"), default=float("nan"))
+        if pd.isna(pct):
+            continue
+        amount = _safe_float(row.get("f6"), 0.0)
+        latest_ts = max(latest_ts, _safe_int(row.get("f124"), 0))
+        items.append({"change_pct": pct, "amount": amount})
+
+    if not items:
+        raise ValueError("empty eastmoney three-market rows")
+
+    if date_text:
+        stat_date = _date_ymd(date_text)
+    elif latest_ts:
+        stat_date = datetime.fromtimestamp(latest_ts).strftime("%Y-%m-%d")
+    else:
+        stat_date = datetime.now().strftime("%Y-%m-%d")
+
+    distribution = {
+        "limit_up": 0,
+        "up_5_to_limit": 0,
+        "up_1_to_5": 0,
+        "up_0_to_1": 0,
+        "flat": 0,
+        "down_0_to_1": 0,
+        "down_1_to_5": 0,
+        "down_5_to_limit": 0,
+        "limit_down": 0,
+    }
+    for item in items:
+        distribution[_pct_bucket(item["change_pct"])] += 1
+
+    total = len(items)
+    listed_total = _safe_int(raw_total, total) or total
+    amount = round(sum(_safe_float(item.get("amount"), 0.0) for item in items) / 1e8, 2)
+    source = "eastmoney_three_market"
+    breadth = {
+        "up": distribution["limit_up"] + distribution["up_5_to_limit"] + distribution["up_1_to_5"] + distribution["up_0_to_1"],
+        "flat": distribution["flat"],
+        "down": distribution["down_0_to_1"] + distribution["down_1_to_5"] + distribution["down_5_to_limit"] + distribution["limit_down"],
+        "total": total,
+        "listed_total": listed_total,
+        "coverage": round(total / listed_total, 3) if listed_total else 1.0,
+        "limit_up": distribution["limit_up"],
+        "limit_dn": distribution["limit_down"],
+        "distribution": distribution,
+        "source": source,
+        "stat_date": stat_date,
+        "degraded": total < DEFAULT_EXPECTED_STOCK_COUNT,
+    }
+    if breadth["degraded"]:
+        breadth["reason"] = f"eastmoney active count {total} below expected {DEFAULT_EXPECTED_STOCK_COUNT}"
+    return {
+        "source": source,
+        "stat_date": stat_date,
+        "turnover": {
+            "today": round(amount, 0),
+            "amount": amount,
+            "source": source,
+            "stat_date": stat_date,
+            "degraded": False,
+        },
+        "breadth": breadth,
+    }
+
+
+def fetch_eastmoney_three_market_snapshot(date_text: str | None = None) -> dict:
+    import requests
+
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+    params = {
+        "pn": 1,
+        "pz": 100,
+        "po": 1,
+        "np": 1,
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": 2,
+        "invt": 2,
+        "fid": "f12",
+        "fs": EASTMONEY_THREE_MARKET_FS,
+        "fields": "f2,f3,f6,f12,f14,f124",
+    }
+    response = requests.get(EASTMONEY_THREE_MARKET_URL, params=params, headers=headers, timeout=20)
+    response.raise_for_status()
+    payload = response.json()
+    data = payload.get("data") or {}
+    raw_total = _safe_int(data.get("total"), 0)
+    rows = list(data.get("diff") or [])
+    if raw_total <= 0 or not rows:
+        raise ValueError("empty eastmoney three-market payload")
+
+    pages = math.ceil(raw_total / int(params["pz"]))
+    for page in range(2, pages + 1):
+        params["pn"] = page
+        response = requests.get(EASTMONEY_THREE_MARKET_URL, params=params, headers=headers, timeout=20)
+        response.raise_for_status()
+        rows.extend((response.json().get("data") or {}).get("diff") or [])
+
+    snapshot = three_market_snapshot_from_rows(rows, raw_total=raw_total)
+    requested = _date_compact(date_text)
+    actual = _date_compact(snapshot.get("stat_date"))
+    if requested and actual and requested != actual:
+        raise ValueError(f"eastmoney latest date {snapshot.get('stat_date')} does not match requested {_date_ymd(date_text)}")
+    return snapshot
+
+
 def normalize_breadth_quality(breadth: dict | None, expected_count: int | None = None) -> dict:
     """Recompute quote breadth quality for old cached/archive payloads.
 
@@ -317,6 +449,12 @@ def get_market_breadth(expected_count: int | None = None, date_text: str | None 
         return snapshot["breadth"]
 
     try:
+        snapshot = fetch_eastmoney_three_market_snapshot(date_text)
+        return snapshot["breadth"]
+    except Exception as exc:
+        logger.warning(f"[market_stats] eastmoney three-market breadth failed: {exc}")
+
+    try:
         import akshare as ak
 
         parsed = parse_legu_activity(ak.stock_market_activity_legu())
@@ -350,7 +488,7 @@ def get_market_breadth(expected_count: int | None = None, date_text: str | None 
 def get_market_turnover(date_text: str | None = None, prefer_official: bool | None = None) -> dict:
     snapshot = get_verified_market_snapshot(date_text)
     if snapshot:
-        result = snapshot["turnover"]
+        result = dict(snapshot["turnover"])
         try:
             trend = _turnover_trend_from_index_daily()
         except Exception as exc:
@@ -360,6 +498,21 @@ def get_market_turnover(date_text: str | None = None, prefer_official: bool | No
             trend[-1]["amount"] = result["today"]
         result["trend"] = trend
         return result
+
+    try:
+        snapshot = fetch_eastmoney_three_market_snapshot(date_text)
+        result = dict(snapshot["turnover"])
+        try:
+            trend = _turnover_trend_from_index_daily()
+        except Exception as exc:
+            logger.debug(f"[market_stats] turnover trend failed: {exc}")
+            trend = []
+        if trend:
+            trend[-1]["amount"] = result["today"]
+        result["trend"] = trend
+        return result
+    except Exception as exc:
+        logger.warning(f"[market_stats] eastmoney three-market turnover failed: {exc}")
 
     prefer_official = (not _is_trading_time()) if prefer_official is None else prefer_official
     sources = (_turnover_from_official_exchange, _turnover_from_tdx_index) if prefer_official else (_turnover_from_tdx_index, _turnover_from_official_exchange)

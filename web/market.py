@@ -49,6 +49,32 @@ def _review_from_archive(archive: dict | None) -> dict | None:
     return normalized
 
 
+def _archive_review_needs_refresh(review: dict | None) -> bool:
+    if not isinstance(review, dict):
+        return False
+    breadth = review.get("breadth") or {}
+    return bool(breadth.get("degraded") or breadth.get("source") in {"tdx_quotes", "none"})
+
+
+def _refresh_archive_market_review(date_text: str | None, archived: dict | None) -> dict | None:
+    if not isinstance(archived, dict):
+        return None
+    try:
+        import market_stats as _mstats
+
+        breadth = _mstats.get_market_breadth(date_text=date_text)
+    except Exception:
+        return None
+    if not breadth or breadth.get("degraded") or breadth.get("source") in {"tdx_quotes", "none"}:
+        return None
+    result = deepcopy(archived)
+    result["breadth"] = breadth
+    result["archived"] = False
+    result["refreshed_from_archive"] = True
+    result.pop("archive_phase", None)
+    return result
+
+
 def _load_archive_review(date_text: str | None = None) -> dict | None:
     try:
         import review_engine as re_
@@ -163,6 +189,11 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
         if allow_archive:
             archived = _load_archive_review(date_text)
             if archived:
+                if not _archive_review_needs_refresh(archived):
+                    return archived
+                refreshed = _refresh_archive_market_review(date_text, archived)
+                if refreshed:
+                    return refreshed
                 return archived
     elif allow_archive and _should_use_archive_for_live():
         archived = _load_archive_review()

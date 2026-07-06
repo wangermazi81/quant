@@ -142,6 +142,48 @@ def test_market_review_uses_latest_archive_before_market_open(monkeypatch):
     assert review["breadth"]["degraded"] is True
 
 
+def test_market_review_rebuilds_degraded_explicit_archive_from_three_market_source(monkeypatch):
+    import web.market as market_web
+
+    archive = {
+        "ok": True,
+        "date": "2026-07-06",
+        "phase": "evening",
+        "data": {
+            "market": {
+                "date": "2026-07-06",
+                "time": "15:00",
+                "breadth": {
+                    "source": "tdx_quotes",
+                    "up": 1594,
+                    "down": 2954,
+                    "flat": 86,
+                    "total": 4634,
+                    "expected_count": 4634,
+                    "coverage": 1.0,
+                    "degraded": False,
+                },
+                "sectors": {"top_gainers": [], "top_losers": []},
+            }
+        },
+    }
+    fake_review_engine = types.SimpleNamespace(load=lambda date_str: archive if date_str == "2026-07-06" else None)
+    fake_market_stats = types.SimpleNamespace(
+        get_verified_market_snapshot=lambda date_text: None,
+        normalize_breadth_quality=lambda breadth: {**breadth, "expected_count": 5190, "coverage": round(4634 / 5190, 3), "degraded": True},
+        get_market_breadth=lambda date_text=None: {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
+    )
+    monkeypatch.setitem(sys.modules, "review_engine", fake_review_engine)
+    monkeypatch.setitem(sys.modules, "market_stats", fake_market_stats)
+
+    review = market_web._build_market_review("2026-07-06")
+
+    assert review["date"] == "2026-07-06"
+    assert review.get("archived") is not True
+    assert review["breadth"]["source"] == "eastmoney_three_market"
+    assert review["breadth"]["total"] == 5519
+
+
 def test_market_review_force_refresh_bypasses_preopen_archive(monkeypatch):
     import web.market as market_web
 
@@ -253,6 +295,55 @@ def test_daily_review_api_verified_snapshot_overrides_stale_historical_archive(m
     assert payload["data"]["market"]["breadth"]["down"] == 1628
     assert payload["data"]["zt"]["zt_count"] == 160
     assert payload["data"]["zt"]["dt_count"] == 24
+
+
+def test_daily_review_api_repairs_degraded_historical_archive(monkeypatch):
+    from flask import Flask
+    from web.review import bp
+
+    stale_archive = {
+        "ok": True,
+        "date": "2026-07-06",
+        "phase": "evening",
+        "data": {
+            "date": "2026-07-06",
+            "market": {
+                "date": "2026-07-06",
+                "breadth": {"source": "tdx_quotes", "up": 1594, "down": 2954, "flat": 86, "total": 4634, "expected_count": 4634},
+            },
+            "turnover": {"source": "official_exchange", "today": 30944.0, "amount": 30944.46},
+            "zt": {"zt_count": 64, "dt_count": 46},
+        },
+        "ai_summary": "old ai summary",
+    }
+    repaired = {
+        "date": "2026-07-06",
+        "market": {"date": "2026-07-06", "breadth": {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519}},
+        "turnover": {"source": "eastmoney_three_market", "today": 31124, "amount": 31124.43},
+        "zt": {"zt_count": 64, "dt_count": 46},
+        "trading_day": True,
+    }
+    fake_market_stats = types.SimpleNamespace(
+        get_verified_market_snapshot=lambda date_text: None,
+        normalize_breadth_quality=lambda breadth: {**breadth, "expected_count": 5190, "coverage": round(4634 / 5190, 3), "degraded": True},
+        fetch_eastmoney_three_market_snapshot=lambda date_text: (_ for _ in ()).throw(RuntimeError("direct source unavailable in this test")),
+    )
+    monkeypatch.setattr(review_engine, "load", lambda date_str: stale_archive)
+    monkeypatch.setattr(review_engine, "collect", lambda date_str: repaired)
+    monkeypatch.setitem(sys.modules, "review_engine", review_engine)
+    monkeypatch.setitem(sys.modules, "market_stats", fake_market_stats)
+
+    app = Flask(__name__)
+    app.register_blueprint(bp)
+
+    response = app.test_client().get("/api/review/daily?date=2026-07-06")
+    payload = response.get_json()
+
+    assert payload["ok"] is True
+    assert payload["phase"] == "evening"
+    assert payload["data"]["market"]["breadth"]["source"] == "eastmoney_three_market"
+    assert payload["data"]["turnover"]["source"] == "eastmoney_three_market"
+    assert payload["ai_summary"] == "old ai summary"
 
 
 def test_collect_turnover_uses_requested_compact_date(monkeypatch):

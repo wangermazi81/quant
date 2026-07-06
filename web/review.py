@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from copy import deepcopy
 from datetime import datetime
 
 from flask import Blueprint, request, jsonify
@@ -111,6 +112,57 @@ def _verified_snapshot_archive(date_str: str) -> dict | None:
     }
 
 
+def _archive_market_metrics_need_refresh(archive: dict | None) -> bool:
+    if not isinstance(archive, dict):
+        return False
+    data = archive.get("data") if isinstance(archive.get("data"), dict) else {}
+    market = data.get("market") if isinstance(data.get("market"), dict) else {}
+    breadth = market.get("breadth") if isinstance(market.get("breadth"), dict) else {}
+    try:
+        import market_stats
+
+        breadth = market_stats.normalize_breadth_quality(breadth)
+    except Exception:
+        pass
+    turnover = data.get("turnover") if isinstance(data.get("turnover"), dict) else {}
+    if breadth.get("degraded") or breadth.get("source") in {"tdx_quotes", "none", None}:
+        return True
+    return turnover.get("source") not in {"eastmoney_three_market", "eastmoney_three_market_verified"}
+
+
+def _refresh_archive_market_metrics(archive: dict, date_str: str, re_) -> dict:
+    if not _archive_market_metrics_need_refresh(archive):
+        return archive
+    refreshed = deepcopy(archive)
+    data = refreshed.setdefault("data", {})
+    market = data.setdefault("market", {})
+    try:
+        import market_stats
+
+        snapshot = market_stats.fetch_eastmoney_three_market_snapshot(date_str)
+        market["date"] = snapshot.get("stat_date") or date_str
+        market["breadth"] = snapshot["breadth"]
+        data["turnover"] = snapshot["turnover"]
+        return refreshed
+    except Exception as exc:
+        logger.warning(f"[review] refresh archive market metrics failed: {exc}")
+
+    try:
+        live = re_.collect(date_str)
+    except Exception as exc:
+        logger.warning(f"[review] fallback collect for archive refresh failed: {exc}")
+        return archive
+    live_market = live.get("market") if isinstance(live.get("market"), dict) else {}
+    live_breadth = live_market.get("breadth") if isinstance(live_market.get("breadth"), dict) else {}
+    live_turnover = live.get("turnover") if isinstance(live.get("turnover"), dict) else {}
+    if live_breadth and not live_breadth.get("degraded"):
+        market["date"] = live_market.get("date") or date_str
+        market["breadth"] = live_breadth
+    if live_turnover and live_turnover.get("today") is not None:
+        data["turnover"] = live_turnover
+    return refreshed
+
+
 @bp.route("/api/review/daily")
 def api_review_daily():
     import review_engine as re_
@@ -129,12 +181,12 @@ def api_review_daily():
         if verified:
             return jsonify(verified)
         if archived:
-            return jsonify(archived)
+            return jsonify(_refresh_archive_market_metrics(archived, date_str, re_))
         return jsonify({"ok": False, "error": "该日期无复盘归档", "date": date_str})
 
     # 当天：已有收盘/晚间归档直接用；否则实时采集（无 AI，5分钟缓存）
     if archived and not force:
-        return jsonify(archived)
+        return jsonify(_refresh_archive_market_metrics(archived, date_str, re_))
     if _should_use_latest_archive(now, explicit_date, force, archived):
         latest = _load_latest_archive(re_)
         if latest:
