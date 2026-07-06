@@ -172,6 +172,7 @@ def test_market_review_rebuilds_degraded_explicit_archive_from_three_market_sour
         get_verified_market_snapshot=lambda date_text: None,
         normalize_breadth_quality=lambda breadth: {**breadth, "expected_count": 5190, "coverage": round(4634 / 5190, 3), "degraded": True},
         get_market_breadth=lambda date_text=None: {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
+        get_market_turnover=lambda date_text=None: {"source": "eastmoney_three_market", "today": 31124, "amount": 31124.43, "degraded": False},
     )
     monkeypatch.setitem(sys.modules, "review_engine", fake_review_engine)
     monkeypatch.setitem(sys.modules, "market_stats", fake_market_stats)
@@ -182,6 +183,8 @@ def test_market_review_rebuilds_degraded_explicit_archive_from_three_market_sour
     assert review.get("archived") is not True
     assert review["breadth"]["source"] == "eastmoney_three_market"
     assert review["breadth"]["total"] == 5519
+    assert review["turnover"]["source"] == "eastmoney_three_market"
+    assert review["turnover"]["today"] == 31124
 
 
 def test_market_review_force_refresh_bypasses_preopen_archive(monkeypatch):
@@ -235,6 +238,8 @@ def test_market_review_historical_verified_snapshot_does_not_mix_live_indices():
     assert review["date"] == "2026-07-03"
     assert review["time"] == "15:00"
     assert review["indices"] == {}
+    assert review["turnover"]["today"] == 32055
+    assert review["turnover"]["source"] == "eastmoney_three_market_verified"
     assert review["breadth"]["up"] == 3804
     assert review["breadth"]["source"] == "eastmoney_three_market_verified"
 

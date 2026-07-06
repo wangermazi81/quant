@@ -39,6 +39,7 @@ def _review_from_archive(archive: dict | None) -> dict | None:
         "date": market.get("date") or data.get("date") or archive.get("date"),
         "time": market.get("time") or "15:00",
         "indices": market.get("indices") or {},
+        "turnover": data.get("turnover") or {},
         "breadth": market.get("breadth") or {},
         "sectors": market.get("sectors") or {"top_gainers": [], "top_losers": []},
     }
@@ -63,12 +64,15 @@ def _refresh_archive_market_review(date_text: str | None, archived: dict | None)
         import market_stats as _mstats
 
         breadth = _mstats.get_market_breadth(date_text=date_text)
+        turnover = _mstats.get_market_turnover(date_text=date_text)
     except Exception:
         return None
     if not breadth or breadth.get("degraded") or breadth.get("source") in {"tdx_quotes", "none"}:
         return None
     result = deepcopy(archived)
     result["breadth"] = breadth
+    if turnover and not turnover.get("degraded"):
+        result["turnover"] = turnover
     result["archived"] = False
     result["refreshed_from_archive"] = True
     result.pop("archive_phase", None)
@@ -181,6 +185,7 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
                     "date": stat_date,
                     "time": "15:00",
                     "indices": {},
+                    "turnover": snapshot["turnover"],
                     "breadth": snapshot["breadth"],
                     "sectors": {"top_gainers": [], "top_losers": []},
                 })
@@ -203,6 +208,7 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
         "date":    stat_date,
         "time":    _dt.now().strftime("%H:%M"),
         "indices": {},
+        "turnover": {},
         "breadth": {},
         "sectors": {"top_gainers": [], "top_losers": []},
     }
@@ -250,6 +256,7 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
     try:
         import market_stats as _mstats
         review["breadth"] = _mstats.get_market_breadth(date_text=date_text)
+        review["turnover"] = _mstats.get_market_turnover(date_text=date_text)
     except Exception:
         pass
 
