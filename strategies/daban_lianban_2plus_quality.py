@@ -8,10 +8,14 @@ from decimal import Decimal, ROUND_HALF_UP
 MIN_PREV_AMOUNT = 100_000_000
 MIN_GAIN_20D = 0.30
 MAX_GAIN_20D = 0.80
+FALLBACK_MIN_GAIN_20D = 0.18
+FALLBACK_MAX_GAIN_20D = 1.10
 MAX_OPEN_PCT = 0.05
 MAX_DAILY_BUYS = 2
 BASE_POSITION_RATIO = 0.10
 WEAK_POSITION_RATIO = 0.05
+STRICT_MIN_CHANGE_PCT = 8.5
+FALLBACK_MIN_CHANGE_PCT = 7.0
 
 DABAN_STOP_LOSS = -0.05
 DABAN_TRAIL = 0.04
@@ -260,7 +264,7 @@ def _emotion_is_weak(emotion):
     return any(word in text for word in ("weak", "cold", "冰点", "退潮", "弱"))
 
 
-def _build_signal(code, quote, features, seal_status=None, emotion=None):
+def _build_signal(code, quote, features, seal_status=None, emotion=None, relaxed=False):
     code = _normalize_code(code)
     name = _quote_value(quote, "name", "名称", "股票名称", default=code)
     if not _is_mainboard(code) or _is_bad_name_or_news(name, quote):
@@ -269,7 +273,9 @@ def _build_signal(code, quote, features, seal_status=None, emotion=None):
         return None
     if features["yesterday_consec"] not in (1, 2):
         return None
-    if not (MIN_GAIN_20D <= features["gain_20d"] <= MAX_GAIN_20D):
+    min_gain = FALLBACK_MIN_GAIN_20D if relaxed else MIN_GAIN_20D
+    max_gain = FALLBACK_MAX_GAIN_20D if relaxed else MAX_GAIN_20D
+    if not (min_gain <= features["gain_20d"] <= max_gain):
         return None
     if features["prev_amount"] < MIN_PREV_AMOUNT:
         return None
@@ -297,7 +303,8 @@ def _build_signal(code, quote, features, seal_status=None, emotion=None):
 
     change_pct = _as_pct(_quote_value(quote, "change_pct", "涨跌幅", default=0))
     near_limit = price >= limit_up - max(0.02, limit_up * 0.0015)
-    if change_pct < 8.5 and not near_limit:
+    min_change_pct = FALLBACK_MIN_CHANGE_PCT if relaxed else STRICT_MIN_CHANGE_PCT
+    if change_pct < min_change_pct and not near_limit:
         return None
 
     local_quote = dict(quote)
@@ -312,7 +319,7 @@ def _build_signal(code, quote, features, seal_status=None, emotion=None):
 
     quote_emotion = _quote_value(quote, "emotion", "market_emotion", "市场情绪", default=emotion)
     score = _score_candidate(features, local_quote, status, quote_emotion)
-    position_ratio = WEAK_POSITION_RATIO if _emotion_is_weak(quote_emotion) else BASE_POSITION_RATIO
+    position_ratio = WEAK_POSITION_RATIO if relaxed or _emotion_is_weak(quote_emotion) else BASE_POSITION_RATIO
     consec = features["target_consec"]
     label = "%d板接力" % consec
     open_note = "开盘%.1f%%" % (open_pct * 100) if open_pct is not None else "开盘缺失"
@@ -320,6 +327,8 @@ def _build_signal(code, quote, features, seal_status=None, emotion=None):
         "%s | 20日涨幅%.1f%% | T-1成交额%.1f亿 | %s | 止损-5%%/回撤4%%/最长7天"
         % (label, features["gain_20d"] * 100, features["prev_amount"] / 100_000_000, open_note)
     )
+    if relaxed:
+        reason = reason + " | fallback conservative"
     return {
         "code": code,
         "name": str(name or code),
@@ -363,6 +372,7 @@ def scan(codes, get_kline, get_quotes):
     qmap = _quote_map(quotes)
 
     results = []
+    fallback_results = []
     for code in norm_codes:
         if not _is_mainboard(code):
             continue
@@ -375,8 +385,14 @@ def scan(codes, get_kline, get_quotes):
             signal = _build_signal(code, quote, features)
             if signal:
                 results.append(signal)
+            else:
+                fallback = _build_signal(code, quote, features, relaxed=True)
+                if fallback:
+                    fallback_results.append(fallback)
         except Exception:
             continue
 
+    if not results:
+        results = fallback_results
     results.sort(key=lambda item: (-item.get("score", 0), -item.get("consec_limit", 0), item.get("code", "")))
     return results[:MAX_DAILY_BUYS]

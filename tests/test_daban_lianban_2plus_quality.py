@@ -57,6 +57,21 @@ def quote(code, price=15.95, last_close=14.5, open_price=15.0, change_pct=10.0, 
     }
 
 
+def quote_cn(code, price=15.95, last_close=14.5, open_price=15.0, change_pct=10.0, name="test"):
+    return {
+        "代码": code,
+        "名称": name,
+        "最新价": price,
+        "昨收": last_close,
+        "open": open_price,
+        "low": 14.8,
+        "limit_up": round(last_close * 1.10, 2),
+        "涨跌幅": change_pct,
+        "bids": [{"price": round(last_close * 1.10, 2), "vol": 12000}],
+        "asks": [],
+    }
+
+
 def run_scan(cases):
     codes = list(cases)
 
@@ -118,6 +133,39 @@ def test_scan_does_not_use_same_day_amount_to_pass_liquidity_filter():
     }
 
     assert run_scan(cases) == []
+
+
+def test_scan_returns_conservative_fallback_when_strict_pool_is_empty():
+    cases = {
+        "000006": {
+            "kline": make_kline(1, gain_20d=0.24, prev_amount=200_000_000),
+            "quote": quote("000006", name="fallback"),
+        }
+    }
+
+    results = run_scan(cases)
+
+    assert len(results) == 1
+    assert results[0]["code"] == "000006"
+    assert results[0]["consec_limit"] == 2
+    assert results[0]["position_ratio"] == strat.WEAK_POSITION_RATIO
+    assert "fallback" in results[0]["reason"]
+
+
+def test_scan_reads_chinese_quote_columns_from_market_dataframe():
+    cases = {
+        "000007": {
+            "kline": make_kline(1, gain_20d=0.45, prev_amount=200_000_000),
+            "quote": quote_cn("000007", name="cn-fields"),
+        }
+    }
+
+    results = run_scan(cases)
+
+    assert len(results) == 1
+    assert results[0]["code"] == "000007"
+    assert results[0]["price"] == 15.95
+    assert results[0]["change"] == 10.0
 
 
 def test_cancel_decision_cancels_after_repeated_board_opening():
