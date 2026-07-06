@@ -1,0 +1,7 @@
+﻿{
+  "provider": "custom",
+  "api_key": "",
+  "base_url": "https://api.example.com/v1",
+  "model": "gpt-5.4",
+  "enabled": false
+}
