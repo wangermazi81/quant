@@ -310,19 +310,25 @@ def _build_data_fns(universe: list):
     def _get_quotes(codes_list: list) -> pd.DataFrame:
         if not codes_list:
             return pd.DataFrame()
+        requested = [str(code).split(".")[-1][-6:] for code in codes_list]
+        live_rows = []
         try:
             import ths_quote as _tq
             client = _tq.get_client()
             if client and client._ok:
                 qs = client.get_quotes(codes_list)
-                rows = _rows_from_quote_records(qs, codes_list)
-                if rows:
-                    return pd.DataFrame(rows)
+                live_rows = _rows_from_quote_records(qs, codes_list)
+                if len(live_rows) >= len(set(requested)):
+                    return pd.DataFrame(live_rows)
         except Exception:
             pass
-        rows = _rows_from_quote_records(_mkt_cache.get("sorted_quotes", []), codes_list)
-        if rows:
-            logger.info(f"[SM] strategy quotes reused market cache: {len(rows)}/{len(codes_list)}")
+        cache_rows = _rows_from_quote_records(_mkt_cache.get("sorted_quotes", []), codes_list)
+        if live_rows or cache_rows:
+            merged = {row["\u4ee3\u7801"]: row for row in cache_rows}
+            merged.update({row["\u4ee3\u7801"]: row for row in live_rows})
+            rows = [merged[code] for code in requested if code in merged]
+            if cache_rows:
+                logger.info(f"[SM] strategy quotes merged live/cache: {len(rows)}/{len(codes_list)}")
             return pd.DataFrame(rows)
         return pd.DataFrame()
 

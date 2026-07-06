@@ -2014,11 +2014,15 @@ def api_strat_progress(task_id):
     snap = {"ok": True, "task_id": task_id, "status": task.get("status")}
     # 借用 strategy_manager 的全局扫描进度
     try:
-        prog = getattr(sm, "_scan_prog", None) or getattr(sm, "_tdx_prog", {})
+        import ths_quote as tq
+        tdx_prog = tq.get_scan_progress()
+        strat_prog = sm.get_scan_progress()
+        prog = tdx_prog if tdx_prog.get("running") else strat_prog
         if isinstance(prog, dict) and prog.get("running"):
             snap["scan_current"] = int(prog.get("current") or 0)
             snap["scan_total"]   = int(prog.get("total") or 0)
             snap["scan_code"]    = prog.get("code") or ""
+            snap["scan_stage"]   = prog.get("stage") or ("行情扫描" if prog is tdx_prog else "策略扫描")
     except Exception:
         pass
     if task.get("status") == "error":

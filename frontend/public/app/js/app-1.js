@@ -40,13 +40,23 @@ function switchRTab(name,el){
   if(editor) setTimeout(()=>editor.refresh(),80)
 }
 
+let _pollStarted = false
+const _pollInflight = {status:false, positions:false, funds:false}
+function pollEvery(fn, ms){
+  const run = () => { if(!document.hidden) fn() }
+  run()
+  return setInterval(run, ms)
+}
 function startPoll(){
-  setInterval(fetchSt, 3000)
-  setInterval(fetchPositions, 5000)   // 持仓每5秒刷新一次实时价格
-  // 资金每 10 秒刷新：实盘已改「事件驱动 + 只读缓存」——这个接口只读缓存、绝不激活
-  // 交易窗口，所以轮询安全、不再弹窗。缓存由「下单成功后」「手动查实盘账户」更新。
-  setInterval(fetchFunds, 10000)
-  fetchSt(); fetchPositions(); fetchFunds()
+  if(_pollStarted) return
+  _pollStarted = true
+  pollEvery(fetchSt, 5000)
+  pollEvery(fetchPositions, 8000)   // 持仓刷新带实时价格，避免请求重叠造成体感卡顿
+  // 资金接口只读缓存；降低轮询频率，下单/查账户后仍会事件驱动刷新。
+  pollEvery(fetchFunds, 15000)
+  document.addEventListener('visibilitychange', ()=>{
+    if(!document.hidden){ fetchSt(); fetchPositions(); fetchFunds() }
+  })
   refreshAutoModeBadge()   // 顶部实盘自动化状态标签
 }
 
@@ -55,6 +65,8 @@ function startPoll(){
 let _availFunds = null
 let _fundsMode  = null   // 记录上次资金来源；'real' 时停止自动轮询（避免抢焦点）
 async function fetchFunds(){
+  if(_pollInflight.funds) return
+  _pollInflight.funds = true
   try{
     const d = await api('/account/funds')
     if(!d) return
@@ -71,8 +83,12 @@ async function fetchFunds(){
       capEl.parentElement?.setAttribute('title', tip)
     }
   }catch(e){}
+  finally{ _pollInflight.funds = false }
 }
 async function fetchSt(){
+  if(_pollInflight.status) return
+  _pollInflight.status = true
+  try{
   const d=await api('/status'); if(!d) return
   const rb=document.getElementById('runBadge')
   rb.textContent=d.running?'运行中':'已停止'
@@ -134,10 +150,15 @@ async function fetchSt(){
   }
   // 同步已入队代码集合（从queue里读）
   if(d.queue) d.queue.forEach(q=>_queuedCodes.add(q.code))
+  }finally{ _pollInflight.status = false }
 }
 async function fetchPositions(){
-  const data = await api('/positions'); if(!data) return
-  renderPositions(Array.isArray(data)?data:[])
+  if(_pollInflight.positions) return
+  _pollInflight.positions = true
+  try{
+    const data = await api('/positions'); if(!data) return
+    renderPositions(Array.isArray(data)?data:[])
+  }finally{ _pollInflight.positions = false }
 }
 async function mStart(){ await api('/start','POST'); fetchSt() }
 async function mStop() { await api('/stop','POST');  fetchSt() }
@@ -1578,33 +1599,44 @@ async function runScreen(maxCodes = 0){
   scProg.style.display='block'
   scBar.className='scan-prog-bar pulse'; scBar.style.width=''
 
-  // 在等待期间拉取实时扫描进度更新进度条
-  let screenDone = false
-  const progTimer = setInterval(async ()=>{
-    if(screenDone) return
-    const st = await api('/status')
-    if(!st) return
-    const prog = st.scan_progress||{}
-    if(prog.running && prog.total > 0){
-      const pct = Math.min(100, Math.round(prog.current/prog.total*100))
+  const initR = await api('/strategies/run_async','POST',{filename:curStrat, max_codes: maxCodes})
+  if(!initR?.ok){
+    scProg.style.display='none'
+    scInfo.textContent='❌ 选股失败: '+(initR?.error||initR?.msg||'未知错误')
+    document.getElementById('scBody').innerHTML=`<div style="padding:14px"><div style="background:#2d1a1e;border:1px solid var(--red);border-radius:8px;padding:12px;color:var(--rl);font-size:13px">${initR?.error||initR?.msg||'选股失败'}</div></div>`
+    return
+  }
+  const taskId = initR.task_id
+  let r = null
+  while(true){
+    await new Promise(res => setTimeout(res, 1500))
+    const prog = await api('/strategies/progress/'+taskId)
+    if(!prog) continue
+    if(prog.status === 'error'){
+      scProg.style.display='none'
+      scInfo.textContent='❌ 选股失败: '+(prog.error||'未知错误')
+      document.getElementById('scBody').innerHTML=`<div style="padding:14px"><div style="background:#2d1a1e;border:1px solid var(--red);border-radius:8px;padding:12px;color:var(--rl);font-size:13px">${prog.error||'选股失败'}</div></div>`
+      return
+    }
+    if(prog.scan_total > 0){
+      const pct = Math.min(100, Math.round(prog.scan_current/prog.scan_total*100))
       scBar.className = 'scan-prog-bar'
       scBar.style.width = pct+'%'
-      // 后端 prog.stage = "行情扫描" / "策略扫描"，UI 跟着切换文案 + 显示当前票号
-      const stage = prog.stage || '扫描'
-      const codeTxt = prog.code ? ` <span style="opacity:.6">[${prog.code}]</span>` : ''
-      scInfo.innerHTML = `<span class="spin">⟳</span> ${stage} ${prog.current}/${prog.total} (${pct}%)${codeTxt}...`
+      const codeTxt = prog.scan_code ? ` <span style="opacity:.6">[${prog.scan_code}]</span>` : ''
+      const stage = prog.scan_stage || '扫描'
+      scInfo.innerHTML = `<span class="spin">⟳</span> ${stage} ${prog.scan_current}/${prog.scan_total} (${pct}%)${codeTxt}...`
     }
-  }, 800)
-
-  const r = await api('/strategies/run','POST',{filename:curStrat, max_codes: maxCodes})
-  screenDone = true
-  clearInterval(progTimer)
+    if(prog.status === 'done'){
+      r = await api('/strategies/result/'+taskId)
+      break
+    }
+  }
   scProg.style.display='none'
   scBar.className='scan-prog-bar pulse'; scBar.style.width=''
 
   if(!r?.ok){
-    scInfo.textContent='❌ 选股失败: '+(r?.msg||'未知错误')
-    document.getElementById('scBody').innerHTML=`<div style="padding:14px"><div style="background:#2d1a1e;border:1px solid var(--red);border-radius:8px;padding:12px;color:var(--rl);font-size:13px">${r?.msg||'选股失败'}</div></div>`
+    scInfo.textContent='❌ 选股失败: '+(r?.error||r?.msg||'未知错误')
+    document.getElementById('scBody').innerHTML=`<div style="padding:14px"><div style="background:#2d1a1e;border:1px solid var(--red);border-radius:8px;padding:12px;color:var(--rl);font-size:13px">${r?.error||r?.msg||'选股失败'}</div></div>`
     return
   }
 
