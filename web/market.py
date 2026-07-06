@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from flask import Blueprint, request, jsonify
 from copy import deepcopy
+from datetime import datetime
 from time import time
 
 import market_context as mctx
@@ -12,6 +13,81 @@ bp = Blueprint("market", __name__)
 
 _MARKET_REVIEW_CACHE_TTL = 60
 _MARKET_REVIEW_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _normalize_market_review(review: dict | None) -> dict | None:
+    if not isinstance(review, dict):
+        return None
+    result = deepcopy(review)
+    try:
+        import market_stats as _mstats
+
+        result["breadth"] = _mstats.normalize_breadth_quality(result.get("breadth"))
+    except Exception:
+        pass
+    return result
+
+
+def _review_from_archive(archive: dict | None) -> dict | None:
+    if not isinstance(archive, dict):
+        return None
+    data = archive.get("data") if isinstance(archive.get("data"), dict) else {}
+    market = data.get("market") if isinstance(data.get("market"), dict) else None
+    if not market:
+        return None
+    review = {
+        "date": market.get("date") or data.get("date") or archive.get("date"),
+        "time": market.get("time") or "15:00",
+        "indices": market.get("indices") or {},
+        "breadth": market.get("breadth") or {},
+        "sectors": market.get("sectors") or {"top_gainers": [], "top_losers": []},
+    }
+    normalized = _normalize_market_review(review)
+    if normalized:
+        normalized["archived"] = True
+        normalized["archive_phase"] = archive.get("phase")
+    return normalized
+
+
+def _load_archive_review(date_text: str | None = None) -> dict | None:
+    try:
+        import review_engine as re_
+    except Exception:
+        return None
+
+    digits = "".join(ch for ch in str(date_text or "") if ch.isdigit())
+    if len(digits) >= 8:
+        date_str = f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+        try:
+            return _review_from_archive(re_.load(date_str))
+        except Exception:
+            return None
+
+    try:
+        dates = re_.list_dates(limit=10)
+    except TypeError:
+        try:
+            dates = re_.list_dates()[:10]
+        except Exception:
+            return None
+    except Exception:
+        return None
+    for date_str in dates:
+        try:
+            review = _review_from_archive(re_.load(date_str))
+            if review:
+                return review
+        except Exception:
+            continue
+    return None
+
+
+def _should_use_archive_for_live(now: datetime | None = None) -> bool:
+    now = now or datetime.now()
+    if now.weekday() >= 5:
+        return True
+    clock = now.hour * 100 + now.minute
+    return clock < 930
 
 
 @bp.route("/api/market/context")
@@ -64,7 +140,7 @@ def api_market_regime():
         return jsonify({"ok": False, "error": str(e)})
 
 
-def _build_market_review(date_text: str | None = None) -> dict:
+def _build_market_review(date_text: str | None = None, allow_archive: bool = True) -> dict:
     """大盘复盘：指数行情 + 市场宽度 + 板块轮动（含缓存）"""
     import pandas as _pd
     from datetime import datetime as _dt
@@ -75,15 +151,23 @@ def _build_market_review(date_text: str | None = None) -> dict:
             import market_stats as _mstats
             snapshot = _mstats.get_verified_market_snapshot(date_text)
             if snapshot:
-                return {
+                return _normalize_market_review({
                     "date": stat_date,
                     "time": "15:00",
                     "indices": {},
                     "breadth": snapshot["breadth"],
                     "sectors": {"top_gainers": [], "top_losers": []},
-                }
+                })
         except Exception:
             pass
+        if allow_archive:
+            archived = _load_archive_review(date_text)
+            if archived:
+                return archived
+    elif allow_archive and _should_use_archive_for_live():
+        archived = _load_archive_review()
+        if archived:
+            return archived
     review = {
         "date":    stat_date,
         "time":    _dt.now().strftime("%H:%M"),
@@ -155,7 +239,7 @@ def _build_market_review(date_text: str | None = None) -> dict:
     except Exception:
         pass
 
-    return review
+    return _normalize_market_review(review) or review
 
 
 def _get_market_review(date_text: str | None = None, force_refresh: bool = False) -> dict:
@@ -168,7 +252,7 @@ def _get_market_review(date_text: str | None = None, force_refresh: bool = False
             result["cached"] = True
             return result
 
-    review = _build_market_review(date_text)
+    review = _build_market_review(date_text, allow_archive=not force_refresh)
     _MARKET_REVIEW_CACHE[cache_key] = (now, deepcopy(review))
     return review
 

@@ -188,6 +188,36 @@ def breadth_from_spot_frame(df: pd.DataFrame, expected_count: int | None = None)
     return result
 
 
+def normalize_breadth_quality(breadth: dict | None, expected_count: int | None = None) -> dict:
+    """Recompute quote breadth quality for old cached/archive payloads.
+
+    Older archives sometimes stored ``tdx_quotes`` with ``expected_count`` equal
+    to the partial quote count, which made incomplete coverage look reliable.
+    Keep the counts, but repair the metadata at response time.
+    """
+    if not isinstance(breadth, dict):
+        return breadth or {}
+    result = dict(breadth)
+    if result.get("source") != "tdx_quotes":
+        return result
+
+    total = _safe_int(result.get("total"), 0)
+    expected = expected_count or DEFAULT_EXPECTED_STOCK_COUNT
+    stored_expected = _safe_int(result.get("expected_count"), 0)
+    if stored_expected > expected:
+        expected = stored_expected
+    result["expected_count"] = expected
+    coverage = round(total / expected, 3) if expected else 1.0
+    result["coverage"] = coverage
+    degraded = coverage < MIN_QUOTE_COVERAGE
+    result["degraded"] = degraded
+    if degraded:
+        result["reason"] = f"quote coverage {coverage:.1%} below {MIN_QUOTE_COVERAGE:.0%}"
+    else:
+        result.pop("reason", None)
+    return result
+
+
 def official_turnover_from_frames(date_text: str, sse_df: pd.DataFrame, szse_df: pd.DataFrame) -> dict:
     if sse_df is None or sse_df.empty or szse_df is None or szse_df.empty:
         raise ValueError("empty official turnover frame")

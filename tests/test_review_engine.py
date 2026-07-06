@@ -45,7 +45,7 @@ def test_market_review_api_reuses_short_cache(monkeypatch):
 
     calls = []
 
-    def fake_build_review(date_text=None):
+    def fake_build_review(date_text=None, allow_archive=True):
         calls.append(date_text)
         return {"date": "2026-07-06", "breadth": {"up": len(calls)}}
 
@@ -72,7 +72,7 @@ def test_market_review_cache_does_not_miss_on_minute_boundary(monkeypatch):
     now_values = iter([100.0, 110.0])
     bucket_values = iter(["202607062359", "202607070000"])
 
-    def fake_build_review(date_text=None):
+    def fake_build_review(date_text=None, allow_archive=True):
         calls.append(date_text)
         return {"date": "2026-07-06", "breadth": {"up": len(calls)}}
 
@@ -88,6 +88,101 @@ def test_market_review_cache_does_not_miss_on_minute_boundary(monkeypatch):
     assert first["breadth"]["up"] == 1
     assert second["breadth"]["up"] == 1
     assert calls == [None]
+
+
+def test_market_review_uses_latest_archive_before_market_open(monkeypatch):
+    import web.market as market_web
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 7, 0, 20, 0)
+
+    latest_archive = {
+        "ok": True,
+        "date": "2026-07-06",
+        "phase": "evening",
+        "data": {
+            "date": "2026-07-06",
+            "market": {
+                "date": "2026-07-06",
+                "time": "15:00",
+                "indices": {},
+                "breadth": {
+                    "source": "tdx_quotes",
+                    "up": 1594,
+                    "down": 2954,
+                    "flat": 86,
+                    "total": 4634,
+                    "expected_count": 4634,
+                    "coverage": 1.0,
+                    "degraded": False,
+                },
+                "sectors": {"top_gainers": [], "top_losers": []},
+            },
+        },
+    }
+    fake_review_engine = types.SimpleNamespace(
+        load=lambda date_str: latest_archive if date_str == "2026-07-06" else None,
+        list_dates=lambda limit=10: ["2026-07-06", "2026-07-03"],
+    )
+    monkeypatch.setitem(sys.modules, "review_engine", fake_review_engine)
+    monkeypatch.setattr(market_web, "datetime", FakeDateTime)
+    monkeypatch.setattr(
+        market_web,
+        "mctx",
+        types.SimpleNamespace(get_market_regime=lambda force_refresh=False: (_ for _ in ()).throw(AssertionError("should not collect live"))),
+    )
+
+    review = market_web._build_market_review()
+
+    assert review["date"] == "2026-07-06"
+    assert review["archived"] is True
+    assert review["breadth"]["expected_count"] == 5190
+    assert review["breadth"]["degraded"] is True
+
+
+def test_market_review_force_refresh_bypasses_preopen_archive(monkeypatch):
+    import web.market as market_web
+
+    monkeypatch.setattr(market_web, "_should_use_archive_for_live", lambda now=None: True)
+    monkeypatch.setattr(market_web, "_load_archive_review", lambda date_text=None: (_ for _ in ()).throw(AssertionError("archive should be bypassed")))
+
+    class FakeMarketStats:
+        @staticmethod
+        def get_market_breadth(date_text=None):
+            return {"source": "eastmoney_spot", "up": 1, "down": 0, "flat": 0, "total": 1}
+
+    monkeypatch.setitem(sys.modules, "market_stats", FakeMarketStats)
+
+    review = market_web._get_market_review(force_refresh=True)
+
+    assert review["breadth"]["source"] == "eastmoney_spot"
+
+
+def test_market_review_uses_historical_archive_when_no_verified_snapshot(monkeypatch):
+    import web.market as market_web
+
+    archive = {
+        "ok": True,
+        "date": "2026-07-02",
+        "phase": "evening",
+        "data": {
+            "market": {
+                "date": "2026-07-02",
+                "time": "15:00",
+                "breadth": {"source": "eastmoney_spot", "up": 3000, "down": 2000, "flat": 90, "total": 5090},
+            }
+        },
+    }
+    fake_review_engine = types.SimpleNamespace(load=lambda date_str: archive if date_str == "2026-07-02" else None)
+    monkeypatch.setitem(sys.modules, "review_engine", fake_review_engine)
+
+    review = market_web._build_market_review("2026-07-02")
+
+    assert review["date"] == "2026-07-02"
+    assert review["archived"] is True
+    assert review["breadth"]["up"] == 3000
 
 
 def test_market_review_historical_verified_snapshot_does_not_mix_live_indices():

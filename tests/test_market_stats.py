@@ -66,6 +66,26 @@ def test_quote_breadth_uses_default_expected_count_when_unspecified():
     assert breadth["degraded"] is True
 
 
+def test_normalize_breadth_quality_repairs_old_tdx_archive_metadata():
+    old_archive_breadth = {
+        "source": "tdx_quotes",
+        "up": 1594,
+        "down": 2954,
+        "flat": 86,
+        "total": 4634,
+        "expected_count": 4634,
+        "coverage": 1.0,
+        "degraded": False,
+    }
+
+    breadth = market_stats.normalize_breadth_quality(old_archive_breadth)
+
+    assert breadth["expected_count"] == market_stats.DEFAULT_EXPECTED_STOCK_COUNT
+    assert breadth["coverage"] == round(4634 / market_stats.DEFAULT_EXPECTED_STOCK_COUNT, 3)
+    assert breadth["degraded"] is True
+    assert "coverage" in breadth["reason"]
+
+
 def test_breadth_falls_back_to_spot_when_legu_and_strategy_snapshot_unavailable(monkeypatch):
     spot = pd.DataFrame(
         {
