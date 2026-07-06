@@ -769,6 +769,241 @@ def _get_fundamentals(code: str) -> dict:
     data["text"] = "\n".join(lines)
     return data
 
+_ACTION_ORDER = ["卖出", "减仓", "观望", "买入", "强烈买入"]
+_BUY_ACTIONS = {"买入", "强烈买入"}
+
+
+def _clamp_num(value, low, high, default=0.0):
+    try:
+        v = float(value)
+        if math.isnan(v) or math.isinf(v):
+            return default
+        return max(low, min(high, v))
+    except Exception:
+        return default
+
+
+def _round_price(value, default=None):
+    try:
+        v = float(value)
+        if v <= 0 or math.isnan(v) or math.isinf(v):
+            return default
+        return round(v, 2)
+    except Exception:
+        return default
+
+
+def _normalize_action(action: str, fallback: str = "观望") -> str:
+    raw = str(action or "").strip()
+    if raw in _ACTION_ORDER:
+        return raw
+    aliases = {
+        "持有": "观望",
+        "等待": "观望",
+        "强买": "强烈买入",
+        "强烈看多": "强烈买入",
+        "看多": "买入",
+        "谨慎买入": "买入",
+        "减持": "减仓",
+        "清仓": "卖出",
+        "回避": "卖出",
+    }
+    for k, v in aliases.items():
+        if k in raw:
+            return v
+    return fallback
+
+
+def _degrade_action(action: str, steps: int = 1) -> str:
+    action = _normalize_action(action)
+    try:
+        idx = _ACTION_ORDER.index(action)
+        return _ACTION_ORDER[max(0, idx - steps)]
+    except ValueError:
+        return "观望"
+
+
+def _parse_position_pct(position, fallback: float) -> float:
+    if isinstance(position, (int, float, np.integer, np.floating)):
+        v = float(position)
+        return _clamp_num(v / 100 if v > 1 else v, 0, 0.5, fallback)
+    txt = str(position or "")
+    m = re.search(r"(\d+(?:\.\d+)?)\s*%", txt)
+    if m:
+        return _clamp_num(float(m.group(1)) / 100, 0, 0.5, fallback)
+    m = re.search(r"(0(?:\.\d+)?|1(?:\.0+)?)", txt)
+    if m:
+        return _clamp_num(float(m.group(1)), 0, 0.5, fallback)
+    if "空" in txt or "不" in txt:
+        return 0.0
+    if "轻" in txt:
+        return min(fallback, 0.15) if fallback else 0.1
+    if "半" in txt:
+        return 0.3
+    if "重" in txt or "满" in txt:
+        return 0.45
+    return fallback
+
+
+def _base_position_for_action(action: str, confidence: float, score: float) -> float:
+    if action == "强烈买入":
+        return 0.35 if confidence >= 75 else 0.28
+    if action == "买入":
+        return 0.25 if score >= 60 else 0.15
+    if action == "减仓":
+        return 0.05
+    return 0.0
+
+
+def _build_decision_cockpit(score_result: dict, market_ctx_data: dict = None,
+                            news_data: dict = None, fund_data: dict = None,
+                            summary: dict = None, indicators: dict = None,
+                            ai_error: str = "") -> tuple[dict, dict]:
+    """把量化评分、市场、新闻、基本面和 AI 摘要归一成可执行交易计划。"""
+    score_result = score_result or {}
+    market_ctx_data = market_ctx_data or {}
+    news_data = news_data or {}
+    fund_data = fund_data or {}
+    summary = summary or {}
+    indicators = indicators or score_result.get("indicators") or {}
+
+    score = _clamp_num(score_result.get("total"), 0, 100, 0)
+    signal = score_result.get("signal") or "观望"
+    base_action = _normalize_action(signal)
+    action = _normalize_action(summary.get("action"), base_action)
+    confidence = _clamp_num(summary.get("confidence"), 0, 100, max(score, 35))
+
+    sent = news_data.get("sentiment") or {}
+    sent_score = _clamp_num(sent.get("score"), -1, 1, 0)
+    sent_label = sent.get("label") or "中性"
+    market_strength = _clamp_num(market_ctx_data.get("strength"), 0, 100, 50)
+    market_trend = market_ctx_data.get("trend") or "未知"
+
+    risk_flags = []
+    gate_notes = []
+    if score < 45:
+        risk_flags.append(f"量化评分偏低({score:.0f}/100)")
+        gate_notes.append("评分未过主动买入线")
+        if action in _BUY_ACTIONS:
+            action = "观望"
+    if market_strength < 35:
+        risk_flags.append(f"市场环境偏弱({market_strength:.0f}/100)")
+        gate_notes.append("弱市降低买入优先级")
+        if action == "强烈买入":
+            action = "买入"
+        elif action == "买入" and confidence < 75:
+            action = "观望"
+    elif market_strength >= 70:
+        gate_notes.append("市场强度支持精选个股")
+    if sent_score <= -0.2:
+        risk_flags.append(f"新闻情绪偏负({sent_score:+.2f})")
+        gate_notes.append("负面消息压制仓位")
+        if action in _BUY_ACTIONS:
+            action = _degrade_action(action)
+            confidence = max(0, confidence - 8)
+    elif sent_score >= 0.2:
+        gate_notes.append("新闻情绪提供正向催化")
+        confidence = min(100, confidence + 3)
+    if ai_error:
+        risk_flags.append("AI深度分析失败，当前为量化降级决策")
+
+    price = _round_price(indicators.get("price")) or _round_price(score_result.get("entry_price"))
+    entry = _round_price(summary.get("entry_price")) or _round_price(score_result.get("entry_price")) or price
+    entry_low = _round_price(entry * 0.99 if entry else None)
+    entry_high = _round_price(entry * 1.01 if entry else None)
+    stop_loss = (_round_price(summary.get("stop_loss")) or
+                 _round_price(score_result.get("stop_loss")) or
+                 _round_price(price * 0.95 if price else None) or 0)
+    target1 = (_round_price(summary.get("target1")) or
+               _round_price(score_result.get("target1")) or
+               _round_price(entry * 1.06 if entry else None) or 0)
+    target2 = (_round_price(summary.get("target2")) or
+               _round_price(score_result.get("target2")) or
+               _round_price(entry * 1.12 if entry else None) or target1)
+
+    position_pct = _base_position_for_action(action, confidence, score)
+    position_pct = _parse_position_pct(summary.get("position"), position_pct)
+    if market_strength < 35 and position_pct > 0:
+        position_pct *= 0.5
+    if sent_score <= -0.2 and position_pct > 0:
+        position_pct *= 0.65
+    if score < 45 and position_pct > 0.05:
+        position_pct = 0.05
+    position_pct = round(_clamp_num(position_pct, 0, 0.5, 0), 2)
+
+    hold_days = "5-15个交易日" if action == "强烈买入" else "3-10个交易日" if action == "买入" else "等待下一次放量突破或回踩确认"
+    if action in {"减仓", "卖出"}:
+        hold_days = "优先降低风险暴露"
+
+    cancel_conditions = [
+        f"跌破止损价 {stop_loss}" if stop_loss else "跌破最近有效支撑位",
+        "放量跌破MA20且次日不能收回",
+        "市场强度跌破35或涨跌结构明显转弱",
+    ]
+    if sent_score <= -0.2:
+        cancel_conditions.append("负面消息继续扩散且无澄清")
+    if summary.get("checklist"):
+        cancel_conditions.extend([str(x) for x in summary.get("checklist", [])[:2]])
+
+    catalysts = summary.get("catalysts") or score_result.get("catalysts") or []
+    risks = summary.get("risks") or score_result.get("risks") or []
+    risk_flags.extend(str(x) for x in risks[:3] if x)
+    risk_flags = list(dict.fromkeys(risk_flags))
+
+    if not gate_notes:
+        gate_notes.append("等待价格、量能和市场环境共振")
+    summary_text = summary.get("summary") or "；".join(gate_notes[:2])
+
+    plan = {
+        "action": action,
+        "confidence": int(round(confidence)),
+        "position_pct": position_pct,
+        "entry_zone": {"low": entry_low or 0, "high": entry_high or 0},
+        "stop_loss": stop_loss,
+        "take_profit": {"t1": target1, "t2": target2},
+        "hold_days": hold_days,
+        "cancel_conditions": cancel_conditions[:6],
+        "risk_flags": risk_flags,
+        "catalysts": catalysts[:5],
+        "notes": summary_text,
+    }
+
+    dims = score_result.get("dimensions") or {}
+    fund_text = fund_data.get("text") or ""
+    evidence = {
+        "technical": {
+            "score": int(round(score)),
+            "signal": signal,
+            "trend": (dims.get("trend") or {}).get("detail", ""),
+            "volume": (dims.get("volume") or {}).get("detail", ""),
+            "macd": (dims.get("macd") or {}).get("detail", ""),
+        },
+        "market": {
+            "trend": market_trend,
+            "strength": int(round(market_strength)),
+            "allow_buy": market_strength >= 45,
+        },
+        "sentiment": {
+            "label": sent_label,
+            "score": round(sent_score, 2),
+            "keywords": sent.get("keywords") or [],
+            "news_count": len(news_data.get("news") or []),
+        },
+        "fundamental": {
+            "industry": fund_data.get("industry"),
+            "mktcap": fund_data.get("mktcap"),
+            "pe_ttm": fund_data.get("pe_ttm"),
+            "pb": fund_data.get("pb"),
+            "net_profit_yi": fund_data.get("net_profit_yi"),
+            "summary": fund_text.replace("\n", " | ")[:180] if fund_text else "暂无可靠基本面数据",
+        },
+        "risk": {
+            "flags": risk_flags,
+            "gate_notes": gate_notes,
+            "ai_error": ai_error or "",
+        },
+    }
+    return plan, evidence
 
 def run_analysis(code: str, name: str, df: pd.DataFrame,
                  config_override: dict = None) -> dict:
@@ -792,15 +1027,18 @@ def run_analysis(code: str, name: str, df: pd.DataFrame,
     except Exception:
         pass
 
-    # 无 LLM 时仅返回评分结果
+    # 无 LLM 时返回量化驾驶舱，保证股票分析在未配置模型时也可执行。
     cfg = config_override if config_override else load_config()
     if not cfg.get("enabled") or not cfg.get("api_key"):
+        decision_plan, evidence = _build_decision_cockpit(score_result, market_ctx_data)
         return {
             "ok":             True,
             "code":           code,
             "name":           name,
             "score":          score_result,
             "market_context": market_ctx_data,
+            "decision_plan":  decision_plan,
+            "evidence":       evidence,
             "ai_enabled":     False,
             "message":        "量化评分已完成。启用AI可获得深度多智能体分析。",
         }
@@ -939,8 +1177,11 @@ RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']} 
                 f"多方研究：\n{bull_report}\n\n"
                 f"空方研究：\n{bear_report}\n\n"
                 f"风险评估：\n{risk_report}\n\n"
-                f"市场背景：{market_ctx_data.get('trend', '-')} 强度{market_ctx_data.get('strength', '-')}/100\n\n"
-                "请用中文给出最终综合决策，须结合上述基本面/估值（PE/PB/净利润）一并研判，"
+                f"市场背景：{market_ctx_data.get('trend', '-')} 强度{market_ctx_data.get('strength', '-')}/100\n"
+                f"新闻情绪：{news_data.get('sentiment', {}).get('label', '中性')} "
+                f"得分{news_data.get('sentiment', {}).get('score', 0):+.2f}\n"
+                f"相关新闻：\n{news_ctx_text or '暂无可靠新闻'}\n\n"
+                "请用中文给出最终综合决策，须结合上述基本面/估值（PE/PB/净利润）、新闻情绪和市场强弱一并研判，"
                 "JSON摘要中的字符串值也必须是中文。"
             )},
         ], temperature=0.2, max_tokens=1000)
@@ -978,9 +1219,13 @@ RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']} 
         if summary.get("target2"):
             score_result["target2"] = summary["target2"]
 
+        decision_plan, evidence = _build_decision_cockpit(
+            score_result, market_ctx_data, news_data, fund_data, summary, ind
+        )
+
         # ── 决策稳定性检查 ───────────────────────────
-        final_action = summary.get("action", "")
-        final_conf   = int(summary.get("confidence", 50))
+        final_action = decision_plan.get("action") or summary.get("action", "")
+        final_conf   = int(decision_plan.get("confidence") or summary.get("confidence", 50))
         stability = _check_decision_stability(code, final_action, final_conf)
         _update_decision_cache(code, final_action, final_conf)
 
@@ -991,6 +1236,8 @@ RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']} 
             "ai_enabled":     True,
             "score":          score_result,
             "market_context": market_ctx_data,
+            "decision_plan":  decision_plan,
+            "evidence":       evidence,
             "indicators":     ind,
             "tech_report":    tech_report,
             "bull_report":    bull_report,
@@ -1007,7 +1254,10 @@ RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']} 
     except Exception as e:
         err_msg = str(e)
         logger.error(f"AI分析失败 {code}: {err_msg}")
-        # LLM 失败时仍返回量化评分，同时告知用户具体错误原因
+        # LLM 失败时仍返回量化评分和可执行驾驶舱，同时告知用户具体错误原因
+        decision_plan, evidence = _build_decision_cockpit(
+            score_result, market_ctx_data, ai_error=err_msg
+        )
         return {
             "ok":             True,
             "code":           code,
@@ -1016,6 +1266,8 @@ RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']} 
             "ai_error":       err_msg,
             "score":          score_result,
             "market_context": market_ctx_data,
+            "decision_plan":  decision_plan,
+            "evidence":       evidence,
             "message":        f"AI接口调用失败：{err_msg}",
         }
 

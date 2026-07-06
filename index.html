@@ -214,6 +214,17 @@ tr:hover td{background:var(--card)}
 .dim-bar-track{height:5px;background:var(--b1);border-radius:3px;overflow:hidden}
 .dim-bar-fill{height:100%;border-radius:3px;transition:width .5s ease}
 .dim-bar-detail{font-size:10px;color:var(--t4);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 决策驾驶舱 */
+.ai-cockpit{background:var(--card);border:1px solid var(--b1);border-left:4px solid var(--b1);border-radius:8px;margin:0 0 12px;padding:13px 14px}
+.ai-cockpit.ai-sum-buy{border-left-color:#f85149}.ai-cockpit.ai-sum-watch{border-left-color:#e3b341}.ai-cockpit.ai-sum-reduce{border-left-color:#d29922}.ai-cockpit.ai-sum-sell{border-left-color:#3fb950}
+.ai-cp-top{display:grid;grid-template-columns:minmax(118px,1.05fr) repeat(2,minmax(82px,.72fr));gap:8px;align-items:stretch;margin-bottom:10px}
+.ai-cp-action{background:var(--inp);border:1px solid var(--b1);border-radius:8px;padding:10px 12px;min-width:0}
+.ai-cp-k{font-size:10px;color:var(--t3);margin-bottom:4px;white-space:nowrap}.ai-cp-v{font-size:17px;font-weight:900;color:var(--t1);line-height:1.2}.ai-cp-sub{font-size:11px;color:var(--t3);margin-top:4px;line-height:1.35}
+.ai-cp-action .ai-cp-v.buy{color:#f85149}.ai-cp-action .ai-cp-v.watch{color:#e3b341}.ai-cp-action .ai-cp-v.sell{color:#3fb950}
+.ai-cp-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-bottom:10px}.ai-cp-cell{background:var(--inp);border:1px solid var(--b2);border-radius:7px;padding:8px 9px;min-width:0}.ai-cp-cell .v{font-size:14px;font-weight:800;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ai-cp-cell .k{font-size:10px;color:var(--t3);margin-bottom:3px}
+.ai-cp-evidence{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}.ai-ev{background:rgba(110,118,129,.08);border:1px solid var(--b2);border-radius:7px;padding:8px 9px;min-width:0}.ai-ev-h{font-size:11px;font-weight:800;color:var(--t2);margin-bottom:4px}.ai-ev-b{font-size:11px;color:var(--t3);line-height:1.45;min-height:31px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.ai-cp-lists{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.ai-cp-list{background:rgba(110,118,129,.08);border:1px solid var(--b2);border-radius:7px;padding:8px 10px}.ai-cp-list-h{font-size:11px;font-weight:800;color:var(--t2);margin-bottom:5px}.ai-cp-list div{font-size:11px;color:var(--t3);line-height:1.55}
+@media(max-width:760px){.ai-cp-top,.ai-cp-lists{grid-template-columns:1fr}.ai-cp-grid,.ai-cp-evidence{grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* 价格建议卡 */
 .price-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:10px}
 .price-card{background:var(--inp);border-radius:6px;padding:7px 10px;text-align:center}
@@ -4066,9 +4077,11 @@ async function runAI(){
 function renderAIResult(r){
   const score     = r.score       || {}
   const s         = r.summary     || {}
+  const plan      = r.decision_plan || {}
+  const evidence  = r.evidence || {}
   const ind       = r.indicators  || score.indicators || {}
   const dims      = score.dimensions || {}
-  const act       = s.action      || '—'
+  const act       = plan.action || s.action || '—'
   const aiEnabled = r.ai_enabled  !== false
 
   // 决策颜色映射
@@ -4081,7 +4094,12 @@ function renderAIResult(r){
     '卖出':    {cls:'ai-sum-sell',  ic:'ai-act-sell',   emoji:'🔴'},
   }
   const am   = actMap[act] || {cls:'ai-sum-watch',ic:'ai-act-watch',emoji:'⚪'}
-  const conf = s.confidence || 0
+  const conf = plan.confidence ?? s.confidence ?? 0
+
+  const fmtPrice = v => { const n=Number(v); return Number.isFinite(n) && n>0 ? `¥${n.toFixed(2)}` : '—' }
+  const fmtPct = v => { const n=Number(v); return Number.isFinite(n) ? `${Math.round(n*100)}%` : '—' }
+  const actionTone = act==='卖出'||act==='减仓' ? 'sell' : (act==='强烈买入'||act==='买入' ? 'buy' : 'watch')
+  const listLines = arr => (arr||[]).slice(0,4).map(x=>`<div>${esc(x)}</div>`).join('') || '<div>暂无</div>'
 
   // 六维维度颜色
   const dimColors = {
@@ -4090,6 +4108,51 @@ function renderAIResult(r){
   }
 
   let html = ''
+
+  // ══ 交易决策驾驶舱 ══════════════════════════════
+  if(plan.action){
+    const ez = plan.entry_zone || {}
+    const tp = plan.take_profit || {}
+    const evTech = evidence.technical || {}
+    const evMarket = evidence.market || {}
+    const evSent = evidence.sentiment || {}
+    const evFund = evidence.fundamental || {}
+    html += `<div class="ai-cockpit ${am.cls}">
+      <div class="ai-cp-top">
+        <div class="ai-cp-action">
+          <div class="ai-cp-k">交易动作</div>
+          <div class="ai-cp-v ${actionTone}">${am.emoji} ${esc(act)}</div>
+          <div class="ai-cp-sub">${esc(plan.notes || '等待确认')}</div>
+        </div>
+        <div class="ai-cp-action">
+          <div class="ai-cp-k">置信度</div>
+          <div class="ai-cp-v">${conf || 0}<span style="font-size:11px;color:var(--t3);font-weight:600"> / 100</span></div>
+          <div class="ai-cp-sub">量化分 ${score.total ?? '—'}</div>
+        </div>
+        <div class="ai-cp-action">
+          <div class="ai-cp-k">建议仓位</div>
+          <div class="ai-cp-v">${fmtPct(plan.position_pct)}</div>
+          <div class="ai-cp-sub">单票上限按风控执行</div>
+        </div>
+      </div>
+      <div class="ai-cp-grid">
+        <div class="ai-cp-cell"><div class="k">入场区间</div><div class="v">${fmtPrice(ez.low)} - ${fmtPrice(ez.high)}</div></div>
+        <div class="ai-cp-cell"><div class="k">止损</div><div class="v" style="color:#3fb950">${fmtPrice(plan.stop_loss)}</div></div>
+        <div class="ai-cp-cell"><div class="k">止盈</div><div class="v" style="color:#f85149">${fmtPrice(tp.t1)} / ${fmtPrice(tp.t2)}</div></div>
+        <div class="ai-cp-cell"><div class="k">持仓周期</div><div class="v">${esc(plan.hold_days || '—')}</div></div>
+      </div>
+      <div class="ai-cp-evidence">
+        <div class="ai-ev"><div class="ai-ev-h">技术</div><div class="ai-ev-b">${esc((evTech.signal||score.signal||'—') + ' · ' + (evTech.trend||''))}</div></div>
+        <div class="ai-ev"><div class="ai-ev-h">市场</div><div class="ai-ev-b">${esc((evMarket.trend||'未知') + ' · 强度' + (evMarket.strength ?? '—'))}</div></div>
+        <div class="ai-ev"><div class="ai-ev-h">情绪</div><div class="ai-ev-b">${esc((evSent.label||'中性') + ' · ' + ((evSent.score||0)>0?'+':'') + (evSent.score ?? 0))}</div></div>
+        <div class="ai-ev"><div class="ai-ev-h">基本面</div><div class="ai-ev-b">${esc(evFund.summary||'暂无可靠基本面数据')}</div></div>
+      </div>
+      <div class="ai-cp-lists">
+        <div class="ai-cp-list"><div class="ai-cp-list-h">撤单 / 放弃条件</div>${listLines(plan.cancel_conditions)}</div>
+        <div class="ai-cp-list"><div class="ai-cp-list-h">风险旗标</div>${listLines(plan.risk_flags)}</div>
+      </div>
+    </div>`
+  }
 
   // ══ 六维评分仪表盘 ══════════════════════════════
   if(score.ok){
