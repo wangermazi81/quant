@@ -181,7 +181,7 @@ def collect(date_str: str = None) -> dict:
     with no_proxy():
         try:
             from web.market import _get_market_review
-            data["market"] = _get_market_review()
+            data["market"] = _get_market_review(compact)
         except Exception as e:
             logger.warning(f"[review] 大盘数据失败: {e}")
             data["market"] = {}

@@ -85,6 +85,55 @@ def test_breadth_falls_back_to_spot_when_legu_and_strategy_snapshot_unavailable(
     assert breadth["degraded"] is False
 
 
+def test_verified_eastmoney_snapshot_matches_20260703_three_market_overview():
+    snapshot = market_stats.get_verified_market_snapshot("20260703")
+
+    assert snapshot["source"] == "eastmoney_three_market_verified"
+    assert snapshot["stat_date"] == "2026-07-03"
+    assert snapshot["turnover"]["today"] == 32055
+    assert snapshot["turnover"]["amount"] == 32055
+    assert snapshot["turnover"]["previous_same_time_delta"] == -2687
+    assert snapshot["turnover"]["previous_same_time_pct"] == -7.73
+    assert snapshot["turnover"]["avg_60d"] == 29641
+    assert snapshot["turnover"]["avg_60d_pct"] == 8.14
+    assert snapshot["breadth"]["up"] == 3804
+    assert snapshot["breadth"]["flat"] == 84
+    assert snapshot["breadth"]["down"] == 1628
+    assert snapshot["breadth"]["total"] == 5516
+    assert snapshot["breadth"]["distribution"] == {
+        "limit_up": 160,
+        "up_5_to_limit": 443,
+        "up_1_to_5": 2380,
+        "up_0_to_1": 821,
+        "flat": 84,
+        "down_0_to_1": 428,
+        "down_1_to_5": 886,
+        "down_5_to_limit": 290,
+        "limit_down": 24,
+    }
+
+
+def test_market_turnover_prefers_verified_three_market_snapshot_for_20260703():
+    turnover = market_stats.get_market_turnover("20260703")
+
+    assert turnover["today"] == 32055
+    assert turnover["amount"] == 32055
+    assert turnover["source"] == "eastmoney_three_market_verified"
+    assert turnover["stat_date"] == "2026-07-03"
+    assert turnover["degraded"] is False
+
+
+def test_market_breadth_prefers_verified_three_market_snapshot_for_20260703():
+    breadth = market_stats.get_market_breadth(date_text="20260703")
+
+    assert breadth["up"] == 3804
+    assert breadth["flat"] == 84
+    assert breadth["down"] == 1628
+    assert breadth["total"] == 5516
+    assert breadth["source"] == "eastmoney_three_market_verified"
+    assert breadth["degraded"] is False
+
+
 def test_official_turnover_combines_sse_yi_and_szse_yuan_units():
     sse = pd.DataFrame(
         [

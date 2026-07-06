@@ -24,6 +24,65 @@ _live_lock = threading.Lock()
 _LIVE_TTL = 120   # 盘中天梯/情绪要跟得上盘面，2分钟缓存
 
 
+def _verified_snapshot_archive(date_str: str) -> dict | None:
+    try:
+        import market_stats
+
+        snapshot = market_stats.get_verified_market_snapshot(date_str)
+    except Exception:
+        snapshot = None
+    if not snapshot:
+        return None
+
+    breadth = snapshot["breadth"]
+    turnover = dict(snapshot["turnover"])
+    turnover["trend"] = []
+    zt = {
+        "zt_count": breadth.get("limit_up", 0),
+        "dt_count": breadth.get("limit_dn", 0),
+        "zb_count": 0,
+        "zb_rate": None,
+        "max_height": 0,
+        "ladder": [],
+        "prev_zt_avg": None,
+        "prev_zt_red_rate": None,
+    }
+    score = 50.0
+    score += min(zt["zt_count"], 120) * 0.25
+    score -= min(zt["dt_count"], 60) * 0.5
+    if breadth.get("total"):
+        score += (breadth.get("up", 0) - breadth.get("down", 0)) / breadth["total"] * 30
+
+    return {
+        "ok": True,
+        "date": snapshot["stat_date"],
+        "phase": "verified_snapshot",
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "data": {
+            "date": snapshot["stat_date"],
+            "market": {
+                "date": snapshot["stat_date"],
+                "time": "15:00",
+                "indices": {},
+                "breadth": breadth,
+                "sectors": {"top_gainers": [], "top_losers": []},
+            },
+            "zt": zt,
+            "turnover": turnover,
+            "sectors": {"industry_top": [], "industry_bottom": [], "concept_top": []},
+            "news": [],
+            "trading_day": True,
+            "sentiment_score": int(max(0, min(100, round(score)))),
+        },
+        "ai_summary": (
+            f"{snapshot['stat_date']} 复盘归档已按东方财富三市 A 股市场概况截图校准："
+            f"三市成交额 {turnover.get('today')} 亿；上涨 {breadth.get('up')} 家、"
+            f"平盘 {breadth.get('flat')} 家、下跌 {breadth.get('down')} 家；"
+            f"涨停 {zt['zt_count']} 家、跌停 {zt['dt_count']} 家。"
+        ),
+    }
+
+
 @bp.route("/api/review/daily")
 def api_review_daily():
     import review_engine as re_
@@ -36,6 +95,9 @@ def api_review_daily():
     if date_str != today:
         if archived:
             return jsonify(archived)
+        verified = _verified_snapshot_archive(date_str)
+        if verified:
+            return jsonify(verified)
         return jsonify({"ok": False, "error": "该日期无复盘归档", "date": date_str})
 
     # 当天：已有收盘/晚间归档直接用；否则实时采集（无 AI，5分钟缓存）

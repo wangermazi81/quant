@@ -57,12 +57,14 @@ def api_market_regime():
         return jsonify({"ok": False, "error": str(e)})
 
 
-def _get_market_review() -> dict:
+def _get_market_review(date_text: str | None = None) -> dict:
     """大盘复盘：指数行情 + 市场宽度 + 板块轮动（含缓存）"""
     import pandas as _pd
     from datetime import datetime as _dt
+    digits = "".join(ch for ch in str(date_text or "") if ch.isdigit())
+    stat_date = f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}" if len(digits) >= 8 else _dt.now().strftime("%Y-%m-%d")
     review = {
-        "date":    _dt.now().strftime("%Y-%m-%d"),
+        "date":    stat_date,
         "time":    _dt.now().strftime("%H:%M"),
         "indices": {},
         "breadth": {},
@@ -111,7 +113,7 @@ def _get_market_review() -> dict:
     # batches can be incomplete under TDX fallback and must not define breadth.
     try:
         import market_stats as _mstats
-        review["breadth"] = _mstats.get_market_breadth()
+        review["breadth"] = _mstats.get_market_breadth(date_text=date_text)
     except Exception:
         pass
 
