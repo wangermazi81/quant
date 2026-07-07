@@ -243,6 +243,53 @@ def test_market_review_reuses_single_three_market_snapshot(monkeypatch):
     assert review["turnover"]["trend"][-1]["amount"] == 30567
 
 
+def test_market_review_uses_direct_sector_source_without_slow_akshare(monkeypatch):
+    import web.market as market_web
+
+    fake_market_stats = types.SimpleNamespace(
+        get_verified_market_snapshot=lambda date_text: None,
+        normalize_breadth_quality=lambda breadth: breadth or {},
+        get_market_snapshot_metrics=lambda date_text=None: {
+            "breadth": {"source": "eastmoney_three_market", "up": 1, "down": 0, "flat": 0, "total": 1},
+            "turnover": {"source": "eastmoney_three_market", "today": 1, "trend": []},
+        },
+    )
+    fake_ths_quote = types.SimpleNamespace(get_client=lambda: types.SimpleNamespace(_ok=False))
+    fake_akshare = types.SimpleNamespace(
+        stock_zh_index_spot_em=lambda: None,
+        stock_board_industry_name_em=lambda: (_ for _ in ()).throw(AssertionError("slow akshare sector source should not be used")),
+    )
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": {
+                    "diff": [
+                        {"f14": "Strong A", "f3": 4.2},
+                        {"f14": "Strong B", "f3": 3.1},
+                        {"f14": "Strong C", "f3": 2.8},
+                        {"f14": "Weak A", "f3": -2.4},
+                        {"f14": "Weak B", "f3": -1.7},
+                        {"f14": "Weak C", "f3": -1.2},
+                    ]
+                }
+            }
+
+    fake_requests = types.SimpleNamespace(get=lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setitem(sys.modules, "market_stats", fake_market_stats)
+    monkeypatch.setitem(sys.modules, "ths_quote", fake_ths_quote)
+    monkeypatch.setitem(sys.modules, "akshare", fake_akshare)
+    monkeypatch.setitem(sys.modules, "requests", fake_requests)
+
+    review = market_web._build_market_review(allow_archive=False)
+
+    assert review["sectors"]["top_gainers"] == ["Strong A", "Strong B", "Strong C"]
+    assert review["sectors"]["top_losers"] == ["Weak A", "Weak B", "Weak C"]
+
+
 def test_market_review_uses_historical_archive_when_no_verified_snapshot(monkeypatch):
     import web.market as market_web
 

@@ -13,6 +13,53 @@ bp = Blueprint("market", __name__)
 
 _MARKET_REVIEW_CACHE_TTL = 60
 _MARKET_REVIEW_CACHE: dict[str, tuple[float, dict]] = {}
+_EASTMONEY_INDUSTRY_URL = "https://17.push2.eastmoney.com/api/qt/clist/get"
+
+
+def _float_or_none(value) -> float | None:
+    try:
+        if value in (None, "", "-"):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _fetch_industry_sector_rotation(timeout: float = 1.5) -> dict:
+    result = {"top_gainers": [], "top_losers": []}
+    try:
+        import requests
+
+        params = {
+            "pn": "1",
+            "pz": "100",
+            "po": "1",
+            "np": "1",
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f3",
+            "fs": "m:90 t:2 f:!50",
+            "fields": "f3,f12,f14",
+        }
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+        response = requests.get(_EASTMONEY_INDUSTRY_URL, params=params, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        rows = ((response.json().get("data") or {}).get("diff") or [])
+    except Exception:
+        return result
+
+    boards = []
+    for row in rows:
+        name = str(row.get("f14") or "").strip()
+        change = _float_or_none(row.get("f3"))
+        if name and change is not None:
+            boards.append((change, name))
+    if not boards:
+        return result
+    result["top_gainers"] = [name for _, name in sorted(boards, reverse=True)[:3]]
+    result["top_losers"] = [name for _, name in sorted(boards)[:3]]
+    return result
 
 
 def _normalize_market_review(review: dict | None) -> dict | None:
@@ -172,7 +219,6 @@ def api_market_regime():
 
 def _build_market_review(date_text: str | None = None, allow_archive: bool = True) -> dict:
     """大盘复盘：指数行情 + 市场宽度 + 板块轮动（含缓存）"""
-    import pandas as _pd
     from datetime import datetime as _dt
     digits = "".join(ch for ch in str(date_text or "") if ch.isdigit())
     stat_date = f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}" if len(digits) >= 8 else _dt.now().strftime("%Y-%m-%d")
@@ -265,22 +311,9 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
     except Exception:
         pass
 
-    # 3. 板块轮动（行业板块）
-    # stock_board_industry_rank_em 在 akshare 1.18.x 不存在（此处曾静默失败导致板块恒空），
-    # 正确接口为 stock_board_industry_name_em；名称列需模糊匹配（首列是"排名"）。
-    try:
-        import akshare as ak
-        df_sec = ak.stock_board_industry_name_em()
-        if df_sec is not None and not df_sec.empty:
-            chg_col  = next((c for c in df_sec.columns if "涨跌幅" in c), None)
-            name_col = next((c for c in df_sec.columns if "名称" in str(c)), df_sec.columns[0])
-            if chg_col:
-                df_sec[chg_col] = _pd.to_numeric(df_sec[chg_col], errors="coerce")
-                df_s = df_sec.dropna(subset=[chg_col]).sort_values(chg_col, ascending=False)
-                review["sectors"]["top_gainers"] = df_s.head(3)[name_col].tolist()
-                review["sectors"]["top_losers"]  = df_s.tail(3)[name_col].tolist()
-    except Exception:
-        pass
+    # 3. Industry sector rotation. Use direct Eastmoney requests with a short
+    # timeout; the akshare wrapper can block for several seconds before failing.
+    review["sectors"] = _fetch_industry_sector_rotation()
 
     return _normalize_market_review(review) or review
 
