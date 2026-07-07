@@ -7631,7 +7631,8 @@ function aitApplySnapshot(s){
 function aitApplyStatus(s){
   const sb=document.getElementById('aitStatus');
   if(s.halted_reason){ sb.className='ait-badge halt'; sb.textContent='🔥 已熔断'; sb.title=s.halted_reason; }
-  else if(s.running){ sb.className='ait-badge run'; sb.textContent='● 运行中'; sb.title=''; }
+  else if(s.running && s.waiting_reason){ sb.className='ait-badge run'; sb.textContent='● 等待中'; sb.title=s.waiting_reason; }
+  else if(s.running){ sb.className='ait-badge run'; sb.textContent='● 运行中'; sb.title=s.next_round_in_sec>0?('下次扫描约 '+s.next_round_in_sec+' 秒后'):''; }
   else { sb.className='ait-badge stop'; sb.textContent='● 已停止'; sb.title=''; }
   const mb=document.getElementById('aitMode'), live=(s.broker_mode==='live');
   mb.className='ait-badge '+(live?'live':'paper');

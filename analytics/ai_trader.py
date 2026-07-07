@@ -378,6 +378,7 @@ class _Engine:
         self.recent_execs = deque(maxlen=120)
         self.agent_cards = deque(maxlen=60)   # 最近角色发言，供快照
         self.market_data_status = {"degraded": False, "reason": ""}
+        self.last_wait_reason = ""
         self.lock = threading.Lock()
 
     # ── 控制 ──────────────────────────────────────────────
@@ -447,12 +448,20 @@ class _Engine:
 
     def status(self) -> dict:
         st = load_settings(self.uid)
+        analysis_ready, waiting_reason = self._market_gate(st)
+        next_round_in_sec = 0
+        if self.running and analysis_ready:
+            next_round_in_sec = max(0, int(st.get("interval_sec", 0) - (time.time() - self.last_round_ts)))
         return {
             "running": self.running,
             "round_no": self.round_no,
             "started_at": self.started_at,
             "halted_reason": self.halted_reason,
             "once_running": self.once_running,
+            "market_open": analysis_ready,
+            "analysis_ready": analysis_ready and not self.halted_reason,
+            "waiting_reason": waiting_reason if self.running and not analysis_ready else "",
+            "next_round_in_sec": next_round_in_sec,
             "today_trades": self._today_trades(),
             "broker_mode": self._broker_mode(),
             "pending_count": len(self.pending),
@@ -563,6 +572,17 @@ class _Engine:
     def _push_status(self):
         self._push("ai_status", self.status())
 
+    def _market_gate(self, st: dict) -> tuple[bool, str]:
+        if st.get("ignore_market_time"):
+            return True, ""
+        try:
+            from market_data import is_trading_time
+            if is_trading_time():
+                return True, ""
+            return False, "当前非A股连续竞价时段，AI交易团队已启动但会等待开盘/午休结束后再自动分析。需要盘后测试可勾选「忽略交易时间」或点击「单轮测试」。"
+        except Exception as e:
+            return False, f"交易时间判断失败，暂停自动分析：{e}"
+
     def _audit(self, record: dict):
         try:
             LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -587,8 +607,15 @@ class _Engine:
         while not self.stop_flag.is_set():
             try:
                 st = load_settings(self.uid)
-                from market_data import is_trading_time
-                tradable = st["ignore_market_time"] or is_trading_time()
+                tradable, wait_reason = self._market_gate(st)
+                if not tradable:
+                    if wait_reason != self.last_wait_reason:
+                        self.last_wait_reason = wait_reason
+                        self._log(f"⏳ {wait_reason}", "warn")
+                        self._push_status()
+                    self.stop_flag.wait(5)
+                    continue
+                self.last_wait_reason = ""
                 if tradable and (time.time() - self.last_round_ts) >= st["interval_sec"]:
                     self._run_round(st)
                     self.last_round_ts = time.time()

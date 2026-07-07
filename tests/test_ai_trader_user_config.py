@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import sys
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -114,6 +115,18 @@ def test_ai_trader_engine_refuses_to_use_global_key_for_user_without_config(tmp_
 
     assert res["ok"] is False
     assert res["msg"]
+
+
+def test_ai_trader_status_explains_waiting_outside_market_time(monkeypatch):
+    monkeypatch.setitem(sys.modules, "market_data", types.SimpleNamespace(is_trading_time=lambda: False))
+    engine = ai_trader._Engine(101)
+    engine.running = True
+
+    st = engine.status()
+
+    assert st["market_open"] is False
+    assert st["analysis_ready"] is False
+    assert "非A股连续竞价时段" in st["waiting_reason"]
 
 
 def test_platform_ai_config_does_not_fallback_to_ai_trader_user_key(tmp_path, monkeypatch):
