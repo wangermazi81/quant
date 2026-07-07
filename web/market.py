@@ -255,8 +255,13 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
     # batches can be incomplete under TDX fallback and must not define breadth.
     try:
         import market_stats as _mstats
-        review["breadth"] = _mstats.get_market_breadth(date_text=date_text)
-        review["turnover"] = _mstats.get_market_turnover(date_text=date_text)
+        try:
+            metrics = _mstats.get_market_snapshot_metrics(date_text=date_text)
+            review["breadth"] = metrics.get("breadth") or {}
+            review["turnover"] = metrics.get("turnover") or {}
+        except Exception:
+            review["breadth"] = _mstats.get_market_breadth(date_text=date_text)
+            review["turnover"] = _mstats.get_market_turnover(date_text=date_text)
     except Exception:
         pass
 

@@ -522,6 +522,47 @@ def _turnover_trend_from_index_daily(limit: int = 20) -> list[dict]:
     return [{"date": day, "amount": round(amounts[day] / 1e8, 0)} for day in sorted(amounts.keys())[-limit:]]
 
 
+def _turnover_from_snapshot_with_trend(snapshot: dict) -> dict:
+    result = dict(snapshot["turnover"])
+    try:
+        trend = _turnover_trend_from_index_daily()
+    except Exception as exc:
+        logger.debug(f"[market_stats] turnover trend failed: {exc}")
+        trend = []
+    if trend:
+        trend[-1]["amount"] = result["today"]
+    result["trend"] = trend
+    return result
+
+
+def get_market_snapshot_metrics(date_text: str | None = None) -> dict:
+    """Return breadth and turnover from one official three-market snapshot.
+
+    ``web.market`` needs both metrics for one response. Fetching them through
+    ``get_market_breadth`` and ``get_market_turnover`` separately can pull the
+    same paged Eastmoney snapshot twice on a cold request.
+    """
+    snapshot = _historical_market_snapshot(date_text) or fetch_eastmoney_three_market_snapshot(date_text)
+    breadth = dict(snapshot["breadth"])
+    if _is_explicit_today_request(date_text) and breadth.get("degraded"):
+        breadth = {
+            "source": "none",
+            "degraded": True,
+            "reason": f"official breadth unavailable for requested {_date_ymd(date_text)}: {breadth.get('reason', 'degraded breadth')}",
+        }
+
+    turnover = _turnover_from_snapshot_with_trend(snapshot)
+    if _is_explicit_today_request(date_text) and _safe_float(turnover.get("amount", turnover.get("today"))) <= 0:
+        turnover = {
+            "today": None,
+            "trend": [],
+            "source": "none",
+            "degraded": True,
+            "reason": f"official turnover unavailable for requested {_date_ymd(date_text)}: zero turnover",
+        }
+    return {"breadth": breadth, "turnover": turnover, "source": snapshot.get("source"), "stat_date": snapshot.get("stat_date")}
+
+
 def get_market_breadth(expected_count: int | None = None, date_text: str | None = None) -> dict:
     snapshot = _historical_market_snapshot(date_text)
     if snapshot:

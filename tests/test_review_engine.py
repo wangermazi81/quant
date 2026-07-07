@@ -205,6 +205,44 @@ def test_market_review_force_refresh_bypasses_preopen_archive(monkeypatch):
     assert review["breadth"]["source"] == "eastmoney_spot"
 
 
+def test_market_review_reuses_single_three_market_snapshot(monkeypatch):
+    import web.market as market_web
+
+    calls = []
+    snapshot = {
+        "source": "eastmoney_three_market",
+        "stat_date": "2026-07-07",
+        "turnover": {"today": 30567, "amount": 30567.4, "source": "eastmoney_three_market", "degraded": False},
+        "breadth": {"source": "eastmoney_three_market", "up": 2450, "down": 2810, "flat": 91, "total": 5351, "degraded": False},
+    }
+
+    def fetch_once(date_text=None):
+        calls.append(date_text)
+        return snapshot
+
+    fake_market_stats = types.SimpleNamespace(
+        get_verified_market_snapshot=lambda date_text: None,
+        normalize_breadth_quality=lambda breadth: breadth or {},
+        get_market_snapshot_metrics=lambda date_text=None: {
+            "breadth": fetch_once(date_text)["breadth"],
+            "turnover": {**snapshot["turnover"], "trend": [{"date": "2026-07-07", "amount": snapshot["turnover"]["today"]}]},
+        },
+    )
+    fake_ths_quote = types.SimpleNamespace(get_client=lambda: types.SimpleNamespace(_ok=False))
+    fake_akshare = types.SimpleNamespace(stock_zh_index_spot_em=lambda: None, stock_board_industry_name_em=lambda: None)
+    monkeypatch.setitem(sys.modules, "market_stats", fake_market_stats)
+    monkeypatch.setitem(sys.modules, "ths_quote", fake_ths_quote)
+    monkeypatch.setitem(sys.modules, "akshare", fake_akshare)
+
+    review = market_web._build_market_review(allow_archive=False)
+
+    assert calls == [None]
+    assert review["breadth"]["source"] == "eastmoney_three_market"
+    assert review["breadth"]["total"] == 5351
+    assert review["turnover"]["today"] == 30567
+    assert review["turnover"]["trend"][-1]["amount"] == 30567
+
+
 def test_market_review_uses_historical_archive_when_no_verified_snapshot(monkeypatch):
     import web.market as market_web
 
