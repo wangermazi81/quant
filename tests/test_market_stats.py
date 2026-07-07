@@ -275,6 +275,36 @@ def test_market_snapshot_metrics_reuse_one_three_market_snapshot(monkeypatch, tm
     assert metrics["turnover"]["trend"][-1]["amount"] == 31124
 
 
+def test_market_snapshot_metrics_fetches_snapshot_and_trend_concurrently(monkeypatch, tmp_path):
+    snapshot_started = threading.Event()
+    trend_started = threading.Event()
+    snapshot = {
+        "source": "eastmoney_three_market",
+        "stat_date": "2026-07-06",
+        "turnover": {"today": 31124, "amount": 31124.43, "source": "eastmoney_three_market", "degraded": False},
+        "breadth": {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
+    }
+
+    def fake_snapshot(date_text=None):
+        snapshot_started.set()
+        assert trend_started.wait(0.5), "turnover trend did not start while snapshot was in flight"
+        return snapshot
+
+    def fake_trend():
+        trend_started.set()
+        assert snapshot_started.wait(0.5), "snapshot did not start while turnover trend was in flight"
+        return [{"date": "2026-07-06", "amount": 0}]
+
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(market_stats, "fetch_eastmoney_three_market_snapshot", fake_snapshot, raising=False)
+    monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", fake_trend)
+
+    metrics = market_stats.get_market_snapshot_metrics("2026-07-06")
+
+    assert metrics["breadth"]["total"] == 5519
+    assert metrics["turnover"]["trend"][-1]["amount"] == 31124
+
+
 def test_market_breadth_and_turnover_use_cached_snapshot_when_history_source_is_unavailable(monkeypatch, tmp_path):
     snapshot = {
         "source": "eastmoney_three_market",

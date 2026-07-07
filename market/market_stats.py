@@ -545,13 +545,18 @@ def _turnover_trend_from_index_daily(limit: int = 20) -> list[dict]:
     return [{"date": day, "amount": round(amounts[day] / 1e8, 0)} for day in sorted(amounts.keys())[-limit:]]
 
 
-def _turnover_from_snapshot_with_trend(snapshot: dict) -> dict:
-    result = dict(snapshot["turnover"])
+def _safe_turnover_trend() -> list[dict]:
     try:
-        trend = _turnover_trend_from_index_daily()
+        return _turnover_trend_from_index_daily()
     except Exception as exc:
         logger.debug(f"[market_stats] turnover trend failed: {exc}")
-        trend = []
+        return []
+
+
+def _turnover_from_snapshot_with_trend(snapshot: dict, trend: list[dict] | None = None) -> dict:
+    result = dict(snapshot["turnover"])
+    if trend is None:
+        trend = _safe_turnover_trend()
     if trend:
         trend[-1]["amount"] = result["today"]
     result["trend"] = trend
@@ -565,7 +570,11 @@ def get_market_snapshot_metrics(date_text: str | None = None) -> dict:
     ``get_market_breadth`` and ``get_market_turnover`` separately can pull the
     same paged Eastmoney snapshot twice on a cold request.
     """
-    snapshot = _historical_market_snapshot(date_text) or fetch_eastmoney_three_market_snapshot(date_text)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        snapshot_future = executor.submit(lambda: _historical_market_snapshot(date_text) or fetch_eastmoney_three_market_snapshot(date_text))
+        trend_future = executor.submit(_safe_turnover_trend)
+        snapshot = snapshot_future.result()
+        trend = trend_future.result()
     breadth = dict(snapshot["breadth"])
     if _is_explicit_today_request(date_text) and breadth.get("degraded"):
         breadth = {
@@ -574,7 +583,7 @@ def get_market_snapshot_metrics(date_text: str | None = None) -> dict:
             "reason": f"official breadth unavailable for requested {_date_ymd(date_text)}: {breadth.get('reason', 'degraded breadth')}",
         }
 
-    turnover = _turnover_from_snapshot_with_trend(snapshot)
+    turnover = _turnover_from_snapshot_with_trend(snapshot, trend=trend)
     if _is_explicit_today_request(date_text) and _safe_float(turnover.get("amount", turnover.get("today"))) <= 0:
         turnover = {
             "today": None,
