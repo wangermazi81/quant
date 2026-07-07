@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import math
 import json
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,7 @@ MIN_QUOTE_COVERAGE = 0.98
 DEFAULT_EXPECTED_STOCK_COUNT = 5190
 EASTMONEY_THREE_MARKET_FS = "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048"
 EASTMONEY_THREE_MARKET_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
+EASTMONEY_PAGE_WORKERS = 8
 MARKET_SNAPSHOT_DIR = Path(__file__).resolve().parent.parent / "data" / "market_snapshots"
 
 VERIFIED_MARKET_SNAPSHOTS = {
@@ -356,6 +358,23 @@ def three_market_snapshot_from_rows(rows: Iterable[dict], date_text: str | None 
     }
 
 
+def _fetch_pages_concurrently(fetch_page, page_numbers: Iterable[int], max_workers: int = EASTMONEY_PAGE_WORKERS) -> list:
+    page_numbers = list(page_numbers)
+    if not page_numbers:
+        return []
+    workers = max(1, min(int(max_workers or 1), len(page_numbers)))
+    chunks = []
+    if workers == 1:
+        chunks = [fetch_page(page) for page in page_numbers]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            chunks = list(executor.map(fetch_page, page_numbers))
+    rows = []
+    for chunk in chunks:
+        rows.extend(list(chunk or []))
+    return rows
+
+
 def fetch_eastmoney_three_market_snapshot(date_text: str | None = None) -> dict:
     import requests
 
@@ -382,11 +401,15 @@ def fetch_eastmoney_three_market_snapshot(date_text: str | None = None) -> dict:
         raise ValueError("empty eastmoney three-market payload")
 
     pages = math.ceil(raw_total / int(params["pz"]))
-    for page in range(2, pages + 1):
-        params["pn"] = page
-        response = requests.get(EASTMONEY_THREE_MARKET_URL, params=params, headers=headers, timeout=20)
+
+    def fetch_page(page: int) -> list:
+        page_params = dict(params)
+        page_params["pn"] = page
+        response = requests.get(EASTMONEY_THREE_MARKET_URL, params=page_params, headers=headers, timeout=20)
         response.raise_for_status()
-        rows.extend((response.json().get("data") or {}).get("diff") or [])
+        return (response.json().get("data") or {}).get("diff") or []
+
+    rows.extend(_fetch_pages_concurrently(fetch_page, range(2, pages + 1)))
 
     snapshot = three_market_snapshot_from_rows(rows, raw_total=raw_total)
     requested = _date_compact(date_text)

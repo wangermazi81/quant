@@ -1,4 +1,6 @@
 ﻿import sys
+import threading
+import time
 import types
 from pathlib import Path
 
@@ -206,6 +208,27 @@ def test_three_market_snapshot_from_eastmoney_rows_aggregates_breadth_and_turnov
         "down_5_to_limit": 1,
         "limit_down": 1,
     }
+
+
+def test_fetch_pages_concurrently_runs_more_than_one_page_at_once():
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def fetch_page(page):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.02)
+        with lock:
+            active -= 1
+        return [{"page": page}]
+
+    rows = market_stats._fetch_pages_concurrently(fetch_page, [2, 3, 4, 5], max_workers=4)
+
+    assert max_active > 1
+    assert [row["page"] for row in rows] == [2, 3, 4, 5]
 
 
 def test_market_breadth_and_turnover_prefer_dynamic_three_market_snapshot(monkeypatch):
