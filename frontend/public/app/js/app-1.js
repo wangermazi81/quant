@@ -58,6 +58,10 @@ function switchRTab(name,el){
 
 let _pollStarted = false
 const _pollInflight = {status:false, positions:false, funds:false}
+const _statusRenderSig = {pool:'', queue:'', logs:''}
+function _statusPayloadSig(value){
+  try{return JSON.stringify(value||[])}catch(e){return ''}
+}
 function pollEvery(fn, ms){
   const run = () => { if(!document.hidden) fn() }
   run()
@@ -140,7 +144,26 @@ async function fetchSt(){
     _autoExec = d.auto_execute
     _renderAutoSwitch(_autoExec)
   }
-  _lastPool = d.pool||[]; renderPool(_lastPool); renderQueue(d.queue); renderLogs(d.logs)
+  const pool = d.pool||[], queue = d.queue||[], logs = d.logs||[]
+  const poolSig = _statusPayloadSig(pool), queueSig = _statusPayloadSig(queue), logsSig = _statusPayloadSig(logs)
+  const queueChanged = queueSig!==_statusRenderSig.queue
+  if(poolSig!==_statusRenderSig.pool || queueChanged){
+    _lastPool = pool
+    if(queueChanged){
+      _queuedCodes.clear()
+      queue.forEach(q=>{ if(q?.code) _queuedCodes.add(q.code) })
+    }
+    renderPool(_lastPool)
+    renderQueue(queue)
+    _statusRenderSig.pool = poolSig
+    _statusRenderSig.queue = queueSig
+  } else {
+    _lastPool = pool
+  }
+  if(logsSig!==_statusRenderSig.logs){
+    renderLogs(logs)
+    _statusRenderSig.logs = logsSig
+  }
   document.getElementById('actLbl').textContent=d.active_strategy?'⚡ 自动:'+d.active_strategy:''
   // 同步扫描进度条（显示实际百分比）
   const prog = d.scan_progress||{}
@@ -166,8 +189,6 @@ async function fetchSt(){
     progBar.className='scan-prog-bar pulse'
     progBar.style.width=''
   }
-  // 同步已入队代码集合（从queue里读）
-  if(d.queue) d.queue.forEach(q=>_queuedCodes.add(q.code))
   }finally{ _pollInflight.status = false }
 }
 async function fetchPositions(){

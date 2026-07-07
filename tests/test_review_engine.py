@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import types
 from pathlib import Path
 from datetime import datetime
@@ -321,20 +321,15 @@ def test_daily_review_api_repairs_degraded_historical_archive(monkeypatch):
         },
         "ai_summary": "old ai summary",
     }
-    repaired = {
-        "date": "2026-07-06",
-        "market": {"date": "2026-07-06", "breadth": {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519}},
-        "turnover": {"source": "eastmoney_three_market", "today": 31124, "amount": 31124.43},
-        "zt": {"zt_count": 64, "dt_count": 46},
-        "trading_day": True,
-    }
     fake_market_stats = types.SimpleNamespace(
         get_verified_market_snapshot=lambda date_text: None,
         normalize_breadth_quality=lambda breadth: {**breadth, "expected_count": 5190, "coverage": round(4634 / 5190, 3), "degraded": True},
         fetch_eastmoney_three_market_snapshot=lambda date_text: (_ for _ in ()).throw(RuntimeError("direct source unavailable in this test")),
+        get_market_breadth=lambda date_text=None: {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
+        get_market_turnover=lambda date_text=None: {"source": "eastmoney_three_market", "today": 31124, "amount": 31124.43, "degraded": False},
     )
     monkeypatch.setattr(review_engine, "load", lambda date_str: stale_archive)
-    monkeypatch.setattr(review_engine, "collect", lambda date_str: repaired)
+    monkeypatch.setattr(review_engine, "collect", lambda date_str: (_ for _ in ()).throw(AssertionError("collect should not be needed for archived market metric repair")))
     monkeypatch.setitem(sys.modules, "review_engine", review_engine)
     monkeypatch.setitem(sys.modules, "market_stats", fake_market_stats)
 
@@ -350,6 +345,36 @@ def test_daily_review_api_repairs_degraded_historical_archive(monkeypatch):
     assert payload["data"]["turnover"]["source"] == "eastmoney_three_market"
     assert payload["ai_summary"] == "old ai summary"
 
+
+
+def test_generate_refreshes_market_snapshot_before_collect(monkeypatch, tmp_path):
+    calls = []
+
+    monkeypatch.setattr(review_engine, "REVIEW_DIR", tmp_path)
+    monkeypatch.setattr(review_engine, "load", lambda date_str: {})
+    monkeypatch.setattr(review_engine, "summarize", lambda data, phase: "")
+
+    def fake_refresh(date_str):
+        calls.append(("refresh", date_str))
+        return True
+
+    def fake_collect(date_str):
+        calls.append(("collect", date_str))
+        return {
+            "date": date_str,
+            "trading_day": True,
+            "zt": {"zt_count": 1, "dt_count": 0, "zb_count": 0},
+            "market": {"breadth": {"up": 1, "down": 0, "total": 1}},
+            "turnover": {"today": 1},
+        }
+
+    monkeypatch.setattr(review_engine, "_refresh_market_snapshot", fake_refresh, raising=False)
+    monkeypatch.setattr(review_engine, "collect", fake_collect)
+
+    result = review_engine.generate("2026-07-06", phase="close", with_ai=False)
+
+    assert result["ok"] is True
+    assert calls[:2] == [("refresh", "2026-07-06"), ("collect", "2026-07-06")]
 
 def test_collect_turnover_uses_requested_compact_date(monkeypatch):
     calls = []

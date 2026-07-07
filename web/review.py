@@ -136,14 +136,21 @@ def _refresh_archive_market_metrics(archive: dict, date_str: str, re_) -> dict:
     refreshed = deepcopy(archive)
     data = refreshed.setdefault("data", {})
     market = data.setdefault("market", {})
+    changed = False
     try:
         import market_stats
 
-        snapshot = market_stats.fetch_eastmoney_three_market_snapshot(date_str)
-        market["date"] = snapshot.get("stat_date") or date_str
-        market["breadth"] = snapshot["breadth"]
-        data["turnover"] = snapshot["turnover"]
-        return refreshed
+        breadth = market_stats.get_market_breadth(date_text=date_str)
+        turnover = market_stats.get_market_turnover(date_text=date_str)
+        if breadth and not breadth.get("degraded") and breadth.get("source") not in {"tdx_quotes", "none"}:
+            market["date"] = breadth.get("stat_date") or date_str
+            market["breadth"] = breadth
+            changed = True
+        if turnover and not turnover.get("degraded") and turnover.get("today") is not None:
+            data["turnover"] = turnover
+            changed = True
+        if changed:
+            return refreshed
     except Exception as exc:
         logger.warning(f"[review] refresh archive market metrics failed: {exc}")
 

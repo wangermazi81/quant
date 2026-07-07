@@ -1,4 +1,4 @@
-"""每日复盘引擎(review_engine)
+﻿"""每日复盘引擎(review_engine)
 
 收盘后自动：采集复盘数据 → AI 总结(盘面研判/资金题材/要闻影响/明日预案) → JSON 归档。
 
@@ -34,6 +34,18 @@ REVIEW_DIR = BASE_DIR / "data" / "review"
 
 def _today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def _refresh_market_snapshot(date_str: str) -> bool:
+    """Capture the latest Eastmoney whole-market snapshot before archiving review data."""
+    try:
+        import market_stats as _mstats
+
+        _mstats.fetch_eastmoney_three_market_snapshot(date_str)
+        return True
+    except Exception as exc:
+        logger.info(f"[review] market snapshot refresh skipped for {date_str}: {exc}")
+        return False
 
 
 # ──────────────────────────────────────────────────────────────
@@ -338,6 +350,7 @@ def generate(date_str: str = None, phase: str = "close", with_ai: bool = True) -
     """采集 + AI 总结 + 归档。非交易日不归档。"""
     date_str = date_str or _today()
     logger.info(f"[review] 生成复盘 {date_str} phase={phase} ai={with_ai}")
+    _refresh_market_snapshot(date_str)
     data = collect(date_str)
     if not data.get("trading_day"):
         return {"ok": False, "error": "非交易日（涨停/跌停池均为空）", "date": date_str}

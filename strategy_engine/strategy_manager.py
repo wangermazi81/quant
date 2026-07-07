@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """策略管理器：加载、保存、执行策略文件"""
 
 import json
@@ -457,12 +457,9 @@ def _refresh_market_cache() -> list:
         if not codes:
             raise ValueError("baostock 未返回有效股票代码")
         # 构造轻量行情（无实时价，成交量为0，仍可用于代码宇宙）
-        active = [{"code": c, "name": c, "price": 10.0, "vol": 1000,
-                   "last_close": 10.0, "change_pct": 0.0} for c in codes]
-        _mkt_cache["sorted_quotes"] = active
-        _mkt_cache["ts"] = _time.time()
-        logger.info(f"[SM] 全市场行情缓存刷新（baostock，仅代码列表）：{len(active)} 只")
-        return active
+        logger.warning(
+            f"[SM] baostock returned code-only universe ({len(codes)}); skip quote cache and try later live sources"
+        )
     except ImportError:
         logger.debug("[SM] baostock 未安装，跳过")
     except Exception as e:

@@ -42,6 +42,15 @@ def test_frontends_guard_background_polling_and_overlapping_requests():
         assert "pollEvery(fetchFunds, 15000)" in text, path
 
 
+def test_status_polling_skips_unchanged_heavy_renders():
+    for path in STRATEGY_SCAN_FILES:
+        text = path.read_text(encoding="utf-8")
+        assert "_statusRenderSig" in text, path
+        assert "_statusPayloadSig" in text, path
+        assert "queueChanged" in text, path
+        assert "poolSig!==_statusRenderSig.pool || queueChanged" in text, path
+
+
 def test_public_shell_does_not_block_on_private_account_requests():
     private_boot = (
         "loadStratList(); loadDbList(); startPoll(); initAI(); "

@@ -1,4 +1,5 @@
 import sys
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -102,3 +103,67 @@ def test_strategy_quotes_merge_partial_live_quotes_with_market_cache(monkeypatch
     assert records["000001"]["\u6700\u65b0\u4ef7"] == 11.0
     assert records["000002"]["\u540d\u79f0"] == "CacheTwo"
     assert records["000002"]["\u6700\u65b0\u4ef7"] == 20.5
+
+
+def test_market_cache_does_not_accept_baostock_code_only_stubs(monkeypatch):
+    sm._mkt_cache["sorted_quotes"] = []
+    sm._mkt_cache["ts"] = 0
+
+    class EmptyTdxClient:
+        _ok = True
+
+        def get_all_stock_codes(self):
+            return []
+
+    class BaoLogin:
+        error_code = "0"
+        error_msg = ""
+
+    class BaoQuery:
+        error_code = "0"
+        error_msg = ""
+
+        def __init__(self):
+            self._rows = [["sz.000001"], ["sh.600000"]]
+            self._idx = -1
+
+        def next(self):
+            self._idx += 1
+            return self._idx < len(self._rows)
+
+        def get_row_data(self):
+            return self._rows[self._idx]
+
+    def ak_down():
+        raise RuntimeError("eastmoney spot unavailable")
+
+    def ef_quotes():
+        return pd.DataFrame(
+            {
+                "\u80a1\u7968\u4ee3\u7801": ["000001", "600000"],
+                "\u80a1\u7968\u540d\u79f0": ["PingAn", "Pufa"],
+                "\u6700\u65b0\u4ef7": [12.3, 9.8],
+                "\u6da8\u8dcc\u5e45": [1.2, -0.4],
+                "\u6628\u65e5\u6536\u76d8": [12.0, 9.9],
+                "\u6210\u4ea4\u91cf": [2000, 3000],
+            }
+        )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ths_quote",
+        types.SimpleNamespace(get_client=lambda *args, **kwargs: EmptyTdxClient()),
+    )
+    monkeypatch.setitem(sys.modules, "akshare", types.SimpleNamespace(stock_zh_a_spot_em=ak_down))
+    monkeypatch.setitem(
+        sys.modules,
+        "baostock",
+        types.SimpleNamespace(login=lambda: BaoLogin(), query_all_stock=lambda: BaoQuery(), logout=lambda: None),
+    )
+    monkeypatch.setitem(sys.modules, "efinance", types.SimpleNamespace(stock=types.SimpleNamespace(get_realtime_quotes=ef_quotes)))
+
+    active = sm._refresh_market_cache()
+
+    assert [q["code"] for q in active] == ["600000", "000001"]
+    assert active[0]["price"] == 9.8
+    assert active[0]["vol"] == 3000

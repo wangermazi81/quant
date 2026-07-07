@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import types
 from pathlib import Path
 
@@ -225,6 +225,221 @@ def test_market_breadth_and_turnover_prefer_dynamic_three_market_snapshot(monkey
     assert breadth["total"] == 5519
     assert turnover["source"] == "eastmoney_three_market"
     assert turnover["today"] == 31124
+
+
+def test_market_breadth_and_turnover_use_cached_snapshot_when_history_source_is_unavailable(monkeypatch, tmp_path):
+    snapshot = {
+        "source": "eastmoney_three_market",
+        "stat_date": "2026-07-06",
+        "turnover": {"today": 31124, "amount": 31124.43, "source": "eastmoney_three_market", "degraded": False},
+        "breadth": {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
+    }
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    market_stats.save_market_snapshot(snapshot)
+    monkeypatch.setattr(
+        market_stats,
+        "fetch_eastmoney_three_market_snapshot",
+        lambda date_text=None: (_ for _ in ()).throw(RuntimeError("latest-only source unavailable for historical date")),
+        raising=False,
+    )
+    monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [])
+
+    breadth = market_stats.get_market_breadth(date_text="2026-07-06")
+    turnover = market_stats.get_market_turnover("2026-07-06")
+
+    assert breadth["source"] == "eastmoney_three_market"
+    assert breadth["total"] == 5519
+    assert turnover["source"] == "eastmoney_three_market"
+    assert turnover["today"] == 31124
+
+
+def test_explicit_today_ignores_cached_zero_turnover_or_degraded_breadth(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 7, 16, 10, 0)
+
+    snapshot = {
+        "source": "eastmoney_three_market",
+        "stat_date": "2026-07-07",
+        "turnover": {"today": 0, "amount": 0, "source": "eastmoney_three_market", "degraded": False},
+        "breadth": {"source": "eastmoney_three_market", "up": 969, "down": 1030, "flat": 532, "total": 2531, "degraded": True},
+    }
+    monkeypatch.setattr(market_stats, "datetime", FakeDateTime)
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    market_stats.save_market_snapshot(snapshot)
+
+    assert market_stats.load_cached_market_snapshot("2026-07-07") is None
+
+
+def test_explicit_today_breadth_date_mismatch_does_not_use_previous_day_live_fallback(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 7, 2, 15, 0)
+
+    monkeypatch.setattr(market_stats, "datetime", FakeDateTime)
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(
+        market_stats,
+        "fetch_eastmoney_three_market_snapshot",
+        lambda date_text=None: (_ for _ in ()).throw(ValueError("eastmoney latest date 2026-07-06 does not match requested 2026-07-07")),
+    )
+    fake_ak = types.SimpleNamespace(
+        stock_market_activity_legu=lambda: (_ for _ in ()).throw(AssertionError("previous-day legu must not be used for explicit today")),
+        stock_zh_a_spot_em=lambda: (_ for _ in ()).throw(AssertionError("spot fallback must not be used after date mismatch")),
+    )
+    monkeypatch.setitem(sys.modules, "akshare", fake_ak)
+    monkeypatch.setitem(sys.modules, "strategy_manager", types.SimpleNamespace(_get_full_market_snapshot=lambda: (_ for _ in ()).throw(AssertionError("quote fallback must not be used after date mismatch"))))
+
+    breadth = market_stats.get_market_breadth(date_text="2026-07-07")
+
+    assert breadth["source"] == "none"
+    assert breadth["degraded"] is True
+    assert "date mismatch" in breadth["reason"]
+
+
+def test_explicit_today_turnover_date_mismatch_does_not_use_previous_day_live_fallback(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 7, 2, 15, 0)
+
+    monkeypatch.setattr(market_stats, "datetime", FakeDateTime)
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(
+        market_stats,
+        "fetch_eastmoney_three_market_snapshot",
+        lambda date_text=None: (_ for _ in ()).throw(ValueError("eastmoney latest date 2026-07-06 does not match requested 2026-07-07")),
+    )
+    monkeypatch.setattr(
+        market_stats,
+        "_turnover_from_tdx_index",
+        lambda: (_ for _ in ()).throw(AssertionError("live TDX must not be used after date mismatch")),
+    )
+    monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [])
+
+    turnover = market_stats.get_market_turnover("2026-07-07")
+
+    assert turnover["source"] == "none"
+    assert turnover["degraded"] is True
+    assert "date mismatch" in turnover["reason"]
+
+
+def test_explicit_today_breadth_empty_official_source_does_not_use_previous_day_live_fallback(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 7, 8, 30, 0)
+
+    monkeypatch.setattr(market_stats, "datetime", FakeDateTime)
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(
+        market_stats,
+        "fetch_eastmoney_three_market_snapshot",
+        lambda date_text=None: (_ for _ in ()).throw(ValueError("empty eastmoney three-market rows")),
+    )
+    fake_ak = types.SimpleNamespace(
+        stock_market_activity_legu=lambda: (_ for _ in ()).throw(AssertionError("previous-day legu must not be used for explicit today")),
+        stock_zh_a_spot_em=lambda: (_ for _ in ()).throw(AssertionError("spot fallback must not be used after explicit today source is empty")),
+    )
+    monkeypatch.setitem(sys.modules, "akshare", fake_ak)
+    monkeypatch.setitem(sys.modules, "strategy_manager", types.SimpleNamespace(_get_full_market_snapshot=lambda: (_ for _ in ()).throw(AssertionError("quote fallback must not be used after explicit today source is empty"))))
+
+    breadth = market_stats.get_market_breadth(date_text="2026-07-07")
+
+    assert breadth["source"] == "none"
+    assert breadth["degraded"] is True
+    assert "unavailable" in breadth["reason"]
+
+
+def test_explicit_today_turnover_empty_official_source_does_not_use_live_fallback(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 7, 8, 30, 0)
+
+    monkeypatch.setattr(market_stats, "datetime", FakeDateTime)
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(
+        market_stats,
+        "fetch_eastmoney_three_market_snapshot",
+        lambda date_text=None: (_ for _ in ()).throw(ValueError("eastmoney turnover unavailable for requested 2026-07-07")),
+    )
+    monkeypatch.setattr(
+        market_stats,
+        "_turnover_from_tdx_index",
+        lambda: (_ for _ in ()).throw(AssertionError("live TDX must not be used after explicit today turnover is unavailable")),
+    )
+    monkeypatch.setattr(
+        market_stats,
+        "_turnover_from_official_exchange",
+        lambda date_text=None: (_ for _ in ()).throw(AssertionError("official fallback must not be used after explicit today turnover is unavailable")),
+    )
+    monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [])
+
+    turnover = market_stats.get_market_turnover("2026-07-07")
+
+    assert turnover["source"] == "none"
+    assert turnover["degraded"] is True
+    assert "unavailable" in turnover["reason"]
+
+def test_historical_breadth_does_not_use_live_only_fallbacks_when_snapshot_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(
+        market_stats,
+        "fetch_eastmoney_three_market_snapshot",
+        lambda date_text=None: (_ for _ in ()).throw(ValueError("latest date does not match requested")),
+    )
+
+    fake_ak = types.SimpleNamespace(
+        stock_market_activity_legu=lambda: (_ for _ in ()).throw(AssertionError("live legu must not be used for historical breadth")),
+        stock_zh_a_spot_em=lambda: (_ for _ in ()).throw(AssertionError("live spot must not be used for historical breadth")),
+    )
+    monkeypatch.setitem(sys.modules, "akshare", fake_ak)
+    monkeypatch.setitem(sys.modules, "strategy_manager", types.SimpleNamespace(_get_full_market_snapshot=lambda: (_ for _ in ()).throw(AssertionError("live quotes must not be used for historical breadth"))))
+
+    breadth = market_stats.get_market_breadth(date_text="2026-07-01")
+
+    assert breadth["source"] == "none"
+    assert breadth["degraded"] is True
+    assert "historical" in breadth["reason"]
+
+
+def test_historical_turnover_does_not_use_live_tdx_when_official_history_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(
+        market_stats,
+        "fetch_eastmoney_three_market_snapshot",
+        lambda date_text=None: (_ for _ in ()).throw(ValueError("latest date does not match requested")),
+    )
+    monkeypatch.setattr(
+        market_stats,
+        "_turnover_from_official_exchange",
+        lambda date_text=None: (_ for _ in ()).throw(RuntimeError("official historical source unavailable")),
+    )
+    monkeypatch.setattr(
+        market_stats,
+        "_turnover_from_tdx_index",
+        lambda: (_ for _ in ()).throw(AssertionError("live TDX must not be used for historical turnover")),
+    )
+    monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [])
+
+    turnover = market_stats.get_market_turnover("2026-07-01")
+
+    assert turnover["source"] == "none"
+    assert turnover["degraded"] is True
+    assert "official" in turnover["reason"]
 
 
 def test_official_turnover_combines_sse_yi_and_szse_yuan_units():

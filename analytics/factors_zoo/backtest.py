@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """见微 Alpha 因子回测（最小可行版本）
 
 设计：
@@ -123,7 +123,7 @@ def backtest_factor(
 
     i = 0
     n = len(dates)
-    while i < n - hold_days - 1:
+    while i + hold_days + 1 < n:
         dt = dates[i]
         fac_row = factor_df.loc[dt].dropna()
         if len(fac_row) < top_k:
@@ -131,13 +131,15 @@ def backtest_factor(
             equity.append({"date": dt.strftime("%Y-%m-%d"), "nav": round(nav, 6)})
             continue
         top_codes = fac_row.nlargest(top_k).index.tolist()
+        open_idx = i + 1
+        close_idx = open_idx + hold_days
 
         # 计算这 K 只股票从 i 到 i+hold_days 的等权收益
         period_returns = []
         for code in top_codes:
             try:
-                p0 = close.loc[dates[i], code]
-                p1 = close.loc[dates[i + hold_days], code]
+                p0 = close.loc[dates[open_idx], code]
+                p1 = close.loc[dates[close_idx], code]
                 if pd.notna(p0) and pd.notna(p1) and p0 > 0:
                     period_returns.append(float(p1 / p0 - 1.0))
             except (KeyError, IndexError):
@@ -151,8 +153,9 @@ def backtest_factor(
         avg_ret -= 2 * fee_rate
         nav *= (1 + avg_ret)
         trades.append({
-            "open_date":  dt.strftime("%Y-%m-%d"),
-            "close_date": dates[i + hold_days].strftime("%Y-%m-%d"),
+            "signal_date": dt.strftime("%Y-%m-%d"),
+            "open_date":  dates[open_idx].strftime("%Y-%m-%d"),
+            "close_date": dates[close_idx].strftime("%Y-%m-%d"),
             "codes":      top_codes,
             "pnl_pct":    round(avg_ret * 100, 4),
         })

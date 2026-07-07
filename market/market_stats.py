@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 import math
+import json
 from copy import deepcopy
 from datetime import datetime
+from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
@@ -22,6 +24,7 @@ MIN_QUOTE_COVERAGE = 0.98
 DEFAULT_EXPECTED_STOCK_COUNT = 5190
 EASTMONEY_THREE_MARKET_FS = "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048"
 EASTMONEY_THREE_MARKET_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
+MARKET_SNAPSHOT_DIR = Path(__file__).resolve().parent.parent / "data" / "market_snapshots"
 
 VERIFIED_MARKET_SNAPSHOTS = {
     "20260703": {
@@ -112,9 +115,82 @@ def _date_compact(date_text: str | None) -> str:
     return digits[:8] if len(digits) >= 8 else ""
 
 
+def _is_explicit_historical_date(date_text: str | None) -> bool:
+    compact = _date_compact(date_text)
+    if not compact:
+        return False
+    return compact != datetime.now().strftime("%Y%m%d")
+
+
+def _is_explicit_today_request(date_text: str | None) -> bool:
+    compact = _date_compact(date_text)
+    return bool(compact) and compact == datetime.now().strftime("%Y%m%d")
+
+
+
+def _is_date_mismatch_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "does not match requested" in text or "date mismatch" in text
+
+
+def _is_official_unavailable_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return _is_date_mismatch_error(exc) or "empty eastmoney" in text or "unavailable" in text
+
 def get_verified_market_snapshot(date_text: str | None) -> dict | None:
     snapshot = VERIFIED_MARKET_SNAPSHOTS.get(_date_compact(date_text))
     return deepcopy(snapshot) if snapshot else None
+
+
+def _market_snapshot_path(date_text: str | None) -> Path | None:
+    compact = _date_compact(date_text)
+    if not compact:
+        return None
+    return MARKET_SNAPSHOT_DIR / f"{compact}.json"
+
+
+def load_cached_market_snapshot(date_text: str | None) -> dict | None:
+    path = _market_snapshot_path(date_text)
+    if not path or not path.exists():
+        return None
+    try:
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning(f"[market_stats] read cached market snapshot failed: {exc}")
+        return None
+    if not isinstance(snapshot, dict):
+        return None
+    if _date_compact(snapshot.get("stat_date")) != _date_compact(date_text):
+        return None
+    if not isinstance(snapshot.get("breadth"), dict) or not isinstance(snapshot.get("turnover"), dict):
+        return None
+    if _is_explicit_today_request(date_text):
+        turnover = snapshot.get("turnover") or {}
+        breadth = snapshot.get("breadth") or {}
+        if _safe_float(turnover.get("amount", turnover.get("today"))) <= 0:
+            return None
+        if breadth.get("degraded"):
+            return None
+    return deepcopy(snapshot)
+
+
+def save_market_snapshot(snapshot: dict | None) -> None:
+    if not isinstance(snapshot, dict):
+        return
+    path = _market_snapshot_path(snapshot.get("stat_date"))
+    if not path:
+        return
+    payload = deepcopy(snapshot)
+    payload["cached_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.warning(f"[market_stats] write cached market snapshot failed: {exc}")
+
+
+def _historical_market_snapshot(date_text: str | None) -> dict | None:
+    return get_verified_market_snapshot(date_text) or load_cached_market_snapshot(date_text)
 
 
 def parse_legu_activity(df: pd.DataFrame) -> dict:
@@ -317,6 +393,9 @@ def fetch_eastmoney_three_market_snapshot(date_text: str | None = None) -> dict:
     actual = _date_compact(snapshot.get("stat_date"))
     if requested and actual and requested != actual:
         raise ValueError(f"eastmoney latest date {snapshot.get('stat_date')} does not match requested {_date_ymd(date_text)}")
+    if _is_explicit_today_request(date_text) and _safe_float((snapshot.get("turnover") or {}).get("amount")) <= 0:
+        raise ValueError(f"eastmoney turnover unavailable for requested {_date_ymd(date_text)}")
+    save_market_snapshot(snapshot)
     return snapshot
 
 
@@ -444,15 +523,35 @@ def _turnover_trend_from_index_daily(limit: int = 20) -> list[dict]:
 
 
 def get_market_breadth(expected_count: int | None = None, date_text: str | None = None) -> dict:
-    snapshot = get_verified_market_snapshot(date_text)
+    snapshot = _historical_market_snapshot(date_text)
     if snapshot:
         return snapshot["breadth"]
 
     try:
         snapshot = fetch_eastmoney_three_market_snapshot(date_text)
+        if _is_explicit_today_request(date_text) and (snapshot.get("breadth") or {}).get("degraded"):
+            return {
+                "source": "none",
+                "degraded": True,
+                "reason": f"official breadth unavailable for requested {_date_ymd(date_text)}: {(snapshot.get('breadth') or {}).get('reason', 'degraded breadth')}",
+            }
         return snapshot["breadth"]
     except Exception as exc:
         logger.warning(f"[market_stats] eastmoney three-market breadth failed: {exc}")
+        if _is_explicit_today_request(date_text) and _is_official_unavailable_error(exc):
+            reason_prefix = "date mismatch" if _is_date_mismatch_error(exc) else "official breadth unavailable"
+            return {
+                "source": "none",
+                "degraded": True,
+                "reason": f"{reason_prefix} for requested {_date_ymd(date_text)}: {exc}",
+            }
+
+    if _is_explicit_historical_date(date_text):
+        return {
+            "source": "none",
+            "degraded": True,
+            "reason": f"historical breadth snapshot unavailable for {_date_ymd(date_text)}",
+        }
 
     try:
         import akshare as ak
@@ -486,7 +585,7 @@ def get_market_breadth(expected_count: int | None = None, date_text: str | None 
 
 
 def get_market_turnover(date_text: str | None = None, prefer_official: bool | None = None) -> dict:
-    snapshot = get_verified_market_snapshot(date_text)
+    snapshot = _historical_market_snapshot(date_text)
     if snapshot:
         result = dict(snapshot["turnover"])
         try:
@@ -510,9 +609,47 @@ def get_market_turnover(date_text: str | None = None, prefer_official: bool | No
         if trend:
             trend[-1]["amount"] = result["today"]
         result["trend"] = trend
+        if _is_explicit_today_request(date_text) and _safe_float(result.get("amount", result.get("today"))) <= 0:
+            return {
+                "today": None,
+                "trend": [],
+                "source": "none",
+                "degraded": True,
+                "reason": f"official turnover unavailable for requested {_date_ymd(date_text)}: zero turnover",
+            }
         return result
     except Exception as exc:
         logger.warning(f"[market_stats] eastmoney three-market turnover failed: {exc}")
+        if _is_explicit_today_request(date_text) and _is_official_unavailable_error(exc):
+            reason_prefix = "date mismatch" if _is_date_mismatch_error(exc) else "official turnover unavailable"
+            return {
+                "today": None,
+                "trend": [],
+                "source": "none",
+                "degraded": True,
+                "reason": f"{reason_prefix} for requested {_date_ymd(date_text)}: {exc}",
+            }
+
+    if _is_explicit_historical_date(date_text):
+        try:
+            result = _turnover_from_official_exchange(date_text)
+        except Exception as exc:
+            result = {
+                "today": None,
+                "trend": [],
+                "source": "none",
+                "degraded": True,
+                "reason": f"official historical turnover unavailable: {exc}",
+            }
+        try:
+            trend = _turnover_trend_from_index_daily()
+        except Exception as exc:
+            logger.debug(f"[market_stats] turnover trend failed: {exc}")
+            trend = []
+        if result.get("today") is not None and trend:
+            trend[-1]["amount"] = result["today"]
+        result["trend"] = trend
+        return result
 
     prefer_official = (not _is_trading_time()) if prefer_official is None else prefer_official
     sources = (_turnover_from_official_exchange, _turnover_from_tdx_index) if prefer_official else (_turnover_from_tdx_index, _turnover_from_official_exchange)

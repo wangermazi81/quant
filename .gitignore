@@ -77,6 +77,7 @@ data/users_merged.db
 
 # ── 行情缓存（每次运行会更新，不进 git）────────────────
 data/market_universe.json
+data/market_snapshots/
 
 # ── 打板持仓峰值（运行态，每环境各自维护，不进 git）──────
 data/daban_peaks.json
