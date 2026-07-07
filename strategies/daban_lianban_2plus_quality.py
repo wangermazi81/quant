@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 
 MIN_PREV_AMOUNT = 100_000_000
 MIN_GAIN_20D = 0.30
 MAX_GAIN_20D = 0.80
-FALLBACK_MIN_GAIN_20D = 0.18
-FALLBACK_MAX_GAIN_20D = 1.10
+FALLBACK_MIN_GAIN_20D = -0.05
+FALLBACK_MAX_GAIN_20D = 1.50
+FALLBACK_MAX_PRICE = 80
 MAX_OPEN_PCT = 0.05
 MAX_DAILY_BUYS = 2
 BASE_POSITION_RATIO = 0.10
@@ -68,10 +70,7 @@ def _to_float(value, default=0.0):
 
 
 def _as_pct(value):
-    pct = _to_float(value)
-    if abs(pct) <= 1.0 and pct != 0:
-        return pct * 100
-    return pct
+    return _to_float(value)
 
 
 def _quote_value(q, *names, **kwargs):
@@ -110,6 +109,23 @@ def _sort_kline(kline):
         return None
 
 
+def _drop_current_trading_day_bar(df):
+    """Use completed daily bars only when live quotes describe the current day."""
+    if df is None or len(df) == 0 or "date" not in df.columns:
+        return df
+    try:
+        last_date = df.iloc[-1].get("date")
+        if hasattr(last_date, "date"):
+            last_day = last_date.date()
+        else:
+            last_day = datetime.fromisoformat(str(last_date)[:10]).date()
+        if last_day == datetime.now().date():
+            return df.iloc[:-1].reset_index(drop=True)
+    except Exception:
+        return df
+    return df
+
+
 def _count_consec_limit_up(kline, code):
     df = _sort_kline(kline)
     if df is None or len(df) < 2 or "close" not in df.columns:
@@ -129,12 +145,13 @@ def _row_amount(row, close):
     if amount is not None:
         return _to_float(amount)
     volume = _quote_value(row, "volume", "vol", "成交量", default=0)
-    return _to_float(close) * _to_float(volume)
+    return _to_float(close) * _to_float(volume) * 100
 
 
 def _daily_features(kline, code):
     code = _normalize_code(code)
     df = _sort_kline(kline)
+    df = _drop_current_trading_day_bar(df)
     if df is None or len(df) < 22 or "close" not in df.columns:
         return None
     last = df.iloc[-1]
@@ -287,7 +304,8 @@ def _build_signal(code, quote, features, seal_status=None, emotion=None, relaxed
     price = _to_float(_quote_value(quote, "price", "最新价", "现价", default=0))
     if price <= 0:
         return None
-    if not (3 <= min(price, limit_up) <= 50):
+    max_price = FALLBACK_MAX_PRICE if relaxed else 50
+    if not (3 <= min(price, limit_up) <= max_price):
         return None
 
     open_price = _to_float(_quote_value(quote, "open", "今开", "开盘", default=0))

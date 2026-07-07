@@ -38,6 +38,7 @@ def make_kline(yesterday_consec=1, gain_20d=0.45, prev_amount=200_000_000):
             "low": closes,
             "close": closes,
             "volume": volume,
+            "amount": [close * vol for close, vol in zip(closes, volume)],
         }
     )
 
@@ -58,6 +59,21 @@ def quote(code, price=15.95, last_close=14.5, open_price=15.0, change_pct=10.0, 
 
 
 def quote_cn(code, price=15.95, last_close=14.5, open_price=15.0, change_pct=10.0, name="test"):
+    return {
+        "代码": code,
+        "名称": name,
+        "最新价": price,
+        "昨收": last_close,
+        "open": open_price,
+        "low": 14.8,
+        "limit_up": round(last_close * 1.10, 2),
+        "涨跌幅": change_pct,
+        "bids": [{"price": round(last_close * 1.10, 2), "vol": 12000}],
+        "asks": [],
+    }
+
+
+def quote_real_cn(code, price=15.95, last_close=14.5, open_price=15.0, change_pct=10.0, name="test"):
     return {
         "代码": code,
         "名称": name,
@@ -152,6 +168,36 @@ def test_scan_returns_conservative_fallback_when_strict_pool_is_empty():
     assert "fallback" in results[0]["reason"]
 
 
+def test_scan_fallback_accepts_near_limit_relay_with_flat_20d_gain():
+    cases = {
+        "000011": {
+            "kline": make_kline(1, gain_20d=-0.02, prev_amount=300_000_000),
+            "quote": quote("000011", price=15.94, last_close=14.5, open_price=14.6, change_pct=9.9, name="flat-relay"),
+        }
+    }
+
+    results = run_scan(cases)
+
+    assert len(results) == 1
+    assert results[0]["code"] == "000011"
+    assert results[0]["position_ratio"] == strat.WEAK_POSITION_RATIO
+
+
+def test_scan_fallback_allows_hot_relay_price_up_to_80():
+    cases = {
+        "000012": {
+            "kline": make_kline(1, gain_20d=1.20, prev_amount=300_000_000),
+            "quote": quote("000012", price=71.0, last_close=65.86, open_price=64.0, change_pct=7.8, name="hot-relay"),
+        }
+    }
+
+    results = run_scan(cases)
+
+    assert len(results) == 1
+    assert results[0]["code"] == "000012"
+    assert results[0]["position_ratio"] == strat.WEAK_POSITION_RATIO
+
+
 def test_scan_reads_chinese_quote_columns_from_market_dataframe():
     cases = {
         "000007": {
@@ -166,6 +212,72 @@ def test_scan_reads_chinese_quote_columns_from_market_dataframe():
     assert results[0]["code"] == "000007"
     assert results[0]["price"] == 15.95
     assert results[0]["change"] == 10.0
+
+
+def test_scan_reads_real_chinese_quote_columns_from_market_dataframe():
+    cases = {
+        "000008": {
+            "kline": make_kline(1, gain_20d=0.45, prev_amount=200_000_000),
+            "quote": quote_real_cn("000008", name="real-cn-fields"),
+        }
+    }
+
+    results = run_scan(cases)
+
+    assert len(results) == 1
+    assert results[0]["code"] == "000008"
+    assert results[0]["price"] == 15.95
+    assert results[0]["change"] == 10.0
+
+
+def test_daily_features_ignore_current_trading_day_bar():
+    today = pd.Timestamp.today().normalize()
+    dates = pd.date_range(today - pd.Timedelta(days=25), periods=26)
+    closes = [10.0] * 26
+    closes[-4] = 13.00
+    closes[-3] = 13.18
+    closes[-2] = 14.50  # T-1 first board.
+    closes[-1] = 14.20  # Current incomplete daily bar must not reset the streak.
+    df = pd.DataFrame(
+        {
+            "date": dates,
+            "open": closes,
+            "high": closes,
+            "low": closes,
+            "close": closes,
+            "volume": [1_000_000] * 26,
+            "amount": [200_000_000] * 26,
+        }
+    )
+    cases = {
+        "000009": {
+            "kline": df,
+            "quote": quote("000009", price=15.95, last_close=14.5, open_price=15.0, change_pct=10.0, name="intraday"),
+        }
+    }
+
+    results = run_scan(cases)
+
+    assert len(results) == 1
+    assert results[0]["code"] == "000009"
+    assert results[0]["consec_limit"] == 2
+
+
+def test_daily_features_treats_kline_volume_as_hands_when_amount_missing():
+    row = {"volume": 200_000}
+
+    assert strat._row_amount(row, close=10.0) == 200_000_000
+
+
+def test_scan_does_not_multiply_sub_one_percent_quote_change():
+    cases = {
+        "000010": {
+            "kline": make_kline(1, gain_20d=0.45, prev_amount=200_000_000),
+            "quote": quote("000010", price=15.0, last_close=14.5, open_price=14.6, change_pct=0.45, name="small-rise"),
+        }
+    }
+
+    assert run_scan(cases) == []
 
 
 def test_cancel_decision_cancels_after_repeated_board_opening():

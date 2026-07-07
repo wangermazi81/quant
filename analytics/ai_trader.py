@@ -69,6 +69,12 @@ DATA_DIR = BASE_DIR / "data"
 TRADER_CFG_FILE = DATA_DIR / "ai_trader_config.json"      # 交易模块「单独配」的模型
 SETTINGS_DIR = DATA_DIR / "ai_trader"                      # 每用户设置 {uid}.json
 LOG_DIR = BASE_DIR / "logs"
+DEFAULT_STRATEGY_CANDIDATE_STRATEGIES = [
+    "daban_lianban_2plus_quality",
+    "lianban_2plus",
+    "lianban_leader",
+    "da_ban",
+]
 
 # AI 独立模拟账户用虚拟 uid（与用户主账户隔离，同库不同 user_id）
 AI_UID_OFFSET = 9_000_000
@@ -219,7 +225,7 @@ def _default_settings() -> dict:
         "prescreen_universe": 1200,   # 初筛覆盖：按活跃度取全市场前 N 只
         "prescreen_top":      6,      # 初筛入选 top N 喂给团队
         "strategy_candidates_enabled": True,
-        "strategy_candidate_strategies": ["daban_lianban_2plus_quality"],
+        "strategy_candidate_strategies": list(DEFAULT_STRATEGY_CANDIDATE_STRATEGIES),
         "strategy_candidate_max_codes": 1200,
         "strategy_candidate_top": 6,
         "block_buy_on_degraded_data": True,
@@ -695,6 +701,8 @@ class _Engine:
         names = st.get("strategy_candidate_strategies") or []
         if isinstance(names, str):
             names = [x.strip() for x in names.split(",") if x.strip()]
+        if names == ["daban_lianban_2plus_quality"]:
+            names = list(DEFAULT_STRATEGY_CANDIDATE_STRATEGIES)
         top = int(st.get("strategy_candidate_top", st.get("max_candidates", 6)) or 6)
         max_codes = int(st.get("strategy_candidate_max_codes", 1200) or 1200)
         picks = []

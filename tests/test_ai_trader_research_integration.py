@@ -91,6 +91,32 @@ def test_build_candidates_prioritizes_strategy_library_results(monkeypatch):
     assert ("000010", "Prescreen") not in picks
 
 
+def test_strategy_candidates_expand_legacy_single_quality_strategy(monkeypatch):
+    calls = []
+
+    class FakeStrategyManager:
+        @staticmethod
+        def run(filename, codes, max_codes=0):
+            calls.append(filename)
+            if filename == "daban_lianban_2plus_quality":
+                return {"ok": True, "results": []}
+            if filename == "lianban_2plus":
+                return {"ok": True, "results": [{"code": "600246", "name": "Relay"}]}
+            return {"ok": True, "results": []}
+
+    monkeypatch.setitem(sys.modules, "strategy_manager", FakeStrategyManager)
+
+    engine = ai_trader._Engine(101)
+    picks = engine._strategy_candidates({
+        "strategy_candidate_strategies": ["daban_lianban_2plus_quality"],
+        "strategy_candidate_max_codes": 500,
+        "strategy_candidate_top": 2,
+    })
+
+    assert picks == [("600246", "Relay")]
+    assert calls[:2] == ["daban_lianban_2plus_quality", "lianban_2plus"]
+
+
 def test_prescreen_rejects_stub_market_quotes(monkeypatch):
     class FakeStrategyManager:
         @staticmethod
