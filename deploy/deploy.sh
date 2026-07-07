@@ -8,7 +8,7 @@ SERVICE="quant-platform"
 
 echo "=== 1. 安装系统依赖 ==="
 apt-get update -y
-apt-get install -y python3 python3-pip python3-venv nginx git
+apt-get install -y python3 python3-pip python3-venv nginx git nodejs npm
 
 echo "=== 2. 创建目录 ==="
 mkdir -p $APP_DIR/logs

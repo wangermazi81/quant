@@ -1,87 +1,107 @@
 #!/bin/bash
-# ════════════════════════════════════════════════════════════════
-# 见微 Alpha — 服务器日常更新脚本
-# ════════════════════════════════════════════════════════════════
-# 用法（在服务器）：
+# Jianwei Alpha server update script.
+# Usage on server:
 #   bash /opt/quant/deploy/server_update.sh
-#
-# 流程：
-#   1. git pull 最新代码（gitee）
-#   2. 检查 requirements.txt 是否变化，自动重装依赖
-#   3. 跑数据库迁移（幂等）
-#   4. 重启 systemd 服务
-#   5. 验证 5xx 响应
-# ════════════════════════════════════════════════════════════════
+
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/quant}"
 SERVICE="${SERVICE:-quant-platform}"
 PORT="${PORT:-5000}"
+FRONTEND_DIST="$APP_DIR/static/dist/index.html"
 
 cd "$APP_DIR"
 
-# 仓库已 chown 给非 root 服务用户(降权后)，root 运行 git 需加 safe.directory 白名单。
 git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
-# 服务实际运行用户（systemd User=），拉取后据此恢复属主、以其身份跑迁移。
-RUN_USER=$(systemctl show "$SERVICE" -p User --value 2>/dev/null); RUN_USER="${RUN_USER:-root}"
+RUN_USER=$(systemctl show "$SERVICE" -p User --value 2>/dev/null)
+RUN_USER="${RUN_USER:-root}"
 
-echo "▶ [1/5] 拉取最新代码 (gitee)"
-# 仅 fetch origin（已指向可用 SSH 远端），避免 --all 触发历史遗留坏远端导致中止
+echo "[1/6] Pull latest code from Gitee"
 git fetch origin --prune
 LOCAL=$(git rev-parse HEAD)
 git pull --ff-only origin "$(git branch --show-current)" || {
-    echo "❌ git pull 失败。常见原因：服务器侧有未提交改动覆盖了 tracked 文件"
-    echo "   排查：git status   如确认丢弃服务器改动：git reset --hard origin/$(git branch --show-current)"
+    echo "ERROR: git pull failed. Check server-side uncommitted changes with: git status"
     exit 1
 }
 REMOTE=$(git rev-parse HEAD)
-if [ "$LOCAL" = "$REMOTE" ]; then
-    echo "  代码已是最新，无需更新"
+
+if [ "$LOCAL" = "$REMOTE" ] && [ -f "$FRONTEND_DIST" ]; then
+    echo "Code is already up to date and frontend dist exists."
     exit 0
 fi
-echo "  $LOCAL → $REMOTE"
-# 拉取的文件以 root 写入，恢复属主给服务用户（app 非 root 需能读新文件）
-if [ "$RUN_USER" != "root" ]; then
-    chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
-    echo "  已恢复属主 $RUN_USER:$RUN_USER"
+
+if [ "$LOCAL" = "$REMOTE" ]; then
+    echo "Code is up to date, but frontend dist is missing; continue build."
+else
+    echo "Updated: $LOCAL -> $REMOTE"
 fi
 
-echo ""
-echo "▶ [2/5] 检查依赖是否变化"
+if [ "$RUN_USER" != "root" ]; then
+    chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
+    echo "Restored ownership to $RUN_USER:$RUN_USER"
+fi
+
+echo
+echo "[2/6] Check Python dependencies"
 # shellcheck disable=SC1091
 source venv/bin/activate
 if git diff --name-only "$LOCAL" "$REMOTE" | grep -q "^requirements.txt$"; then
-    echo "  requirements.txt 有变化，重装依赖"
+    echo "requirements.txt changed; installing Python dependencies."
     pip install -r requirements.txt
 else
-    echo "  requirements.txt 未变化，跳过 pip install"
+    echo "requirements.txt unchanged; skip pip install."
 fi
 
-echo ""
-echo "▶ [3/5] 运行数据库迁移（幂等）"
-# 以服务用户身份跑，避免迁移产生的 -wal/-shm 文件归 root → app(非root) 写不动
-sudo -u "$RUN_USER" "$APP_DIR/venv/bin/python" core/db_migration.py \
-    || echo "  ⚠️  migration 报错（可能是兼容 try/except，不致命）"
+echo
+echo "[3/6] Build frontend for /v2"
+if [ -f "$APP_DIR/frontend/package.json" ]; then
+    if command -v npm >/dev/null 2>&1; then
+        (
+            cd "$APP_DIR/frontend"
+            if [ -f package-lock.json ]; then
+                npm ci --no-audit --no-fund
+            else
+                npm install --no-audit --no-fund
+            fi
+            npm run build
+        )
+        if [ "$RUN_USER" != "root" ]; then
+            chown -R "$RUN_USER:$RUN_USER" "$APP_DIR/static" "$APP_DIR/frontend/node_modules" 2>/dev/null || true
+        fi
+    elif [ ! -f "$FRONTEND_DIST" ]; then
+        echo "ERROR: npm is not installed and $FRONTEND_DIST is missing."
+        echo "Install nodejs/npm or upload a built static/dist artifact."
+        exit 1
+    else
+        echo "npm is not installed, but frontend dist exists; skip build."
+    fi
+else
+    echo "frontend/package.json not found; skip frontend build."
+fi
 
-echo ""
-echo "▶ [4/5] 重启服务"
+echo
+echo "[4/6] Run database migration"
+sudo -u "$RUN_USER" "$APP_DIR/venv/bin/python" core/db_migration.py \
+    || echo "WARNING: migration reported an error; continuing because migrations are idempotent."
+
+echo
+echo "[5/6] Restart service"
 systemctl restart "$SERVICE"
 sleep 4
 
-echo ""
-echo "▶ [5/5] 健康检查"
+echo
+echo "[6/6] Health check"
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/api/auth/me" --max-time 8 || echo "000")
 case "$HTTP_CODE" in
     200|401|403)
-        # 200 已登录，401/403 未登录但服务在跑
-        echo "  ✅ 服务健康 (HTTP $HTTP_CODE)"
+        echo "Service healthy (HTTP $HTTP_CODE)"
         ;;
     *)
-        echo "  ❌ 服务无响应或异常 (HTTP $HTTP_CODE)"
-        echo "  查看日志:  journalctl -u $SERVICE -n 50 --no-pager"
+        echo "ERROR: service unhealthy (HTTP $HTTP_CODE)"
+        echo "Check logs: journalctl -u $SERVICE -n 50 --no-pager"
         exit 1
         ;;
 esac
 
-echo ""
-echo "✅ 更新完成，commit: $REMOTE"
+echo
+echo "Update complete, commit: $REMOTE"
