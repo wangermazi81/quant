@@ -1090,6 +1090,8 @@ tr:hover td{background:var(--card)}
 .ait-badge.halt{background:var(--candy-pink-bg);color:#D6456A;border-color:var(--candy-pink-bd)}
 .ait-badge.live{background:var(--candy-pink-bg);color:#D6456A;border-color:var(--candy-pink-bd)}
 .ait-badge.paper{background:var(--candy-blue-bg);color:#3D6FD0;border-color:var(--candy-blue-bd)}
+.ait-badge.token{background:var(--candy-amber-bg);color:#A9791C;border-color:var(--candy-amber-bd)}
+.ait-badge.strategy{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ait-grid{flex:1;min-height:0;display:grid;grid-template-columns:1.15fr 1fr 0.95fr;gap:10px;padding:10px 14px;overflow:hidden}
 .ait-pane{display:flex;flex-direction:column;min-height:0;background:var(--panel);border:1px solid var(--b1);border-radius:16px;overflow:hidden;box-shadow:0 8px 30px rgba(120,90,60,.045)}
 .ait-pane-hd{padding:10px 14px;border-bottom:1px solid var(--b1);font-weight:700;font-size:13px;color:var(--t1);display:flex;align-items:center;gap:6px;flex-shrink:0}
@@ -1119,6 +1121,7 @@ tr:hover td{background:var(--card)}
 .ait-dec-block{font-size:11px;color:#A9791C;margin-top:4px}
 .ait-dec-cons{font-size:11px;color:var(--t3);margin-top:4px}
 .ait-dec-cons .ok{color:#4A7C59}.ait-dec-cons .no{color:#E0536C}
+.ait-dec-token{font-size:11px;color:var(--t3);margin-top:4px}
 .ait-pend{border:1px solid var(--candy-pink-bd);background:var(--candy-pink-bg);border-radius:12px;padding:10px;margin-bottom:9px}
 .ait-pend-row{display:flex;gap:8px;margin-top:8px}
 .ait-exec{display:flex;align-items:center;gap:7px;font-size:12px;padding:6px 8px;border-bottom:1px solid var(--b2)}
@@ -1135,6 +1138,14 @@ tr:hover td{background:var(--card)}
 .ait-wl{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .ait-wl-tag{background:var(--candy-blue-bg);color:#3D6FD0;border:1px solid var(--candy-blue-bd);border-radius:8px;padding:3px 8px;font-size:12px;display:flex;align-items:center;gap:5px}
 .ait-wl-tag span{cursor:pointer;font-weight:800}
+.ait-checks{display:grid;grid-template-columns:1fr;gap:6px;max-height:160px;overflow-y:auto;border:1px solid var(--b1);border-radius:10px;background:var(--inp);padding:8px}
+.ait-checks label{display:flex!important;align-items:flex-start;gap:7px;margin:0!important;color:var(--t1)!important;font-weight:600!important}
+.ait-checks input{width:auto!important;margin-top:2px}
+.ait-check-sub{display:block;font-size:11px;color:var(--t3);font-weight:400;margin-top:2px;line-height:1.4}
+.ait-trace{font-size:12px;color:var(--t2);padding:4px}
+.ait-trace-row{border:1px solid var(--b1);background:var(--card);border-radius:8px;padding:7px 8px;margin-bottom:6px}
+.ait-trace-row b{color:var(--t1)}
+.ait-trace-sub{font-size:11px;color:var(--t3);margin-top:3px;line-height:1.45}
 /* 决策可追溯：展开各 agent 对该票的建议 */
 .ait-dec-hd{user-select:none}
 .ait-dec-exp{font-size:11px;color:var(--t3);width:12px;display:inline-block}
@@ -1164,6 +1175,8 @@ tr:hover td{background:var(--card)}
     <span id="aitStatus" class="ait-badge stop">● 已停止</span>
     <span id="aitMode" class="ait-badge paper">模拟盘</span>
     <span id="aitRound" class="ait-badge">第 0 轮</span>
+    <span id="aitToken" class="ait-badge token">Token 估算 0</span>
+    <span id="aitStrategyBadge" class="ait-badge strategy">策略：默认候选链</span>
     <div class="ait-spacer"></div>
     <button class="btn btn-green btn-sm" id="aitBtnStart" onclick="aitStart()">▶ 启动</button>
     <button class="btn btn-gray btn-sm" id="aitBtnStop" onclick="aitStop()">⏸ 停止</button>
@@ -1186,6 +1199,8 @@ tr:hover td{background:var(--card)}
       <div class="ait-pane-hd">🤖 AI 模拟盘 / 待确认 / 执行</div>
       <div class="ait-pane-bd">
         <div id="aitPending"></div>
+        <div class="ait-sec-hd">🎯 策略来源 / 候选轨迹</div>
+        <div id="aitCandidateTrace" class="ait-trace"><div class="ait-empty">等待下一轮候选扫描</div></div>
         <div class="ait-sec-hd">💰 AI 独立模拟账户<button class="btn btn-gray btn-xs" style="margin-left:auto" onclick="aitResetAccount()">重置</button></div>
         <div id="aitAccount" class="ait-acct"><div class="ait-empty">加载中…</div></div>
         <div class="ait-sec-hd">📦 AI 持仓</div>
@@ -1222,6 +1237,12 @@ tr:hover td{background:var(--card)}
 <div class="ait-modal" id="aitSettingsModal" onclick="if(event.target===this)this.classList.remove('show')">
   <div class="ait-modal-box">
     <h3>⚙️ 候选池 / 节奏 / 风控</h3>
+    <div class="ait-field"><label><input type="checkbox" id="aitSetStrategyCandidates" style="width:auto;margin-right:6px">🎯 使用策略库生成 AI 候选</label></div>
+    <div class="ait-field"><label>AI 交易候选策略（按勾选顺序由系统配置链执行）</label><div id="aitStrategyChecks" class="ait-checks"></div></div>
+    <div class="ait-row2">
+      <div class="ait-field"><label>策略扫描覆盖(活跃前N只)</label><input id="aitSetStratMax" type="number"></div>
+      <div class="ait-field"><label>策略候选入选(top N)</label><input id="aitSetStratTop" type="number"></div>
+    </div>
     <div class="ait-field"><label><input type="checkbox" id="aitSetPrescreen" style="width:auto;margin-right:6px">🧮 全市场量化初筛（无LLM海选 → top N 交团队深析）</label></div>
     <div class="ait-row2">
       <div class="ait-field"><label>初筛覆盖(活跃前N只)</label><input id="aitSetPreUni" type="number"></div>
@@ -7586,13 +7607,13 @@ function _fbEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g, m=>({'&':'&am
 </script>
 <script>
 /* ══════════════ 🤖 AI 交易模块（本地）前端驱动 ══════════════ */
-const aitS = { roles:[], agents:{}, decisions:[], execs:[], pending:{}, providers:{}, settings:null, es:null, inited:false, curStock:'' };
+const aitS = { roles:[], agents:{}, decisions:[], execs:[], pending:{}, providers:{}, strategyCatalog:[], settings:null, tokenUsage:null, candidateTrace:null, es:null, inited:false, curStock:'' };
 
 async function initAiTrader(){
   if(aitS.inited) return;
   aitS.inited = true;
   const meta = await api('/ai_trader/meta');
-  if(meta && meta.ok){ aitS.roles = meta.roles||[]; aitS.providers = meta.providers||{}; aitFillProviders(); }
+  if(meta && meta.ok){ aitS.roles = meta.roles||[]; aitS.providers = meta.providers||{}; aitS.strategyCatalog = meta.strategy_candidates||[]; aitFillProviders(); aitRenderStrategyOptions(); }
   await aitLoadConfig();
   await aitLoadSettings();
   const snap = await api('/ai_trader/snapshot');
@@ -7609,6 +7630,7 @@ function aitConnectSSE(){
   aitS.es = es;
   es.addEventListener('snapshot', e=> aitApplySnapshot(JSON.parse(e.data)));
   es.addEventListener('ai_status', e=> aitApplyStatus(JSON.parse(e.data)));
+  es.addEventListener('ai_token_usage', e=>{ aitS.tokenUsage=JSON.parse(e.data); aitRenderTokenUsage(); });
   es.addEventListener('ai_round', e=>{ const d=JSON.parse(e.data); if(d.phase==='start') document.getElementById('aitRound').textContent='第 '+d.round_no+' 轮'; });
   es.addEventListener('ai_agent', e=> aitOnAgent(JSON.parse(e.data)));
   es.addEventListener('ai_decision', e=> aitOnDecision(JSON.parse(e.data)));
@@ -7624,8 +7646,10 @@ function aitApplySnapshot(s){
   aitS.decisions = s.decisions||[];
   aitS.execs = s.execs||[];
   aitS.pending = {}; (s.pending||[]).forEach(p=> aitS.pending[p.id]=p);
+  if(s.token_usage) aitS.tokenUsage = s.token_usage;
+  if(s.candidate_trace) aitS.candidateTrace = s.candidate_trace;
   aitApplyStatus(s);
-  aitRenderAgents(); aitRenderDecisions(); aitRenderExecs(); aitRenderPending();
+  aitRenderAgents(); aitRenderDecisions(); aitRenderExecs(); aitRenderPending(); aitRenderTokenUsage(); aitRenderCandidateTrace();
 }
 
 function aitApplyStatus(s){
@@ -7638,6 +7662,9 @@ function aitApplyStatus(s){
   mb.className='ait-badge '+(live?'live':'paper');
   mb.textContent = live?'实盘(需人工确认)':'模拟盘(自动)';
   if(typeof s.round_no==='number') document.getElementById('aitRound').textContent='第 '+s.round_no+' 轮';
+  if(s.settings){ aitS.settings=s.settings; aitRenderStrategyBadge(); }
+  if(s.token_usage){ aitS.tokenUsage=s.token_usage; aitRenderTokenUsage(); }
+  if(s.candidate_trace){ aitS.candidateTrace=s.candidate_trace; aitRenderCandidateTrace(); }
   document.getElementById('aitBtnStart').disabled=!!s.running;
   document.getElementById('aitBtnStop').disabled=!s.running;
   const once=!!s.once_running;
@@ -7691,6 +7718,7 @@ function aitRenderDecisions(){
       +'<span class="ait-dec-conf">信心 '+(d.confidence||0)+' · '+esc(d.time||'')+(hasAg?' 🔍':'')+'</span></div>'
       +(d.reason?'<div class="ait-dec-reason">'+esc(d.reason)+'</div>':'')
       +(d.consensus?('<div class="ait-dec-cons">🗳️ 个股票 多'+(d.consensus.long||0)+'/空'+(d.consensus.short||0)+'/中'+(d.consensus.neutral||0)+(d.consensus.market_cn?' · 市场'+esc(d.consensus.market_cn):'')+' · '+(d.consensus.buy_ok?'<b class="ok">看多达标✓</b>':'<b class="no">看多未达标✗</b>')+'</div>'):'')
+      +aitDecisionTokenHtml(d)
       +(d.blocked?'<div class="ait-dec-block">🛡️ 风控拦截：'+esc(d.blocked)+'</div>':'')
       +'</div>';
   });
@@ -7711,6 +7739,7 @@ function aitShowDec(id){
     +'<div style="font-size:12px;color:var(--t3);margin-bottom:8px">信心 '+(d.confidence||0)+' · '+esc(d.time||'')+(d.holding?' · <b style="color:#3D6FD0">当前持仓</b>':'')+'</div>'
     +(d.reason?'<div class="ait-dec-reason" style="margin-bottom:4px"><b>🎯 主Agent裁决：</b>'+esc(d.reason)+'</div>':'')
     +cons
+    +aitDecisionTokenHtml(d)
     +(d.blocked?'<div class="ait-dec-block">🛡️ 风控拦截：'+esc(d.blocked)+'</div>':'')
     +'<div class="ait-sec-hd" style="margin-top:12px">👥 团队各角色对该票的建议</div>'
     +(aitAgentsHtml(d.agents)||'<div class="ait-empty">无角色留痕</div>')
@@ -7775,6 +7804,64 @@ async function aitResetAccount(){
   fbToast((r&&r.msg)||'已重置', r&&!r.ok); aitLoadAccount();
 }
 async function aitConfirm(id,ap){ const r=await api('/ai_trader/confirm','POST',{id:id,approve:ap}); fbToast((r&&r.msg)||'', r&&!r.ok); delete aitS.pending[id]; aitRenderPending(); }
+
+function aitStrategyName(file){
+  const it=(aitS.strategyCatalog||[]).find(x=>x.file===file);
+  return (it&&it.name)||file;
+}
+function aitRenderTokenUsage(){
+  const el=document.getElementById('aitToken'); if(!el) return;
+  const u=aitS.tokenUsage||{};
+  const total=Number(u.total_tokens||0), calls=Number(u.calls||0);
+  el.textContent='Token '+(u.estimated!==false?'估算 ':'')+aitFmt(total)+' · '+calls+'次';
+  const last=u.last_call||{};
+  el.title='累计 Prompt '+aitFmt(u.prompt_tokens||0)+'，Completion '+aitFmt(u.completion_tokens||0)+(last.total_tokens?('；最近一次 '+aitFmt(last.total_tokens)):'');
+}
+function aitRenderStrategyBadge(){
+  const el=document.getElementById('aitStrategyBadge'); if(!el) return;
+  const s=aitS.settings||{}, files=s.strategy_candidate_strategies||[];
+  const enabled=s.strategy_candidates_enabled!==false;
+  const names=(files.length?files:[]).slice(0,3).map(aitStrategyName);
+  el.textContent=enabled?('策略：'+(names.join(' / ')||'默认候选链')):'策略：已关闭';
+  el.title=enabled?(files.map(aitStrategyName).join(' / ')||'默认候选链'):'策略库候选已关闭';
+}
+function aitRenderCandidateTrace(){
+  const box=document.getElementById('aitCandidateTrace'); if(!box) return;
+  const tr=aitS.candidateTrace||{}, rows=tr.strategies||[], final=tr.final||[];
+  if(!rows.length && !final.length){ box.innerHTML='<div class="ait-empty">等待下一轮候选扫描</div>'; return; }
+  let html='';
+  rows.forEach(r=>{
+    const picks=(r.picked||[]).map(p=>esc(p.code)+(p.name?' '+esc(p.name):'')).join('，');
+    html+='<div class="ait-trace-row"><b>'+esc(aitStrategyName(r.file||'策略库'))+'</b>'
+      +'<span style="float:right;color:var(--t3)">'+(r.ok?'结果 '+(r.count||0):'未通过')+'</span>'
+      +'<div class="ait-trace-sub">'+(picks?('入选：'+picks):(r.msg?('原因：'+esc(r.msg)):'暂无入选'))+'</div></div>';
+  });
+  if(final.length){
+    html+='<div class="ait-trace-sub" style="padding:2px 4px">最终交给团队分析：'
+      +final.map(p=>'<b>'+esc(p.code)+'</b>').join('，')+(tr.updated_at?' · '+esc(tr.updated_at):'')+'</div>';
+  }
+  box.innerHTML=html;
+}
+function aitRenderStrategyOptions(){
+  const box=document.getElementById('aitStrategyChecks'); if(!box) return;
+  const list=aitS.strategyCatalog||[];
+  if(!list.length){ box.innerHTML='<div style="font-size:12px;color:var(--t3)">策略目录加载中…</div>'; return; }
+  const selected=new Set((aitS.settings&&aitS.settings.strategy_candidate_strategies)||[]);
+  box.innerHTML=list.map(it=>{
+    const checked=selected.has(it.file) || (!selected.size && it.default);
+    return '<label><input type="checkbox" name="aitStrategyPick" value="'+esc(it.file)+'" '+(checked?'checked':'')+'>'
+      +'<span>'+esc(it.name||it.file)+'<span class="ait-check-sub">'+esc(it.file)+(it.desc?' · '+esc(it.desc):'')+'</span></span></label>';
+  }).join('');
+}
+function aitDecisionTokenHtml(d){
+  const u=(d&&d.token_usage)||{};
+  const total=Number(u.total_tokens||0), calls=Number(u.calls||0);
+  if(!total && !calls) return '';
+  const parts=['Token '+(u.estimated!==false?'估算 ':'')+aitFmt(total)];
+  if(calls) parts.push(calls+' 次模型调用');
+  if(u.prompt_tokens||u.completion_tokens) parts.push('Prompt '+aitFmt(u.prompt_tokens||0)+' / Completion '+aitFmt(u.completion_tokens||0));
+  return '<div class="ait-dec-token">🧾 '+parts.join(' · ')+'</div>';
+}
 
 function aitFillProviders(){
   const sel=document.getElementById('aitCfgProvider'); if(!sel) return;
@@ -7843,8 +7930,12 @@ function aitFillSettings(){
   set('aitSetMinConf',r.min_confidence); set('aitSetMaxPos',r.max_positions); set('aitSetPerTrade',r.per_trade_ratio);
   set('aitSetSingleMax',r.single_max_ratio); set('aitSetDayLimit',r.daily_trade_limit); set('aitSetMaxLoss',r.daily_max_loss_pct);
   set('aitSetPreUni',s.prescreen_universe); set('aitSetPreTop',s.prescreen_top); set('aitSetConsensus',r.consensus_min_votes);
+  set('aitSetStratMax',s.strategy_candidate_max_codes); set('aitSetStratTop',s.strategy_candidate_top);
   const ig=document.getElementById('aitSetIgnoreTime'); if(ig) ig.checked=!!s.ignore_market_time;
   const ps=document.getElementById('aitSetPrescreen'); if(ps) ps.checked=s.prescreen_enabled!==false;
+  const sc=document.getElementById('aitSetStrategyCandidates'); if(sc) sc.checked=s.strategy_candidates_enabled!==false;
+  aitRenderStrategyOptions();
+  aitRenderStrategyBadge();
   aitRenderWatch();
 }
 function aitRenderWatch(){
@@ -7863,15 +7954,20 @@ async function aitRemoveWatch(code){
 function aitOpenSettings(){ aitFillSettings(); document.getElementById('aitSettingsModal').classList.add('show'); }
 async function aitSaveSettings(){
   const num=id=>parseFloat(document.getElementById(id).value);
+  const picked=Array.from(document.querySelectorAll('input[name="aitStrategyPick"]:checked')).map(x=>x.value);
   const body={ max_candidates:num('aitSetMaxCand'), interval_sec:num('aitSetInterval'), monitor_sec:num('aitSetMonitor'),
     ignore_market_time:document.getElementById('aitSetIgnoreTime').checked,
+    strategy_candidates_enabled:document.getElementById('aitSetStrategyCandidates').checked,
+    strategy_candidate_strategies:picked,
+    strategy_candidate_max_codes:num('aitSetStratMax'),
+    strategy_candidate_top:num('aitSetStratTop'),
     prescreen_enabled:document.getElementById('aitSetPrescreen').checked,
     prescreen_universe:num('aitSetPreUni'), prescreen_top:num('aitSetPreTop'),
     risk:{ min_confidence:num('aitSetMinConf'), max_positions:num('aitSetMaxPos'), per_trade_ratio:num('aitSetPerTrade'),
       single_max_ratio:num('aitSetSingleMax'), daily_trade_limit:num('aitSetDayLimit'), daily_max_loss_pct:num('aitSetMaxLoss'),
       consensus_min_votes:num('aitSetConsensus') } };
   const r=await api('/ai_trader/settings','POST',body);
-  if(r&&r.ok){ aitS.settings=r.settings; fbToast('设置已保存'); document.getElementById('aitSettingsModal').classList.remove('show'); }
+  if(r&&r.ok){ aitS.settings=r.settings; aitRenderStrategyOptions(); aitRenderStrategyBadge(); fbToast('设置已保存'); document.getElementById('aitSettingsModal').classList.remove('show'); }
   else fbToast('保存失败',true);
 }
 </script>

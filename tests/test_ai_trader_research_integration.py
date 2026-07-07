@@ -117,6 +117,87 @@ def test_strategy_candidates_expand_legacy_single_quality_strategy(monkeypatch):
     assert calls[:2] == ["daban_lianban_2plus_quality", "lianban_2plus"]
 
 
+def test_strategy_candidates_records_trace_for_ui(monkeypatch):
+    class FakeStrategyManager:
+        @staticmethod
+        def run(filename, codes, max_codes=0):
+            if filename == "empty_strategy":
+                return {"ok": True, "results": []}
+            return {
+                "ok": True,
+                "results": [
+                    {"code": "000111", "name": "TracePick"},
+                    {"code": "000222", "name": "TraceSecond"},
+                ],
+            }
+
+    monkeypatch.setitem(sys.modules, "strategy_manager", FakeStrategyManager)
+
+    engine = ai_trader._Engine(101)
+    picks = engine._strategy_candidates({
+        "strategy_candidate_strategies": ["empty_strategy", "winner_strategy"],
+        "strategy_candidate_max_codes": 500,
+        "strategy_candidate_top": 1,
+    })
+
+    assert picks == [("000111", "TracePick")]
+    assert engine.candidate_trace["strategies"][0]["file"] == "empty_strategy"
+    assert engine.candidate_trace["strategies"][0]["count"] == 0
+    assert engine.candidate_trace["strategies"][1]["file"] == "winner_strategy"
+    assert engine.candidate_trace["strategies"][1]["picked"] == [{"code": "000111", "name": "TracePick"}]
+
+
+def test_llm_updates_estimated_token_usage(monkeypatch):
+    monkeypatch.setattr(ai_trader._ai, "_call_llm", lambda *args, **kwargs: "abcd" * 12)
+
+    engine = ai_trader._Engine(101)
+    reply = engine._llm(
+        {"provider": "test"},
+        "system prompt",
+        "user prompt",
+        max_tokens=64,
+    )
+
+    assert reply == "abcd" * 12
+    usage = engine.token_usage
+    assert usage["calls"] == 1
+    assert usage["prompt_tokens"] > 0
+    assert usage["completion_tokens"] > 0
+    assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+    assert usage["estimated"] is True
+    assert usage["last_call"]["total_tokens"] > 0
+
+
+def test_llm_prefers_provider_usage_when_available(monkeypatch):
+    def fake_call(*args, **kwargs):
+        assert kwargs.get("return_usage") is True
+        return {
+            "content": "真实 usage 回复",
+            "usage": {"prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168},
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+        }
+
+    monkeypatch.setattr(ai_trader._ai, "_call_llm", fake_call)
+
+    engine = ai_trader._Engine(101)
+    reply = engine._llm(
+        {"provider": "deepseek", "model": "deepseek-chat"},
+        "system prompt",
+        "user prompt",
+        max_tokens=64,
+    )
+
+    assert reply == "真实 usage 回复"
+    assert engine.token_usage["prompt_tokens"] == 123
+    assert engine.token_usage["completion_tokens"] == 45
+    assert engine.token_usage["total_tokens"] == 168
+    assert engine.token_usage["calls"] == 1
+    assert engine.token_usage["estimated"] is False
+    assert engine.token_usage["last_call"]["provider"] == "deepseek"
+    assert engine.token_usage["last_call"]["model"] == "deepseek-chat"
+
+
 def test_prescreen_rejects_stub_market_quotes(monkeypatch):
     class FakeStrategyManager:
         @staticmethod

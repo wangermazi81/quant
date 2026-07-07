@@ -18,6 +18,9 @@ env/
 # ── 敏感配置（绝对不能提交）──────────────────────
 data/ai_config.json
 data/ai_trader_config.json
+data/ai_research.db
+data/ai_research.db-wal
+data/ai_research.db-shm
 data/users.db
 data/users.db-wal
 data/users.db-shm

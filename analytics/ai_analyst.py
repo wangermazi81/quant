@@ -471,8 +471,34 @@ def _urlopen_smart(req, timeout):
     raise last
 
 
+def _normalize_usage(usage: dict | None) -> dict:
+    """Normalize provider token usage to OpenAI-compatible fields."""
+    usage = usage or {}
+    prompt = usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0
+    completion = usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0
+    total = usage.get("total_tokens") or (prompt + completion)
+    return {
+        "prompt_tokens": int(prompt or 0),
+        "completion_tokens": int(completion or 0),
+        "total_tokens": int(total or 0),
+    }
+
+
+def _llm_result(content: str, data: dict | None, provider: str, model: str, return_usage: bool):
+    if not return_usage:
+        return content
+    return {
+        "content": content,
+        "usage": _normalize_usage((data or {}).get("usage")),
+        "provider": provider,
+        "model": model,
+        "estimated": False,
+    }
+
+
 def _call_llm(cfg: dict, messages: list, temperature: float = 0.3,
-              max_tokens: int = 1200, timeout: int = 180) -> str:
+              max_tokens: int = 1200, timeout: int = 180,
+              return_usage: bool = False):
     """
     timeout 默认 180 秒。大模型（kimi-k2.6 等）生成长篇分析需要较长时间，
     60 秒往往不够，调高到 180 秒避免 "read operation timed out" 报错。
@@ -486,7 +512,7 @@ def _call_llm(cfg: dict, messages: list, temperature: float = 0.3,
         model    = cfg.get("model", "deepseek-chat")
 
         if provider == "anthropic":
-            return _call_anthropic(cfg, messages, temperature, max_tokens, timeout)
+            return _call_anthropic(cfg, messages, temperature, max_tokens, timeout, return_usage=return_usage)
 
         url  = f"{base_url}/chat/completions"
         # 部分国产 API（小米MiMo等）不接受 temperature=0，强制最小值 0.01
@@ -506,14 +532,15 @@ def _call_llm(cfg: dict, messages: list, temperature: float = 0.3,
         )
         import time as _time
         _content = ""
+        _data = {}
         # ★ 空响应重试：部分国产模型(小米MiMo等)在限流/偶发时会返回 200 但 content 为空，
         #   旧代码直接返回空串 → AI 分析某一级(多方/风控等)整段空白、看着"不完整"。
         #   200-空 重试一次（HTTP/网络错误仍立即抛出，不重试）。
         for _attempt in range(3):
             try:
                 with _urlopen_smart(req, timeout=timeout) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    _content = (data["choices"][0]["message"]["content"] or "").strip()
+                    _data = json.loads(resp.read().decode("utf-8"))
+                    _content = (_data["choices"][0]["message"]["content"] or "").strip()
             except urllib.error.HTTPError as e:
                 try:
                     err_body = e.read().decode("utf-8", errors="ignore")
@@ -541,17 +568,17 @@ def _call_llm(cfg: dict, messages: list, temperature: float = 0.3,
                     continue
                 raise RuntimeError(f"网络错误: {e.reason}（请检查 Base URL / 网络 / 代理）")
             if _content:
-                return _content
+                return _llm_result(_content, _data, provider, model, return_usage)
             if _attempt < 2:
                 _time.sleep(2.0 * (_attempt + 1))   # 空响应退避重试：2s、4s
-        return _content
+        return _llm_result(_content, _data, provider, model, return_usage)
     except RuntimeError:
         raise
     except Exception as e:
         raise RuntimeError(f"LLM 调用失败: {e}")
 
 
-def _call_anthropic(cfg, messages, temperature, max_tokens, timeout: int = 180) -> str:
+def _call_anthropic(cfg, messages, temperature, max_tokens, timeout: int = 180, return_usage: bool = False):
     import urllib.request
     system_msg, conv_msgs = "", []
     for m in messages:
@@ -573,7 +600,8 @@ def _call_anthropic(cfg, messages, temperature, max_tokens, timeout: int = 180) 
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-        return data["content"][0]["text"].strip()
+        content = data["content"][0]["text"].strip()
+        return _llm_result(content, data, "anthropic", cfg.get("model", "claude-3-5-haiku-20241022"), return_usage)
 
 
 # ══════════════════════════════════════════════════════

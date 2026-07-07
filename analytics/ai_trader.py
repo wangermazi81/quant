@@ -76,6 +76,13 @@ DEFAULT_STRATEGY_CANDIDATE_STRATEGIES = [
     "da_ban",
 ]
 
+_STRATEGY_CANDIDATE_LABELS = {
+    "daban_lianban_2plus_quality": "二三板接力情绪打板(质量版)",
+    "lianban_2plus": "二板以上连板接力",
+    "lianban_leader": "连板龙头",
+    "da_ban": "打板策略",
+}
+
 # AI 独立模拟账户用虚拟 uid（与用户主账户隔离，同库不同 user_id）
 AI_UID_OFFSET = 9_000_000
 
@@ -177,6 +184,39 @@ def test_trader_config(cfg: dict, uid: int | None = None) -> dict:
 
 def list_providers() -> dict:
     return _ai.PROVIDER_PRESETS
+
+
+def strategy_candidate_catalog() -> list:
+    """Return strategy-library entries that AI trading can use as candidate sources."""
+    items = []
+    try:
+        import strategy_manager as sm
+        items = sm.list_strategies() or []
+    except Exception as e:
+        logger.debug(f"strategy_candidate_catalog: {e}")
+    by_file = {}
+    for it in items:
+        fn = str((it or {}).get("file") or "").strip()
+        if not fn:
+            continue
+        by_file[fn] = {
+            "file": fn,
+            "name": (it or {}).get("name") or _STRATEGY_CANDIDATE_LABELS.get(fn) or fn,
+            "desc": (it or {}).get("desc") or "",
+            "builtin": bool((it or {}).get("builtin", False)),
+            "default": fn in DEFAULT_STRATEGY_CANDIDATE_STRATEGIES,
+        }
+    for fn in DEFAULT_STRATEGY_CANDIDATE_STRATEGIES:
+        by_file.setdefault(fn, {
+            "file": fn,
+            "name": _STRATEGY_CANDIDATE_LABELS.get(fn, fn),
+            "desc": "",
+            "builtin": True,
+            "default": True,
+        })
+    ordered = [by_file[fn] for fn in DEFAULT_STRATEGY_CANDIDATE_STRATEGIES if fn in by_file]
+    ordered.extend(v for k, v in sorted(by_file.items()) if k not in DEFAULT_STRATEGY_CANDIDATE_STRATEGIES)
+    return ordered
 
 
 def detect_models(api_key: str = "", base_url: str = "", uid: int | None = None) -> dict:
@@ -385,6 +425,15 @@ class _Engine:
         self.agent_cards = deque(maxlen=60)   # 最近角色发言，供快照
         self.market_data_status = {"degraded": False, "reason": ""}
         self.last_wait_reason = ""
+        self.token_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "calls": 0,
+            "estimated": False,
+            "last_call": {},
+        }
+        self.candidate_trace = {"updated_at": "", "strategies": [], "final": []}
         self.lock = threading.Lock()
 
     # ── 控制 ──────────────────────────────────────────────
@@ -471,6 +520,8 @@ class _Engine:
             "today_trades": self._today_trades(),
             "broker_mode": self._broker_mode(),
             "pending_count": len(self.pending),
+            "token_usage": dict(self.token_usage),
+            "candidate_trace": self.candidate_trace,
             "settings": st,
         }
 
@@ -577,6 +628,59 @@ class _Engine:
 
     def _push_status(self):
         self._push("ai_status", self.status())
+
+    def _estimate_tokens(self, text) -> int:
+        return max(1, (len(str(text or "")) + 3) // 4)
+
+    def _record_token_usage(self, system, user, reply, provider_usage: dict | None = None,
+                            provider: str = "", model: str = "") -> dict:
+        provider_usage = provider_usage or {}
+        actual_total = int(provider_usage.get("total_tokens") or 0)
+        if actual_total:
+            prompt_tokens = int(provider_usage.get("prompt_tokens") or 0)
+            completion_tokens = int(provider_usage.get("completion_tokens") or 0)
+            estimated = False
+        else:
+            prompt_tokens = self._estimate_tokens(system) + self._estimate_tokens(user)
+            completion_tokens = self._estimate_tokens(reply)
+            actual_total = prompt_tokens + completion_tokens
+            estimated = True
+        last = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": actual_total,
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "estimated": estimated,
+            "provider": provider or "",
+            "model": model or "",
+        }
+        with self.lock:
+            self.token_usage["prompt_tokens"] += prompt_tokens
+            self.token_usage["completion_tokens"] += completion_tokens
+            self.token_usage["total_tokens"] += last["total_tokens"]
+            self.token_usage["calls"] += 1
+            self.token_usage["estimated"] = bool(self.token_usage.get("estimated", False) or estimated)
+            self.token_usage["last_call"] = last
+            usage = dict(self.token_usage)
+        self._push("ai_token_usage", usage)
+        return usage
+
+    def _token_usage_delta(self, before: dict) -> dict:
+        before = before or {}
+        last = self.token_usage.get("last_call") or {}
+        return {
+            "prompt_tokens": self.token_usage.get("prompt_tokens", 0) - before.get("prompt_tokens", 0),
+            "completion_tokens": self.token_usage.get("completion_tokens", 0) - before.get("completion_tokens", 0),
+            "total_tokens": self.token_usage.get("total_tokens", 0) - before.get("total_tokens", 0),
+            "calls": self.token_usage.get("calls", 0) - before.get("calls", 0),
+            "estimated": bool(last.get("estimated", True)),
+        }
+
+    def _update_candidate_trace_final(self, candidates: list):
+        self.candidate_trace["final"] = [
+            {"code": str(code), "name": str(name or code)} for code, name in (candidates or [])
+        ]
+        self.candidate_trace["updated_at"] = datetime.now().strftime("%H:%M:%S")
 
     def _market_gate(self, st: dict) -> tuple[bool, str]:
         if st.get("ignore_market_time"):
@@ -690,13 +794,22 @@ class _Engine:
         if st.get("prescreen_enabled", True) and (not fallback_only or len(out) == 0):
             for code, name in self._prescreen(st):
                 add(code, name)
-        return out[: st.get("max_candidates", 6)]
+        final = out[: st.get("max_candidates", 6)]
+        self._update_candidate_trace_final(final)
+        return final
 
     def _strategy_candidates(self, st: dict) -> list:
+        trace = {
+            "updated_at": datetime.now().strftime("%H:%M:%S"),
+            "strategies": [],
+            "final": [],
+        }
+        self.candidate_trace = trace
         try:
             import strategy_manager as sm
         except Exception as e:
             self._log(f"⚠ 策略库候选不可用：{e}", "warn")
+            trace["strategies"].append({"file": "", "ok": False, "count": 0, "picked": [], "msg": str(e)[:120]})
             return []
         names = st.get("strategy_candidate_strategies") or []
         if isinstance(names, str):
@@ -708,25 +821,36 @@ class _Engine:
         picks = []
         seen = set()
         for filename in names:
+            entry = {"file": str(filename), "ok": False, "count": 0, "picked": [], "msg": ""}
+            trace["strategies"].append(entry)
             try:
                 res = sm.run(filename, [], max_codes=max_codes)
             except Exception as e:
+                entry["msg"] = str(e)[:120]
                 self._log(f"⚠ 策略候选 {filename} 执行失败：{e}", "warn")
                 continue
             if not res or not res.get("ok"):
+                entry["msg"] = str((res or {}).get("msg", ""))[:120]
                 self._log(f"⚠ 策略候选 {filename} 无有效结果：{(res or {}).get('msg', '')}", "warn")
                 continue
-            for row in res.get("results") or []:
+            rows = res.get("results") or []
+            entry["ok"] = True
+            entry["count"] = len(rows)
+            for row in rows:
                 code = str((row or {}).get("code") or "").strip()
                 if not code or code in seen:
                     continue
                 seen.add(code)
-                picks.append((code, (row or {}).get("name") or code))
+                name = (row or {}).get("name") or code
+                picks.append((code, name))
+                entry["picked"].append({"code": code, "name": name})
                 if len(picks) >= top:
+                    trace["final"] = [{"code": c, "name": n} for c, n in picks]
                     self._log(f"AI strategy candidates: {filename} -> {len(picks)}")
                     return picks
         if picks:
             self._log(f"AI strategy candidates: {len(picks)}")
+        trace["final"] = [{"code": c, "name": n} for c, n in picks]
         return picks
 
     def _market_snapshot_degraded(self, universe: list, qc: dict) -> tuple[bool, str]:
@@ -811,12 +935,23 @@ class _Engine:
 
     # ── 各 Agent（LLM 调用 + 推送）────────────────────────
     def _llm(self, cfg, system, user, temperature=0.4, max_tokens=520):
-        return _ai._call_llm(
+        reply = _ai._call_llm(
             cfg,
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],
             temperature=temperature, max_tokens=max_tokens, timeout=120,
+            return_usage=True,
         )
+        provider_usage = {}
+        provider = cfg.get("provider", "") if isinstance(cfg, dict) else ""
+        model = cfg.get("model", "") if isinstance(cfg, dict) else ""
+        if isinstance(reply, dict):
+            provider_usage = reply.get("usage") or {}
+            provider = reply.get("provider") or provider
+            model = reply.get("model") or model
+            reply = reply.get("content") or ""
+        self._record_token_usage(system, user, reply, provider_usage, provider, model)
+        return reply
 
     def _agent_market(self, cfg) -> str:
         self._agent_say(None, "market", "thinking")
@@ -881,6 +1016,7 @@ class _Engine:
     def _team_decide(self, cfg, code, name, market_view, st) -> dict | None:
         if self.stop_flag.is_set():
             return None
+        token_before = dict(self.token_usage)
         ctx, quote, ok = self._stock_context(code, name)
         if not ok:
             self._agent_say(code, "technical", "done", conclusion=ctx)
@@ -976,6 +1112,7 @@ class _Engine:
             "price": _to_float(quote.get("price")) or _to_float(dec.get("entry")),
             "holding": holding,
             "consensus": consensus,
+            "token_usage": self._token_usage_delta(token_before),
             "time": datetime.now().strftime("%H:%M:%S"),
             "raw": raw[:400] if isinstance(raw, str) else "",
         }

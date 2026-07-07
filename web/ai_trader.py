@@ -39,7 +39,9 @@ def _mask_key(k: str) -> str:
 @require_auth
 def meta():
     return jsonify({"ok": True, "roles": engine.roles_meta(),
-                    "providers": engine.list_providers()})
+                    "providers": engine.list_providers(),
+                    "strategy_candidates": engine.strategy_candidate_catalog(),
+                    "strategy_candidate_defaults": engine.DEFAULT_STRATEGY_CANDIDATE_STRATEGIES})
 
 
 # ── 模型配置（交易模块单独配）────────────────────────────
