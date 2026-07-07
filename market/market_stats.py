@@ -25,6 +25,16 @@ MIN_QUOTE_COVERAGE = 0.98
 DEFAULT_EXPECTED_STOCK_COUNT = 5190
 EASTMONEY_THREE_MARKET_FS = "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048"
 EASTMONEY_THREE_MARKET_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
+EASTMONEY_INDEX_QUOTE_URLS = [
+    "https://push2delay.eastmoney.com/api/qt/ulist.np/get",
+    "https://push2.eastmoney.com/api/qt/ulist.np/get",
+]
+EASTMONEY_INDEX_KLINE_URLS = [
+    "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+    "https://push2delay.eastmoney.com/api/qt/stock/kline/get",
+]
+TWO_MARKET_INDEX_CODES = ("000001", "399001")
+TWO_MARKET_INDEX_SECIDS = ("1.000001", "0.399001")
 EASTMONEY_PAGE_WORKERS = 8
 MARKET_SNAPSHOT_DIR = Path(__file__).resolve().parent.parent / "data" / "market_snapshots"
 
@@ -375,6 +385,43 @@ def _fetch_pages_concurrently(fetch_page, page_numbers: Iterable[int], max_worke
     return rows
 
 
+def _eastmoney_get_json(urls: Iterable[str], params: dict, timeout: int = 20) -> dict:
+    import requests
+    try:
+        from research_center import no_proxy
+    except Exception:
+        from contextlib import nullcontext as no_proxy
+
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+    errors = []
+    for url in urls:
+        try:
+            with no_proxy():
+                response = requests.get(url, params=params, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, dict):
+                return payload
+            raise ValueError("non-dict eastmoney payload")
+        except Exception as exc:
+            errors.append(f"{url}: {exc}")
+    raise RuntimeError("; ".join(errors))
+
+
+def _eastmoney_get_klines(params: dict, timeout: int = 20) -> list[str]:
+    errors = []
+    for url in EASTMONEY_INDEX_KLINE_URLS:
+        try:
+            payload = _eastmoney_get_json([url], params, timeout=timeout)
+            klines = ((payload.get("data") or {}).get("klines") or [])
+            if klines:
+                return klines
+            errors.append(f"{url}: empty klines")
+        except Exception as exc:
+            errors.append(f"{url}: {exc}")
+    raise RuntimeError("; ".join(errors))
+
+
 def fetch_eastmoney_three_market_snapshot(date_text: str | None = None) -> dict:
     import requests
 
@@ -418,6 +465,10 @@ def fetch_eastmoney_three_market_snapshot(date_text: str | None = None) -> dict:
         raise ValueError(f"eastmoney latest date {snapshot.get('stat_date')} does not match requested {_date_ymd(date_text)}")
     if _is_explicit_today_request(date_text) and _safe_float((snapshot.get("turnover") or {}).get("amount")) <= 0:
         raise ValueError(f"eastmoney turnover unavailable for requested {_date_ymd(date_text)}")
+    try:
+        snapshot["turnover"] = _turnover_from_eastmoney_index(date_text)
+    except Exception as exc:
+        logger.warning(f"[market_stats] eastmoney two-market index turnover failed: {exc}")
     save_market_snapshot(snapshot)
     return snapshot
 
@@ -480,18 +531,99 @@ def official_turnover_from_frames(date_text: str, sse_df: pd.DataFrame, szse_df:
     }
 
 
-def turnover_from_index_quotes(quotes: Iterable[dict]) -> dict:
-    by_code = {str(q.get("code", "")): q for q in (quotes or [])}
-    missing = [code for code in ("000001", "399106") if code not in by_code]
+def turnover_from_index_rows(rows: Iterable[dict], *, source: str = "eastmoney_index", date_text: str | None = None) -> dict:
+    by_code = {str(row.get("f12") or row.get("code") or ""): row for row in (rows or [])}
+    missing = [code for code in TWO_MARKET_INDEX_CODES if code not in by_code]
     if missing:
         raise ValueError(f"missing index quotes: {','.join(missing)}")
-    amount = round(sum(_safe_float(by_code[code].get("amount")) for code in ("000001", "399106")) / 1e8, 2)
+    amounts = [_safe_float(by_code[code].get("f6", by_code[code].get("amount"))) for code in TWO_MARKET_INDEX_CODES]
+    if any(amount <= 0 for amount in amounts):
+        raise ValueError("empty index turnover")
+    latest_ts = max(_safe_int(by_code[code].get("f124"), 0) for code in TWO_MARKET_INDEX_CODES)
+    stat_date = _date_ymd(date_text) if date_text else (datetime.fromtimestamp(latest_ts).strftime("%Y-%m-%d") if latest_ts else datetime.now().strftime("%Y-%m-%d"))
+    amount = round(sum(amounts) / 1e8, 2)
+    return {
+        "today": round(amount, 0),
+        "amount": amount,
+        "source": source,
+        "stat_date": stat_date,
+        "degraded": False,
+    }
+
+
+def turnover_from_index_quotes(quotes: Iterable[dict]) -> dict:
+    by_code = {str(q.get("code", "")): q for q in (quotes or [])}
+    missing = [code for code in TWO_MARKET_INDEX_CODES if code not in by_code]
+    if missing:
+        raise ValueError(f"missing index quotes: {','.join(missing)}")
+    amount = round(sum(_safe_float(by_code[code].get("amount")) for code in TWO_MARKET_INDEX_CODES) / 1e8, 2)
     return {
         "today": round(amount, 0),
         "amount": amount,
         "source": "tdx_index",
         "degraded": False,
     }
+
+
+def _turnover_from_eastmoney_index_live(date_text: str | None = None) -> dict:
+    params = {
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": 2,
+        "fields": "f6,f12,f14,f124",
+        "secids": "1.000001,0.399001",
+    }
+    rows = ((_eastmoney_get_json(EASTMONEY_INDEX_QUOTE_URLS, params).get("data") or {}).get("diff") or [])
+    result = turnover_from_index_rows(rows, source="eastmoney_index", date_text=None)
+    requested = _date_compact(date_text)
+    actual = _date_compact(result.get("stat_date"))
+    if requested and actual and requested != actual:
+        raise ValueError(f"eastmoney index date {result.get('stat_date')} does not match requested {_date_ymd(date_text)}")
+    return result
+
+
+def _turnover_from_eastmoney_index_history(date_text: str) -> dict:
+    compact = _date_compact(date_text)
+    if not compact:
+        raise ValueError("historical index turnover needs an explicit date")
+    target = _date_ymd(compact)
+    amount = 0.0
+    end = max(compact, datetime.now().strftime("%Y%m%d"))
+    for secid in TWO_MARKET_INDEX_SECIDS:
+        params = {
+            "secid": secid,
+            "klt": 101,
+            "fqt": 1,
+            "beg": f"{compact[:4]}0101",
+            "end": end,
+            "lmt": 260,
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        }
+        matched = None
+        for line in _eastmoney_get_klines(params):
+            parts = str(line).split(",")
+            if len(parts) >= 7 and parts[0] == target:
+                matched = parts
+                break
+        if not matched:
+            raise ValueError(f"index daily date {target} mismatch: {secid}")
+        amount += _safe_float(matched[6])
+    amount = round(amount / 1e8, 2)
+    if amount <= 0:
+        raise ValueError(f"zero index turnover for {target}")
+    return {
+        "today": round(amount, 0),
+        "amount": amount,
+        "source": "eastmoney_index_daily",
+        "stat_date": target,
+        "degraded": False,
+    }
+
+
+def _turnover_from_eastmoney_index(date_text: str | None = None) -> dict:
+    if _is_explicit_historical_date(date_text):
+        return _turnover_from_eastmoney_index_history(date_text or "")
+    return _turnover_from_eastmoney_index_live(date_text)
 
 
 def _latest_sse_report_date() -> str:
@@ -525,23 +657,29 @@ def _turnover_from_tdx_index() -> dict:
     client = tq.get_client()
     if not (client and client._ok):
         raise RuntimeError("TDX unavailable")
-    quotes = client.get_index_quotes([(1, "000001"), (0, "399106")])
+    quotes = client.get_index_quotes([(1, "000001"), (0, "399001")])
     return turnover_from_index_quotes(quotes)
 
 
 def _turnover_trend_from_index_daily(limit: int = 20) -> list[dict]:
-    import akshare as ak
-
     amounts = {}
-    for sym in ("sh000001", "sz399106"):
-        df = ak.stock_zh_index_daily_em(symbol=sym)
-        if df is None or df.empty:
-            continue
-        for _, row in df.tail(limit).iterrows():
-            day = str(row.get("date", ""))[:10]
-            if not day:
+    for secid in TWO_MARKET_INDEX_SECIDS:
+        params = {
+            "secid": secid,
+            "klt": 101,
+            "fqt": 1,
+            "beg": "0",
+            "end": "20500101",
+            "lmt": limit,
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        }
+        for line in _eastmoney_get_klines(params)[-limit:]:
+            parts = str(line).split(",")
+            if len(parts) < 7:
                 continue
-            amounts[day] = amounts.get(day, 0.0) + _safe_float(row.get("amount"))
+            day = parts[0]
+            amounts[day] = amounts.get(day, 0.0) + _safe_float(parts[6])
     return [{"date": day, "amount": round(amounts[day] / 1e8, 0)} for day in sorted(amounts.keys())[-limit:]]
 
 
@@ -563,6 +701,24 @@ def _turnover_from_snapshot_with_trend(snapshot: dict, trend: list[dict] | None 
     return result
 
 
+def _snapshot_turnover_is_verified_or_two_market(snapshot: dict | None) -> bool:
+    if not isinstance(snapshot, dict):
+        return False
+    turnover = snapshot.get("turnover") or {}
+    source = str(turnover.get("source") or snapshot.get("source") or "")
+    return source in {"eastmoney_three_market_verified", "eastmoney_index", "eastmoney_index_daily", "tdx_index"}
+
+
+def _turnover_with_trend(turnover: dict, trend: list[dict] | None = None) -> dict:
+    result = dict(turnover or {})
+    if trend is None:
+        trend = _safe_turnover_trend()
+    if result.get("today") is not None and trend:
+        trend[-1]["amount"] = result["today"]
+    result["trend"] = trend or []
+    return result
+
+
 def get_market_snapshot_metrics(date_text: str | None = None) -> dict:
     """Return breadth and turnover from one official three-market snapshot.
 
@@ -570,10 +726,25 @@ def get_market_snapshot_metrics(date_text: str | None = None) -> dict:
     ``get_market_breadth`` and ``get_market_turnover`` separately can pull the
     same paged Eastmoney snapshot twice on a cold request.
     """
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         snapshot_future = executor.submit(lambda: _historical_market_snapshot(date_text) or fetch_eastmoney_three_market_snapshot(date_text))
+        turnover_future = executor.submit(lambda: _turnover_from_eastmoney_index(date_text))
         trend_future = executor.submit(_safe_turnover_trend)
         snapshot = snapshot_future.result()
+        try:
+            turnover_source = turnover_future.result()
+        except Exception as exc:
+            logger.warning(f"[market_stats] eastmoney index turnover for metrics failed: {exc}")
+            if _snapshot_turnover_is_verified_or_two_market(snapshot):
+                turnover_source = snapshot.get("turnover")
+            elif _is_explicit_historical_date(date_text):
+                try:
+                    turnover_source = _turnover_from_official_exchange(date_text)
+                except Exception as fallback_exc:
+                    logger.warning(f"[market_stats] official turnover fallback for metrics failed: {fallback_exc}")
+                    turnover_source = {}
+            else:
+                turnover_source = {}
         trend = trend_future.result()
     breadth = dict(snapshot["breadth"])
     if _is_explicit_today_request(date_text) and breadth.get("degraded"):
@@ -583,7 +754,7 @@ def get_market_snapshot_metrics(date_text: str | None = None) -> dict:
             "reason": f"official breadth unavailable for requested {_date_ymd(date_text)}: {breadth.get('reason', 'degraded breadth')}",
         }
 
-    turnover = _turnover_from_snapshot_with_trend(snapshot, trend=trend)
+    turnover = _turnover_with_trend(turnover_source, trend=trend)
     if _is_explicit_today_request(date_text) and _safe_float(turnover.get("amount", turnover.get("today"))) <= 0:
         turnover = {
             "today": None,
@@ -659,29 +830,28 @@ def get_market_breadth(expected_count: int | None = None, date_text: str | None 
 
 def get_market_turnover(date_text: str | None = None, prefer_official: bool | None = None) -> dict:
     snapshot = _historical_market_snapshot(date_text)
-    if snapshot:
-        result = dict(snapshot["turnover"])
-        try:
-            trend = _turnover_trend_from_index_daily()
-        except Exception as exc:
-            logger.debug(f"[market_stats] turnover trend failed: {exc}")
-            trend = []
-        if trend:
-            trend[-1]["amount"] = result["today"]
-        result["trend"] = trend
-        return result
+    if snapshot and _snapshot_turnover_is_verified_or_two_market(snapshot):
+        return _turnover_from_snapshot_with_trend(snapshot)
+
+    try:
+        return _turnover_with_trend(_turnover_from_eastmoney_index(date_text))
+    except Exception as exc:
+        logger.warning(f"[market_stats] eastmoney index turnover failed: {exc}")
+        if _is_explicit_today_request(date_text) and _is_official_unavailable_error(exc):
+            reason_prefix = "date mismatch" if _is_date_mismatch_error(exc) else "official turnover unavailable"
+            return {
+                "today": None,
+                "trend": [],
+                "source": "none",
+                "degraded": True,
+                "reason": f"{reason_prefix} for requested {_date_ymd(date_text)}: {exc}",
+            }
 
     try:
         snapshot = fetch_eastmoney_three_market_snapshot(date_text)
-        result = dict(snapshot["turnover"])
-        try:
-            trend = _turnover_trend_from_index_daily()
-        except Exception as exc:
-            logger.debug(f"[market_stats] turnover trend failed: {exc}")
-            trend = []
-        if trend:
-            trend[-1]["amount"] = result["today"]
-        result["trend"] = trend
+        if not _snapshot_turnover_is_verified_or_two_market(snapshot):
+            raise RuntimeError("two-market index turnover unavailable in market snapshot")
+        result = _turnover_from_snapshot_with_trend(snapshot)
         if _is_explicit_today_request(date_text) and _safe_float(result.get("amount", result.get("today"))) <= 0:
             return {
                 "today": None,

@@ -231,7 +231,7 @@ def test_fetch_pages_concurrently_runs_more_than_one_page_at_once():
     assert [row["page"] for row in rows] == [2, 3, 4, 5]
 
 
-def test_market_breadth_and_turnover_prefer_dynamic_three_market_snapshot(monkeypatch):
+def test_market_breadth_uses_dynamic_three_market_snapshot_and_turnover_uses_two_market_index(monkeypatch):
     snapshot = {
         "source": "eastmoney_three_market",
         "stat_date": "2026-07-06",
@@ -239,6 +239,7 @@ def test_market_breadth_and_turnover_prefer_dynamic_three_market_snapshot(monkey
         "breadth": {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
     }
     monkeypatch.setattr(market_stats, "fetch_eastmoney_three_market_snapshot", lambda date_text=None: snapshot, raising=False)
+    monkeypatch.setattr(market_stats, "_turnover_from_eastmoney_index", lambda date_text=None: {"today": 30949, "amount": 30948.86, "source": "eastmoney_index", "stat_date": "2026-07-06", "degraded": False})
     monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [])
 
     breadth = market_stats.get_market_breadth(date_text="20260706")
@@ -246,8 +247,8 @@ def test_market_breadth_and_turnover_prefer_dynamic_three_market_snapshot(monkey
 
     assert breadth["source"] == "eastmoney_three_market"
     assert breadth["total"] == 5519
-    assert turnover["source"] == "eastmoney_three_market"
-    assert turnover["today"] == 31124
+    assert turnover["source"] == "eastmoney_index"
+    assert turnover["today"] == 30949
 
 
 def test_market_snapshot_metrics_reuse_one_three_market_snapshot(monkeypatch, tmp_path):
@@ -265,14 +266,15 @@ def test_market_snapshot_metrics_reuse_one_three_market_snapshot(monkeypatch, tm
 
     monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
     monkeypatch.setattr(market_stats, "fetch_eastmoney_three_market_snapshot", fake_snapshot, raising=False)
+    monkeypatch.setattr(market_stats, "_turnover_from_eastmoney_index", lambda date_text=None: {"today": 30949, "amount": 30948.86, "source": "eastmoney_index", "stat_date": "2026-07-06", "degraded": False})
     monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [{"date": "2026-07-06", "amount": 0}])
 
     metrics = market_stats.get_market_snapshot_metrics("2026-07-06")
 
     assert calls == ["2026-07-06"]
     assert metrics["breadth"]["total"] == 5519
-    assert metrics["turnover"]["today"] == 31124
-    assert metrics["turnover"]["trend"][-1]["amount"] == 31124
+    assert metrics["turnover"]["today"] == 30949
+    assert metrics["turnover"]["trend"][-1]["amount"] == 30949
 
 
 def test_market_snapshot_metrics_fetches_snapshot_and_trend_concurrently(monkeypatch, tmp_path):
@@ -297,15 +299,40 @@ def test_market_snapshot_metrics_fetches_snapshot_and_trend_concurrently(monkeyp
 
     monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
     monkeypatch.setattr(market_stats, "fetch_eastmoney_three_market_snapshot", fake_snapshot, raising=False)
+    monkeypatch.setattr(market_stats, "_turnover_from_eastmoney_index", lambda date_text=None: {"today": 30949, "amount": 30948.86, "source": "eastmoney_index", "stat_date": "2026-07-06", "degraded": False})
     monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", fake_trend)
 
     metrics = market_stats.get_market_snapshot_metrics("2026-07-06")
 
     assert metrics["breadth"]["total"] == 5519
-    assert metrics["turnover"]["trend"][-1]["amount"] == 31124
+    assert metrics["turnover"]["trend"][-1]["amount"] == 30949
 
 
-def test_market_breadth_and_turnover_use_cached_snapshot_when_history_source_is_unavailable(monkeypatch, tmp_path):
+def test_market_snapshot_metrics_repairs_historical_turnover_with_official_fallback(monkeypatch, tmp_path):
+    snapshot = {
+        "source": "eastmoney_three_market",
+        "stat_date": "2026-07-06",
+        "turnover": {"today": 31124, "amount": 31124.43, "source": "eastmoney_three_market", "degraded": False},
+        "breadth": {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
+    }
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    market_stats.save_market_snapshot(snapshot)
+    monkeypatch.setattr(
+        market_stats,
+        "_turnover_from_eastmoney_index",
+        lambda date_text=None: (_ for _ in ()).throw(RuntimeError("index history unavailable")),
+    )
+    monkeypatch.setattr(market_stats, "_turnover_from_official_exchange", lambda date_text=None: {"today": 30944, "amount": 30944.46, "source": "official_exchange", "stat_date": "2026-07-06", "degraded": False})
+    monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [])
+
+    metrics = market_stats.get_market_snapshot_metrics("2026-07-06")
+
+    assert metrics["breadth"]["total"] == 5519
+    assert metrics["turnover"]["source"] == "official_exchange"
+    assert metrics["turnover"]["amount"] == 30944.46
+
+
+def test_market_breadth_uses_cached_snapshot_but_turnover_repairs_cached_three_market_amount(monkeypatch, tmp_path):
     snapshot = {
         "source": "eastmoney_three_market",
         "stat_date": "2026-07-06",
@@ -320,6 +347,7 @@ def test_market_breadth_and_turnover_use_cached_snapshot_when_history_source_is_
         lambda date_text=None: (_ for _ in ()).throw(RuntimeError("latest-only source unavailable for historical date")),
         raising=False,
     )
+    monkeypatch.setattr(market_stats, "_turnover_from_eastmoney_index", lambda date_text=None: {"today": 30949, "amount": 30948.86, "source": "eastmoney_index_daily", "stat_date": "2026-07-06", "degraded": False})
     monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [])
 
     breadth = market_stats.get_market_breadth(date_text="2026-07-06")
@@ -327,8 +355,8 @@ def test_market_breadth_and_turnover_use_cached_snapshot_when_history_source_is_
 
     assert breadth["source"] == "eastmoney_three_market"
     assert breadth["total"] == 5519
-    assert turnover["source"] == "eastmoney_three_market"
-    assert turnover["today"] == 31124
+    assert turnover["source"] == "eastmoney_index_daily"
+    assert turnover["today"] == 30949
 
 
 def test_explicit_today_ignores_cached_zero_turnover_or_degraded_breadth(monkeypatch, tmp_path):
@@ -367,6 +395,11 @@ def test_explicit_today_breadth_date_mismatch_does_not_use_previous_day_live_fal
         "fetch_eastmoney_three_market_snapshot",
         lambda date_text=None: (_ for _ in ()).throw(ValueError("eastmoney latest date 2026-07-06 does not match requested 2026-07-07")),
     )
+    monkeypatch.setattr(
+        market_stats,
+        "_turnover_from_eastmoney_index",
+        lambda date_text=None: (_ for _ in ()).throw(ValueError("eastmoney index date 2026-07-06 does not match requested 2026-07-07")),
+    )
     fake_ak = types.SimpleNamespace(
         stock_market_activity_legu=lambda: (_ for _ in ()).throw(AssertionError("previous-day legu must not be used for explicit today")),
         stock_zh_a_spot_em=lambda: (_ for _ in ()).throw(AssertionError("spot fallback must not be used after date mismatch")),
@@ -395,6 +428,11 @@ def test_explicit_today_turnover_date_mismatch_does_not_use_previous_day_live_fa
         market_stats,
         "fetch_eastmoney_three_market_snapshot",
         lambda date_text=None: (_ for _ in ()).throw(ValueError("eastmoney latest date 2026-07-06 does not match requested 2026-07-07")),
+    )
+    monkeypatch.setattr(
+        market_stats,
+        "_turnover_from_eastmoney_index",
+        lambda date_text=None: (_ for _ in ()).throw(ValueError("eastmoney index date 2026-07-06 does not match requested 2026-07-07")),
     )
     monkeypatch.setattr(
         market_stats,
@@ -456,6 +494,11 @@ def test_explicit_today_turnover_empty_official_source_does_not_use_live_fallbac
     )
     monkeypatch.setattr(
         market_stats,
+        "_turnover_from_eastmoney_index",
+        lambda date_text=None: (_ for _ in ()).throw(ValueError("eastmoney index turnover unavailable for requested 2026-07-07")),
+    )
+    monkeypatch.setattr(
+        market_stats,
         "_turnover_from_tdx_index",
         lambda: (_ for _ in ()).throw(AssertionError("live TDX must not be used after explicit today turnover is unavailable")),
     )
@@ -478,6 +521,11 @@ def test_historical_breadth_does_not_use_live_only_fallbacks_when_snapshot_missi
         market_stats,
         "fetch_eastmoney_three_market_snapshot",
         lambda date_text=None: (_ for _ in ()).throw(ValueError("latest date does not match requested")),
+    )
+    monkeypatch.setattr(
+        market_stats,
+        "_turnover_from_eastmoney_index",
+        lambda date_text=None: (_ for _ in ()).throw(RuntimeError("index historical source unavailable")),
     )
 
     fake_ak = types.SimpleNamespace(
@@ -552,7 +600,7 @@ def test_official_turnover_combines_sse_yi_and_szse_yuan_units():
 def test_index_turnover_uses_tdx_whole_market_indices_not_stock_sum():
     quotes = [
         {"code": "000001", "amount": 1465563086848.0},
-        {"code": "399106", "amount": 1716890370048.0},
+        {"code": "399106", "amount": 1716000000000.0},
         {"code": "399001", "amount": 1716890370048.0},
     ]
 
@@ -561,4 +609,19 @@ def test_index_turnover_uses_tdx_whole_market_indices_not_stock_sum():
     assert turnover["today"] == 31825.0
     assert turnover["amount"] == 31824.53
     assert turnover["source"] == "tdx_index"
+    assert turnover["degraded"] is False
+
+
+def test_eastmoney_index_rows_match_two_market_turnover_quote():
+    rows = [
+        {"f12": "000001", "f6": 1196371087894.4, "f124": 1783411921},
+        {"f12": "399001", "f6": 1384786224621.8315, "f124": 1783411896},
+    ]
+
+    turnover = market_stats.turnover_from_index_rows(rows, date_text="20260707")
+
+    assert turnover["today"] == 25812
+    assert turnover["amount"] == 25811.57
+    assert turnover["source"] == "eastmoney_index"
+    assert turnover["stat_date"] == "2026-07-07"
     assert turnover["degraded"] is False

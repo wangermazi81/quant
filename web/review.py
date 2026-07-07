@@ -21,6 +21,35 @@ from app_state import require_auth, _deduct
 logger = logging.getLogger(__name__)
 bp = Blueprint("review", __name__)
 
+_TRUSTED_TWO_MARKET_TURNOVER_SOURCES = {
+    "eastmoney_three_market_verified",
+    "eastmoney_index",
+    "eastmoney_index_daily",
+    "tdx_index",
+    "official_exchange",
+}
+
+
+def _is_trusted_turnover(turnover: dict | None) -> bool:
+    if not isinstance(turnover, dict):
+        return False
+    return bool(
+        not turnover.get("degraded")
+        and turnover.get("today") is not None
+        and turnover.get("source") in _TRUSTED_TWO_MARKET_TURNOVER_SOURCES
+    )
+
+
+def _mark_turnover_unavailable(data: dict, date_str: str) -> None:
+    data["turnover"] = {
+        "source": "unavailable",
+        "today": None,
+        "amount": None,
+        "stat_date": date_str,
+        "degraded": True,
+        "reason": "trusted_two_market_turnover_unavailable",
+    }
+
 # 当天实时采集缓存（盘中反复刷新不用每次打满 akshare）
 _live_cache: dict = {"ts": 0.0, "data": None}
 _live_lock = threading.Lock()
@@ -127,7 +156,7 @@ def _archive_market_metrics_need_refresh(archive: dict | None) -> bool:
     turnover = data.get("turnover") if isinstance(data.get("turnover"), dict) else {}
     if breadth.get("degraded") or breadth.get("source") in {"tdx_quotes", "none", None}:
         return True
-    return turnover.get("source") not in {"eastmoney_three_market", "eastmoney_three_market_verified"}
+    return not _is_trusted_turnover(turnover)
 
 
 def _refresh_archive_market_metrics(archive: dict, date_str: str, re_) -> dict:
@@ -146,10 +175,10 @@ def _refresh_archive_market_metrics(archive: dict, date_str: str, re_) -> dict:
             market["date"] = breadth.get("stat_date") or date_str
             market["breadth"] = breadth
             changed = True
-        if turnover and not turnover.get("degraded") and turnover.get("today") is not None:
+        if _is_trusted_turnover(turnover):
             data["turnover"] = turnover
             changed = True
-        if changed:
+        if changed and _is_trusted_turnover(data.get("turnover")):
             return refreshed
     except Exception as exc:
         logger.warning(f"[review] refresh archive market metrics failed: {exc}")
@@ -165,8 +194,10 @@ def _refresh_archive_market_metrics(archive: dict, date_str: str, re_) -> dict:
     if live_breadth and not live_breadth.get("degraded"):
         market["date"] = live_market.get("date") or date_str
         market["breadth"] = live_breadth
-    if live_turnover and live_turnover.get("today") is not None:
+    if _is_trusted_turnover(live_turnover):
         data["turnover"] = live_turnover
+    elif not _is_trusted_turnover(data.get("turnover")):
+        _mark_turnover_unavailable(data, date_str)
     return refreshed
 
 

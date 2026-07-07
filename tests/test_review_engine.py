@@ -164,7 +164,8 @@ def test_market_review_rebuilds_degraded_explicit_archive_from_three_market_sour
                     "degraded": False,
                 },
                 "sectors": {"top_gainers": [], "top_losers": []},
-            }
+            },
+            "turnover": {"source": "eastmoney_three_market", "today": 31124, "amount": 31124.43, "degraded": False},
         },
     }
     fake_review_engine = types.SimpleNamespace(load=lambda date_str: archive if date_str == "2026-07-06" else None)
@@ -172,7 +173,7 @@ def test_market_review_rebuilds_degraded_explicit_archive_from_three_market_sour
         get_verified_market_snapshot=lambda date_text: None,
         normalize_breadth_quality=lambda breadth: {**breadth, "expected_count": 5190, "coverage": round(4634 / 5190, 3), "degraded": True},
         get_market_breadth=lambda date_text=None: {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
-        get_market_turnover=lambda date_text=None: {"source": "eastmoney_three_market", "today": 31124, "amount": 31124.43, "degraded": False},
+        get_market_turnover=lambda date_text=None: {"source": "official_exchange", "today": 30944.0, "amount": 30944.46, "degraded": False},
     )
     monkeypatch.setitem(sys.modules, "review_engine", fake_review_engine)
     monkeypatch.setitem(sys.modules, "market_stats", fake_market_stats)
@@ -183,8 +184,8 @@ def test_market_review_rebuilds_degraded_explicit_archive_from_three_market_sour
     assert review.get("archived") is not True
     assert review["breadth"]["source"] == "eastmoney_three_market"
     assert review["breadth"]["total"] == 5519
-    assert review["turnover"]["source"] == "eastmoney_three_market"
-    assert review["turnover"]["today"] == 31124
+    assert review["turnover"]["source"] == "official_exchange"
+    assert review["turnover"]["today"] == 30944.0
 
 
 def test_market_review_force_refresh_bypasses_preopen_archive(monkeypatch):
@@ -302,7 +303,8 @@ def test_market_review_uses_historical_archive_when_no_verified_snapshot(monkeyp
                 "date": "2026-07-02",
                 "time": "15:00",
                 "breadth": {"source": "eastmoney_spot", "up": 3000, "down": 2000, "flat": 90, "total": 5090},
-            }
+            },
+            "turnover": {"source": "official_exchange", "today": 28000.0, "amount": 28000.12, "degraded": False},
         },
     }
     fake_review_engine = types.SimpleNamespace(load=lambda date_str: archive if date_str == "2026-07-02" else None)
@@ -313,6 +315,7 @@ def test_market_review_uses_historical_archive_when_no_verified_snapshot(monkeyp
     assert review["date"] == "2026-07-02"
     assert review["archived"] is True
     assert review["breadth"]["up"] == 3000
+    assert review["turnover"]["source"] == "official_exchange"
 
 
 def test_market_review_historical_verified_snapshot_does_not_mix_live_indices():
@@ -387,7 +390,7 @@ def test_daily_review_api_verified_snapshot_overrides_stale_historical_archive(m
     assert payload["data"]["zt"]["dt_count"] == 24
 
 
-def test_daily_review_api_repairs_degraded_historical_archive(monkeypatch):
+def test_daily_review_api_repairs_stale_three_market_turnover_archive(monkeypatch):
     from flask import Flask
     from web.review import bp
 
@@ -399,19 +402,19 @@ def test_daily_review_api_repairs_degraded_historical_archive(monkeypatch):
             "date": "2026-07-06",
             "market": {
                 "date": "2026-07-06",
-                "breadth": {"source": "tdx_quotes", "up": 1594, "down": 2954, "flat": 86, "total": 4634, "expected_count": 4634},
+                "breadth": {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
             },
-            "turnover": {"source": "official_exchange", "today": 30944.0, "amount": 30944.46},
+            "turnover": {"source": "eastmoney_three_market", "today": 31124, "amount": 31124.43, "degraded": False},
             "zt": {"zt_count": 64, "dt_count": 46},
         },
         "ai_summary": "old ai summary",
     }
     fake_market_stats = types.SimpleNamespace(
         get_verified_market_snapshot=lambda date_text: None,
-        normalize_breadth_quality=lambda breadth: {**breadth, "expected_count": 5190, "coverage": round(4634 / 5190, 3), "degraded": True},
+        normalize_breadth_quality=lambda breadth: {**breadth, "expected_count": 5519, "coverage": 1.0, "degraded": False},
         fetch_eastmoney_three_market_snapshot=lambda date_text: (_ for _ in ()).throw(RuntimeError("direct source unavailable in this test")),
         get_market_breadth=lambda date_text=None: {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
-        get_market_turnover=lambda date_text=None: {"source": "eastmoney_three_market", "today": 31124, "amount": 31124.43, "degraded": False},
+        get_market_turnover=lambda date_text=None: {"source": "official_exchange", "today": 30944.0, "amount": 30944.46, "degraded": False},
     )
     monkeypatch.setattr(review_engine, "load", lambda date_str: stale_archive)
     monkeypatch.setattr(review_engine, "collect", lambda date_str: (_ for _ in ()).throw(AssertionError("collect should not be needed for archived market metric repair")))
@@ -427,7 +430,8 @@ def test_daily_review_api_repairs_degraded_historical_archive(monkeypatch):
     assert payload["ok"] is True
     assert payload["phase"] == "evening"
     assert payload["data"]["market"]["breadth"]["source"] == "eastmoney_three_market"
-    assert payload["data"]["turnover"]["source"] == "eastmoney_three_market"
+    assert payload["data"]["turnover"]["source"] == "official_exchange"
+    assert payload["data"]["turnover"]["today"] == 30944.0
     assert payload["ai_summary"] == "old ai summary"
 
 

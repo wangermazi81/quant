@@ -14,6 +14,23 @@ bp = Blueprint("market", __name__)
 _MARKET_REVIEW_CACHE_TTL = 60
 _MARKET_REVIEW_CACHE: dict[str, tuple[float, dict]] = {}
 _EASTMONEY_INDUSTRY_URL = "https://17.push2.eastmoney.com/api/qt/clist/get"
+_TRUSTED_TWO_MARKET_TURNOVER_SOURCES = {
+    "eastmoney_three_market_verified",
+    "eastmoney_index",
+    "eastmoney_index_daily",
+    "tdx_index",
+    "official_exchange",
+}
+
+
+def _is_trusted_turnover(turnover: dict | None) -> bool:
+    if not isinstance(turnover, dict):
+        return False
+    return bool(
+        not turnover.get("degraded")
+        and turnover.get("today") is not None
+        and turnover.get("source") in _TRUSTED_TWO_MARKET_TURNOVER_SOURCES
+    )
 
 
 def _float_or_none(value) -> float | None:
@@ -101,7 +118,12 @@ def _archive_review_needs_refresh(review: dict | None) -> bool:
     if not isinstance(review, dict):
         return False
     breadth = review.get("breadth") or {}
-    return bool(breadth.get("degraded") or breadth.get("source") in {"tdx_quotes", "none"})
+    turnover = review.get("turnover") or {}
+    return bool(
+        breadth.get("degraded")
+        or breadth.get("source") in {"tdx_quotes", "none"}
+        or not _is_trusted_turnover(turnover)
+    )
 
 
 def _refresh_archive_market_review(date_text: str | None, archived: dict | None) -> dict | None:
@@ -118,8 +140,10 @@ def _refresh_archive_market_review(date_text: str | None, archived: dict | None)
         return None
     result = deepcopy(archived)
     result["breadth"] = breadth
-    if turnover and not turnover.get("degraded"):
+    if _is_trusted_turnover(turnover):
         result["turnover"] = turnover
+    elif not _is_trusted_turnover(result.get("turnover")):
+        return None
     result["archived"] = False
     result["refreshed_from_archive"] = True
     result.pop("archive_phase", None)
@@ -245,10 +269,15 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
                 refreshed = _refresh_archive_market_review(date_text, archived)
                 if refreshed:
                     return refreshed
-                return archived
+                if _is_trusted_turnover(archived.get("turnover")):
+                    return archived
     elif allow_archive and _should_use_archive_for_live():
         archived = _load_archive_review()
         if archived:
+            if _archive_review_needs_refresh(archived):
+                refreshed = _refresh_archive_market_review(archived.get("date"), archived)
+                if refreshed:
+                    return refreshed
             return archived
     review = {
         "date":    stat_date,
