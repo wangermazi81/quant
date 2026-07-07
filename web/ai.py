@@ -86,9 +86,9 @@ def api_stock_score():
                     df = pd.DataFrame(bars)
                     df["date"] = pd.to_datetime(df["date"])
                     try:
-                        daily_dir = BASE_DIR / "data" / "daily"
-                        daily_dir.mkdir(parents=True, exist_ok=True)
-                        df.to_csv(daily_dir / f"{code}.csv", index=False, encoding="utf-8")
+                        merged = dm.merge_kline_cache(code, df)
+                        if merged is not None and not merged.empty:
+                            df = merged
                     except Exception:
                         pass
         except Exception:
@@ -131,10 +131,10 @@ def ai_analyze():
                     # 拉到数据后保存到本地 CSV 作为缓存
                     # 下次同一只票分析时秒读，不必每次都打 TDX 服务器
                     try:
-                        daily_dir = BASE_DIR / "data" / "daily"
-                        daily_dir.mkdir(parents=True, exist_ok=True)
-                        df.to_csv(daily_dir / f"{code}.csv", index=False, encoding="utf-8")
-                        logger.info(f"[ai_analyze] 已缓存 {code} K 线到 data/daily/{code}.csv ({len(df)} 行)")
+                        merged = dm.merge_kline_cache(code, df)
+                        if merged is not None and not merged.empty:
+                            df = merged
+                        logger.info(f"[ai_analyze] 已合并缓存 {code} K 线到 data/daily/{code}.csv ({len(df)} 行)")
                     except Exception as _e:
                         logger.debug(f"[ai_analyze] 缓存 {code} CSV 失败（不致命）: {_e}")
         except Exception:
@@ -222,9 +222,9 @@ def ai_analyze_async():
                             df = pd.DataFrame(bars)
                             df["date"] = pd.to_datetime(df["date"])
                             try:
-                                daily_dir = BASE_DIR / "data" / "daily"
-                                daily_dir.mkdir(parents=True, exist_ok=True)
-                                df.to_csv(daily_dir / f"{code}.csv", index=False, encoding="utf-8")
+                                merged = dm.merge_kline_cache(code, df)
+                                if merged is not None and not merged.empty:
+                                    df = merged
                             except Exception:
                                 pass
                 except Exception:

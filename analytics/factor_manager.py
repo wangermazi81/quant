@@ -18,6 +18,7 @@ import threading
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from datetime import date
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +220,18 @@ def _init_kline_pool(n: int = 4) -> list:
         return new_pool
 
 
+def _kline_is_stale(df: pd.DataFrame, max_lag_days: int = 3) -> bool:
+    if df is None or df.empty or "date" not in df.columns:
+        return True
+    try:
+        last = pd.to_datetime(df["date"], errors="coerce").max()
+        if pd.isna(last):
+            return True
+        return (date.today() - last.date()).days > max_lag_days
+    except Exception:
+        return True
+
+
 def _fetch_kline_one(args) -> tuple:
     """
     单只 K 线拉取（供 ThreadPoolExecutor 调用）。
@@ -279,7 +292,7 @@ def _prefetch_klines_parallel(universe: list, fallback_get_kline,
         def _read_local(code):
             try:
                 df = _dm.get_local(code)
-                if df is not None and not df.empty and len(df) >= 10:
+                if df is not None and not df.empty and len(df) >= 10 and not _kline_is_stale(df):
                     return code, df.tail(days).reset_index(drop=True)
             except Exception:
                 pass

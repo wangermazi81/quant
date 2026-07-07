@@ -269,7 +269,16 @@ def run_research(
     panel, codes = build_panel_from_cache(n_stocks=n_stocks, days=days, min_history=days)
     if not panel or "close" not in panel:
         raise RuntimeError("no close panel loaded from data/daily")
-    alpha_ids = ["rh158_ma20", "rh158_std5", "rh158_std10", "rh158_roc10", "gtja191_005"]
+    alpha_ids = [
+        "rh158_ma20",
+        "rh158_std5",
+        "rh158_std10",
+        "rh158_roc10",
+        "gtja191_005",
+        "jw_relay_heat_v1",
+        "jw_relay_pullback_v1",
+        "jw_overheat_avoid_v1",
+    ]
     factors = _compute_builtin_factors(panel, alpha_ids)
     factors.update(build_composite_factors(factors))
     results = []

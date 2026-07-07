@@ -89,6 +89,81 @@ def _clean_kline(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ── 元数据 ────────────────────────────────────────
+def _standardize_kline_for_cache(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize common kline shapes before writing the daily CSV cache."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+    if "date" not in out.columns:
+        if isinstance(out.index, pd.DatetimeIndex):
+            out = out.reset_index().rename(columns={"index": "date"})
+        elif "datetime" in out.columns:
+            out = out.rename(columns={"datetime": "date"})
+        elif "Date" in out.columns:
+            out = out.rename(columns={"Date": "date"})
+        elif "trade_date" in out.columns:
+            out = out.rename(columns={"trade_date": "date"})
+
+    if "volume" not in out.columns:
+        for col in ("vol", "amount", "成交量"):
+            if col in out.columns:
+                out["volume"] = out[col]
+                break
+
+    required = ["date", "open", "high", "low", "close", "volume"]
+    if any(c not in out.columns for c in required):
+        return pd.DataFrame()
+    return _clean_kline(out[required])
+
+
+def merge_kline_cache(code: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Merge a refreshed kline slice into data/daily/<code>.csv.
+
+    Short refreshes from TDX must not overwrite long historical CSV files.
+    New rows win on duplicate dates, then the merged file is cleaned and sorted.
+    """
+    new_df = _standardize_kline_for_cache(df)
+    if new_df is None or new_df.empty:
+        return pd.DataFrame()
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    csv_path = DATA_DIR / f"{code}.csv"
+
+    if csv_path.exists():
+        try:
+            old_df = pd.read_csv(csv_path, parse_dates=["date"])
+            old_df = _standardize_kline_for_cache(old_df)
+        except Exception:
+            old_df = pd.DataFrame()
+        if old_df is not None and not old_df.empty:
+            merged = _clean_kline(pd.concat([old_df, new_df], ignore_index=True))
+        else:
+            merged = new_df
+    else:
+        merged = new_df
+
+    required = ["date", "open", "close", "high", "low", "volume"]
+    merged[required].to_csv(csv_path, index=False, encoding="utf-8")
+
+    try:
+        meta = _load_meta()
+        item = dict(meta.get(code, {}))
+        item.update({
+            "name": item.get("name") or code,
+            "start": str(merged["date"].iloc[0].date()),
+            "end": str(merged["date"].iloc[-1].date()),
+            "rows": len(merged),
+            "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        })
+        meta[code] = item
+        _save_meta(meta)
+    except Exception:
+        pass
+
+    return merged
+
+
 def _load_meta() -> dict:
     if META_FILE.exists():
         try:
