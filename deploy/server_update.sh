@@ -52,6 +52,7 @@ git pull --ff-only origin "$(git branch --show-current)" || {
 REMOTE=$(git rev-parse HEAD)
 
 if [ "$LOCAL" = "$REMOTE" ] && [ -f "$FRONTEND_DIST" ]; then
+    secure_runtime_secrets "$RUN_USER"
     echo "Code is already up to date and frontend dist exists."
     exit 0
 fi
