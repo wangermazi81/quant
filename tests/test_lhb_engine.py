@@ -39,7 +39,11 @@ def test_preload_today_force_refreshes_and_reports_success(monkeypatch):
 
     def fake_get_lhb_data(date=None, force_refresh=False):
         calls.append((date, force_refresh))
-        return {"ok": True, "date": "2026-07-08", "stocks": [{"code": "000001"}]}
+        return {
+            "ok": True,
+            "date": "2026-07-08",
+            "stocks": [{"code": "000001", "branches": [{"name": "机构专用"}]}],
+        }
 
     monkeypatch.setattr(lhb_engine, "get_lhb_data", fake_get_lhb_data)
 
@@ -55,6 +59,82 @@ def test_preload_today_reports_pending_when_not_published(monkeypatch):
     )
 
     assert lhb_engine.preload_today() is False
+
+
+def test_preload_today_keeps_retrying_until_seat_details_are_ready(monkeypatch):
+    monkeypatch.setattr(
+        lhb_engine,
+        "get_lhb_data",
+        lambda date=None, force_refresh=False: {
+            "ok": True,
+            "date": "2026-07-08",
+            "stocks": [{"code": "000001", "branches": []}, {"code": "000002"}],
+        },
+    )
+
+    assert lhb_engine.preload_today() is False
+
+
+def test_fetch_lhb_stocks_merges_duplicate_akshare_rows(monkeypatch):
+    class FakeDf:
+        empty = False
+        columns = [
+            "代码",
+            "名称",
+            "涨跌幅",
+            "净额汇总",
+            "买入额汇总",
+            "卖出额汇总",
+            "收盘价",
+            "换手率",
+            "上榜原因",
+            "成交额",
+        ]
+
+        def iterrows(self):
+            rows = [
+                {
+                    "代码": "000001",
+                    "名称": "平安银行",
+                    "涨跌幅": 10.01,
+                    "净额汇总": 1200000,
+                    "买入额汇总": 5000000,
+                    "卖出额汇总": 3800000,
+                    "收盘价": 12.34,
+                    "换手率": 8.9,
+                    "上榜原因": "日涨幅偏离值达7%",
+                    "成交额": 8800000,
+                },
+                {
+                    "代码": "000001",
+                    "名称": "平安银行",
+                    "涨跌幅": 10.01,
+                    "净额汇总": 900000,
+                    "买入额汇总": 4200000,
+                    "卖出额汇总": 3300000,
+                    "收盘价": 12.34,
+                    "换手率": 8.9,
+                    "上榜原因": "连续三个交易日内涨幅偏离值累计达20%",
+                    "成交额": 7600000,
+                },
+            ]
+            for idx, row in enumerate(rows):
+                yield idx, row
+
+    monkeypatch.setitem(
+        sys.modules,
+        "akshare",
+        types.SimpleNamespace(stock_lhb_detail_em=lambda *args, **kwargs: FakeDf()),
+    )
+    monkeypatch.setattr(lhb_engine, "no_proxy", lambda: nullcontext())
+
+    rows = lhb_engine._fetch_lhb_stocks("20260708")
+
+    assert len(rows) == 1
+    assert rows[0]["code"] == "000001"
+    assert rows[0]["net_amt"] == 120.0
+    assert "日涨幅偏离值达7%" in rows[0]["reason"]
+    assert "连续三个交易日" in rows[0]["reason"]
 
 
 def test_fetch_lhb_stocks_falls_back_to_eastmoney_when_akshare_breaks(monkeypatch):

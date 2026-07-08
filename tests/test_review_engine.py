@@ -23,10 +23,10 @@ def test_lhb_preloader_retries_until_today_is_cached(monkeypatch):
         datetime(2026, 7, 8, 15, 31, 0), state, now_ts=1000.0
     )
     too_soon = review_engine._maybe_preload_lhb(
-        datetime(2026, 7, 8, 15, 33, 0), state, now_ts=1060.0
+        datetime(2026, 7, 8, 15, 31, 30), state, now_ts=1030.0
     )
     second = review_engine._maybe_preload_lhb(
-        datetime(2026, 7, 8, 15, 36, 0), state, now_ts=1301.0
+        datetime(2026, 7, 8, 15, 32, 1), state, now_ts=1061.0
     )
     after_success = review_engine._maybe_preload_lhb(
         datetime(2026, 7, 8, 15, 45, 0), state, now_ts=1900.0
@@ -51,13 +51,13 @@ def test_lhb_preloader_retries_quickly_right_after_publish_window(monkeypatch):
     state = {}
 
     first = review_engine._maybe_preload_lhb(
-        datetime(2026, 7, 8, 15, 31, 0), state, now_ts=1000.0
+        datetime(2026, 7, 8, 15, 25, 0), state, now_ts=1000.0
     )
     too_soon = review_engine._maybe_preload_lhb(
-        datetime(2026, 7, 8, 15, 32, 30), state, now_ts=1090.0
+        datetime(2026, 7, 8, 15, 25, 30), state, now_ts=1030.0
     )
     retry = review_engine._maybe_preload_lhb(
-        datetime(2026, 7, 8, 15, 33, 1), state, now_ts=1121.0
+        datetime(2026, 7, 8, 15, 26, 1), state, now_ts=1061.0
     )
 
     assert first is False

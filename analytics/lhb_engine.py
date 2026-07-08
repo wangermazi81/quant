@@ -186,6 +186,22 @@ def _disk_put(yyyymmdd: str, data: dict):
         pass
 
 
+def _seat_detail_count(data: dict) -> int:
+    stocks = data.get("stocks") if isinstance(data, dict) else None
+    if not isinstance(stocks, list):
+        return 0
+    return sum(1 for s in stocks if isinstance(s, dict) and s.get("branches"))
+
+
+def _lhb_payload_complete(data: dict) -> bool:
+    stocks = data.get("stocks") if isinstance(data, dict) else None
+    if not data.get("ok") or not isinstance(stocks, list) or not stocks:
+        return False
+    # 龙虎榜发布时可能先出股票列表、席位明细稍后才可查。
+    # 自动预加载只有等到至少一只股票带席位后才算完成，避免缓存半成品图谱。
+    return _seat_detail_count(data) > 0
+
+
 def _today() -> str:
     return datetime.now().strftime("%Y%m%d")
 
@@ -486,7 +502,7 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
             hit = _cache.get(yyyymmdd)
             if hit:
                 ts, cached = hit
-                ttl = 300 if datetime.now().hour < 16 else 86400
+                ttl = 300 if datetime.now().hour < 16 else (86400 if cached.get("complete") else 60)
                 if time.time() - ts < ttl:
                     return cached
 
@@ -535,13 +551,15 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
         "stocks":      stocks,
         "youzai_stat": youzai_stat,
         "total":       len(stocks),
+        "seat_detail_count": _seat_detail_count({"stocks": stocks}),
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "source":       "eastmoney_akshare",
     }
+    out["complete"] = _lhb_payload_complete(out)
 
     with _lock:
         _cache[yyyymmdd] = (time.time(), out)
-    if not is_today or datetime.now().hour >= 15:
+    if not is_today or (datetime.now().hour >= 15 and out["complete"]):
         _disk_put(yyyymmdd, out)
 
     logger.info(f"[lhb] {date_str} 龙虎榜 {len(stocks)} 只，游资 {len(youzai_stat)} 组")
@@ -570,7 +588,7 @@ def preload_today() -> bool:
     """后台预加载今日数据（主要在 15:30 后触发）。"""
     try:
         data = get_lhb_data(force_refresh=True)
-        return bool(data.get("ok") and data.get("stocks"))
+        return _lhb_payload_complete(data)
     except Exception as e:
         logger.warning(f"[lhb] 预加载失败: {e}")
         return False

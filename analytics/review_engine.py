@@ -423,12 +423,12 @@ def generate_async(date_str: str = None, phase: str = "manual", with_ai: bool = 
 # ──────────────────────────────────────────────────────────────
 def _lhb_preload_window(now: datetime) -> bool:
     hm = now.hour * 100 + now.minute
-    return 1530 <= hm < 2300
+    return 1520 <= hm < 2300
 
 
 def _lhb_retry_interval(now: datetime) -> int:
     hm = now.hour * 100 + now.minute
-    return 120 if 1530 <= hm < 1630 else 300
+    return 60 if 1520 <= hm < 1630 else 300
 
 
 def _maybe_preload_lhb(now: datetime, state: dict, now_ts: float | None = None) -> bool:
