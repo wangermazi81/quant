@@ -188,7 +188,7 @@ def _should_use_archive_for_live(now: datetime | None = None) -> bool:
     if now.weekday() >= 5:
         return True
     clock = now.hour * 100 + now.minute
-    return clock < 930
+    return clock < 930 or clock >= 1510
 
 
 @bp.route("/api/market/context")
@@ -271,8 +271,14 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
                     return refreshed
                 if _is_trusted_turnover(archived.get("turnover")):
                     return archived
-    elif allow_archive and _should_use_archive_for_live():
-        archived = _load_archive_review()
+    elif allow_archive:
+        archive_now = datetime.now()
+        archived = None
+        if _should_use_archive_for_live(archive_now):
+            archive_date = None
+            if archive_now.weekday() < 5 and archive_now.hour * 100 + archive_now.minute >= 1510:
+                archive_date = archive_now.strftime("%Y-%m-%d")
+            archived = _load_archive_review(archive_date)
         if archived:
             return archived
     review = {

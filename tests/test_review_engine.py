@@ -229,6 +229,37 @@ def test_market_review_uses_latest_archive_before_market_open(monkeypatch):
     assert review["breadth"]["degraded"] is True
 
 
+def test_market_review_uses_today_archive_after_close(monkeypatch):
+    import web.market as market_web
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 8, 15, 20, 0)
+
+    archive_review = {
+        "date": "2026-07-08",
+        "time": "15:10",
+        "archived": True,
+        "breadth": {"source": "eastmoney_three_market", "up": 1593, "down": 3790, "flat": 136, "total": 5519},
+        "turnover": {"source": "eastmoney_index", "today": 25635.0, "degraded": False},
+        "sectors": {"top_gainers": [], "top_losers": []},
+    }
+    monkeypatch.setattr(market_web, "datetime", FakeDateTime)
+    monkeypatch.setattr(market_web, "_load_archive_review", lambda date_text=None: archive_review)
+    monkeypatch.setattr(
+        market_web,
+        "_fetch_industry_sector_rotation",
+        lambda: (_ for _ in ()).throw(AssertionError("after-close archive should bypass live sector fetch")),
+    )
+
+    review = market_web._build_market_review()
+
+    assert review["date"] == "2026-07-08"
+    assert review["archived"] is True
+    assert review["turnover"]["today"] == 25635.0
+
+
 def test_market_review_rebuilds_degraded_explicit_archive_from_three_market_source(monkeypatch):
     import web.market as market_web
 
