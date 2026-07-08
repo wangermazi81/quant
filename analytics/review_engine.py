@@ -444,7 +444,7 @@ def _maybe_preload_lhb(now: datetime, state: dict, now_ts: float | None = None) 
     now_ts = time.time() if now_ts is None else now_ts
     if state.get("last_date") != today:
         state["last_date"] = today
-        state["last_try"] = 0.0
+        state["last_try"] = -999999.0
     interval = _lhb_retry_interval(now)
     if now_ts - float(state.get("last_try") or 0.0) < interval:
         return False
@@ -467,15 +467,51 @@ def _maybe_preload_lhb(now: datetime, state: dict, now_ts: float | None = None) 
         return False
 
 
+def _lhb_backfill_window(now: datetime) -> bool:
+    hm = now.hour * 100 + now.minute
+    return 1630 <= hm < 2300
+
+
+def _maybe_backfill_lhb(now: datetime, state: dict, now_ts: float | None = None) -> bool:
+    if now.weekday() >= 5:
+        return False
+    if not _lhb_backfill_window(now):
+        return False
+
+    today = now.strftime("%Y-%m-%d")
+    now_ts = time.time() if now_ts is None else now_ts
+    if state.get("last_date") != today:
+        state["last_date"] = today
+        state["last_try"] = -999999.0
+    if now_ts - float(state.get("last_try") or 0.0) < 1800:
+        return False
+
+    state["last_try"] = now_ts
+    try:
+        import lhb_engine
+
+        result = lhb_engine.backfill_recent(today=now, days=5, limit=2)
+        state["last_result"] = result
+        state["last_checked_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
+        return bool(result.get("saved") or result.get("checked"))
+    except Exception as e:
+        state["last_error"] = str(e)[:200]
+        state["last_checked_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
+        logger.warning(f"[review] 龙虎榜回补异常: {e}")
+        return False
+
+
 def run_review_scheduler():
     logger.info("[review] 每日复盘调度器启动")
     last_try = 0.0
     lhb_state = {}
+    lhb_backfill_state = {}
     while True:
         try:
             now = datetime.now()
             if now.weekday() < 5:
                 _maybe_preload_lhb(now, lhb_state)
+                _maybe_backfill_lhb(now, lhb_backfill_state)
                 hm    = now.hour * 100 + now.minute
                 today = _today()
                 cur   = load(today) or {}

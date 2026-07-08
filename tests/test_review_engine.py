@@ -96,6 +96,36 @@ def test_lhb_preloader_keeps_retrying_until_late_evening(monkeypatch):
     assert calls == [1, 2]
 
 
+def test_lhb_backfill_runs_after_close_and_throttles(monkeypatch):
+    calls = []
+
+    def fake_backfill_recent(today=None, days=5, limit=2):
+        calls.append((today.strftime("%Y-%m-%d"), days, limit))
+        return {"checked": ["2026-07-07"], "saved": ["2026-07-07"], "pending": [], "skipped": []}
+
+    monkeypatch.setitem(sys.modules, "lhb_engine", types.SimpleNamespace(backfill_recent=fake_backfill_recent))
+    state = {}
+
+    before_window = review_engine._maybe_backfill_lhb(
+        datetime(2026, 7, 8, 16, 29, 0), state, now_ts=1000.0
+    )
+    first = review_engine._maybe_backfill_lhb(
+        datetime(2026, 7, 8, 16, 31, 0), state, now_ts=1060.0
+    )
+    too_soon = review_engine._maybe_backfill_lhb(
+        datetime(2026, 7, 8, 16, 45, 0), state, now_ts=1900.0
+    )
+    retry = review_engine._maybe_backfill_lhb(
+        datetime(2026, 7, 8, 17, 2, 0), state, now_ts=2920.0
+    )
+
+    assert before_window is False
+    assert first is True
+    assert too_soon is False
+    assert retry is True
+    assert calls == [("2026-07-08", 5, 2), ("2026-07-08", 5, 2)]
+
+
 def test_daily_review_without_date_uses_latest_archive_before_market_open(monkeypatch):
     from flask import Flask
     import web.review as review_web

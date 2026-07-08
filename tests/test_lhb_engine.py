@@ -2,6 +2,7 @@ import sys
 import types
 from pathlib import Path
 from contextlib import nullcontext
+from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import _pathsetup  # noqa: F401
@@ -73,6 +74,63 @@ def test_preload_today_keeps_retrying_until_seat_details_are_ready(monkeypatch):
     )
 
     assert lhb_engine.preload_today() is False
+
+
+def test_get_lhb_data_does_not_persist_incomplete_historical_payload(monkeypatch, tmp_path):
+    monkeypatch.setattr(lhb_engine, "LHB_DIR", tmp_path)
+    monkeypatch.setattr(lhb_engine, "_today", lambda: "20260708")
+    monkeypatch.setattr(lhb_engine, "_fetch_lhb_stocks", lambda yyyymmdd: [
+        {"code": "000001", "name": "骞冲畨閾惰", "branches": [], "youzai": []}
+    ])
+    monkeypatch.setattr(lhb_engine, "_fetch_seat_detail", lambda code, date_str: [])
+    monkeypatch.setattr(lhb_engine.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(lhb_engine, "no_proxy", lambda: nullcontext())
+
+    data = lhb_engine.get_lhb_data("2026-07-06", force_refresh=True)
+
+    assert data["ok"] is True
+    assert data["complete"] is False
+    assert not (tmp_path / "lhb_20260706.json").exists()
+
+
+def test_backfill_recent_fetches_missing_weekdays_until_limit(monkeypatch, tmp_path):
+    monkeypatch.setattr(lhb_engine, "LHB_DIR", tmp_path)
+    (tmp_path / "lhb_20260708.json").write_text("{}", encoding="utf-8")
+    calls = []
+
+    def fake_get_lhb_data(date=None, force_refresh=False):
+        calls.append((date, force_refresh))
+        return {
+            "ok": True,
+            "date": date,
+            "stocks": [{"branches": [{"name": "seat"}]}] if date == "2026-07-07" else [{"branches": []}],
+            "complete": date == "2026-07-07",
+        }
+
+    monkeypatch.setattr(lhb_engine, "get_lhb_data", fake_get_lhb_data)
+
+    result = lhb_engine.backfill_recent(today=datetime(2026, 7, 8), days=5, limit=2)
+
+    assert calls == [("2026-07-07", True), ("2026-07-06", True)]
+    assert result["saved"] == ["2026-07-07"]
+    assert result["pending"] == ["2026-07-06"]
+
+
+def test_get_lhb_dates_filters_incomplete_disk_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr(lhb_engine, "LHB_DIR", tmp_path)
+    monkeypatch.setattr(lhb_engine, "_today", lambda: "20260708")
+    (tmp_path / "lhb_20260707.json").write_text(
+        '{"ok": true, "stocks": [{"code": "000001", "branches": []}]}',
+        encoding="utf-8",
+    )
+    (tmp_path / "lhb_20260706.json").write_text(
+        '{"ok": true, "stocks": [{"code": "000002", "branches": [{"name": "seat"}]}]}',
+        encoding="utf-8",
+    )
+
+    dates = lhb_engine.get_lhb_dates()
+
+    assert dates == ["2026-07-08", "2026-07-06"]
 
 
 def test_fetch_lhb_stocks_merges_duplicate_akshare_rows(monkeypatch):

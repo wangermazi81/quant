@@ -559,7 +559,7 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
 
     with _lock:
         _cache[yyyymmdd] = (time.time(), out)
-    if not is_today or (datetime.now().hour >= 15 and out["complete"]):
+    if out["complete"]:
         _disk_put(yyyymmdd, out)
 
     logger.info(f"[lhb] {date_str} 龙虎榜 {len(stocks)} 只，游资 {len(youzai_stat)} 组")
@@ -573,7 +573,9 @@ def get_lhb_dates(limit: int = 30) -> list:
         for p in sorted(LHB_DIR.glob("lhb_*.json"), reverse=True):
             d = p.stem.replace("lhb_", "")
             if len(d) == 8 and d.isdigit():
-                dates.append(_fmt(d))
+                disk = _disk_get(d)
+                if _lhb_payload_complete(disk or {}):
+                    dates.append(_fmt(d))
             if len(dates) >= limit:
                 break
     except Exception:
@@ -582,6 +584,62 @@ def get_lhb_dates(limit: int = 30) -> list:
     if today not in dates:
         dates.insert(0, today)
     return dates[:limit]
+
+
+def _recent_weekdays(today: datetime | None = None, days: int = 10) -> list[str]:
+    today = today or datetime.now()
+    out = []
+    cur = today
+    while len(out) < days:
+        if cur.weekday() < 5:
+            out.append(cur.strftime("%Y-%m-%d"))
+        cur -= timedelta(days=1)
+    return out
+
+
+def backfill_recent(
+    today: datetime | None = None,
+    days: int = 5,
+    limit: int = 2,
+    include_today: bool = False,
+) -> dict:
+    """补齐最近工作日缺失的龙虎榜完整缓存。
+
+    调度器用于处理服务重启、东财接口短时失败、席位明细延迟发布等情况。
+    只把带席位明细的完整数据视为 saved，避免把半成品长期落盘。
+    """
+    checked: list[str] = []
+    saved: list[str] = []
+    pending: list[str] = []
+    skipped: list[str] = []
+    attempts = 0
+
+    today_dt = today or datetime.now()
+    today_str = today_dt.strftime("%Y-%m-%d")
+    for date_str in _recent_weekdays(today=today_dt, days=days):
+        if not include_today and date_str == today_str:
+            skipped.append(date_str)
+            continue
+        yyyymmdd = date_str.replace("-", "")
+        disk = _disk_get(yyyymmdd)
+        if _lhb_payload_complete(disk or {}):
+            skipped.append(date_str)
+            continue
+        if attempts >= limit:
+            break
+        attempts += 1
+        checked.append(date_str)
+        try:
+            data = get_lhb_data(date_str, force_refresh=True)
+            if _lhb_payload_complete(data):
+                saved.append(date_str)
+            else:
+                pending.append(date_str)
+        except Exception as e:
+            pending.append(date_str)
+            logger.warning(f"[lhb] backfill {date_str} failed: {e}")
+
+    return {"checked": checked, "saved": saved, "pending": pending, "skipped": skipped}
 
 
 def preload_today() -> bool:
