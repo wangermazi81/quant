@@ -21,6 +21,41 @@ import threading as _threading
 _ai_tasks: dict = {}
 _ai_tasks_lock = _threading.Lock()
 
+DEFAULT_STRATEGY_TEMPLATES = [
+    {
+        "id": "ma_cross",
+        "name": "均线金叉",
+        "category": "趋势",
+        "tags": ["均线", "金叉", "经典"],
+        "desc": "MA5 上穿 MA20，成交量放大，排除 ST 和退市股。",
+        "prompt": "筛选 MA5 上穿 MA20 形成金叉，成交量高于近20日均量1.5倍以上，当日涨幅在2%到8%之间，排除ST和退市股，按成交额降序排列。",
+    },
+    {
+        "id": "volume_breakout",
+        "name": "放量突破",
+        "category": "突破",
+        "tags": ["放量", "突破", "强势"],
+        "desc": "放量突破近期平台或60日高点，优先强势收盘。",
+        "prompt": "筛选股价突破近60日高点，成交量达到近5日均量2倍以上，收盘价接近日内高点，当日涨幅在5%到9.5%之间，排除ST。",
+    },
+    {
+        "id": "oversold_rebound",
+        "name": "超跌反弹",
+        "category": "反转",
+        "tags": ["超跌", "反弹", "低位"],
+        "desc": "RSI 超卖后回升，价格位于低位区域，控制追高。",
+        "prompt": "筛选 RSI14 从30以下回升到30以上，近5日累计跌幅超过10%，当日成交量较昨日放大，当日涨幅在1%到6%之间，排除ST。",
+    },
+    {
+        "id": "second_third_board",
+        "name": "二三板接力",
+        "category": "打板",
+        "tags": ["连板", "情绪", "接力"],
+        "desc": "关注二板、三板晋级候选，结合封单、换手和市场情绪。",
+        "prompt": "筛选昨日二板或三板个股，排除一字板开板风险过高标的，关注换手充分、封单稳定、板块情绪较强、竞价承接良好的候选，给出买入、撤单、止盈止损和持仓周期建议。",
+    },
+]
+
 
 def _kline_is_stale(df, max_lag_days: int = 3) -> bool:
     """K 线缓存是否过期（最后一根距今超过 max_lag_days 个自然日）。
@@ -392,6 +427,11 @@ def api_strategy_templates():
     tpl_file = BASE_DIR / "data" / "strategy_templates.json"
     try:
         templates = json.loads(tpl_file.read_text(encoding="utf-8"))
-        return jsonify({"ok": True, "templates": templates})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "templates": []})
+        if not isinstance(templates, list) or not templates:
+            raise ValueError("strategy template payload is empty or invalid")
+        return jsonify({"ok": True, "templates": templates, "source": "file"})
+    except FileNotFoundError:
+        return jsonify({"ok": True, "templates": DEFAULT_STRATEGY_TEMPLATES, "source": "builtin"})
+    except Exception:
+        logger.warning("Failed to load strategy templates; using built-in defaults", exc_info=True)
+        return jsonify({"ok": True, "templates": DEFAULT_STRATEGY_TEMPLATES, "source": "builtin"})
