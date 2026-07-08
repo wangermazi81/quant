@@ -170,6 +170,49 @@ def test_security_audit_endpoints_require_security_permission(isolated_app):
     assert allowed.get_json()["ok"] is True
 
 
+def test_admin_system_status_requires_dashboard_permission_and_hides_sensitive_details(isolated_app, tmp_path, monkeypatch):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(um, permissions=[])
+    base_dir = tmp_path / "platform"
+    for subdir in ("data/review", "data/lhb", "data/market_snapshots"):
+        (base_dir / subdir).mkdir(parents=True, exist_ok=True)
+    (base_dir / "data" / "review" / "2026-07-07.json").write_text("{}", encoding="utf-8")
+    (base_dir / "data" / "lhb" / "lhb_20260708.json").write_text("{}", encoding="utf-8")
+    (base_dir / "data" / "market_snapshots" / "20260708.json").write_text("{}", encoding="utf-8")
+
+    import web.admin as admin_api
+    monkeypatch.setattr(admin_api, "BASE_DIR", base_dir, raising=False)
+
+    client = app.test_client()
+
+    login_required = client.get("/api/admin/system/status")
+    assert login_required.status_code == 401
+
+    _login_session(client, ops_uid, "ops")
+    denied = client.get("/api/admin/system/status")
+    assert denied.status_code == 403
+    assert denied.get_json()["missing_permission"] == "dashboard_view"
+
+    assert um.set_admin_permissions(ops_uid, ["dashboard_view"], granted_by=1)["ok"]
+    allowed = client.get("/api/admin/system/status")
+    data = allowed.get_json()
+
+    assert allowed.status_code == 200
+    assert data["ok"] is True
+    assert data["checks"]["database"]["ok"] is True
+    assert data["checks"]["data_dir"]["ok"] is True
+    assert data["checks"]["review_archive"]["latest_date"] == "2026-07-07"
+    assert data["checks"]["lhb_cache"]["latest_date"] == "2026-07-08"
+    assert data["checks"]["market_snapshot"]["latest_date"] == "2026-07-08"
+
+    serialized = str(data).lower()
+    assert str(base_dir).lower() not in serialized
+    assert "users.db" not in serialized
+    assert "secret" not in serialized
+    assert "api_key" not in serialized
+    assert "token" not in serialized
+
+
 def test_only_root_admin_can_grant_admin_and_permissions(isolated_app):
     app, um, _main = isolated_app
     ops_uid = _create_admin(um, permissions=["user_manage"])

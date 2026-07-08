@@ -121,6 +121,14 @@ body{font-family:'Segoe UI',system-ui,'Microsoft YaHei',sans-serif;font-size:14p
 /* ===== CHARTS ===== */
 .chart-row{display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:20px}
 .chart-box{height:300px}
+.system-status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.system-status-item{border:1px solid var(--border);border-radius:6px;padding:12px;background:#fff;min-height:84px}
+.system-status-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.system-status-name{font-size:13px;font-weight:600;color:var(--text1)}
+.system-status-pill{font-size:11px;padding:2px 8px;border-radius:999px;background:#f5f7fa;color:var(--text3);white-space:nowrap}
+.system-status-pill.ok{background:#f0f9eb;color:var(--green)}
+.system-status-pill.bad{background:#fef0f0;color:var(--red)}
+.system-status-meta{font-size:12px;color:var(--text3);line-height:1.7;word-break:break-word}
 
 /* ===== ACTIVITY ===== */
 .timeline{list-style:none;padding:0}
@@ -451,6 +459,12 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
         <div class="card">
           <div class="card-title"><i class="fas fa-chart-pie"></i> 功能使用分布</div>
           <div class="chart-box" id="chartPie"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><i class="fas fa-heartbeat"></i> 运行诊断</div>
+        <div class="system-status-grid" id="systemStatusBody">
+          <div class="system-status-meta">加载中...</div>
         </div>
       </div>
       <div class="card">
@@ -1307,9 +1321,50 @@ async function loadDashboard(){
   document.getElementById('st-points').textContent = d.total_points.toLocaleString();
   document.getElementById('st-calls').textContent = d.today_calls;
   document.getElementById('st-active').textContent = d.active_users;
+  loadSystemStatus();
   renderLineChart();
   renderPieChart();
   renderActivity();
+}
+
+async function loadSystemStatus(){
+  const box = document.getElementById('systemStatusBody');
+  if(!box) return;
+  try{
+    const r = await fetch(`${API}/admin/system/status`,{credentials:'include'});
+    const d = await safeJson(r);
+    if(!r.ok || !d.ok){
+      box.innerHTML = `<div class="system-status-meta">暂无权限或诊断接口不可用</div>`;
+      return;
+    }
+    const checks = d.checks || {};
+    const rows = [
+      ['database','数据库', c => c.readable ? '可读' : '不可读'],
+      ['data_dir','数据目录', c => c.writable ? '可写' : '只读'],
+      ['review_archive','复盘归档', c => c.latest_date || '暂无归档'],
+      ['lhb_cache','龙虎榜缓存', c => c.latest_date || '暂无缓存'],
+      ['market_snapshot','市场快照', c => c.latest_date || '暂无快照'],
+    ];
+    box.innerHTML = rows.map(([key, name, meta])=>{
+      const c = checks[key] || {};
+      const ok = !!c.ok;
+      const count = Number.isFinite(Number(c.file_count)) ? `文件 ${Number(c.file_count)}` : '';
+      const updated = c.latest_updated_at ? `更新 ${esc(c.latest_updated_at)}` : '';
+      return `<div class="system-status-item">
+        <div class="system-status-head">
+          <span class="system-status-name">${name}</span>
+          <span class="system-status-pill ${ok?'ok':'bad'}">${ok?'正常':'异常'}</span>
+        </div>
+        <div class="system-status-meta">
+          <div>${esc(String(meta(c)))}</div>
+          ${count?`<div>${count}</div>`:''}
+          ${updated?`<div>${updated}</div>`:''}
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){
+    box.innerHTML = `<div class="system-status-meta">诊断加载失败</div>`;
+  }
 }
 
 function renderLineChart(){

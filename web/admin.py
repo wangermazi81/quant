@@ -1,11 +1,83 @@
 """管理员 API 蓝图：公告管理 / 日志 / 统计 / 用户与积分管理。"""
+import os
+import re
+from datetime import datetime
+from pathlib import Path
+
 from flask import Blueprint, request, jsonify, session
 
 import user_manager as um
 import app_security as sec
-from app_state import require_admin, require_admin_perm, require_root_admin
+from app_state import BASE_DIR, require_admin, require_admin_perm, require_root_admin
 
 bp = Blueprint("admin", __name__)
+
+
+def _safe_mtime(path: Path) -> str | None:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+def _cache_dir_status(relative_dir: str, date_pattern: str, date_format: str) -> dict:
+    directory = (BASE_DIR / relative_dir).resolve()
+    status = {
+        "ok": False,
+        "exists": directory.exists() and directory.is_dir(),
+        "writable": False,
+        "file_count": 0,
+        "latest_date": None,
+        "latest_updated_at": None,
+    }
+    if not status["exists"]:
+        return status
+
+    status["writable"] = os.access(str(directory), os.W_OK)
+    candidates = []
+    pattern = re.compile(date_pattern)
+    try:
+        for item in directory.iterdir():
+            if not item.is_file():
+                continue
+            status["file_count"] += 1
+            match = pattern.match(item.name)
+            if not match:
+                continue
+            raw_date = match.group(1)
+            try:
+                date_text = datetime.strptime(raw_date, date_format).strftime("%Y-%m-%d")
+            except Exception:
+                continue
+            candidates.append((date_text, item))
+    except Exception:
+        return status
+
+    if candidates:
+        latest_date, latest_file = max(candidates, key=lambda pair: pair[0])
+        status["latest_date"] = latest_date
+        status["latest_updated_at"] = _safe_mtime(latest_file)
+    status["ok"] = bool(status["exists"])
+    return status
+
+
+def _database_status() -> dict:
+    try:
+        with um._conn() as conn:
+            conn.execute("SELECT 1").fetchone()
+        return {"ok": True, "readable": True}
+    except Exception:
+        return {"ok": False, "readable": False}
+
+
+def _data_dir_status() -> dict:
+    directory = (BASE_DIR / "data").resolve()
+    exists = directory.exists() and directory.is_dir()
+    return {
+        "ok": bool(exists),
+        "exists": bool(exists),
+        "writable": bool(exists and os.access(str(directory), os.W_OK)),
+    }
 
 
 # ── 公告管理 ──────────────────────────────────────────────────
@@ -111,6 +183,23 @@ def admin_security_release_ip(ip):
 @require_admin_perm("dashboard_view")
 def admin_stats():
     return jsonify({"ok": True, **um.stats()})
+
+
+@bp.route("/api/admin/system/status")
+@require_admin_perm("dashboard_view")
+def admin_system_status():
+    checks = {
+        "database": _database_status(),
+        "data_dir": _data_dir_status(),
+        "review_archive": _cache_dir_status("data/review", r"^(\d{4}-\d{2}-\d{2})\.json$", "%Y-%m-%d"),
+        "lhb_cache": _cache_dir_status("data/lhb", r"^lhb_(\d{8})\.json$", "%Y%m%d"),
+        "market_snapshot": _cache_dir_status("data/market_snapshots", r"^(\d{8})\.json$", "%Y%m%d"),
+    }
+    return jsonify({
+        "ok": True,
+        "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "checks": checks,
+    })
 
 
 @bp.route("/api/admin/permissions/catalog")
