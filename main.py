@@ -2257,10 +2257,13 @@ def api_factor_evaluate():
         description: 因子评价指标
     """
     uid = session["user_id"]
-    d   = request.json or {}
+    d   = request.get_json(silent=True) or {}
     fn  = d.get("filename", "")
     cs  = d.get("codes") or []
-    period = int(d.get("period", 20))
+    period = _int_value(d.get("period"), 20)
+    if period is None or period <= 0:
+        return jsonify({"ok": False, "error": "invalid period"}), 400
+    period = max(1, min(250, period))
     _add_log(uid, f"因子评价: [{fn}] period={period}")
     try:
         r = fm.evaluate(fn, cs, period=period)

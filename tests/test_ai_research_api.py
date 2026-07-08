@@ -71,3 +71,17 @@ def test_research_backtest_starts_async_job_without_blocking(tmp_path, monkeypat
     assert status["status"] == "done"
     assert status["result"]["decision_count"] == 1
     assert status["result"]["avg_pnl_pct"] == 3.0
+
+
+def test_research_backtest_rejects_invalid_top_before_queueing(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "research.db")
+    store.init_research_db()
+    client = _app(101).test_client()
+
+    data = client.post(
+        "/api/ai_trader/research/backtest",
+        json={"start": "2026-07-01", "end": "2026-07-05", "top": "bad"},
+    ).get_json()
+
+    assert data["ok"] is False
+    assert "top" in data["error"]

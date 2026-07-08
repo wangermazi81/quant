@@ -249,3 +249,27 @@ def test_portfolio_optimize_rejects_invalid_capital_before_optimizer(monkeypatch
     assert data["ok"] is False
     assert "capital" in data["error"]
     assert calls == []
+
+
+def test_factor_evaluate_rejects_invalid_period_before_evaluator(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        main.fm,
+        "evaluate",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or {"ok": True},
+        raising=False,
+    )
+
+    client = main.app.test_client()
+    _login(client, uid=83)
+
+    response = client.post(
+        "/api/factors/evaluate",
+        json={"filename": "factor.py", "codes": ["000001"], "period": "bad"},
+    )
+    data = response.get_json()
+
+    assert response.status_code == 400
+    assert data["ok"] is False
+    assert "period" in data["error"]
+    assert calls == []

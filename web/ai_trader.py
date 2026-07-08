@@ -34,6 +34,18 @@ def _mask_key(k: str) -> str:
     return (k[:4] + "•" * 6 + k[-4:]) if len(k) > 10 else "••••••"
 
 
+def _int_payload_value(payload, name: str, default: int, min_value: int, max_value: int):
+    raw = payload.get(name)
+    if raw in (None, ""):
+        value = default
+    else:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+    return max(min_value, min(max_value, value))
+
+
 # ── 元信息：角色 + 服务商预设（页面初始化用）──────────────
 @bp.route("/api/ai_trader/meta")
 @require_auth
@@ -210,7 +222,7 @@ def _run_research_backtest_job(job_id, uid, payload):
             uid,
             start=str(payload.get("start") or ""),
             end=str(payload.get("end") or ""),
-            top=int(payload.get("top") or 100),
+            top=payload["top"],
         )
         with _research_jobs_lock:
             _research_jobs[job_id].update({"status": "done", "result": result, "finished_at": time.time()})
@@ -222,7 +234,11 @@ def _run_research_backtest_job(job_id, uid, payload):
 @bp.route("/api/ai_trader/research/backtest", methods=["POST"])
 @require_auth
 def research_backtest():
-    payload = request.json or {}
+    payload = request.get_json(silent=True) or {}
+    top = _int_payload_value(payload, "top", 100, 1, 500)
+    if top is None:
+        return jsonify({"ok": False, "error": "invalid top"}), 400
+    payload["top"] = top
     job_id = uuid.uuid4().hex[:12]
     uid = _uid()
     with _research_jobs_lock:
