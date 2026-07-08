@@ -14,7 +14,8 @@ bp = Blueprint("lhb", __name__)
 def api_lhb_data():
     import lhb_engine as le
     date = (request.args.get("date") or "").strip()
-    data = le.get_lhb_data(date or None)
+    force = request.args.get("refresh", "0") == "1"
+    data = le.get_lhb_data(date or None, force_refresh=force)
     return jsonify(data)
 
 

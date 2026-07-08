@@ -9,6 +9,37 @@ import _pathsetup  # noqa: F401
 import review_engine
 
 
+def test_lhb_preloader_retries_until_today_is_cached(monkeypatch):
+    calls = []
+
+    def fake_preload_today():
+        calls.append(len(calls) + 1)
+        return len(calls) >= 2
+
+    monkeypatch.setitem(sys.modules, "lhb_engine", types.SimpleNamespace(preload_today=fake_preload_today))
+    state = {}
+
+    first = review_engine._maybe_preload_lhb(
+        datetime(2026, 7, 8, 15, 31, 0), state, now_ts=1000.0
+    )
+    too_soon = review_engine._maybe_preload_lhb(
+        datetime(2026, 7, 8, 15, 33, 0), state, now_ts=1060.0
+    )
+    second = review_engine._maybe_preload_lhb(
+        datetime(2026, 7, 8, 15, 36, 0), state, now_ts=1301.0
+    )
+    after_success = review_engine._maybe_preload_lhb(
+        datetime(2026, 7, 8, 15, 45, 0), state, now_ts=1900.0
+    )
+
+    assert first is False
+    assert too_soon is False
+    assert second is True
+    assert after_success is True
+    assert calls == [1, 2]
+    assert state["done_date"] == "2026-07-08"
+
+
 def test_daily_review_without_date_uses_latest_archive_before_market_open(monkeypatch):
     from flask import Flask
     import web.review as review_web

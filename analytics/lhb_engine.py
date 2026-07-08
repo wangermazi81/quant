@@ -363,7 +363,7 @@ def _fetch_seat_detail(code: str, date_str: str) -> list:
 # 主入口
 # ══════════════════════════════════════════════════════════════
 
-def get_lhb_data(date: str = None) -> dict:
+def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
     """获取龙虎榜全量数据（股票 + 席位 + 游资图谱标注）。
 
     date: YYYY-MM-DD 或 YYYYMMDD，默认今日。
@@ -382,28 +382,31 @@ def get_lhb_data(date: str = None) -> dict:
     is_today = (yyyymmdd == _today())
 
     # 历史数据直读磁盘
-    if not is_today:
+    if not is_today and not force_refresh:
         disk = _disk_get(yyyymmdd)
         if disk:
             return disk
 
     # 内存缓存（盘中 5 分钟刷新；盘后不过期）
-    with _lock:
-        hit = _cache.get(yyyymmdd)
-        if hit:
-            ts, cached = hit
-            ttl = 300 if datetime.now().hour < 16 else 86400
-            if time.time() - ts < ttl:
-                return cached
+    if not force_refresh:
+        with _lock:
+            hit = _cache.get(yyyymmdd)
+            if hit:
+                ts, cached = hit
+                ttl = 300 if datetime.now().hour < 16 else 86400
+                if time.time() - ts < ttl:
+                    return cached
 
     # ── 1. 股票列表 ─────────────────────────────────────────
     stocks = _fetch_lhb_stocks(yyyymmdd)
     if not stocks:
-        disk = _disk_get(yyyymmdd)
-        if disk:
-            logger.info(f"[lhb] {date_str} 用磁盘缓存")
-            return disk
+        if not force_refresh:
+            disk = _disk_get(yyyymmdd)
+            if disk:
+                logger.info(f"[lhb] {date_str} 用磁盘缓存")
+                return disk
         return {"ok": False, "date": date_str, "stocks": [],
+                "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "error": "龙虎榜数据暂未发布或接口暂时拉取失败，请15:30后重试"}
 
     # ── 2. 席位明细（取前40只，避免过多请求）────────────────
@@ -439,6 +442,8 @@ def get_lhb_data(date: str = None) -> dict:
         "stocks":      stocks,
         "youzai_stat": youzai_stat,
         "total":       len(stocks),
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "source":       "eastmoney_akshare",
     }
 
     with _lock:
@@ -468,9 +473,11 @@ def get_lhb_dates(limit: int = 30) -> list:
     return dates[:limit]
 
 
-def preload_today():
+def preload_today() -> bool:
     """后台预加载今日数据（主要在 15:30 后触发）。"""
     try:
-        get_lhb_data()
+        data = get_lhb_data(force_refresh=True)
+        return bool(data.get("ok") and data.get("stocks"))
     except Exception as e:
         logger.warning(f"[lhb] 预加载失败: {e}")
+        return False

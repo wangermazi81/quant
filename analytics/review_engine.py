@@ -421,13 +421,46 @@ def generate_async(date_str: str = None, phase: str = "manual", with_ai: bool = 
 # ──────────────────────────────────────────────────────────────
 # 调度线程：15:10 收盘版 → 19:50 晚间版
 # ──────────────────────────────────────────────────────────────
+def _maybe_preload_lhb(now: datetime, state: dict, now_ts: float | None = None) -> bool:
+    if now.weekday() >= 5:
+        return False
+    today = now.strftime("%Y-%m-%d")
+    if state.get("done_date") == today:
+        return True
+
+    hm = now.hour * 100 + now.minute
+    if not (1530 <= hm < 2100):
+        return False
+
+    now_ts = time.time() if now_ts is None else now_ts
+    if state.get("last_date") != today:
+        state["last_date"] = today
+        state["last_try"] = 0.0
+    if now_ts - float(state.get("last_try") or 0.0) < 300:
+        return False
+
+    state["last_try"] = now_ts
+    try:
+        import lhb_engine
+
+        ok = bool(lhb_engine.preload_today())
+        if ok:
+            state["done_date"] = today
+        return ok
+    except Exception as e:
+        logger.warning(f"[review] 龙虎榜预加载异常: {e}")
+        return False
+
+
 def run_review_scheduler():
     logger.info("[review] 每日复盘调度器启动")
     last_try = 0.0
+    lhb_state = {}
     while True:
         try:
             now = datetime.now()
             if now.weekday() < 5:
+                _maybe_preload_lhb(now, lhb_state)
                 hm    = now.hour * 100 + now.minute
                 today = _today()
                 cur   = load(today) or {}

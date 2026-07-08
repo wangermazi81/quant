@@ -1037,6 +1037,7 @@ tr:hover td{background:var(--card)}
           <div class="lhb-sub-tab active" id="lhb-sub-graph" onclick="lhbSubTab('graph')">游资图谱</div>
           <div class="lhb-sub-tab" id="lhb-sub-list"  onclick="lhbSubTab('list')">龙虎榜单</div>
         </div>
+        <span id="lhb-status" style="font-size:11px;color:var(--t3);white-space:nowrap"></span>
         <button class="btn" onclick="loadLhb(true)" style="padding:3px 10px;font-size:12px;margin-left:auto">刷新</button>
       </div>
       <!-- 复盘内容 -->
@@ -6895,7 +6896,7 @@ function initReviewPage(){
     const pg = document.getElementById('page-review')
     if(!pg || !pg.classList.contains('active')) return
     const sel   = document.getElementById('rv-date')
-    const today = new Date().toISOString().slice(0,10)
+    const today = _normDate(new Date())
     if(sel && sel.value && sel.value !== today) return   // 看历史日期时不打扰
     const now = new Date(), day = now.getDay(), hm = now.getHours()*100 + now.getMinutes()
     if(day >= 1 && day <= 5 && hm >= 925 && hm <= 1505) loadReview(true, true)
@@ -6942,7 +6943,7 @@ async function _initLhbDates(){
     const r = await fetch('/api/lhb/dates')
     const d = await r.json()
     const sel   = document.getElementById('lhb-date')
-    const today = new Date().toISOString().slice(0,10)
+    const today = _normDate(new Date())
     const dates = (d.dates||[]).slice()
     if(!dates.includes(today)) dates.unshift(today)
     sel.innerHTML = dates.map(x=>`<option value="${x}">${x===today?x+'（今天）':x}</option>`).join('')
@@ -6954,12 +6955,18 @@ async function loadLhb(force){
   const date = sel && sel.value ? sel.value : ''
   const gc   = document.getElementById('lhb-graph-canvas')
   const lc   = document.getElementById('lhb-list-canvas')
+  const st   = document.getElementById('lhb-status')
+  if(st) st.textContent = force === true ? '正在强制刷新…' : '正在加载…'
   gc.innerHTML = '<div class="empty-hint">加载中…</div>'
   lc.innerHTML = '<div class="empty-hint">加载中…</div>'
   try{
-    const r = await fetch(`/api/lhb/data?date=${date}`)
+    const r = await fetch(`/api/lhb/data?date=${date}${force===true?'&refresh=1':''}`)
     const d = await r.json()
     _lhbCache = d
+    if(st){
+      const t = d.generated_at ? d.generated_at.slice(11,19) : ''
+      st.textContent = d.ok ? `已整理 ${d.total||0} 只${t?' · '+t:''}` : (d.error || '暂无数据')
+    }
     renderYouzaiGraph(d, gc)
     renderLhbList(d, lc)
     // 若当前子 tab 是榜单则切回显示
@@ -6968,6 +6975,7 @@ async function loadLhb(force){
       document.getElementById('lhb-list-area').style.display  = 'block'
     }
   }catch(e){
+    if(st) st.textContent = '加载失败'
     gc.innerHTML = `<div class="empty-hint">加载失败: ${e.message}</div>`
     lc.innerHTML = `<div class="empty-hint">加载失败: ${e.message}</div>`
   }
@@ -7151,7 +7159,7 @@ async function loadReviewDates(){
     const r = await fetch('/api/review/dates')
     const d = await r.json()
     const sel   = document.getElementById('rv-date')
-    const today = new Date().toISOString().slice(0,10)
+    const today = _normDate(new Date())
     const dates = (d.dates||[]).slice()
     if(!dates.includes(today)) dates.unshift(today)
     sel.innerHTML = dates.map(x=>`<option value="${x}">${x===today ? x+'（今天）' : x}</option>`).join('')
