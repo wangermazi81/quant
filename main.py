@@ -2011,12 +2011,11 @@ def api_delete():
 @app.route("/api/strategies/run", methods=["POST"])
 @require_auth
 def api_run():
-    err = _deduct("scan", "全市场选股扫描")
-    if err:
-        return jsonify(err), 402
     uid = session["user_id"]
-    d   = request.json
-    fn  = d.get("filename", "")
+    d   = request.get_json(silent=True) or {}
+    fn  = (d.get("filename") or "").strip()
+    if not fn:
+        return jsonify({"ok": False, "error": "invalid filename"}), 400
     cs  = d.get("codes") or []
     # 前端可传 max_codes 控制扫描范围：
     #   0       = 全市场（约 5000 只，2-3 分钟）
@@ -2026,6 +2025,9 @@ def api_run():
         mc = int(d.get("max_codes", 0))
     except (TypeError, ValueError):
         mc = 0
+    err = _deduct("scan", "全市场选股扫描")
+    if err:
+        return jsonify(err), 402
     scope_label = "全市场" if not cs else f"{len(cs)}只"
     if not cs and mc > 0:
         scope_label = f"活跃前{mc}只"
@@ -2041,17 +2043,19 @@ def api_run():
 def api_run_async():
     """异步选股：立即返回 task_id，前端轮询 /strategies/progress 和 /strategies/result。"""
     import uuid as _uuid
-    err = _deduct("scan", "全市场选股扫描")
-    if err:
-        return jsonify(err), 402
     uid = session["user_id"]
-    d   = request.json or {}
-    fn  = d.get("filename", "")
+    d   = request.get_json(silent=True) or {}
+    fn  = (d.get("filename") or "").strip()
+    if not fn:
+        return jsonify({"ok": False, "error": "invalid filename"}), 400
     cs  = d.get("codes") or []
     try:
         mc = int(d.get("max_codes", 0))
     except (TypeError, ValueError):
         mc = 0
+    err = _deduct("scan", "全市场选股扫描")
+    if err:
+        return jsonify(err), 402
     task_id = _uuid.uuid4().hex[:12]
     with _strat_tasks_lock:
         _strat_tasks[task_id] = {"status": "pending", "uid": uid, "fn": fn}
