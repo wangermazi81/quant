@@ -16,6 +16,32 @@ git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
 RUN_USER=$(systemctl show "$SERVICE" -p User --value 2>/dev/null)
 RUN_USER="${RUN_USER:-root}"
 
+secure_runtime_secrets() {
+    local owner="$1"
+    local files=(
+        ".env"
+        "data/.secret_key"
+        "data/ai_config.json"
+        "data/ai_trader_config.json"
+        "data/ai_research.db"
+        "data/ai_research.db-wal"
+        "data/ai_research.db-shm"
+        "data/users.db"
+        "data/users.db-wal"
+        "data/users.db-shm"
+        "data/search_config.json"
+        "data/notify_config.json"
+        "tools/bridge_config.json"
+    )
+
+    for file in "${files[@]}"; do
+        if [ -e "$file" ]; then
+            chown "$owner:$owner" "$file" 2>/dev/null || true
+            chmod 600 "$file" 2>/dev/null || true
+        fi
+    done
+}
+
 echo "[1/6] Pull latest code from Gitee"
 git fetch origin --prune
 LOCAL=$(git rev-parse HEAD)
@@ -83,6 +109,7 @@ echo
 echo "[4/6] Run database migration"
 sudo -u "$RUN_USER" "$APP_DIR/venv/bin/python" core/db_migration.py \
     || echo "WARNING: migration reported an error; continuing because migrations are idempotent."
+secure_runtime_secrets "$RUN_USER"
 
 echo
 echo "[5/6] Restart service"

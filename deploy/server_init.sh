@@ -13,6 +13,32 @@ GITEE_REPO="${GITEE_REPO:-https://gitee.com/wangermazi81/quant.git}"
 BRANCH="${BRANCH:-main}"
 PORT="${PORT:-5000}"
 
+secure_runtime_secrets() {
+    local owner="$1"
+    local files=(
+        ".env"
+        "data/.secret_key"
+        "data/ai_config.json"
+        "data/ai_trader_config.json"
+        "data/ai_research.db"
+        "data/ai_research.db-wal"
+        "data/ai_research.db-shm"
+        "data/users.db"
+        "data/users.db-wal"
+        "data/users.db-shm"
+        "data/search_config.json"
+        "data/notify_config.json"
+        "tools/bridge_config.json"
+    )
+
+    for file in "${files[@]}"; do
+        if [ -e "$file" ]; then
+            chown "$owner:$owner" "$file" 2>/dev/null || true
+            chmod 600 "$file" 2>/dev/null || true
+        fi
+    done
+}
+
 echo
 echo "Jianwei Alpha first-time server setup"
 echo "APP_DIR = $APP_DIR"
@@ -97,6 +123,7 @@ fi
 echo
 echo "[7/9] Run database migration"
 python3 core/db_migration.py || true
+secure_runtime_secrets root
 
 echo
 echo "[8/9] Configure systemd service"
