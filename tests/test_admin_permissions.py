@@ -365,8 +365,8 @@ def test_only_root_admin_can_grant_admin_and_permissions(isolated_app):
     assert um.get_admin_permissions(target_uid) == ["dashboard_view"]
 
 
-def test_builtin_strategy_and_factor_source_are_not_returned_to_admin(isolated_app, monkeypatch):
-    app, _um, main = isolated_app
+def test_builtin_strategy_and_factor_source_visibility_respects_root_admin(isolated_app, monkeypatch):
+    app, um, main = isolated_app
 
     monkeypatch.setattr(main.sm, "get_meta", lambda filename: {"name": "Secret Strategy", "builtin": True})
     monkeypatch.setattr(main.sm, "get_code", lambda filename: "SECRET_STRATEGY_CODE")
@@ -375,6 +375,17 @@ def test_builtin_strategy_and_factor_source_are_not_returned_to_admin(isolated_a
 
     client = app.test_client()
     _login_session(client, 1, "admin")
+
+    strategy = client.get("/api/strategies/core_alpha").get_json()
+    factor = client.get("/api/factors/core_factor").get_json()
+
+    assert strategy["locked"] is False
+    assert strategy["code"] == "SECRET_STRATEGY_CODE"
+    assert factor["locked"] is False
+    assert factor["code"] == "SECRET_FACTOR_CODE"
+
+    ops_uid = _create_admin(um, username="limited_ops", permissions=["strategy_manage"])
+    _login_session(client, ops_uid, "limited_ops")
 
     strategy = client.get("/api/strategies/core_alpha").get_json()
     factor = client.get("/api/factors/core_factor").get_json()
