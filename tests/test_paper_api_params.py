@@ -194,3 +194,58 @@ def test_positions_sell_falls_back_to_broker_price_when_request_price_invalid(mo
     assert response.status_code == 200
     assert data["ok"] is True
     assert calls == [(80, "000001", 11.2, "手动卖出")]
+
+
+def test_backtest_rejects_invalid_numeric_params_before_deducting(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main.sm, "get_code", lambda filename: "def handle_bar(ctx):\n    pass\n")
+    monkeypatch.setattr(main, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
+
+    fake_backtest = types.SimpleNamespace(
+        run_backtest=lambda **kwargs: calls.append(("run_backtest", kwargs)) or {"ok": True},
+        start_backtest_async=lambda **kwargs: calls.append(("start_backtest_async", kwargs)) or "task-1",
+    )
+    monkeypatch.setitem(sys.modules, "backtest", fake_backtest)
+
+    client = main.app.test_client()
+    _login(client, uid=81)
+
+    response = client.post(
+        "/api/backtest",
+        json={
+            "filename": "strategy.py",
+            "codes": ["000001"],
+            "capital": "bad",
+            "max_positions": 5,
+            "stop_loss": -0.05,
+            "take_profit": 0.1,
+        },
+    )
+    data = response.get_json()
+
+    assert response.status_code == 400
+    assert data["ok"] is False
+    assert "capital" in data["error"]
+    assert calls == []
+
+
+def test_portfolio_optimize_rejects_invalid_capital_before_optimizer(monkeypatch):
+    calls = []
+    fake_optimizer = types.SimpleNamespace(
+        optimize_portfolio=lambda *args, **kwargs: calls.append((args, kwargs)) or {"ok": True}
+    )
+    monkeypatch.setitem(sys.modules, "portfolio_optimizer", fake_optimizer)
+
+    client = main.app.test_client()
+    _login(client, uid=82)
+
+    response = client.post(
+        "/api/portfolio/optimize",
+        json={"codes": ["000001", "000002"], "mode": "equal_weight", "capital": "bad"},
+    )
+    data = response.get_json()
+
+    assert response.status_code == 400
+    assert data["ok"] is False
+    assert "capital" in data["error"]
+    assert calls == []

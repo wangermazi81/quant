@@ -208,6 +208,15 @@ def _positive_float_value(raw, default: float | None = None) -> float | None:
     return value if value > 0 else None
 
 
+def _float_value(raw, default: float | None = None) -> float | None:
+    if raw in (None, ""):
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _int_value(raw, default: int | None = None) -> int | None:
     if raw in (None, ""):
         return default
@@ -2931,11 +2940,8 @@ def api_factors_zoo_result(task_id):
 @app.route("/api/backtest", methods=["POST"])
 @require_auth
 def api_backtest():
-    err = _deduct("backtest", "策略回测")
-    if err:
-        return jsonify(err), 402
     uid      = session["user_id"]
-    d        = request.json
+    d        = request.get_json(silent=True) or {}
     fn       = d.get("filename", "")
     code_str = sm.get_code(fn) if fn else ""
     if not code_str:
@@ -2951,16 +2957,32 @@ def api_backtest():
 
     full_market = not codes
     mode_label  = "全市场" if full_market else f"{len(codes)}只"
+    initial_capital = _positive_float_value(d.get("capital"), 100000)
+    max_positions = _int_value(d.get("max_positions"), 5)
+    stop_loss = _float_value(d.get("stop_loss"), -0.05)
+    take_profit = _float_value(d.get("take_profit"), 0.10)
+    if initial_capital is None:
+        return jsonify({"ok": False, "error": "invalid capital"}), 400
+    if max_positions is None or max_positions <= 0:
+        return jsonify({"ok": False, "error": "invalid max_positions"}), 400
+    if stop_loss is None:
+        return jsonify({"ok": False, "error": "invalid stop_loss"}), 400
+    if take_profit is None:
+        return jsonify({"ok": False, "error": "invalid take_profit"}), 400
+
     bt_kwargs   = dict(
         strategy_code   = code_str,
         codes           = codes,
         start_date      = d.get("start_date", "2024-01-01"),
         end_date        = d.get("end_date",   "2024-12-31"),
-        initial_capital = float(d.get("capital",        100000)),
-        max_positions   = int(d.get("max_positions",    5)),
-        stop_loss       = float(d.get("stop_loss",      -0.05)),
-        take_profit     = float(d.get("take_profit",    0.10)),
+        initial_capital = initial_capital,
+        max_positions   = max_positions,
+        stop_loss       = stop_loss,
+        take_profit     = take_profit,
     )
+    err = _deduct("backtest", "策略回测")
+    if err:
+        return jsonify(err), 402
 
     if full_market:
         from backtest import start_backtest_async
@@ -3016,10 +3038,12 @@ def api_portfolio_optimize():
         description: 各股权重及建议仓位
     """
     uid = session["user_id"]
-    d   = request.json or {}
+    d   = request.get_json(silent=True) or {}
     codes   = d.get("codes", [])
     mode    = d.get("mode", "equal_weight")
-    capital = float(d.get("capital", get_user_state(uid)["capital"]))
+    capital = _positive_float_value(d.get("capital"), get_user_state(uid)["capital"])
+    if capital is None:
+        return jsonify({"ok": False, "error": "invalid capital"}), 400
     if not codes:
         return jsonify({"ok": False, "error": "codes 不能为空"})
     try:
