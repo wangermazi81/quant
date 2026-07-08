@@ -76,6 +76,17 @@ def test_preload_today_keeps_retrying_until_seat_details_are_ready(monkeypatch):
     assert lhb_engine.preload_today() is False
 
 
+def test_lhb_payload_requires_meaningful_seat_detail_coverage():
+    stocks = [
+        {"code": f"00000{i}", "branches": [{"name": "seat"}] if i == 0 else []}
+        for i in range(10)
+    ]
+
+    data = {"ok": True, "stocks": stocks}
+
+    assert lhb_engine._lhb_payload_complete(data) is False
+
+
 def test_preload_today_keeps_retrying_until_today_payload_is_finalized(monkeypatch):
     monkeypatch.setattr(
         lhb_engine,

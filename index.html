@@ -6967,7 +6967,8 @@ async function loadLhb(force){
       const t = d.generated_at ? d.generated_at.slice(11,19) : ''
       const updating = d.status === 'updating' || d.finalized === false
       const label = updating ? '整理中' : '已归档'
-      st.textContent = d.ok ? `${label} ${d.total||0} 只${t?' · '+t:''}` : (d.error || '暂无数据')
+      const seat = d.seat_detail_target ? ` · 席位 ${d.seat_detail_count||0}/${d.seat_detail_target}` : ''
+      st.textContent = d.ok ? `${label} ${d.total||0} 只${seat}${t?' · '+t:''}` : (d.error || '暂无数据')
     }
     renderYouzaiGraph(d, gc)
     renderLhbList(d, lc)

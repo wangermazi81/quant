@@ -194,13 +194,27 @@ def _seat_detail_count(data: dict) -> int:
     return sum(1 for s in stocks if isinstance(s, dict) and s.get("branches"))
 
 
+def _seat_detail_target(data: dict) -> int:
+    stocks = data.get("stocks") if isinstance(data, dict) else None
+    if not isinstance(stocks, list):
+        return 0
+    return min(40, len(stocks))
+
+
+def _required_seat_detail_count(target: int) -> int:
+    if target <= 0:
+        return 0
+    if target <= 1:
+        return 1
+    return max(1, (target * 3 + 4) // 5)
+
+
 def _lhb_payload_complete(data: dict) -> bool:
     stocks = data.get("stocks") if isinstance(data, dict) else None
     if not data.get("ok") or not isinstance(stocks, list) or not stocks:
         return False
-    # 龙虎榜发布时可能先出股票列表、席位明细稍后才可查。
-    # 自动预加载只有等到至少一只股票带席位后才算完成，避免缓存半成品图谱。
-    return _seat_detail_count(data) > 0
+    target = _seat_detail_target(data)
+    return _seat_detail_count(data) >= _required_seat_detail_count(target)
 
 
 def _today() -> str:
@@ -571,12 +585,16 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
         "youzai_stat": youzai_stat,
         "total":       len(stocks),
         "seat_detail_count": _seat_detail_count({"stocks": stocks}),
+        "seat_detail_target": top_n,
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "source":       "eastmoney_akshare",
     }
+    out["seat_detail_coverage"] = round(
+        out["seat_detail_count"] / out["seat_detail_target"], 3
+    ) if out["seat_detail_target"] else 0
     out["complete"] = _lhb_payload_complete(out)
     out["finalized"] = (not is_today) or _lhb_today_finalized()
-    out["status"] = "final" if out["finalized"] else "updating"
+    out["status"] = "final" if out["complete"] and out["finalized"] else "updating"
 
     with _lock:
         _cache[yyyymmdd] = (time.time(), out)
