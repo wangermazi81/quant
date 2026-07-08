@@ -13,6 +13,24 @@ from app_state import BASE_DIR, require_admin, require_admin_perm, require_root_
 bp = Blueprint("admin", __name__)
 
 
+def _bounded_int_arg(name: str, default: int, min_value: int, max_value: int) -> int:
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(min_value, min(max_value, value))
+
+
+def _optional_int_arg(name: str) -> int | None:
+    raw = request.args.get(name)
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _safe_mtime(path: Path) -> str | None:
     try:
         return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
@@ -120,16 +138,16 @@ def admin_delete_announcement(ann_id):
 @bp.route("/api/admin/logs")
 @require_admin_perm("security_audit")
 def admin_get_logs():
-    uid_filter = request.args.get("uid")
-    limit      = int(request.args.get("limit", 500))
-    logs = um.get_all_logs(uid=int(uid_filter) if uid_filter else None, limit=limit)
+    uid_filter = _optional_int_arg("uid")
+    limit      = _bounded_int_arg("limit", 500, 1, 1000)
+    logs = um.get_all_logs(uid=uid_filter, limit=limit)
     return jsonify({"ok": True, "logs": logs})
 
 
 @bp.route("/api/admin/security/events")
 @require_admin_perm("security_audit")
 def admin_security_events():
-    limit = int(request.args.get("limit", 200))
+    limit = _bounded_int_arg("limit", 200, 1, 1000)
     ip = (request.args.get("ip") or "").strip()
     event_type = (request.args.get("event_type") or "").strip()
     return jsonify({
@@ -211,7 +229,7 @@ def admin_permissions_catalog():
 @bp.route("/api/admin/users")
 @require_admin_perm("user_manage")
 def admin_users():
-    page   = int(request.args.get("page", 1))
+    page   = _bounded_int_arg("page", 1, 1, 100000)
     search = request.args.get("search", "")
     return jsonify({"ok": True, **um.list_users(page, 20, search)})
 
@@ -282,7 +300,7 @@ def admin_save_user_permissions(uid):
 @bp.route("/api/admin/transactions")
 @require_admin_perm("points_manage")
 def admin_transactions():
-    page = int(request.args.get("page", 1))
+    page = _bounded_int_arg("page", 1, 1, 100000)
     return jsonify({"ok": True, **um.all_point_transactions(page, 30)})
 
 

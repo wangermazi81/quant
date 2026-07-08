@@ -183,6 +183,57 @@ def test_security_audit_endpoints_require_security_permission(isolated_app):
     assert allowed.get_json()["ok"] is True
 
 
+def test_admin_list_endpoints_sanitize_numeric_query_params(isolated_app, monkeypatch):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(
+        um,
+        permissions=["user_manage", "points_manage", "security_audit"],
+    )
+
+    import web.admin as admin_api
+
+    calls = []
+    monkeypatch.setattr(
+        admin_api.um,
+        "list_users",
+        lambda page, page_size, search: calls.append(("users", page, page_size, search)) or {"users": [], "total": 0},
+    )
+    monkeypatch.setattr(
+        admin_api.um,
+        "get_all_logs",
+        lambda uid=None, limit=500: calls.append(("logs", uid, limit)) or [],
+    )
+    monkeypatch.setattr(
+        admin_api.sec,
+        "list_security_events",
+        lambda limit=200, ip="", event_type="": calls.append(("events", limit, ip, event_type)) or [],
+    )
+    monkeypatch.setattr(
+        admin_api.um,
+        "all_point_transactions",
+        lambda page, page_size: calls.append(("transactions", page, page_size)) or {"transactions": [], "total": 0},
+    )
+
+    client = app.test_client()
+    _login_session(client, ops_uid, "ops")
+
+    users = client.get("/api/admin/users?page=abc&search=ops")
+    logs = client.get("/api/admin/logs?uid=bad&limit=abc")
+    events = client.get("/api/admin/security/events?limit=999999&ip=1.2.3.4&event_type=login")
+    transactions = client.get("/api/admin/transactions?page=-10")
+
+    assert users.status_code == 200
+    assert logs.status_code == 200
+    assert events.status_code == 200
+    assert transactions.status_code == 200
+    assert calls == [
+        ("users", 1, 20, "ops"),
+        ("logs", None, 500),
+        ("events", 1000, "1.2.3.4", "login"),
+        ("transactions", 1, 30),
+    ]
+
+
 def test_admin_system_status_requires_dashboard_permission_and_hides_sensitive_details(isolated_app, tmp_path, monkeypatch):
     app, um, _main = isolated_app
     ops_uid = _create_admin(um, permissions=[])
