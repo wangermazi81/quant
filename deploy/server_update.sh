@@ -42,6 +42,38 @@ secure_runtime_secrets() {
     done
 }
 
+sync_nginx_anti_crawl() {
+    if [ "$(id -u)" != "0" ]; then
+        echo "Skip Nginx anti-crawl sync: root privileges required."
+        return 0
+    fi
+    if ! command -v nginx >/dev/null 2>&1; then
+        echo "Skip Nginx anti-crawl sync: nginx not installed."
+        return 0
+    fi
+
+    local http_conf="$APP_DIR/deploy/nginx/anti_crawl_http.conf"
+    local server_snippet="$APP_DIR/deploy/nginx/anti_crawl_server_snippet.conf"
+    local changed=0
+
+    if [ -f "$http_conf" ]; then
+        mkdir -p /etc/nginx/conf.d
+        cp "$http_conf" /etc/nginx/conf.d/00-jwalpha-anti-crawl.conf
+        changed=1
+    fi
+    if [ -f "$server_snippet" ]; then
+        mkdir -p /etc/nginx/snippets
+        cp "$server_snippet" /etc/nginx/snippets/jwalpha-anti-crawl-server.conf
+        changed=1
+    fi
+
+    if [ "$changed" = "1" ]; then
+        nginx -t
+        systemctl reload nginx
+        echo "Synced Nginx anti-crawl templates."
+    fi
+}
+
 echo "[1/6] Pull latest code from Gitee"
 git fetch origin --prune
 LOCAL=$(git rev-parse HEAD)
@@ -50,6 +82,7 @@ git pull --ff-only origin "$(git branch --show-current)" || {
     exit 1
 }
 REMOTE=$(git rev-parse HEAD)
+sync_nginx_anti_crawl
 
 if [ "$LOCAL" = "$REMOTE" ] && [ -f "$FRONTEND_DIST" ]; then
     secure_runtime_secrets "$RUN_USER"
