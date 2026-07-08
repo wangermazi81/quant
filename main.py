@@ -157,7 +157,7 @@ from app_state import (
     user_states, _user_state_lock, _sse_subscribers, _sse_lock,
     _default_user_state, get_user_state, _persist_state, _add_log,
     _sse_push, _restore_all_user_states, require_auth, require_admin,
-    is_root_admin_session, _deduct,
+    is_root_admin_session, current_admin_permissions, _deduct,
 )
 
 # ── 注册 web 蓝图（非交易 API 已从本文件抽出到 web/）──
@@ -1936,9 +1936,9 @@ def api_list():
 @require_auth
 def api_get(filename):
     meta = sm.get_meta(filename)
-    # ★ 策略隐私：内置策略（自研）的源码仅 admin 可见；其他云端用户拿到"受保护"占位，
+    # ★ 策略隐私：内置策略（自研）的源码仅 admin 或被授权管理员可见；其他云端用户拿到"受保护"占位，
     #   防止被查看/复制复用。策略仍可正常激活运行（运行/回测走 sm 内部真实代码，不经此路由）。
-    if meta.get("builtin") and not is_root_admin_session():
+    if meta.get("builtin") and not _can_view_protected_source():
         nm = meta.get("name", filename)
         placeholder = (
             '# META: {"name": "%s", "builtin": true}\n'
@@ -1952,6 +1952,10 @@ def api_get(filename):
         return jsonify({"code": placeholder, "builtin": True, "locked": True})
     return jsonify({"code": sm.get_code(filename),
                     "builtin": bool(meta.get("builtin")), "locked": False})
+
+
+def _can_view_protected_source() -> bool:
+    return is_root_admin_session() or "strategy_source_view" in current_admin_permissions()
 
 
 def _inject_builtin_flag(code: str, is_admin: bool) -> str:
@@ -2231,7 +2235,7 @@ def api_factor_ai_generate():
 @require_auth
 def api_factor_get(filename):
     meta = fm.get_meta(filename) if hasattr(fm, "get_meta") else {"name": filename, "builtin": True}
-    if meta.get("builtin", True) and not is_root_admin_session():
+    if meta.get("builtin", True) and not _can_view_protected_source():
         name = meta.get("name") or filename
         placeholder = (
             '# FACTOR: {"name": "%s", "builtin": true}\n'

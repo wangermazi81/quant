@@ -1106,6 +1106,7 @@ let ALL_PERMS = [
   {key:'ai_config', label:'AI 平台配置', group:'平台配置', description:'平台级 AI 配置、模型检测、AI 测试。'},
   {key:'data_config', label:'数据源配置', group:'平台配置', description:'数据源状态、刷新、下载、配置。'},
   {key:'strategy_manage', label:'策略与因子管理', group:'策略安全', description:'仅允许查看名称、运行状态、结果，不能查看核心源码。'},
+  {key:'strategy_source_view', label:'策略源码查看', group:'策略安全', description:'允许查看内置策略、内置因子的核心源码；仅给可信管理员勾选。'},
   {key:'security_audit', label:'安全审计', group:'安全权限', description:'登录日志、异常访问、反爬触发记录。'},
   {key:'admin_grant', label:'管理员授权', group:'最高权限', description:'仅 admin 拥有，不开放给普通管理员。'},
 ];
@@ -1790,7 +1791,7 @@ async function renderRoles(){
   const catalogCard = `
     <div class="role-card role-card-wide">
       <div class="rc-title">权限白名单</div>
-      <div class="rc-desc">后端只接受这些固定 key；前端自造权限不会生效。普通管理员即使获得策略与因子权限，也不能读取核心源码。</div>
+      <div class="rc-desc">后端只接受这些固定 key；前端自造权限不会生效。普通管理员只有勾选“策略源码查看”后才能读取内置策略/因子源码。</div>
       <div class="perm-catalog">${permissionCatalogItems(ALL_PERMS)}</div>
     </div>`;
   const adminCards = admins.map(u=>`

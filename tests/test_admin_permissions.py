@@ -115,6 +115,7 @@ def test_permission_catalog_includes_admin_ui_descriptions(isolated_app):
     assert resp.status_code == 200
     assert all(text for text in descriptions.values())
     assert "不能查看核心源码" in descriptions["strategy_manage"]
+    assert "查看内置策略" in descriptions["strategy_source_view"]
     assert "仅 admin 拥有" in descriptions["admin_grant"]
 
 
@@ -394,6 +395,20 @@ def test_builtin_strategy_and_factor_source_visibility_respects_root_admin(isola
     assert "SECRET_STRATEGY_CODE" not in strategy["code"]
     assert factor["locked"] is True
     assert "SECRET_FACTOR_CODE" not in factor["code"]
+
+    assert um.set_admin_permissions(
+        ops_uid,
+        ["strategy_manage", "strategy_source_view"],
+        granted_by=1,
+    )["ok"]
+
+    strategy = client.get("/api/strategies/core_alpha").get_json()
+    factor = client.get("/api/factors/core_factor").get_json()
+
+    assert strategy["locked"] is False
+    assert strategy["code"] == "SECRET_STRATEGY_CODE"
+    assert factor["locked"] is False
+    assert factor["code"] == "SECRET_FACTOR_CODE"
 
 
 def test_root_admin_login_has_stricter_lockout(isolated_app):

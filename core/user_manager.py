@@ -30,6 +30,8 @@ ADMIN_PERMISSION_CATALOG = [
      "description": "数据源状态、刷新、下载、配置。"},
     {"key": "strategy_manage", "label": "策略与因子管理", "group": "策略安全",
      "description": "仅允许查看名称、运行状态、结果，不能查看核心源码。"},
+    {"key": "strategy_source_view", "label": "策略源码查看", "group": "策略安全",
+     "description": "允许查看内置策略、内置因子的核心源码；仅给可信管理员勾选。"},
     {"key": "security_audit", "label": "安全审计", "group": "安全权限",
      "description": "登录日志、异常访问、反爬触发记录。"},
     {"key": "admin_grant", "label": "管理员授权", "group": "最高权限",
