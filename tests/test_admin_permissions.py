@@ -90,6 +90,21 @@ def test_auth_me_returns_root_flag_and_admin_permissions(isolated_app):
     assert "admin_grant" in root_data["admin_permissions"]
 
 
+def test_permission_catalog_includes_admin_ui_descriptions(isolated_app):
+    app, _um, _main = isolated_app
+
+    client = app.test_client()
+    _login_session(client, 1, "admin")
+    resp = client.get("/api/admin/permissions/catalog")
+    data = resp.get_json()
+    descriptions = {p["key"]: p.get("description", "") for p in data["permissions"]}
+
+    assert resp.status_code == 200
+    assert all(text for text in descriptions.values())
+    assert "不能查看核心源码" in descriptions["strategy_manage"]
+    assert "仅 admin 拥有" in descriptions["admin_grant"]
+
+
 def test_admin_endpoint_requires_matching_permission(isolated_app):
     app, um, _main = isolated_app
     ops_uid = _create_admin(um, permissions=["dashboard_view"])

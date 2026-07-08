@@ -14,16 +14,26 @@ DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "user
 ROOT_ADMIN_USERNAME = os.environ.get("JW_ROOT_ADMIN_USERNAME", "admin").strip() or "admin"
 
 ADMIN_PERMISSION_CATALOG = [
-    {"key": "dashboard_view", "label": "工作台查看", "group": "基础权限"},
-    {"key": "user_manage", "label": "用户管理", "group": "系统管理"},
-    {"key": "points_manage", "label": "积分管理", "group": "系统管理"},
-    {"key": "content_manage", "label": "内容管理", "group": "内容运营"},
-    {"key": "invite_manage", "label": "邀请码管理", "group": "系统管理"},
-    {"key": "ai_config", "label": "AI 平台配置", "group": "平台配置"},
-    {"key": "data_config", "label": "数据源配置", "group": "平台配置"},
-    {"key": "strategy_manage", "label": "策略与因子管理", "group": "策略安全"},
-    {"key": "security_audit", "label": "安全审计", "group": "安全权限"},
-    {"key": "admin_grant", "label": "管理员授权", "group": "最高权限"},
+    {"key": "dashboard_view", "label": "工作台查看", "group": "基础权限",
+     "description": "后台首页、统计概览。"},
+    {"key": "user_manage", "label": "用户管理", "group": "系统管理",
+     "description": "查看用户、启停用户、重置密码。"},
+    {"key": "points_manage", "label": "积分管理", "group": "系统管理",
+     "description": "积分流水、充值、扣减、积分规则。"},
+    {"key": "content_manage", "label": "内容管理", "group": "内容运营",
+     "description": "公告、更新日志、反馈。"},
+    {"key": "invite_manage", "label": "邀请码管理", "group": "系统管理",
+     "description": "查看、创建、作废邀请码。"},
+    {"key": "ai_config", "label": "AI 平台配置", "group": "平台配置",
+     "description": "平台级 AI 配置、模型检测、AI 测试。"},
+    {"key": "data_config", "label": "数据源配置", "group": "平台配置",
+     "description": "数据源状态、刷新、下载、配置。"},
+    {"key": "strategy_manage", "label": "策略与因子管理", "group": "策略安全",
+     "description": "仅允许查看名称、运行状态、结果，不能查看核心源码。"},
+    {"key": "security_audit", "label": "安全审计", "group": "安全权限",
+     "description": "登录日志、异常访问、反爬触发记录。"},
+    {"key": "admin_grant", "label": "管理员授权", "group": "最高权限",
+     "description": "仅 admin 拥有，不开放给普通管理员。"},
 ]
 ADMIN_PERMISSION_KEYS = {p["key"] for p in ADMIN_PERMISSION_CATALOG}
 ROOT_ADMIN_PERMISSIONS = [p["key"] for p in ADMIN_PERMISSION_CATALOG]

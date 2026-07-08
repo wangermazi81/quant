@@ -255,23 +255,33 @@ tr:hover td{background:#fafbff}
 .np-footer{padding:10px;text-align:center;font-size:13px;color:var(--theme-active);cursor:pointer;border-top:1px solid var(--border)}
 
 /* ===== PERMISSIONS ===== */
-.perm-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.perm-item{display:flex;align-items:center;gap:8px;padding:10px;border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;transition:.15s}
+.perm-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.perm-item{display:grid;grid-template-columns:16px 1fr;gap:8px;padding:10px;border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;transition:.15s}
 .perm-item:hover{border-color:var(--theme-active);background:#f9fffd}
 .perm-check{width:16px;height:16px;border-radius:3px;border:2px solid var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:.15s}
 .perm-item.checked .perm-check{background:var(--theme-active);border-color:var(--theme-active);color:#fff}
 .perm-item.checked .perm-check::after{content:'✓';font-size:10px}
-.perm-name{font-size:13px}
+.perm-name{font-size:13px;font-weight:600;color:var(--text)}
+.perm-desc{font-size:12px;color:var(--text3);line-height:1.5;margin-top:4px}
+.perm-group{display:inline-flex;margin-left:6px;padding:1px 6px;border-radius:8px;background:var(--content-bg);color:var(--text3);font-size:11px;font-weight:400}
+.perm-catalog{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px}
+.perm-catalog-item{padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--content-bg)}
+.perm-catalog-title{font-size:13px;font-weight:700;color:var(--text);margin-bottom:4px}
+.perm-catalog-desc{font-size:12px;color:var(--text3);line-height:1.5}
 
 /* ===== ROLE CARDS ===== */
 .role-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
 .role-card{background:#fff;border-radius:8px;padding:20px;box-shadow:var(--shadow);border-top:3px solid var(--border);transition:.2s}
 .role-card:hover{border-top-color:var(--theme-active);transform:translateY(-2px)}
+.role-card-wide{grid-column:1/-1}
 .rc-title{font-size:15px;font-weight:700;margin-bottom:6px}
 .rc-desc{font-size:12px;color:var(--text3);margin-bottom:12px}
 .rc-perms{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:14px}
 .rc-perm{padding:2px 8px;background:var(--content-bg);border-radius:10px;font-size:11px;color:var(--text2)}
 .rc-footer{display:flex;gap:8px;justify-content:flex-end}
+@media(max-width:900px){
+  .perm-grid,.perm-catalog,.role-grid{grid-template-columns:1fr}
+}
 
 /* ===== SWITCH ===== */
 .switch{width:40px;height:22px;background:#ddd;border-radius:11px;position:relative;cursor:pointer;transition:.25s;flex-shrink:0}
@@ -1074,16 +1084,16 @@ let notices = [
   {title:'系统消息', desc:'欢迎使用见微 Alpha 管理后台', time:'5分钟前'},
 ];
 let ALL_PERMS = [
-  {key:'dashboard_view', label:'工作台查看', group:'基础权限'},
-  {key:'user_manage', label:'用户管理', group:'系统管理'},
-  {key:'points_manage', label:'积分管理', group:'系统管理'},
-  {key:'content_manage', label:'内容管理', group:'内容运营'},
-  {key:'invite_manage', label:'邀请码管理', group:'系统管理'},
-  {key:'ai_config', label:'AI 平台配置', group:'平台配置'},
-  {key:'data_config', label:'数据源配置', group:'平台配置'},
-  {key:'strategy_manage', label:'策略与因子管理', group:'策略安全'},
-  {key:'security_audit', label:'安全审计', group:'安全权限'},
-  {key:'admin_grant', label:'管理员授权', group:'最高权限'},
+  {key:'dashboard_view', label:'工作台查看', group:'基础权限', description:'后台首页、统计概览。'},
+  {key:'user_manage', label:'用户管理', group:'系统管理', description:'查看用户、启停用户、重置密码。'},
+  {key:'points_manage', label:'积分管理', group:'系统管理', description:'积分流水、充值、扣减、积分规则。'},
+  {key:'content_manage', label:'内容管理', group:'内容运营', description:'公告、更新日志、反馈。'},
+  {key:'invite_manage', label:'邀请码管理', group:'系统管理', description:'查看、创建、作废邀请码。'},
+  {key:'ai_config', label:'AI 平台配置', group:'平台配置', description:'平台级 AI 配置、模型检测、AI 测试。'},
+  {key:'data_config', label:'数据源配置', group:'平台配置', description:'数据源状态、刷新、下载、配置。'},
+  {key:'strategy_manage', label:'策略与因子管理', group:'策略安全', description:'仅允许查看名称、运行状态、结果，不能查看核心源码。'},
+  {key:'security_audit', label:'安全审计', group:'安全权限', description:'登录日志、异常访问、反爬触发记录。'},
+  {key:'admin_grant', label:'管理员授权', group:'最高权限', description:'仅 admin 拥有，不开放给普通管理员。'},
 ];
 
 // ================================================================
@@ -1393,6 +1403,14 @@ function permissionBadges(perms){
   if(!list.length) return '<span style="color:var(--text3);font-size:12px">未分配功能权限</span>';
   return list.slice(0,3).map(p=>`<span class="tag">${esc(ALL_PERMS.find(x=>x.key===p)?.label || p)}</span>`).join('') +
     (list.length > 3 ? `<span style="color:var(--text3);font-size:12px"> +${list.length-3}</span>` : '');
+}
+
+function permissionCatalogItems(perms=ALL_PERMS){
+  return perms.map(p=>`
+    <div class="perm-catalog-item">
+      <div class="perm-catalog-title">${esc(p.label)} <span class="perm-group">${esc(p.group || '未分组')}</span></div>
+      <div class="perm-catalog-desc">${esc(p.description || '')}</div>
+    </div>`).join('');
 }
 
 function renderUserActions(u){
@@ -1715,10 +1733,10 @@ async function renderRoles(){
   const d = r.ok ? await r.json() : {users:[]};
   const admins = (d.users || []).filter(u=>u.is_admin);
   const catalogCard = `
-    <div class="role-card">
+    <div class="role-card role-card-wide">
       <div class="rc-title">权限白名单</div>
-      <div class="rc-desc">后端只接受这些固定 key；前端自造权限不会生效。</div>
-      <div class="rc-perms">${ALL_PERMS.map(p=>`<span class="rc-perm">${esc(p.label)}</span>`).join('')}</div>
+      <div class="rc-desc">后端只接受这些固定 key；前端自造权限不会生效。普通管理员即使获得策略与因子权限，也不能读取核心源码。</div>
+      <div class="perm-catalog">${permissionCatalogItems(ALL_PERMS)}</div>
     </div>`;
   const adminCards = admins.map(u=>`
     <div class="role-card">
@@ -1754,7 +1772,10 @@ async function openAdminPermissions(uid, uname, makeAdmin=false){
   permGrid.innerHTML = ALL_PERMS.filter(p=>p.key !== 'admin_grant').map(p=>`
     <div class="perm-item${currentPerms.includes(p.key)?' checked':''}" onclick="this.classList.toggle('checked')" data-key="${p.key}">
       <div class="perm-check"></div>
-      <span class="perm-name">${esc(p.label)}</span>
+      <div>
+        <div class="perm-name">${esc(p.label)} <span class="perm-group">${esc(p.group || '未分组')}</span></div>
+        <div class="perm-desc">${esc(p.description || '')}</div>
+      </div>
     </div>`).join('');
   openModal('modalRole');
 }

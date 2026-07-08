@@ -274,10 +274,6 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
     elif allow_archive and _should_use_archive_for_live():
         archived = _load_archive_review()
         if archived:
-            if _archive_review_needs_refresh(archived):
-                refreshed = _refresh_archive_market_review(archived.get("date"), archived)
-                if refreshed:
-                    return refreshed
             return archived
     review = {
         "date":    stat_date,
