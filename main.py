@@ -1862,11 +1862,12 @@ def api_list():
 
 
 @app.route("/api/strategies/<filename>")
+@require_auth
 def api_get(filename):
     meta = sm.get_meta(filename)
     # ★ 策略隐私：内置策略（自研）的源码仅 admin 可见；其他云端用户拿到"受保护"占位，
     #   防止被查看/复制复用。策略仍可正常激活运行（运行/回测走 sm 内部真实代码，不经此路由）。
-    if meta.get("builtin") and not session.get("is_admin"):
+    if meta.get("builtin"):
         nm = meta.get("name", filename)
         placeholder = (
             '# META: {"name": "%s", "builtin": true}\n'
@@ -2152,8 +2153,20 @@ def api_factor_ai_generate():
 
 
 @app.route("/api/factors/<filename>")
+@require_auth
 def api_factor_get(filename):
-    return jsonify({"code": fm.get_code(filename)})
+    meta = fm.get_meta(filename) if hasattr(fm, "get_meta") else {"name": filename, "builtin": True}
+    if meta.get("builtin", True):
+        name = meta.get("name") or filename
+        placeholder = (
+            '# FACTOR: {"name": "%s", "builtin": true}\n'
+            '"""\n'
+            'Protected built-in factor. Source code and core logic are not exposed through Web/API.\n'
+            'Create a custom factor if you need editable source.\n'
+            '"""\n'
+        ) % name
+        return jsonify({"code": placeholder, "builtin": True, "locked": True})
+    return jsonify({"code": fm.get_code(filename), "builtin": False, "locked": False})
 
 
 @app.route("/api/factors/evaluate", methods=["POST"])

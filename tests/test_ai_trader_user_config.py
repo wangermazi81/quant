@@ -167,7 +167,7 @@ def test_saving_platform_ai_config_keeps_user_ai_trader_config(tmp_path, monkeyp
         enabled=True,
     )
 
-    r = _platform_ai_app(101).test_client().post("/api/ai/config", json={
+    r = _platform_ai_app(1).test_client().post("/api/ai/config", json={
         "provider": "platform",
         "api_key": "platform-secret-key",
         "base_url": "https://platform.example/v1",

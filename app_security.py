@@ -157,6 +157,9 @@ def rate_limit(max_calls: int, per_seconds: float, scope: str = "",
 _LOGIN_MAX_FAILS = int(os.environ.get("LOGIN_MAX_FAILS", "5"))
 _LOGIN_WINDOW    = int(os.environ.get("LOGIN_FAIL_WINDOW", "900"))    # 15 分钟内累计
 _LOGIN_LOCK      = int(os.environ.get("LOGIN_LOCK_SECONDS", "900"))   # 触发后锁 15 分钟
+_ROOT_LOGIN_MAX_FAILS = int(os.environ.get("ROOT_LOGIN_MAX_FAILS", "3"))
+_ROOT_LOGIN_WINDOW    = int(os.environ.get("ROOT_LOGIN_FAIL_WINDOW", "900"))
+_ROOT_LOGIN_LOCK      = int(os.environ.get("ROOT_LOGIN_LOCK_SECONDS", "1800"))
 
 _fail_log: "dict[str, deque]" = {}
 _lock_until: "dict[str, float]" = {}
@@ -175,18 +178,26 @@ def login_locked(ident: str) -> int:
         return 0
 
 
-def login_fail(ident: str) -> None:
+def _login_fail_with_policy(ident: str, max_fails: int, window: int, lock_seconds: int) -> None:
     """记一次登录失败；窗口内累计达阈值则锁定。"""
     now = time.monotonic()
     with _login_lock:
         dq = _fail_log.setdefault(ident, deque())
-        cutoff = now - _LOGIN_WINDOW
+        cutoff = now - window
         while dq and dq[0] < cutoff:
             dq.popleft()
         dq.append(now)
-        if len(dq) >= _LOGIN_MAX_FAILS:
-            _lock_until[ident] = now + _LOGIN_LOCK
+        if len(dq) >= max_fails:
+            _lock_until[ident] = now + lock_seconds
             dq.clear()
+
+
+def login_fail(ident: str) -> None:
+    _login_fail_with_policy(ident, _LOGIN_MAX_FAILS, _LOGIN_WINDOW, _LOGIN_LOCK)
+
+
+def root_login_fail(ident: str) -> None:
+    _login_fail_with_policy(ident, _ROOT_LOGIN_MAX_FAILS, _ROOT_LOGIN_WINDOW, _ROOT_LOGIN_LOCK)
 
 
 def login_ok(ident: str) -> None:

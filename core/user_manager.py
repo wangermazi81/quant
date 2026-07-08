@@ -11,6 +11,23 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "users.db")
 
+ROOT_ADMIN_USERNAME = os.environ.get("JW_ROOT_ADMIN_USERNAME", "admin").strip() or "admin"
+
+ADMIN_PERMISSION_CATALOG = [
+    {"key": "dashboard_view", "label": "工作台查看", "group": "基础权限"},
+    {"key": "user_manage", "label": "用户管理", "group": "系统管理"},
+    {"key": "points_manage", "label": "积分管理", "group": "系统管理"},
+    {"key": "content_manage", "label": "内容管理", "group": "内容运营"},
+    {"key": "invite_manage", "label": "邀请码管理", "group": "系统管理"},
+    {"key": "ai_config", "label": "AI 平台配置", "group": "平台配置"},
+    {"key": "data_config", "label": "数据源配置", "group": "平台配置"},
+    {"key": "strategy_manage", "label": "策略与因子管理", "group": "策略安全"},
+    {"key": "security_audit", "label": "安全审计", "group": "安全权限"},
+    {"key": "admin_grant", "label": "管理员授权", "group": "最高权限"},
+]
+ADMIN_PERMISSION_KEYS = {p["key"] for p in ADMIN_PERMISSION_CATALOG}
+ROOT_ADMIN_PERMISSIONS = [p["key"] for p in ADMIN_PERMISSION_CATALOG]
+
 # ── 积分消耗配置（默认值；管理后台「积分设置」可改，存 data/point_costs.json）──
 POINT_COSTS = {
     "ai_analysis":     10,   # AI 深度分析
@@ -127,6 +144,15 @@ def init_db():
             created_at  TEXT    DEFAULT (datetime('now','localtime')),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
+        CREATE TABLE IF NOT EXISTS admin_user_permissions (
+            user_id    INTEGER NOT NULL,
+            perm_key   TEXT    NOT NULL,
+            granted_by INTEGER,
+            updated_at TEXT    DEFAULT (datetime('now','localtime')),
+            PRIMARY KEY (user_id, perm_key),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_admin_perms_user ON admin_user_permissions(user_id);
         """)
         c.commit()
         # 没有管理员时自动创建默认账号（密码取自环境变量，否则随机生成）
@@ -724,8 +750,70 @@ def list_users(page: int = 1, per_page: int = 20,
             f" ORDER BY id DESC LIMIT ? OFFSET ?",
             (*params, per_page, (page - 1) * per_page)
         ).fetchall()
+        users = [dict(r) for r in rows]
+        for u in users:
+            u["is_root_admin"] = is_root_admin_user(u)
+            u["admin_permissions"] = get_admin_permissions(u["id"]) if u.get("is_admin") else []
         return {"total": total, "page": page,
-                "per_page": per_page, "users": [dict(r) for r in rows]}
+                "per_page": per_page, "users": users}
+
+
+def admin_permission_catalog() -> list[dict]:
+    return [dict(p) for p in ADMIN_PERMISSION_CATALOG]
+
+
+def is_root_admin_user(user) -> bool:
+    if not user:
+        return False
+    try:
+        username = user["username"] if not isinstance(user, dict) else user.get("username")
+    except Exception:
+        username = None
+    return (username or "").strip().lower() == ROOT_ADMIN_USERNAME.lower()
+
+
+def get_admin_permissions(user_id: int) -> list[str]:
+    user = get_user(user_id)
+    if is_root_admin_user(user):
+        return list(ROOT_ADMIN_PERMISSIONS)
+    if not user or not bool(user.get("is_admin")):
+        return []
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT perm_key FROM admin_user_permissions WHERE user_id=? ORDER BY perm_key",
+            (user_id,),
+        ).fetchall()
+    return [r["perm_key"] for r in rows if r["perm_key"] in ADMIN_PERMISSION_KEYS]
+
+
+def set_admin_permissions(user_id: int, permissions, granted_by: Optional[int] = None) -> dict:
+    user = get_user(user_id)
+    if not user:
+        return {"ok": False, "error": "用户不存在"}
+    if is_root_admin_user(user):
+        return {"ok": False, "error": "admin最高账号不参与普通管理员权限配置"}
+    if not bool(user.get("is_admin")):
+        return {"ok": False, "error": "目标用户不是管理员"}
+    if not isinstance(permissions, (list, tuple, set)):
+        return {"ok": False, "error": "权限列表格式错误"}
+    clean = []
+    for p in permissions:
+        key = str(p or "").strip()
+        if key not in ADMIN_PERMISSION_KEYS:
+            return {"ok": False, "error": f"未知权限: {key}"}
+        if key == "admin_grant":
+            return {"ok": False, "error": "管理员授权权限仅admin最高账号拥有"}
+        if key not in clean:
+            clean.append(key)
+    with _conn() as c:
+        c.execute("DELETE FROM admin_user_permissions WHERE user_id=?", (user_id,))
+        c.executemany(
+            "INSERT INTO admin_user_permissions (user_id,perm_key,granted_by,updated_at)"
+            " VALUES (?,?,?,datetime('now','localtime'))",
+            [(user_id, key, granted_by) for key in clean],
+        )
+        c.commit()
+    return {"ok": True, "permissions": clean}
 
 
 def all_point_transactions(page: int = 1, per_page: int = 30) -> dict:
@@ -752,9 +840,14 @@ def set_active(user_id: int, active: bool) -> dict:
 
 
 def set_admin(user_id: int, is_admin: bool) -> dict:
+    user = get_user(user_id)
+    if is_root_admin_user(user) and not is_admin:
+        return {"ok": False, "error": "不能撤销admin最高账号权限"}
     with _conn() as c:
         c.execute("UPDATE users SET is_admin=? WHERE id=?",
                   (1 if is_admin else 0, user_id))
+        if not is_admin:
+            c.execute("DELETE FROM admin_user_permissions WHERE user_id=?", (user_id,))
         c.commit()
         return {"ok": True}
 

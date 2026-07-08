@@ -833,6 +833,38 @@ def get_market_turnover(date_text: str | None = None, prefer_official: bool | No
     if snapshot and _snapshot_turnover_is_verified_or_two_market(snapshot):
         return _turnover_from_snapshot_with_trend(snapshot)
 
+    if _is_explicit_historical_date(date_text):
+        if snapshot:
+            try:
+                return _turnover_with_trend(_turnover_from_eastmoney_index(date_text))
+            except Exception as exc:
+                logger.warning(f"[market_stats] eastmoney index turnover for cached historical snapshot failed: {exc}")
+        else:
+            try:
+                fetch_eastmoney_three_market_snapshot(date_text)
+                return _turnover_with_trend(_turnover_from_eastmoney_index(date_text))
+            except Exception as exc:
+                logger.warning(f"[market_stats] historical three-market/index turnover unavailable: {exc}")
+        try:
+            result = _turnover_from_official_exchange(date_text)
+        except Exception as exc:
+            result = {
+                "today": None,
+                "trend": [],
+                "source": "none",
+                "degraded": True,
+                "reason": f"official historical turnover unavailable: {exc}",
+            }
+        try:
+            trend = _turnover_trend_from_index_daily()
+        except Exception as exc:
+            logger.debug(f"[market_stats] turnover trend failed: {exc}")
+            trend = []
+        if result.get("today") is not None and trend:
+            trend[-1]["amount"] = result["today"]
+        result["trend"] = trend
+        return result
+
     try:
         return _turnover_with_trend(_turnover_from_eastmoney_index(date_text))
     except Exception as exc:
@@ -872,27 +904,6 @@ def get_market_turnover(date_text: str | None = None, prefer_official: bool | No
                 "degraded": True,
                 "reason": f"{reason_prefix} for requested {_date_ymd(date_text)}: {exc}",
             }
-
-    if _is_explicit_historical_date(date_text):
-        try:
-            result = _turnover_from_official_exchange(date_text)
-        except Exception as exc:
-            result = {
-                "today": None,
-                "trend": [],
-                "source": "none",
-                "degraded": True,
-                "reason": f"official historical turnover unavailable: {exc}",
-            }
-        try:
-            trend = _turnover_trend_from_index_daily()
-        except Exception as exc:
-            logger.debug(f"[market_stats] turnover trend failed: {exc}")
-            trend = []
-        if result.get("today") is not None and trend:
-            trend[-1]["amount"] = result["today"]
-        result["trend"] = trend
-        return result
 
     prefer_official = (not _is_trading_time()) if prefer_official is None else prefer_official
     sources = (_turnover_from_official_exchange, _turnover_from_tdx_index) if prefer_official else (_turnover_from_tdx_index, _turnover_from_official_exchange)

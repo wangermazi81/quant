@@ -1,0 +1,157 @@
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import _pathsetup  # noqa: F401
+
+os.environ["QUANT_TEST_IMPORT"] = "1"
+os.environ["THS_NO_SCHEDULER"] = "1"
+os.environ.setdefault("ADMIN_PASSWORD", "adminpass123")
+
+
+@pytest.fixture
+def isolated_app(tmp_path, monkeypatch):
+    import db_migration as dbm
+    import user_manager as um
+
+    db_path = str(tmp_path / "users_test.db")
+    monkeypatch.setattr(um, "DB_PATH", db_path)
+    monkeypatch.setattr(dbm, "USERS_DB", db_path)
+    um.init_db()
+    dbm.migrate_users_db()
+
+    import main
+
+    main.app.config.update(TESTING=True)
+    return main.app, um, main
+
+
+def _create_admin(um, username="ops", permissions=None):
+    with um._conn() as c:
+        um._create_user(
+            c,
+            username,
+            f"{username}@example.com",
+            "pass123",
+            is_admin=1,
+            points=100,
+        )
+        uid = c.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()["id"]
+    if permissions is not None:
+        assert um.set_admin_permissions(uid, permissions, granted_by=1)["ok"]
+    return uid
+
+
+def _login_session(client, uid, username, is_admin=True):
+    with client.session_transaction() as sess:
+        sess["user_id"] = uid
+        sess["username"] = username
+        sess["is_admin"] = is_admin
+
+
+def test_auth_me_returns_root_flag_and_admin_permissions(isolated_app):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(um, permissions=["dashboard_view", "user_manage"])
+
+    client = app.test_client()
+    _login_session(client, ops_uid, "ops")
+    resp = client.get("/api/auth/me")
+    data = resp.get_json()
+
+    assert data["ok"] is True
+    assert data["is_admin"] is True
+    assert data["is_root_admin"] is False
+    assert data["admin_permissions"] == ["dashboard_view", "user_manage"]
+
+    _login_session(client, 1, "admin")
+    root_data = client.get("/api/auth/me").get_json()
+    assert root_data["is_root_admin"] is True
+    assert "admin_grant" in root_data["admin_permissions"]
+
+
+def test_admin_endpoint_requires_matching_permission(isolated_app):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(um, permissions=["dashboard_view"])
+
+    client = app.test_client()
+    _login_session(client, ops_uid, "ops")
+    denied = client.get("/api/admin/users")
+    assert denied.status_code == 403
+    assert denied.get_json()["missing_permission"] == "user_manage"
+
+    assert um.set_admin_permissions(ops_uid, ["dashboard_view", "user_manage"], granted_by=1)["ok"]
+    allowed = client.get("/api/admin/users")
+    assert allowed.status_code == 200
+    assert allowed.get_json()["ok"] is True
+
+
+def test_only_root_admin_can_grant_admin_and_permissions(isolated_app):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(um, permissions=["user_manage"])
+    target_uid = _create_admin(um, username="target", permissions=[])
+    assert um.set_admin(target_uid, False)["ok"]
+    rejected = um.set_admin_permissions(ops_uid, ["admin_grant"], granted_by=1)
+    assert rejected["ok"] is False
+
+    client = app.test_client()
+    _login_session(client, ops_uid, "ops")
+    denied = client.post(
+        f"/api/admin/users/{target_uid}/admin",
+        json={"is_admin": True, "permissions": ["dashboard_view"]},
+    )
+    assert denied.status_code == 403
+    assert denied.get_json()["code"] == "root_admin_required"
+
+    _login_session(client, 1, "admin")
+    allowed = client.post(
+        f"/api/admin/users/{target_uid}/admin",
+        json={"is_admin": True, "permissions": ["dashboard_view"]},
+    )
+    assert allowed.status_code == 200
+    assert allowed.get_json()["ok"] is True
+    assert um.get_admin_permissions(target_uid) == ["dashboard_view"]
+
+
+def test_builtin_strategy_and_factor_source_are_not_returned_to_admin(isolated_app, monkeypatch):
+    app, _um, main = isolated_app
+
+    monkeypatch.setattr(main.sm, "get_meta", lambda filename: {"name": "Secret Strategy", "builtin": True})
+    monkeypatch.setattr(main.sm, "get_code", lambda filename: "SECRET_STRATEGY_CODE")
+    monkeypatch.setattr(main.fm, "get_meta", lambda filename: {"name": "Secret Factor", "builtin": True}, raising=False)
+    monkeypatch.setattr(main.fm, "get_code", lambda filename: "SECRET_FACTOR_CODE")
+
+    client = app.test_client()
+    _login_session(client, 1, "admin")
+
+    strategy = client.get("/api/strategies/core_alpha").get_json()
+    factor = client.get("/api/factors/core_factor").get_json()
+
+    assert strategy["locked"] is True
+    assert "SECRET_STRATEGY_CODE" not in strategy["code"]
+    assert factor["locked"] is True
+    assert "SECRET_FACTOR_CODE" not in factor["code"]
+
+
+def test_root_admin_login_has_stricter_lockout(isolated_app):
+    app, um, _main = isolated_app
+    _create_admin(um, permissions=["dashboard_view"])
+    client = app.test_client()
+
+    for _ in range(3):
+        resp = client.post("/api/auth/login", json={"username": "admin", "password": "wrong"})
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is False
+
+    locked = client.post("/api/auth/login", json={"username": "admin", "password": "adminpass123"})
+    assert locked.status_code == 429
+
+    for _ in range(3):
+        resp = client.post("/api/auth/login", json={"username": "ops", "password": "wrong"})
+        assert resp.status_code == 200
+
+    not_locked = client.post("/api/auth/login", json={"username": "ops", "password": "pass123"})
+    assert not_locked.status_code == 200
+    assert not_locked.get_json()["ok"] is True

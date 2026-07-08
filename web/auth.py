@@ -6,7 +6,7 @@ from flask import Blueprint, request, jsonify, session
 
 import user_manager as um
 import email_sender as mailer
-from app_security import rate_limit, client_ip, login_locked, login_fail, login_ok
+from app_security import rate_limit, client_ip, login_locked, login_fail, root_login_fail, login_ok
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +32,12 @@ def auth_login():
     username = (d.get("username", "") or "").strip()
     # 防爆破/撞库：按 用户名+IP 计失败次数，达阈值临时锁定（默认 15 分钟内 5 次 → 锁 15 分钟）。
     # 同时挡住「无限尝试烧 PBKDF2 CPU」的 DoS 入口。
-    ident = f"{username.lower()}|{client_ip()}"
-    locked = login_locked(ident)
+    username_key = username.lower()
+    ident = f"{username_key}|{client_ip()}"
+    root_idents = []
+    if username_key == um.ROOT_ADMIN_USERNAME.lower():
+        root_idents = [f"root:{username_key}|{client_ip()}", f"root:{username_key}"]
+    locked = max([login_locked(ident)] + [login_locked(root_ident) for root_ident in root_idents])
     if locked:
         return jsonify({"ok": False,
                         "error": f"尝试次数过多，请约 {max(1, locked // 60)} 分钟后再试",
@@ -41,12 +45,18 @@ def auth_login():
     r = um.login(username, d.get("password", ""))
     if r["ok"]:
         login_ok(ident)
+        for root_ident in root_idents:
+            login_ok(root_ident)
         session["user_id"]  = r["user_id"]
         session["username"] = r["username"]
         session["is_admin"] = r["is_admin"]
         session.permanent   = True
     else:
         login_fail(ident)
+        for root_ident in root_idents:
+            root_login_fail(root_ident)
+        if root_idents:
+            logger.warning("[security] root admin login failed username=%s ip=%s", username_key, client_ip())
     return jsonify(r)
 
 
@@ -119,4 +129,6 @@ def auth_me():
         "username":  user["username"],
         "points":    user["points"],
         "is_admin":  bool(user["is_admin"]),
+        "is_root_admin": um.is_root_admin_user(user),
+        "admin_permissions": um.get_admin_permissions(user["id"]),
     })

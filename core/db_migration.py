@@ -108,6 +108,16 @@ def migrate_users_db():
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
 
+        CREATE TABLE IF NOT EXISTS admin_user_permissions (
+            user_id    INTEGER NOT NULL,
+            perm_key   TEXT    NOT NULL,
+            granted_by INTEGER,
+            updated_at TEXT    DEFAULT (datetime('now','localtime')),
+            PRIMARY KEY (user_id, perm_key),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_admin_perms_user ON admin_user_permissions(user_id);
+
         -- 用户运行日志（每用户独立）
         CREATE TABLE IF NOT EXISTS user_logs (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,

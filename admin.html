@@ -476,8 +476,11 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
     <!-- ===== ROLE MANAGEMENT ===== -->
     <div class="page" id="page-roles">
       <div class="card">
-        <div class="card-title"><i class="fas fa-shield-alt"></i> 角色权限管理</div>
-        <div class="toolbar"><button class="btn btn-primary" onclick="openRoleModal()"><i class="fas fa-plus"></i> 新建角色</button></div>
+        <div class="card-title"><i class="fas fa-shield-alt"></i> 管理员权限授权</div>
+        <div class="toolbar">
+          <span style="font-size:13px;color:var(--text2)">仅最高账号 admin 可为普通管理员勾选功能权限</span>
+          <button class="btn btn-outline" onclick="renderRoles()" style="margin-left:auto"><i class="fas fa-sync-alt"></i> 刷新</button>
+        </div>
         <div class="role-grid" id="roleGrid"></div>
       </div>
     </div>
@@ -864,7 +867,7 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
         <i class="fas fa-lock" style="font-size:72px;opacity:.25;margin-bottom:20px;display:block"></i>
         <div style="font-size:32px;font-weight:700;color:#ddd;margin-bottom:12px">403</div>
         <p>您没有权限访问此页面</p>
-        <button class="btn btn-outline" style="margin-top:20px" onclick="navigate('dashboard')">返回首页</button>
+        <button class="btn btn-outline" style="margin-top:20px" onclick="navigate(defaultPage())">返回可用页面</button>
       </div>
     </div>
 
@@ -1007,17 +1010,17 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
 <div class="modal-overlay" id="modalRole">
   <div class="modal modal-lg">
     <div class="modal-header">
-      <div class="modal-title">角色配置</div>
+      <div class="modal-title" id="modalRoleTitle">管理员权限</div>
       <div class="modal-close" onclick="closeModal('modalRole')"><i class="fas fa-times"></i></div>
     </div>
     <div class="modal-body">
       <div class="form-group">
-        <label class="form-label">角色名称 <span class="req">*</span></label>
-        <input class="form-input" id="role-name" placeholder="如：数据分析师">
+        <label class="form-label">管理员账号</label>
+        <input class="form-input" id="role-name" disabled>
       </div>
       <div class="form-group">
-        <label class="form-label">角色描述</label>
-        <input class="form-input" id="role-desc" placeholder="简短说明此角色的职责">
+        <label class="form-label">说明</label>
+        <input class="form-input" id="role-desc" disabled>
       </div>
       <div class="form-group">
         <label class="form-label">权限分配</label>
@@ -1026,7 +1029,7 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
     </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal('modalRole')">取消</button>
-      <button class="btn btn-primary" onclick="submitRole()"><i class="fas fa-save"></i> 保存</button>
+      <button class="btn btn-primary" onclick="submitRole()"><i class="fas fa-save"></i> 保存权限</button>
     </div>
   </div>
 </div>
@@ -1061,24 +1064,26 @@ let txState = {page:1};
 let editingUserId = null;
 let pointsTargetId = null;
 let resetPwdTargetId = null;
+let permissionTargetId = null;
+let permissionTargetName = '';
+let permissionTargetMode = 'save';
 let cfCallback = null;
 let notices = [
   {title:'新用户注册', desc:'用户 testuser 刚刚注册', time:'刚刚'},
   {title:'积分消耗预警', desc:'今日消耗积分超过 500 分', time:'1分钟前'},
   {title:'系统消息', desc:'欢迎使用见微 Alpha 管理后台', time:'5分钟前'},
 ];
-let roles = [
-  {id:1, name:'超级管理员', desc:'拥有全部权限', perms:['user_manage','role_manage','points_manage','stats_view','system_config']},
-  {id:2, name:'运营人员', desc:'管理用户和积分', perms:['user_manage','points_manage','stats_view']},
-  {id:3, name:'数据分析师', desc:'查看统计数据', perms:['stats_view']},
-];
-const ALL_PERMS = [
-  {key:'user_manage', label:'用户管理'},
-  {key:'role_manage', label:'角色管理'},
-  {key:'points_manage', label:'积分管理'},
-  {key:'stats_view', label:'统计查看'},
-  {key:'system_config', label:'系统配置'},
-  {key:'ai_analyze', label:'AI分析'},
+let ALL_PERMS = [
+  {key:'dashboard_view', label:'工作台查看', group:'基础权限'},
+  {key:'user_manage', label:'用户管理', group:'系统管理'},
+  {key:'points_manage', label:'积分管理', group:'系统管理'},
+  {key:'content_manage', label:'内容管理', group:'内容运营'},
+  {key:'invite_manage', label:'邀请码管理', group:'系统管理'},
+  {key:'ai_config', label:'AI 平台配置', group:'平台配置'},
+  {key:'data_config', label:'数据源配置', group:'平台配置'},
+  {key:'strategy_manage', label:'策略与因子管理', group:'策略安全'},
+  {key:'security_audit', label:'安全审计', group:'安全权限'},
+  {key:'admin_grant', label:'管理员授权', group:'最高权限'},
 ];
 
 // ================================================================
@@ -1100,6 +1105,21 @@ const MENU = [
   {id:'feedback',      icon:'fas fa-comment-dots',     label:'问题反馈',  group:'内容管理'},
   {id:'user-center',   icon:'fas fa-user-circle',     label:'个人中心',  group:'账户'},
 ];
+const PAGE_PERMISSIONS = {
+  dashboard: 'dashboard_view',
+  users: 'user_manage',
+  roles: 'admin_grant',
+  points: 'points_manage',
+  'point-costs': 'points_manage',
+  'ai-config': 'ai_config',
+  invites: 'invite_manage',
+  'reset-requests': 'user_manage',
+  'notify-config': 'content_manage',
+  stats: 'dashboard_view',
+  announcements: 'content_manage',
+  changelog: 'content_manage',
+  feedback: 'content_manage',
+};
 const PAGE_NAMES = {
   'dashboard':'工作台','users':'用户管理','roles':'角色权限',
   'points':'积分流水','stats':'使用统计','announcements':'公告管理',
@@ -1111,10 +1131,33 @@ const PAGE_NAMES = {
 // ================================================================
 // SIDEBAR RENDER
 // ================================================================
+function isRootAdmin(){
+  return !!(currentUser && (currentUser.is_root_admin || currentUser.username === 'admin'));
+}
+
+function canPerm(key){
+  if(!key) return true;
+  if(isRootAdmin()) return true;
+  return (currentUser?.admin_permissions || []).includes(key);
+}
+
+function canPage(id){
+  return canPerm(PAGE_PERMISSIONS[id]);
+}
+
+function visibleMenuItems(){
+  return MENU.filter(m=>canPage(m.id));
+}
+
+function defaultPage(){
+  const first = visibleMenuItems().find(m=>m.id !== 'user-center');
+  return first ? first.id : 'user-center';
+}
+
 function renderMenu(){
   const menu = document.getElementById('sidebarMenu');
   const groups = {};
-  MENU.forEach(m=>{
+  visibleMenuItems().forEach(m=>{
     if(!groups[m.group]) groups[m.group]=[];
     groups[m.group].push(m);
   });
@@ -1170,6 +1213,11 @@ function closeTab(id){
 // NAVIGATE
 // ================================================================
 function navigate(id, addTabFlag=true){
+  if(id !== '403' && id !== '404' && !canPage(id)){
+    showToast('没有权限访问该功能', 'error');
+    id = '403';
+    addTabFlag = false;
+  }
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   const pg = document.getElementById('page-'+id);
   if(!pg){navigate('404'); return;}
@@ -1209,16 +1257,26 @@ function navigate(id, addTabFlag=true){
 // ================================================================
 // AUTH
 // ================================================================
+async function loadPermissionCatalog(){
+  const r = await fetch(`${API}/admin/permissions/catalog`,{credentials:'include'});
+  if(!r.ok) return;
+  const d = await r.json();
+  if(d.ok && Array.isArray(d.permissions) && d.permissions.length){
+    ALL_PERMS = d.permissions;
+  }
+}
+
 async function checkAuth(){
   try{
     const r = await fetch(`${API}/auth/me`,{credentials:'include'});
     if(!r.ok){location.href='/'; return;}
     currentUser = await r.json();
     if(!currentUser.is_admin){location.href='/'; return;}
+    await loadPermissionCatalog();
     document.getElementById('hAvatar').textContent = currentUser.username[0].toUpperCase();
     document.getElementById('hUname').textContent = currentUser.username;
-    document.getElementById('hRole').textContent = currentUser.is_admin?'超级管理员':'普通用户';
-    navigate('dashboard');
+    document.getElementById('hRole').textContent = isRootAdmin() ? '最高账号 admin' : '管理员';
+    navigate(defaultPage());
   }catch(e){location.href='/';}
 }
 
@@ -1324,6 +1382,41 @@ async function loadUsers(page){
   renderPager('usersPager', d.total, d.page, d.per_page, p=>loadUsers(p));
 }
 
+function roleTag(u){
+  if(u.is_root_admin) return '<span class="tag tag-red">最高账号 admin</span>';
+  if(u.is_admin) return '<span class="tag tag-purple">普通管理员</span>';
+  return '<span class="tag tag-blue">普通用户</span>';
+}
+
+function permissionBadges(perms){
+  const list = (perms || []).filter(p=>p !== 'admin_grant');
+  if(!list.length) return '<span style="color:var(--text3);font-size:12px">未分配功能权限</span>';
+  return list.slice(0,3).map(p=>`<span class="tag">${esc(ALL_PERMS.find(x=>x.key===p)?.label || p)}</span>`).join('') +
+    (list.length > 3 ? `<span style="color:var(--text3);font-size:12px"> +${list.length-3}</span>` : '');
+}
+
+function renderUserActions(u){
+  const uname = escJs(u.username);
+  const actions = [];
+  if(canPerm('points_manage')){
+    actions.push(`<button class="btn btn-outline btn-sm" onclick="openPointsModal(${u.id},'${uname}',${u.points})"><i class="fas fa-coins"></i> 积分</button>`);
+  }
+  if(canPerm('user_manage') && !u.is_root_admin){
+    actions.push(`<button class="btn btn-outline btn-sm" onclick="openResetPwdModal(${u.id},'${uname}')" title="重置密码"><i class="fas fa-key"></i></button>`);
+    actions.push(`<button class="btn btn-outline btn-sm" onclick="toggleActive(${u.id},${u.is_active},'${uname}')" title="${u.is_active?'禁用':'启用'}"><i class="fas fa-${u.is_active?'ban':'check'}"></i></button>`);
+  }
+  if(isRootAdmin() && !u.is_root_admin){
+    if(u.is_admin){
+      actions.push(`<button class="btn btn-outline btn-sm" onclick="openAdminPermissions(${u.id},'${uname}')" title="调整权限"><i class="fas fa-shield-alt"></i> 权限</button>`);
+    }
+    actions.push(`<button class="btn btn-outline btn-sm" onclick="toggleAdmin(${u.id},${u.is_admin},'${uname}')" title="${u.is_admin?'撤销管理员':'设为管理员'}"><i class="fas fa-${u.is_admin?'user-minus':'user-shield'}"></i></button>`);
+  }
+  if(canPerm('user_manage') && !u.is_root_admin){
+    actions.push(`<button class="btn btn-danger btn-sm" onclick="delUser(${u.id},'${uname}')" title="删除用户"><i class="fas fa-trash"></i></button>`);
+  }
+  return actions.length ? actions.join('') : '<span style="color:var(--text3);font-size:12px">无可用操作</span>';
+}
+
 function renderUsersTable(users){
   const tbody = document.getElementById('usersTbody');
   if(!users.length){tbody.innerHTML=`<tr><td colspan="9" style="text-align:center;padding:40px;color:var(--text3)"><i class="fas fa-inbox" style="font-size:32px;opacity:.3;display:block;margin-bottom:8px"></i>暂无数据</td></tr>`;return;}
@@ -1333,21 +1426,13 @@ function renderUsersTable(users){
       <td><b>${esc(u.username)}</b></td>
       <td style="color:var(--text2)">${esc(u.email)}</td>
       <td><span style="font-weight:600;color:var(--orange)">${u.points.toLocaleString()}</span></td>
-      <td>${u.is_admin?'<span class="tag tag-purple">管理员</span>':'<span class="tag tag-blue">用户</span>'}</td>
+      <td>${roleTag(u)}<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">${u.is_admin && !u.is_root_admin ? permissionBadges(u.admin_permissions) : ''}</div></td>
       <td>${u.is_active?'<span class="tag tag-green">启用</span>':'<span class="tag tag-red">禁用</span>'}</td>
       <td style="color:var(--text3);font-size:12px">${u.created_at||'—'}</td>
       <td style="color:var(--text3);font-size:12px">${u.last_login||'从未'}</td>
       <td>
         <div style="display:flex;gap:4px;flex-wrap:wrap">
-          <button class="btn btn-outline btn-sm" onclick="openPointsModal(${u.id},'${esc(u.username)}',${u.points})"><i class="fas fa-coins"></i> 积分</button>
-          <button class="btn btn-outline btn-sm" onclick="openResetPwdModal(${u.id},'${esc(u.username)}')"><i class="fas fa-key"></i></button>
-          <button class="btn btn-outline btn-sm" onclick="toggleActive(${u.id},${u.is_active},'${esc(u.username)}')" title="${u.is_active?'禁用':'启用'}">
-            <i class="fas fa-${u.is_active?'ban':'check'}"></i>
-          </button>
-          <button class="btn btn-outline btn-sm" onclick="toggleAdmin(${u.id},${u.is_admin},'${esc(u.username)}')" title="${u.is_admin?'撤销管理员':'设为管理员'}">
-            <i class="fas fa-${u.is_admin?'user-minus':'user-shield'}"></i>
-          </button>
-          <button class="btn btn-danger btn-sm" onclick="delUser(${u.id},'${esc(u.username)}')" title="删除用户"><i class="fas fa-trash"></i></button>
+          ${renderUserActions(u)}
         </div>
       </td>
     </tr>`).join('');
@@ -1412,6 +1497,10 @@ async function toggleActive(uid, current, uname){
 
 async function toggleAdmin(uid, current, uname){
   const next = !current;
+  if(next){
+    openAdminPermissions(uid, uname, true);
+    return;
+  }
   showConfirm(`确定要${next?'设置':'撤销'} <b>${esc(uname)}</b> 的管理员权限吗？`, 'btn-warning',
     async()=>{
       const r = await fetch(`${API}/admin/users/${uid}/admin`,{
@@ -1614,50 +1703,85 @@ function renderDistChart(){
 // ================================================================
 // ROLES
 // ================================================================
-function renderRoles(){
+async function renderRoles(){
   const grid = document.getElementById('roleGrid');
-  grid.innerHTML = roles.map(r=>`
+  if(!isRootAdmin()){
+    grid.innerHTML = '<div class="empty" style="padding:36px;color:var(--text2)">仅最高账号 admin 可以管理管理员授权。</div>';
+    return;
+  }
+  grid.innerHTML = '<div class="empty" style="padding:36px;color:var(--text2)"><span class="loading-spin"></span> 正在加载权限目录...</div>';
+  await loadPermissionCatalog();
+  const r = await fetch(`${API}/admin/users?page=1&search=`,{credentials:'include'});
+  const d = r.ok ? await r.json() : {users:[]};
+  const admins = (d.users || []).filter(u=>u.is_admin);
+  const catalogCard = `
     <div class="role-card">
-      <div class="rc-title">${esc(r.name)}</div>
-      <div class="rc-desc">${esc(r.desc)}</div>
-      <div class="rc-perms">${r.perms.map(p=>`<span class="rc-perm">${ALL_PERMS.find(x=>x.key===p)?.label||p}</span>`).join('')}</div>
+      <div class="rc-title">权限白名单</div>
+      <div class="rc-desc">后端只接受这些固定 key；前端自造权限不会生效。</div>
+      <div class="rc-perms">${ALL_PERMS.map(p=>`<span class="rc-perm">${esc(p.label)}</span>`).join('')}</div>
+    </div>`;
+  const adminCards = admins.map(u=>`
+    <div class="role-card">
+      <div class="rc-title">${esc(u.username)} ${u.is_root_admin ? '<span class="tag tag-red">最高账号</span>' : '<span class="tag tag-purple">普通管理员</span>'}</div>
+      <div class="rc-desc">${u.is_root_admin ? '默认拥有后台最高权限，不参与普通管理员勾选。' : '可查看/操作的功能由 admin 勾选授权。'}</div>
+      <div class="rc-perms">${u.is_root_admin ? '<span class="rc-perm">全部后台权限</span>' : permissionBadges(u.admin_permissions)}</div>
       <div class="rc-footer">
-        <button class="btn btn-outline btn-sm" onclick="openRoleModal(${r.id})"><i class="fas fa-edit"></i> 编辑</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteRole(${r.id})"><i class="fas fa-trash"></i></button>
+        ${u.is_root_admin ? '' : `<button class="btn btn-outline btn-sm" onclick="openAdminPermissions(${u.id},'${escJs(u.username)}')"><i class="fas fa-edit"></i> 调整权限</button>`}
       </div>
     </div>`).join('');
+  grid.innerHTML = catalogCard + (adminCards || '<div class="empty" style="padding:36px;color:var(--text2)">暂无普通管理员</div>');
 }
 
-function openRoleModal(rid){
-  const role = rid ? roles.find(r=>r.id===rid) : null;
-  document.getElementById('role-name').value = role?.name||'';
-  document.getElementById('role-desc').value = role?.desc||'';
+async function openAdminPermissions(uid, uname, makeAdmin=false){
+  permissionTargetId = uid;
+  permissionTargetName = uname;
+  permissionTargetMode = makeAdmin ? 'grant' : 'save';
+  await loadPermissionCatalog();
+  let currentPerms = [];
+  if(!makeAdmin){
+    const r = await fetch(`${API}/admin/users/${uid}/permissions`,{credentials:'include'});
+    const d = r.ok ? await r.json() : {};
+    if(d.is_root_admin){
+      showToast('最高账号 admin 不参与普通管理员授权', 'error');
+      return;
+    }
+    currentPerms = d.permissions || [];
+  }
+  document.getElementById('modalRoleTitle').textContent = makeAdmin ? '设为管理员并授权' : '调整管理员权限';
+  document.getElementById('role-name').value = uname;
+  document.getElementById('role-desc').value = makeAdmin ? '保存后该用户成为普通管理员' : '仅勾选允许查看/操作的功能';
   const permGrid = document.getElementById('permGrid');
-  permGrid.innerHTML = ALL_PERMS.map(p=>`
-    <div class="perm-item${role?.perms.includes(p.key)?' checked':''}" onclick="this.classList.toggle('checked')" data-key="${p.key}">
+  permGrid.innerHTML = ALL_PERMS.filter(p=>p.key !== 'admin_grant').map(p=>`
+    <div class="perm-item${currentPerms.includes(p.key)?' checked':''}" onclick="this.classList.toggle('checked')" data-key="${p.key}">
       <div class="perm-check"></div>
-      <span class="perm-name">${p.label}</span>
+      <span class="perm-name">${esc(p.label)}</span>
     </div>`).join('');
   openModal('modalRole');
 }
 
-function submitRole(){
-  const name = document.getElementById('role-name').value.trim();
-  if(!name){alert('请输入角色名称');return;}
+async function submitRole(){
+  if(!permissionTargetId) return;
   const perms = [...document.querySelectorAll('.perm-item.checked')].map(el=>el.dataset.key);
-  const desc = document.getElementById('role-desc').value.trim();
-  roles.push({id:Date.now(),name,desc,perms});
-  closeModal('modalRole');
-  renderRoles();
-  showToast('角色已创建','success');
-}
-
-function deleteRole(id){
-  showConfirm('确定删除此角色吗？','btn-danger',()=>{
-    roles = roles.filter(r=>r.id!==id);
-    closeModal('modalConfirm');
-    renderRoles();
+  const url = permissionTargetMode === 'grant'
+    ? `${API}/admin/users/${permissionTargetId}/admin`
+    : `${API}/admin/users/${permissionTargetId}/permissions`;
+  const body = permissionTargetMode === 'grant'
+    ? {is_admin:true, permissions:perms}
+    : {permissions:perms};
+  const r = await fetch(url,{
+    method:'POST',credentials:'include',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)
   });
+  const d = await r.json().catch(()=>({}));
+  if(!r.ok || !d.ok){
+    showToast(d.error || d.msg || '权限保存失败', 'error');
+    return;
+  }
+  closeModal('modalRole');
+  showToast('权限已保存','success');
+  if(currentPage === 'roles') renderRoles();
+  loadUsers(usersState.page);
 }
 
 // ================================================================
@@ -1895,6 +2019,11 @@ function showToast(msg, type='info'){
 function esc(s){
   if(s===null||s===undefined) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escJs(s){
+  if(s===null||s===undefined) return '';
+  return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\r?\n/g,' ');
 }
 
 // ================================================================

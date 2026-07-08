@@ -5,7 +5,7 @@ from flask import Blueprint, request, jsonify
 
 import data_manager as dm
 import search_manager as search_mgr
-from app_state import require_auth, require_admin
+from app_state import require_auth, require_admin_perm
 
 bp = Blueprint("search", __name__)
 
@@ -127,7 +127,7 @@ def api_search_status():
 
 
 @bp.route("/api/search/config", methods=["GET"])
-@require_admin
+@require_admin_perm("data_config")
 def api_search_config_get():
     """获取搜索服务配置（管理员）"""
     cfg = search_mgr.get_config()
@@ -142,7 +142,7 @@ def api_search_config_get():
 
 
 @bp.route("/api/search/config", methods=["POST"])
-@require_admin
+@require_admin_perm("data_config")
 def api_search_config_save():
     """保存搜索服务配置（管理员）"""
     d = request.json or {}

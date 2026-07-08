@@ -2,21 +2,21 @@
 from flask import Blueprint, request, jsonify, session
 
 import user_manager as um
-from app_state import require_admin
+from app_state import require_admin, require_admin_perm, require_root_admin
 
 bp = Blueprint("admin", __name__)
 
 
 # ── 公告管理 ──────────────────────────────────────────────────
 @bp.route("/api/admin/announcements", methods=["GET"])
-@require_admin
+@require_admin_perm("content_manage")
 def admin_list_announcements():
     items = um.list_all_announcements()
     return jsonify({"ok": True, "announcements": items})
 
 
 @bp.route("/api/admin/announcements", methods=["POST"])
-@require_admin
+@require_admin_perm("content_manage")
 def admin_create_announcement():
     d = request.json or {}
     r = um.create_announcement(
@@ -30,7 +30,7 @@ def admin_create_announcement():
 
 
 @bp.route("/api/admin/announcements/<int:ann_id>", methods=["PUT"])
-@require_admin
+@require_admin_perm("content_manage")
 def admin_update_announcement(ann_id):
     d = request.json or {}
     r = um.update_announcement(ann_id, **{k: v for k, v in d.items()
@@ -39,13 +39,13 @@ def admin_update_announcement(ann_id):
 
 
 @bp.route("/api/admin/announcements/<int:ann_id>", methods=["DELETE"])
-@require_admin
+@require_admin_perm("content_manage")
 def admin_delete_announcement(ann_id):
     return jsonify(um.delete_announcement(ann_id))
 
 
 @bp.route("/api/admin/logs")
-@require_admin
+@require_admin_perm("security_audit")
 def admin_get_logs():
     uid_filter = request.args.get("uid")
     limit      = int(request.args.get("limit", 500))
@@ -55,13 +55,19 @@ def admin_get_logs():
 
 # ── 用户与积分管理 ────────────────────────────────────────────
 @bp.route("/api/admin/stats")
-@require_admin
+@require_admin_perm("dashboard_view")
 def admin_stats():
     return jsonify({"ok": True, **um.stats()})
 
 
-@bp.route("/api/admin/users")
+@bp.route("/api/admin/permissions/catalog")
 @require_admin
+def admin_permissions_catalog():
+    return jsonify({"ok": True, "permissions": um.admin_permission_catalog()})
+
+
+@bp.route("/api/admin/users")
+@require_admin_perm("user_manage")
 def admin_users():
     page   = int(request.args.get("page", 1))
     search = request.args.get("search", "")
@@ -69,7 +75,7 @@ def admin_users():
 
 
 @bp.route("/api/admin/users/<int:uid>/points", methods=["POST"])
-@require_admin
+@require_admin_perm("points_manage")
 def admin_add_points(uid):
     d      = request.json or {}
     amount = int(d.get("amount", 0))
@@ -79,7 +85,7 @@ def admin_add_points(uid):
 
 
 @bp.route("/api/admin/users/<int:uid>/active", methods=["POST"])
-@require_admin
+@require_admin_perm("user_manage")
 def admin_set_active(uid):
     active = request.json.get("active", True)
     if uid == session.get("user_id") and not active:
@@ -88,21 +94,52 @@ def admin_set_active(uid):
 
 
 @bp.route("/api/admin/users/<int:uid>/admin", methods=["POST"])
-@require_admin
+@require_root_admin
 def admin_set_admin(uid):
-    is_admin = request.json.get("is_admin", False)
-    return jsonify(um.set_admin(uid, is_admin))
+    d = request.json or {}
+    is_admin = d.get("is_admin", False)
+    r = um.set_admin(uid, is_admin)
+    if r.get("ok") and is_admin:
+        perms = d.get("permissions")
+        if perms is not None:
+            pr = um.set_admin_permissions(uid, perms, granted_by=session.get("user_id"))
+            if not pr.get("ok"):
+                return jsonify(pr), 400
+            r["permissions"] = pr.get("permissions", [])
+    return jsonify(r)
+
+
+@bp.route("/api/admin/users/<int:uid>/permissions", methods=["GET"])
+@require_root_admin
+def admin_get_user_permissions(uid):
+    user = um.get_user(uid)
+    if not user:
+        return jsonify({"ok": False, "error": "user not found"}), 404
+    return jsonify({
+        "ok": True,
+        "user_id": uid,
+        "is_root_admin": um.is_root_admin_user(user),
+        "permissions": um.get_admin_permissions(uid),
+    })
+
+
+@bp.route("/api/admin/users/<int:uid>/permissions", methods=["POST"])
+@require_root_admin
+def admin_save_user_permissions(uid):
+    d = request.json or {}
+    r = um.set_admin_permissions(uid, d.get("permissions", []), granted_by=session.get("user_id"))
+    return (jsonify(r), 200 if r.get("ok") else 400)
 
 
 @bp.route("/api/admin/transactions")
-@require_admin
+@require_admin_perm("points_manage")
 def admin_transactions():
     page = int(request.args.get("page", 1))
     return jsonify({"ok": True, **um.all_point_transactions(page, 30)})
 
 
 @bp.route("/api/admin/users/<int:uid>/reset_password", methods=["POST"])
-@require_admin
+@require_admin_perm("user_manage")
 def admin_reset_password(uid):
     new_pw = (request.json or {}).get("new_password", "")
     return jsonify(um.admin_reset_password(uid, new_pw))
@@ -110,7 +147,7 @@ def admin_reset_password(uid):
 
 # ── 找回密码申请（后台审批重置）────────────────────────────────
 @bp.route("/api/admin/reset_requests", methods=["GET"])
-@require_admin
+@require_admin_perm("user_manage")
 def admin_list_reset_requests():
     """列出找回密码申请（默认仅 pending）。"""
     status = request.args.get("status", "pending")
@@ -119,21 +156,21 @@ def admin_list_reset_requests():
 
 
 @bp.route("/api/admin/reset_requests/<int:req_id>/resolve", methods=["POST"])
-@require_admin
+@require_admin_perm("user_manage")
 def admin_resolve_reset_request(req_id):
     """审批通过：生成临时密码并重置，返回临时密码供管理员转告用户。"""
     return jsonify(um.resolve_reset_request(req_id, session.get("user_id", 0)))
 
 
 @bp.route("/api/admin/reset_requests/<int:req_id>/reject", methods=["POST"])
-@require_admin
+@require_admin_perm("user_manage")
 def admin_reject_reset_request(req_id):
     """驳回申请（不重置密码）。"""
     return jsonify(um.reject_reset_request(req_id, session.get("user_id", 0)))
 
 
 @bp.route("/api/admin/users/<int:uid>/set_points", methods=["POST"])
-@require_admin
+@require_admin_perm("points_manage")
 def admin_set_points(uid):
     """把用户积分设为指定值（可增可减），区别于 /points 的增量充值。"""
     d     = request.json or {}
@@ -143,7 +180,7 @@ def admin_set_points(uid):
 
 
 @bp.route("/api/admin/users/<int:uid>", methods=["DELETE"])
-@require_admin
+@require_admin_perm("user_manage")
 def admin_delete_user(uid):
     """删除用户（不可删自己）。"""
     if uid == session.get("user_id"):
@@ -153,7 +190,7 @@ def admin_delete_user(uid):
 
 # ── AI/功能调用积分设置 ───────────────────────────────────────
 @bp.route("/api/admin/point_costs", methods=["GET"])
-@require_admin
+@require_admin_perm("points_manage")
 def admin_get_point_costs():
     """各功能调用积分消耗（0=免费）。"""
     return jsonify({"ok": True, "costs": um.get_point_costs(),
@@ -161,7 +198,7 @@ def admin_get_point_costs():
 
 
 @bp.route("/api/admin/point_costs", methods=["POST"])
-@require_admin
+@require_admin_perm("points_manage")
 def admin_set_point_costs():
     """保存积分消耗配置：内存即时生效 + data/point_costs.json 持久化。"""
     d = request.json or {}
@@ -170,14 +207,14 @@ def admin_set_point_costs():
 
 # ── 邀请码管理（邀请制注册）──────────────────────────────────
 @bp.route("/api/admin/invite_codes", methods=["GET"])
-@require_admin
+@require_admin_perm("invite_manage")
 def admin_list_invites():
     """列出全部邀请码（含生成者、名额、已用、奖励、状态）。"""
     return jsonify({"ok": True, "codes": um.list_invite_codes()})
 
 
 @bp.route("/api/admin/invite_codes", methods=["POST"])
-@require_admin
+@require_admin_perm("invite_manage")
 def admin_create_invite():
     """生成邀请码：max_uses 名额 / reward 每邀请奖励积分 / note 备注 / expires_at 可选过期。"""
     d = request.json or {}
@@ -193,7 +230,7 @@ def admin_create_invite():
 
 
 @bp.route("/api/admin/invite_codes/<int:cid>", methods=["DELETE"])
-@require_admin
+@require_admin_perm("invite_manage")
 def admin_revoke_invite(cid):
     """作废邀请码（停止可用，不删历史）。"""
     return jsonify(um.revoke_invite_code(cid))
@@ -203,7 +240,7 @@ def admin_revoke_invite(cid):
 import changelog_manager as clm
 
 @bp.route("/api/admin/changelog", methods=["GET"])
-@require_admin
+@require_admin_perm("content_manage")
 def admin_list_changelog():
     """管理员列出全部更新日志（含未发布）。"""
     items = clm.list_changelog(published_only=False)
@@ -211,7 +248,7 @@ def admin_list_changelog():
 
 
 @bp.route("/api/admin/changelog", methods=["POST"])
-@require_admin
+@require_admin_perm("content_manage")
 def admin_create_changelog():
     """管理员创建更新日志。"""
     d = request.json or {}
@@ -230,7 +267,7 @@ def admin_create_changelog():
 
 
 @bp.route("/api/admin/changelog/<int:cid>", methods=["PUT"])
-@require_admin
+@require_admin_perm("content_manage")
 def admin_update_changelog(cid):
     """管理员更新日志。"""
     d = request.json or {}
@@ -240,7 +277,7 @@ def admin_update_changelog(cid):
 
 
 @bp.route("/api/admin/changelog/<int:cid>", methods=["DELETE"])
-@require_admin
+@require_admin_perm("content_manage")
 def admin_delete_changelog(cid):
     """管理员删除更新日志。"""
     return jsonify({"ok": clm.delete_changelog(cid)})

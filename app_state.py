@@ -183,6 +183,55 @@ def require_admin(f):
     return wrapper
 
 
+def is_root_admin_session() -> bool:
+    uid = session.get("user_id")
+    if not uid:
+        return False
+    return um.is_root_admin_user(um.get_user(uid))
+
+
+def current_admin_permissions() -> list[str]:
+    uid = session.get("user_id")
+    if not uid:
+        return []
+    return um.get_admin_permissions(uid)
+
+
+def require_root_admin(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not session.get("user_id"):
+            return jsonify({"ok": False, "error": "please login", "code": 401}), 401
+        if not is_root_admin_session():
+            return jsonify({
+                "ok": False,
+                "error": "root admin required",
+                "code": "root_admin_required",
+            }), 403
+        return f(*args, **kwargs)
+    return wrapper
+
+
+def require_admin_perm(perm_key: str):
+    def deco(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            if not session.get("user_id"):
+                return jsonify({"ok": False, "error": "please login", "code": 401}), 401
+            if not session.get("is_admin"):
+                return jsonify({"ok": False, "error": "admin required", "code": 403}), 403
+            if not is_root_admin_session() and perm_key not in current_admin_permissions():
+                return jsonify({
+                    "ok": False,
+                    "error": "missing admin permission",
+                    "code": 403,
+                    "missing_permission": perm_key,
+                }), 403
+            return f(*args, **kwargs)
+        return wrapper
+    return deco
+
+
 def _deduct(action: str, desc: str = ""):
     """扣积分，返回 None 表示成功，返回 dict 表示失败。"""
     uid = session.get("user_id")

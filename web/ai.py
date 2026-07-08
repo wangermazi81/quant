@@ -9,7 +9,7 @@ import ai_analyst as ai
 import data_manager as dm
 import stock_scorer as scorer
 import user_manager as um
-from app_state import BASE_DIR, require_auth, require_admin, _add_log, _deduct
+from app_state import BASE_DIR, require_auth, require_admin_perm, _add_log, _deduct
 from app_security import rate_limit, user_key
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ def _kline_is_stale(df, max_lag_days: int = 3) -> bool:
 
 
 @bp.route("/api/ai/config", methods=["GET"])
-@require_admin
+@require_admin_perm("ai_config")
 def ai_get_config():
     """全局 AI 配置（仅管理员可查看/修改；普通用户的 AI 功能由后端用全局配置代答）。"""
     cfg = ai.load_config()
@@ -52,7 +52,7 @@ def ai_get_config():
 
 
 @bp.route("/api/ai/config", methods=["POST"])
-@require_admin
+@require_admin_perm("ai_config")
 def ai_save_config():
     d   = request.json
     cfg = ai.load_config()
@@ -303,7 +303,7 @@ def ai_analyze_result(task_id):
 
 
 @bp.route("/api/ai/detect_models", methods=["POST"])
-@require_admin
+@require_admin_perm("ai_config")
 def ai_detect_models():
     """探测 Base URL + Key 下可用的全部模型（中转站/官方 OpenAI 兼容端点通用）。
 
@@ -339,7 +339,7 @@ def ai_detect_models():
 
 
 @bp.route("/api/ai/test", methods=["POST"])
-@require_admin
+@require_admin_perm("ai_config")
 def ai_test_conn():
     d   = request.json or {}
     cfg = ai.load_config()

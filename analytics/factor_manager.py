@@ -129,6 +129,13 @@ def list_factors() -> list:
     return result
 
 
+def get_meta(filename: str) -> dict:
+    path = FACTORS_DIR / f"{filename}.py"
+    if not path.exists():
+        return {"name": filename, "desc": "", "category": "综合", "period": 20, "builtin": True}
+    return _read_meta(path)
+
+
 def get_code(filename: str) -> str:
     path = FACTORS_DIR / f"{filename}.py"
     return path.read_text(encoding="utf-8") if path.exists() else ""

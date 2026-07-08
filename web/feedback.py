@@ -8,7 +8,7 @@ import logging
 from flask import Blueprint, request, jsonify, session
 
 import feedback_manager as fbm
-from app_state import require_auth, require_admin, _add_log
+from app_state import require_auth, require_admin_perm, _add_log
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def my_feedback():
 
 
 @bp.route("/api/feedback", methods=["GET"])
-@require_admin
+@require_admin_perm("content_manage")
 def admin_list_feedback():
     """管理员列表（可 ?status=open 过滤）。"""
     status = request.args.get("status") or None
@@ -54,7 +54,7 @@ def admin_list_feedback():
 
 
 @bp.route("/api/feedback/<int:fid>/status", methods=["POST"])
-@require_admin
+@require_admin_perm("content_manage")
 def admin_update_feedback(fid):
     """管理员更新状态 / 备注。"""
     d      = request.json or {}
