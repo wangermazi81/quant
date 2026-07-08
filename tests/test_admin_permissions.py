@@ -70,6 +70,19 @@ def _login_session(client, uid, username, is_admin=True):
         sess["is_admin"] = is_admin
 
 
+def test_admin_page_shell_is_public_but_admin_api_still_requires_login(isolated_app):
+    app, _um, _main = isolated_app
+    client = app.test_client()
+
+    page = client.get("/admin")
+    api = client.get("/api/admin/stats")
+
+    assert page.status_code == 200
+    assert page.content_type.startswith("text/html")
+    assert b"/auth/me" in page.data
+    assert api.status_code == 401
+
+
 def test_auth_me_returns_root_flag_and_admin_permissions(isolated_app):
     app, um, _main = isolated_app
     ops_uid = _create_admin(um, permissions=["dashboard_view", "user_manage"])

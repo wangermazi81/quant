@@ -1,7 +1,7 @@
 """静态页面 + 截图文件服务蓝图。"""
 from flask import Blueprint, jsonify, send_from_directory, request
 
-from app_state import BASE_DIR, require_auth, require_admin
+from app_state import BASE_DIR, require_auth
 import changelog_manager as clm
 
 bp = Blueprint("pages", __name__)
@@ -37,7 +37,6 @@ def index_legacy():
 
 
 @bp.route("/admin")
-@require_admin
 def admin_page():
     resp = send_from_directory(str(BASE_DIR), "admin.html")
     resp.headers["Cache-Control"] = "no-store"
