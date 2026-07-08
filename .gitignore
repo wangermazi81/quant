@@ -61,6 +61,7 @@ logs/
 .coverage
 htmlcov/
 .pytest_cache/
+codex_pytest_tmp/
 
 # ── 归档目录（历史备份，不提交）─────────────────────
 _archive/

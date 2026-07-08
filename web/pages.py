@@ -14,6 +14,14 @@ def _nocache(resp):
     return resp
 
 
+def _bounded_int_arg(name: str, default: int, min_value: int, max_value: int) -> int:
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(min_value, min(value, max_value))
+
+
 @bp.route("/")
 def index():
     # 主前端 index.html 已套用糖果主题（theme-candy.css），从磁盘实时读取 → 改样式免重启。
@@ -65,6 +73,6 @@ def serve_screenshot(filename):
 @bp.route("/api/changelog", methods=["GET"])
 def public_changelog():
     """获取已发布的更新日志（登录/未登录均可看）。"""
-    limit = min(int(request.args.get("limit", 50)), 200)
+    limit = _bounded_int_arg("limit", 50, 1, 200)
     items = clm.list_changelog(limit=limit, published_only=True)
     return jsonify({"ok": True, "items": items, "total": clm.count()})
