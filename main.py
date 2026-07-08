@@ -190,6 +190,14 @@ app.register_blueprint(_lhb_bp)
 app.register_blueprint(_aitrader_bp)
 
 
+def _bounded_int_arg(name: str, default: int, min_value: int, max_value: int) -> int:
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(min_value, min(max_value, value))
+
+
 @app.route("/api/health")
 def api_health():
     return jsonify({
@@ -1598,7 +1606,7 @@ def account_trade_settings():
 @require_auth
 def paper_trades():
     uid    = session["user_id"]
-    limit  = int(request.args.get("limit", 100))
+    limit  = _bounded_int_arg("limit", 100, 1, 500)
     broker = pb.get_broker(uid)
     return jsonify(broker.get_trades(limit=limit))
 
@@ -1607,7 +1615,7 @@ def paper_trades():
 @require_auth
 def paper_orders():
     uid    = session["user_id"]
-    limit  = int(request.args.get("limit", 100))
+    limit  = _bounded_int_arg("limit", 100, 1, 500)
     broker = pb.get_broker(uid)
     return jsonify(broker.get_orders(limit=limit))
 
@@ -1662,7 +1670,7 @@ def paper_stats():
 @require_auth
 def paper_equity():
     uid    = session["user_id"]
-    days   = int(request.args.get("days", 90))
+    days   = _bounded_int_arg("days", 90, 1, 3650)
     broker = pb.get_broker(uid)
     return jsonify(broker.get_equity_curve(days=days))
 
