@@ -21,6 +21,14 @@ def _bounded_int_arg(name: str, default: int, min_value: int, max_value: int) ->
     return max(min_value, min(max_value, value))
 
 
+def _bounded_int_value(raw, default: int, min_value: int, max_value: int) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(min_value, min(max_value, value))
+
+
 def _optional_int_arg(name: str) -> int | None:
     raw = request.args.get(name)
     if raw in (None, ""):
@@ -169,7 +177,7 @@ def admin_security_block_ip():
     ip = (d.get("ip") or "").strip()
     if not ip:
         return jsonify({"ok": False, "error": "ip required"}), 400
-    seconds = int(d.get("seconds") or 900)
+    seconds = _bounded_int_value(d.get("seconds"), 900, 1, 86400)
     reason = (d.get("reason") or "manual admin block").strip()
     sec.block_ip(ip, seconds=seconds, reason=reason)
     sec.record_security_event(

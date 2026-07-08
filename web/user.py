@@ -7,6 +7,14 @@ from app_state import require_auth, get_user_state, _persist_state, _add_log
 bp = Blueprint("user", __name__)
 
 
+def _bounded_int_arg(name: str, default: int, min_value: int, max_value: int) -> int:
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(min_value, min(max_value, value))
+
+
 @bp.route("/api/user/points")
 @require_auth
 def user_points():
@@ -73,7 +81,7 @@ def user_save_settings():
 @require_auth
 def user_get_logs():
     uid   = session["user_id"]
-    limit = int(request.args.get("limit", 200))
+    limit = _bounded_int_arg("limit", 200, 1, 1000)
     logs  = um.get_user_logs(uid, limit=limit)
     return jsonify({"ok": True, "logs": logs})
 

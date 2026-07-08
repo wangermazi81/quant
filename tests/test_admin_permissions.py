@@ -234,6 +234,41 @@ def test_admin_list_endpoints_sanitize_numeric_query_params(isolated_app, monkey
     ]
 
 
+def test_admin_manual_ip_block_sanitizes_seconds(isolated_app, monkeypatch):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(um, permissions=["security_audit"])
+
+    import web.admin as admin_api
+
+    calls = []
+    monkeypatch.setattr(
+        admin_api.sec,
+        "block_ip",
+        lambda ip, seconds=None, reason="": calls.append((ip, seconds, reason)),
+    )
+    monkeypatch.setattr(admin_api.sec, "list_ip_blocks", lambda: [])
+    monkeypatch.setattr(admin_api.sec, "record_security_event", lambda *args, **kwargs: None)
+
+    client = app.test_client()
+    _login_session(client, ops_uid, "ops")
+
+    bad = client.post(
+        "/api/admin/security/ip_blocks",
+        json={"ip": "203.0.113.10", "seconds": "bad", "reason": "manual"},
+    )
+    huge = client.post(
+        "/api/admin/security/ip_blocks",
+        json={"ip": "203.0.113.11", "seconds": 999999999, "reason": "manual"},
+    )
+
+    assert bad.status_code == 200
+    assert huge.status_code == 200
+    assert calls == [
+        ("203.0.113.10", 900, "manual"),
+        ("203.0.113.11", 86400, "manual"),
+    ]
+
+
 def test_admin_system_status_requires_dashboard_permission_and_hides_sensitive_details(isolated_app, tmp_path, monkeypatch):
     app, um, _main = isolated_app
     ops_uid = _create_admin(um, permissions=[])
