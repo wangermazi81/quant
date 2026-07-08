@@ -51,9 +51,10 @@ def api_chain_graph_get():
 @require_auth
 def api_chain_graph_gen():
     import research_center as rc
-    name = ((request.json or {}).get("name") or "").strip()
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name") or "").strip()
     if not name:
-        return jsonify({"ok": False, "error": "缺少概念名称"})
+        return jsonify({"ok": False, "error": "invalid name"}), 400
     err = _deduct("chain_graph", f"产业链图谱 {name}")
     if err:
         return jsonify(err)
