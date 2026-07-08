@@ -199,6 +199,101 @@ def _fmt(yyyymmdd: str) -> str:
 # 数据抓取
 # ══════════════════════════════════════════════════════════════
 
+def _merge_stock_rows(rows: list) -> list:
+    merged: dict = {}
+    for it in rows:
+        code = it["code"]
+        cur = merged.get(code)
+        if cur is None:
+            merged[code] = it
+            continue
+        main, extra = ((cur, it) if abs(cur.get("net_amt") or 0) >= abs(it.get("net_amt") or 0)
+                       else (it, cur))
+        rs, er = main.get("reason", ""), extra.get("reason", "")
+        if er and er not in rs:
+            main["reason"] = (rs + " / " + er)[:60] if rs else er
+        merged[code] = main
+    out = list(merged.values())
+    out.sort(key=lambda x: x.get("net_amt") or -9e9, reverse=True)
+    return out
+
+
+def _fetch_lhb_stocks_eastmoney(yyyymmdd: str) -> list:
+    import requests
+
+    date_str = _fmt(yyyymmdd)
+    hdrs = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Referer": "https://data.eastmoney.com/stock/tradedetail.html",
+        "Accept": "application/json",
+    }
+    params = {
+        "sortColumns": "SECURITY_CODE,TRADE_DATE",
+        "sortTypes": "1,-1",
+        "pageSize": "5000",
+        "pageNumber": "1",
+        "reportName": "RPT_DAILYBILLBOARD_DETAILSNEW",
+        "columns": (
+            "SECURITY_CODE,SECURITY_NAME_ABBR,TRADE_DATE,EXPLAIN,CLOSE_PRICE,CHANGE_RATE,"
+            "BILLBOARD_NET_AMT,BILLBOARD_BUY_AMT,BILLBOARD_SELL_AMT,BILLBOARD_DEAL_AMT,"
+            "ACCUM_AMOUNT,TURNOVERRATE,EXPLANATION"
+        ),
+        "source": "WEB",
+        "client": "WEB",
+        "filter": f"(TRADE_DATE<='{date_str}')(TRADE_DATE>='{date_str}')",
+    }
+
+    try:
+        with no_proxy():
+            r = requests.get(
+                "https://datacenter-web.eastmoney.com/api/data/v1/get",
+                params=params,
+                headers=hdrs,
+                timeout=10,
+            )
+        result = (r.json() or {}).get("result") or {}
+        pages = int(result.get("pages") or 0)
+        if pages <= 0:
+            return []
+        data_rows = list(result.get("data") or [])
+        for page in range(2, pages + 1):
+            params["pageNumber"] = str(page)
+            with no_proxy():
+                r = requests.get(
+                    "https://datacenter-web.eastmoney.com/api/data/v1/get",
+                    params=params,
+                    headers=hdrs,
+                    timeout=10,
+                )
+            data_rows.extend(((r.json() or {}).get("result") or {}).get("data") or [])
+
+        out = []
+        for d in data_rows:
+            code = str(d.get("SECURITY_CODE") or "").zfill(6)
+            name = _clean_text(d.get("SECURITY_NAME_ABBR", ""))
+            if not code.isdigit() or not name:
+                continue
+            net = _num(d.get("BILLBOARD_NET_AMT"))
+            out.append({
+                "code": code,
+                "name": name,
+                "chg": _num(d.get("CHANGE_RATE")),
+                "net_amt": round(net / 10000, 2) if net else None,
+                "buy_amt": round((_num(d.get("BILLBOARD_BUY_AMT")) or 0) / 10000, 2),
+                "sell_amt": round((_num(d.get("BILLBOARD_SELL_AMT")) or 0) / 10000, 2),
+                "close": _num(d.get("CLOSE_PRICE")),
+                "turnover": _num(d.get("TURNOVERRATE")),
+                "reason": _clean_text(d.get("EXPLANATION") or d.get("EXPLAIN") or "")[:30],
+                "vol": round((_num(d.get("BILLBOARD_DEAL_AMT")) or 0) / 1e8, 2),
+                "youzai": [],
+                "branches": [],
+            })
+        return _merge_stock_rows(out)
+    except Exception as e:
+        logger.warning(f"[lhb] eastmoney stock list {yyyymmdd} failed: {e}")
+        return []
+
+
 def _fetch_lhb_stocks(yyyymmdd: str) -> list:
     """akshare 获取当日龙虎榜股票列表（带基本数据）。"""
     try:
@@ -207,7 +302,7 @@ def _fetch_lhb_stocks(yyyymmdd: str) -> list:
             # akshare ≥1.18: start_date/end_date 参数（旧版 date= 已废弃）
             df = ak.stock_lhb_detail_em(start_date=yyyymmdd, end_date=yyyymmdd)
         if df is None or df.empty:
-            return []
+            return _fetch_lhb_stocks_eastmoney(yyyymmdd)
 
         def _col(df, *names):
             for n in names:
@@ -269,12 +364,10 @@ def _fetch_lhb_stocks(yyyymmdd: str) -> list:
             if er and er not in rs:
                 main["reason"] = (rs + " / " + er)[:60] if rs else er
             merged[code] = main
-        out = list(merged.values())
-        out.sort(key=lambda x: x.get("net_amt") or -9e9, reverse=True)
-        return out
+        return _merge_stock_rows(out)
     except Exception as e:
         logger.warning(f"[lhb] 股票列表 {yyyymmdd} 失败: {e}")
-        return []
+        return _fetch_lhb_stocks_eastmoney(yyyymmdd)
 
 
 def _fetch_seat_detail(code: str, date_str: str) -> list:

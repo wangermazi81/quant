@@ -1,6 +1,7 @@
 import sys
 import types
 from pathlib import Path
+from contextlib import nullcontext
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import _pathsetup  # noqa: F401
@@ -54,3 +55,65 @@ def test_preload_today_reports_pending_when_not_published(monkeypatch):
     )
 
     assert lhb_engine.preload_today() is False
+
+
+def test_fetch_lhb_stocks_falls_back_to_eastmoney_when_akshare_breaks(monkeypatch):
+    def broken_lhb_detail(*args, **kwargs):
+        raise TypeError("'NoneType' object is not subscriptable")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "akshare",
+        types.SimpleNamespace(stock_lhb_detail_em=broken_lhb_detail),
+    )
+    monkeypatch.setattr(lhb_engine, "no_proxy", lambda: nullcontext())
+
+    class FakeResponse:
+        def json(self):
+            return {
+                "result": {
+                    "pages": 1,
+                    "data": [
+                        {
+                            "SECURITY_CODE": "1",
+                            "SECURITY_NAME_ABBR": "平安银行",
+                            "CHANGE_RATE": 10.01,
+                            "BILLBOARD_NET_AMT": 1200000,
+                            "BILLBOARD_BUY_AMT": 5000000,
+                            "BILLBOARD_SELL_AMT": 3800000,
+                            "CLOSE_PRICE": 12.34,
+                            "TURNOVERRATE": 8.9,
+                            "EXPLANATION": "日涨幅偏离值达7%",
+                            "BILLBOARD_DEAL_AMT": 8800000,
+                        }
+                    ],
+                }
+            }
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        assert params["reportName"] == "RPT_DAILYBILLBOARD_DETAILSNEW"
+        assert "(TRADE_DATE<='2026-07-08')" in params["filter"]
+        return FakeResponse()
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    rows = lhb_engine._fetch_lhb_stocks("20260708")
+
+    assert rows == [
+        {
+            "code": "000001",
+            "name": "平安银行",
+            "chg": 10.01,
+            "net_amt": 120.0,
+            "buy_amt": 500.0,
+            "sell_amt": 380.0,
+            "close": 12.34,
+            "turnover": 8.9,
+            "reason": "日涨幅偏离值达7%",
+            "vol": 0.09,
+            "youzai": [],
+            "branches": [],
+        }
+    ]
