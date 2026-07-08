@@ -42,6 +42,12 @@ _SENSITIVE_PATH_RE = re.compile(
     r"(\.sql|\.sqlite|\.db|\.bak|\.old|\.zip|\.tar|\.gz)$",
     re.I,
 )
+_SENSITIVE_API_PATH_RE = re.compile(
+    r"(^|/)(\.git|\.svn|\.hg|\.env|\.aws|\.ssh|id_rsa|users\.db|paper_trading\.db|"
+    r"config\.py|secret|secrets|backup|backups|dump)(/|$)|"
+    r"(\.sql|\.sqlite|\.db|\.bak|\.old|\.zip|\.tar|\.gz)$",
+    re.I,
+)
 _HIGH_VALUE_PREFIXES = (
     "/api/admin",
     "/api/ai",
@@ -311,6 +317,12 @@ def _is_high_value_path(path: str) -> bool:
     return any(path.startswith(prefix) for prefix in _HIGH_VALUE_PREFIXES)
 
 
+def _is_sensitive_probe_path(path: str) -> bool:
+    if path.startswith("/api/"):
+        return bool(_SENSITIVE_API_PATH_RE.search(path))
+    return bool(_SENSITIVE_PATH_RE.search(path))
+
+
 def init_security(app):
     secure = _truthy(os.environ.get("SESSION_COOKIE_SECURE", "0"))
     app.config.update(
@@ -354,7 +366,7 @@ def init_security(app):
                 "reason": reason,
             }), 403
 
-        if _SENSITIVE_PATH_RE.search(path):
+        if _is_sensitive_probe_path(path):
             record_security_event(
                 "sensitive_path",
                 severity="high",

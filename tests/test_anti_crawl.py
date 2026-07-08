@@ -18,6 +18,7 @@ def _isolated_security(monkeypatch, tmp_path):
     monkeypatch.setattr(sec, "_ANTI_BLOCK_SECONDS", 60)
     monkeypatch.setattr(sec, "_ANTI_AUTH_FAIL_MAX", 2)
     sec._buckets.clear()
+    sec._suspicious_hits.clear()
     sec._fail_log.clear()
     sec._lock_until.clear()
     sec._ip_blocks.clear()
@@ -35,6 +36,56 @@ def test_sensitive_probe_is_hidden_and_audited(monkeypatch, tmp_path):
     events = sec.list_security_events(limit=10)
     assert events[0]["event_type"] == "sensitive_path"
     assert events[0]["ip"] == "198.51.100.10"
+
+
+def test_business_api_named_data_is_not_hidden_by_sensitive_guard(monkeypatch, tmp_path):
+    _isolated_security(monkeypatch, tmp_path)
+    app = Flask(__name__)
+    sec.init_security(app)
+
+    @app.route("/api/lhb/data")
+    def lhb_data():
+        return jsonify({"ok": True, "stocks": []})
+
+    @app.route("/api/admin/logs")
+    def admin_logs():
+        return jsonify({"ok": True, "items": []})
+
+    @app.route("/api/data/stocks")
+    def data_stocks():
+        return jsonify({"ok": True, "items": []})
+
+    r = app.test_client().get("/api/lhb/data", headers={"X-Real-IP": "198.51.100.11"})
+    logs_r = app.test_client().get("/api/admin/logs", headers={"X-Real-IP": "198.51.100.11"})
+    data_r = app.test_client().get("/api/data/stocks", headers={"X-Real-IP": "198.51.100.11"})
+
+    assert r.status_code == 200
+    assert r.get_json()["ok"] is True
+    assert logs_r.status_code == 200
+    assert data_r.status_code == 200
+    assert sec.list_security_events(limit=10) == []
+
+
+def test_sensitive_api_file_probe_still_hidden(monkeypatch, tmp_path):
+    _isolated_security(monkeypatch, tmp_path)
+    app = Flask(__name__)
+    sec.init_security(app)
+
+    r = app.test_client().get("/api/download/users.db", headers={"X-Real-IP": "198.51.100.13"})
+
+    assert r.status_code == 404
+    assert sec.list_security_events(limit=10)[0]["event_type"] == "sensitive_path"
+
+
+def test_real_data_file_probe_still_hidden(monkeypatch, tmp_path):
+    _isolated_security(monkeypatch, tmp_path)
+    app = Flask(__name__)
+    sec.init_security(app)
+
+    r = app.test_client().get("/data/users.db", headers={"X-Real-IP": "198.51.100.12"})
+
+    assert r.status_code == 404
+    assert sec.list_security_events(limit=10)[0]["event_type"] == "sensitive_path"
 
 
 def test_offensive_user_agent_is_blocked(monkeypatch, tmp_path):
