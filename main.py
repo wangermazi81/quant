@@ -190,6 +190,16 @@ app.register_blueprint(_lhb_bp)
 app.register_blueprint(_aitrader_bp)
 
 
+@app.route("/api/health")
+def api_health():
+    return jsonify({
+        "ok": True,
+        "status": "healthy",
+        "service": "jwalpha",
+        "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+
+
 
 
 # ══════════════════════════════════════════════════════════════
