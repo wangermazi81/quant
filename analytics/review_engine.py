@@ -421,6 +421,16 @@ def generate_async(date_str: str = None, phase: str = "manual", with_ai: bool = 
 # ──────────────────────────────────────────────────────────────
 # 调度线程：15:10 收盘版 → 19:50 晚间版
 # ──────────────────────────────────────────────────────────────
+def _lhb_preload_window(now: datetime) -> bool:
+    hm = now.hour * 100 + now.minute
+    return 1530 <= hm < 2300
+
+
+def _lhb_retry_interval(now: datetime) -> int:
+    hm = now.hour * 100 + now.minute
+    return 120 if 1530 <= hm < 1630 else 300
+
+
 def _maybe_preload_lhb(now: datetime, state: dict, now_ts: float | None = None) -> bool:
     if now.weekday() >= 5:
         return False
@@ -428,15 +438,15 @@ def _maybe_preload_lhb(now: datetime, state: dict, now_ts: float | None = None) 
     if state.get("done_date") == today:
         return True
 
-    hm = now.hour * 100 + now.minute
-    if not (1530 <= hm < 2100):
+    if not _lhb_preload_window(now):
         return False
 
     now_ts = time.time() if now_ts is None else now_ts
     if state.get("last_date") != today:
         state["last_date"] = today
         state["last_try"] = 0.0
-    if now_ts - float(state.get("last_try") or 0.0) < 300:
+    interval = _lhb_retry_interval(now)
+    if now_ts - float(state.get("last_try") or 0.0) < interval:
         return False
 
     state["last_try"] = now_ts
@@ -444,10 +454,15 @@ def _maybe_preload_lhb(now: datetime, state: dict, now_ts: float | None = None) 
         import lhb_engine
 
         ok = bool(lhb_engine.preload_today())
+        state["last_ok"] = ok
+        state["last_checked_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
         if ok:
             state["done_date"] = today
         return ok
     except Exception as e:
+        state["last_ok"] = False
+        state["last_error"] = str(e)[:200]
+        state["last_checked_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
         logger.warning(f"[review] 龙虎榜预加载异常: {e}")
         return False
 

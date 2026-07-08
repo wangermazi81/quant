@@ -40,6 +40,62 @@ def test_lhb_preloader_retries_until_today_is_cached(monkeypatch):
     assert state["done_date"] == "2026-07-08"
 
 
+def test_lhb_preloader_retries_quickly_right_after_publish_window(monkeypatch):
+    calls = []
+
+    def fake_preload_today():
+        calls.append(len(calls) + 1)
+        return len(calls) >= 2
+
+    monkeypatch.setitem(sys.modules, "lhb_engine", types.SimpleNamespace(preload_today=fake_preload_today))
+    state = {}
+
+    first = review_engine._maybe_preload_lhb(
+        datetime(2026, 7, 8, 15, 31, 0), state, now_ts=1000.0
+    )
+    too_soon = review_engine._maybe_preload_lhb(
+        datetime(2026, 7, 8, 15, 32, 30), state, now_ts=1090.0
+    )
+    retry = review_engine._maybe_preload_lhb(
+        datetime(2026, 7, 8, 15, 33, 1), state, now_ts=1121.0
+    )
+
+    assert first is False
+    assert too_soon is False
+    assert retry is True
+    assert calls == [1, 2]
+
+
+def test_lhb_preloader_keeps_retrying_until_late_evening(monkeypatch):
+    calls = []
+
+    def fake_preload_today():
+        calls.append(len(calls) + 1)
+        return False
+
+    monkeypatch.setitem(sys.modules, "lhb_engine", types.SimpleNamespace(preload_today=fake_preload_today))
+    state = {}
+
+    first = review_engine._maybe_preload_lhb(
+        datetime(2026, 7, 8, 16, 31, 0), state, now_ts=2000.0
+    )
+    too_soon = review_engine._maybe_preload_lhb(
+        datetime(2026, 7, 8, 16, 34, 0), state, now_ts=2180.0
+    )
+    late_retry = review_engine._maybe_preload_lhb(
+        datetime(2026, 7, 8, 22, 30, 0), state, now_ts=2301.0
+    )
+    after_window = review_engine._maybe_preload_lhb(
+        datetime(2026, 7, 8, 23, 1, 0), state, now_ts=2700.0
+    )
+
+    assert first is False
+    assert too_soon is False
+    assert late_retry is False
+    assert after_window is False
+    assert calls == [1, 2]
+
+
 def test_daily_review_without_date_uses_latest_archive_before_market_open(monkeypatch):
     from flask import Flask
     import web.review as review_web
