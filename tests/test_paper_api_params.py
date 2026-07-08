@@ -34,6 +34,10 @@ class FakeBroker:
         self.calls.append(("equity", days))
         return {"ok": True, "points": [], "days": days}
 
+    def reset(self, initial_capital=None):
+        self.calls.append(("reset", initial_capital))
+        return {"ok": True, "initial_capital": initial_capital}
+
 
 def test_paper_list_endpoints_sanitize_numeric_query_params(monkeypatch):
     broker = FakeBroker()
@@ -54,3 +58,64 @@ def test_paper_list_endpoints_sanitize_numeric_query_params(monkeypatch):
         ("orders", 500),
         ("equity", 1),
     ]
+
+
+def test_paper_reset_rejects_invalid_initial_capital(monkeypatch):
+    broker = FakeBroker()
+    monkeypatch.setattr(main.pb, "get_broker", lambda uid: broker)
+
+    client = main.app.test_client()
+    _login(client)
+
+    response = client.post("/api/paper/reset", json={"initial_capital": "bad"})
+    data = response.get_json()
+
+    assert response.status_code == 400
+    assert data["ok"] is False
+    assert "initial_capital" in data["error"]
+    assert broker.calls == []
+
+
+def test_paper_buy_rejects_invalid_price_before_deducting(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
+    monkeypatch.setattr(main, "execute_buy", lambda *args, **kwargs: calls.append(("execute", args)) or {"ok": True})
+
+    client = main.app.test_client()
+    _login(client)
+
+    response = client.post(
+        "/api/paper/buy",
+        json={"code": "000001", "name": "Ping An", "price": "bad", "shares": 100},
+    )
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["ok"] is False
+    assert calls == []
+
+
+def test_paper_buy_rejects_missing_live_cash_before_deducting(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "DRY_RUN", False)
+    monkeypatch.setattr(
+        main.um,
+        "get_user_broker_config",
+        lambda uid: {"broker_type": "live", "config": {"live_cash": 0}},
+    )
+    monkeypatch.setattr(main, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
+    monkeypatch.setattr(main, "execute_buy", lambda *args, **kwargs: calls.append(("execute", args)) or {"ok": True})
+
+    client = main.app.test_client()
+    _login(client)
+
+    response = client.post(
+        "/api/paper/buy",
+        json={"code": "000001", "name": "Ping An", "price": 10.0, "shares": 0},
+    )
+    data = response.get_json()
+
+    assert response.status_code == 400
+    assert data["ok"] is False
+    assert data["need_live_cash"] is True
+    assert calls == []

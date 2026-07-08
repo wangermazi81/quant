@@ -198,6 +198,25 @@ def _bounded_int_arg(name: str, default: int, min_value: int, max_value: int) ->
     return max(min_value, min(max_value, value))
 
 
+def _positive_float_value(raw, default: float | None = None) -> float | None:
+    if raw in (None, ""):
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _int_value(raw, default: int | None = None) -> int | None:
+    if raw in (None, ""):
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 @app.route("/api/health")
 def api_health():
     return jsonify({
@@ -1680,7 +1699,9 @@ def paper_equity():
 def paper_reset():
     uid    = session["user_id"]
     s      = get_user_state(uid)
-    cap    = float((request.json or {}).get("initial_capital", INITIAL_CAPITAL))
+    cap    = _positive_float_value((request.json or {}).get("initial_capital"), INITIAL_CAPITAL)
+    if cap is None:
+        return jsonify({"ok": False, "error": "invalid initial_capital"}), 400
     broker = pb.get_broker(uid)
     result = broker.reset(initial_capital=cap)
     s["positions"]    = {}
@@ -1711,16 +1732,22 @@ def paper_set_config():
 @app.route("/api/paper/buy", methods=["POST"])
 @require_auth
 def paper_manual_buy():
-    err = _deduct("paper_trade", "模拟盘下单")
-    if err:
-        return jsonify(err), 402
+    payload = request.json or {}
+    raw_code = payload.get("code", "")
+    code_for_validation = raw_code.strip() if isinstance(raw_code, str) else ""
+    if not code_for_validation:
+        return jsonify({"ok": False, "msg": "missing code"})
+    if _positive_float_value(payload.get("price")) is None:
+        return jsonify({"ok": False, "msg": "invalid price"})
+    if _int_value(payload.get("shares"), 0) is None:
+        return jsonify({"ok": False, "msg": "invalid shares"})
     uid    = session["user_id"]
     s      = get_user_state(uid)
-    d      = request.json
+    d      = request.json or {}
     code   = d.get("code", "").strip()
     name   = d.get("name", code)
-    price  = float(d.get("price", 0))
-    shares = int(d.get("shares", 0))
+    price  = _positive_float_value(d.get("price"))
+    shares = _int_value(d.get("shares"), 0)
     # 防御：name 含 "?" / 乱码 / 为空，从本地 stock_names.json 查
     if not name or "?" in name or "??" in name or name == code or len(name.strip()) < 2:
         try:
@@ -1734,13 +1761,15 @@ def paper_manual_buy():
             name = name or code
     if not code:
         return jsonify({"ok": False, "msg": "请输入股票代码"})
-    if price <= 0:
+    if price is None:
         return jsonify({"ok": False, "msg": "价格必须大于0"})
     # 非交易时段提示但仍允许（方便用户测试 + 复盘）
     # 严格模式：取消注释下面 4 行让非交易时段拒单
     # from market_data import is_trading_time
     # if not is_trading_time():
     #     return jsonify({"ok": False, "msg": "非交易时段，无法下单（仅交易日 9:30-11:30 / 13:00-15:00）"})
+    if shares is None:
+        return jsonify({"ok": False, "msg": "invalid shares"})
     try:
         from market_data import is_trading_time
         if not is_trading_time():
@@ -1774,6 +1803,9 @@ def paper_manual_buy():
         if _eff < _ratio:
             _add_log(uid, f"🛡 单笔护栏：仓位比 {_ratio*100:.0f}% > 单笔上限 {_cap*100:.0f}%，按 {_eff*100:.0f}% 建仓")
         _add_log(uid, f"💰 仓位计算: {broker_type} base_cash=¥{base_cash:,.0f} × {_eff*100:.0f}% = ¥{budget:,.0f} → {shares}股 @{price:.2f}")
+    err = _deduct("paper_trade", "模拟盘下单")
+    if err:
+        return jsonify(err), 402
     res = execute_buy(uid, code, name, price, shares, reason="模拟盘手动买入")
     if res.get("ok"):
         # 透传 execute_buy 所有字段（含实盘的 signal_id，前端轮询用）
