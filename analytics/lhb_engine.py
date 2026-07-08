@@ -162,6 +162,7 @@ def _tag_branch(branch: str) -> str:
 # ══════════════════════════════════════════════════════════════
 _cache: dict = {}
 _lock = threading.Lock()
+LHB_FINALIZE_HM = 1845
 
 
 def _disk_path(yyyymmdd: str) -> Path:
@@ -204,6 +205,24 @@ def _lhb_payload_complete(data: dict) -> bool:
 
 def _today() -> str:
     return datetime.now().strftime("%Y%m%d")
+
+
+def _lhb_cache_ready(data: dict) -> bool:
+    return _lhb_payload_complete(data) and data.get("finalized") is not False
+
+
+def _lhb_today_finalized(now: datetime | None = None) -> bool:
+    now = now or datetime.now()
+    hm = now.hour * 100 + now.minute
+    return hm >= LHB_FINALIZE_HM
+
+
+def _cache_ttl(cached: dict) -> int:
+    if cached.get("finalized") is True:
+        return 86400
+    if cached.get("complete"):
+        return 60
+    return 300 if datetime.now().hour < 16 else 60
 
 
 def _fmt(yyyymmdd: str) -> str:
@@ -493,7 +512,7 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
     # 历史数据直读磁盘
     if not is_today and not force_refresh:
         disk = _disk_get(yyyymmdd)
-        if disk:
+        if _lhb_cache_ready(disk or {}):
             return disk
 
     # 内存缓存（盘中 5 分钟刷新；盘后不过期）
@@ -502,7 +521,7 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
             hit = _cache.get(yyyymmdd)
             if hit:
                 ts, cached = hit
-                ttl = 300 if datetime.now().hour < 16 else (86400 if cached.get("complete") else 60)
+                ttl = _cache_ttl(cached)
                 if time.time() - ts < ttl:
                     return cached
 
@@ -511,7 +530,7 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
     if not stocks:
         if not force_refresh:
             disk = _disk_get(yyyymmdd)
-            if disk:
+            if disk and (is_today or _lhb_cache_ready(disk or {})):
                 logger.info(f"[lhb] {date_str} 用磁盘缓存")
                 return disk
         return {"ok": False, "date": date_str, "stocks": [],
@@ -556,6 +575,8 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
         "source":       "eastmoney_akshare",
     }
     out["complete"] = _lhb_payload_complete(out)
+    out["finalized"] = (not is_today) or _lhb_today_finalized()
+    out["status"] = "final" if out["finalized"] else "updating"
 
     with _lock:
         _cache[yyyymmdd] = (time.time(), out)
@@ -574,7 +595,7 @@ def get_lhb_dates(limit: int = 30) -> list:
             d = p.stem.replace("lhb_", "")
             if len(d) == 8 and d.isdigit():
                 disk = _disk_get(d)
-                if _lhb_payload_complete(disk or {}):
+                if _lhb_cache_ready(disk or {}):
                     dates.append(_fmt(d))
             if len(dates) >= limit:
                 break
@@ -622,7 +643,7 @@ def backfill_recent(
             continue
         yyyymmdd = date_str.replace("-", "")
         disk = _disk_get(yyyymmdd)
-        if _lhb_payload_complete(disk or {}):
+        if _lhb_cache_ready(disk or {}):
             skipped.append(date_str)
             continue
         if attempts >= limit:
@@ -631,7 +652,7 @@ def backfill_recent(
         checked.append(date_str)
         try:
             data = get_lhb_data(date_str, force_refresh=True)
-            if _lhb_payload_complete(data):
+            if _lhb_cache_ready(data):
                 saved.append(date_str)
             else:
                 pending.append(date_str)
@@ -646,7 +667,7 @@ def preload_today() -> bool:
     """后台预加载今日数据（主要在 15:30 后触发）。"""
     try:
         data = get_lhb_data(force_refresh=True)
-        return _lhb_payload_complete(data)
+        return _lhb_cache_ready(data)
     except Exception as e:
         logger.warning(f"[lhb] 预加载失败: {e}")
         return False
