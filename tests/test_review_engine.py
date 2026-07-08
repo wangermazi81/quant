@@ -259,6 +259,38 @@ def test_market_review_uses_latest_archive_before_market_open(monkeypatch):
     assert review["breadth"]["degraded"] is True
 
 
+def test_news_feed_sanitizes_limit_and_offset(monkeypatch):
+    from flask import Flask
+    import web.review as review_web
+
+    calls = []
+
+    def fake_query(**kwargs):
+        calls.append(kwargs)
+        return [{"title": "ok"}]
+
+    fake_news_center = types.SimpleNamespace(
+        query=fake_query,
+        fetch_quick=lambda: None,
+        maybe_fetch_async=lambda min_gap=60: None,
+    )
+    monkeypatch.setitem(sys.modules, "news_center", fake_news_center)
+
+    app = Flask(__name__)
+    app.register_blueprint(review_web.bp)
+    client = app.test_client()
+
+    invalid = client.get("/api/news/feed?limit=abc&offset=abc")
+    clamped = client.get("/api/news/feed?limit=999999&offset=-20")
+
+    assert invalid.status_code == 200
+    assert clamped.status_code == 200
+    assert calls[0]["limit"] == 80
+    assert calls[0]["offset"] == 0
+    assert calls[1]["limit"] == 200
+    assert calls[1]["offset"] == 0
+
+
 def test_market_review_uses_today_archive_after_close(monkeypatch):
     import web.market as market_web
 

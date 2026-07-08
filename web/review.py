@@ -21,6 +21,15 @@ from app_state import require_auth, _deduct
 logger = logging.getLogger(__name__)
 bp = Blueprint("review", __name__)
 
+
+def _bounded_int_arg(name: str, default: int, min_value: int, max_value: int) -> int:
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(min_value, min(max_value, value))
+
+
 _TRUSTED_TWO_MARKET_TURNOVER_SOURCES = {
     "eastmoney_three_market_verified",
     "eastmoney_index",
@@ -297,8 +306,8 @@ def api_news_feed():
         q=(request.args.get("q") or "").strip(),
         important=request.args.get("important", "0") == "1",
         since=(request.args.get("since") or "").strip(),
-        limit=int(request.args.get("limit", 80)),
-        offset=int(request.args.get("offset", 0)),
+        limit=_bounded_int_arg("limit", 80, 1, 200),
+        offset=_bounded_int_arg("offset", 0, 0, 10000),
     )
     # 库还是空的（首次部署）→ 后台补一轮抓取，前端下次刷新即有数据
     if not items and not _first_fetch_fired:
