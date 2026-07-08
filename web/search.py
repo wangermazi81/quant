@@ -10,6 +10,18 @@ from app_state import require_auth, require_admin_perm
 bp = Blueprint("search", __name__)
 
 
+def _bounded_int_value(raw, default: int, min_value: int, max_value: int) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(min_value, min(max_value, value))
+
+
+def _bounded_int_arg(name: str, default: int, min_value: int, max_value: int) -> int:
+    return _bounded_int_value(request.args.get(name, default), default, min_value, max_value)
+
+
 @bp.route("/api/stock/news/<code>")
 @require_auth
 def api_stock_news(code):
@@ -34,7 +46,7 @@ def api_stock_news(code):
 def api_search_news(code):
     """个股新闻搜索（Tavily→SerpAPI→直接抓取）"""
     name  = dm.get_stock_name(code) or request.args.get("name", "")
-    limit = int(request.args.get("limit", 8))
+    limit = _bounded_int_arg("limit", 8, 1, 50)
     force = request.args.get("refresh", "0") == "1"
     try:
         results = search_mgr.search_stock_news(code, name=name, limit=limit,
@@ -54,7 +66,7 @@ def api_search_web():
     if not query:
         return jsonify({"ok": False, "error": "query 不能为空"})
     topic = d.get("topic", "general")   # general | news | research
-    limit = int(d.get("limit", 10))
+    limit = _bounded_int_value(d.get("limit", 10), 10, 1, 50)
     force = bool(d.get("force_refresh", False))
     try:
         results = search_mgr.search_web(query, topic=topic, limit=limit,
@@ -91,7 +103,7 @@ def api_td_quote(code):
 @require_auth
 def api_td_kline(code):
     """TwelveData K线数据（A股）"""
-    days     = int(request.args.get("days", 60))
+    days     = _bounded_int_arg("days", 60, 1, 3650)
     interval = request.args.get("interval", "1day")
     try:
         bars = search_mgr.td_get_kline(code, days=days, interval=interval)
