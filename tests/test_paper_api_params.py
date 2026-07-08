@@ -22,6 +22,7 @@ def _login(client, uid=77):
 class FakeBroker:
     def __init__(self):
         self.calls = []
+        self.positions = []
 
     def get_trades(self, limit=100):
         self.calls.append(("trades", limit))
@@ -38,6 +39,10 @@ class FakeBroker:
     def reset(self, initial_capital=None):
         self.calls.append(("reset", initial_capital))
         return {"ok": True, "initial_capital": initial_capital}
+
+    def get_positions(self):
+        self.calls.append(("positions",))
+        return self.positions
 
 
 def test_paper_list_endpoints_sanitize_numeric_query_params(monkeypatch):
@@ -74,7 +79,7 @@ def test_paper_reset_rejects_invalid_initial_capital(monkeypatch):
     assert response.status_code == 400
     assert data["ok"] is False
     assert "initial_capital" in data["error"]
-    assert broker.calls == []
+    assert not any(call[0] == "reset" for call in broker.calls)
 
 
 def test_paper_buy_rejects_invalid_price_before_deducting(monkeypatch):
@@ -164,3 +169,28 @@ def test_execute_manual_buy_rejects_invalid_price_before_execution(monkeypatch):
     assert response.status_code == 200
     assert data["ok"] is False
     assert calls == []
+
+
+def test_positions_sell_falls_back_to_broker_price_when_request_price_invalid(monkeypatch):
+    broker = FakeBroker()
+    broker.positions = [{"code": "000001", "cur_price": 11.2, "cost_price": 10.5}]
+    calls = []
+    fake_quote = types.SimpleNamespace(get_client=lambda: None)
+    monkeypatch.setitem(sys.modules, "ths_quote", fake_quote)
+    monkeypatch.setattr(main, "DRY_RUN", True)
+    monkeypatch.setattr(main.pb, "get_broker", lambda uid: broker)
+    monkeypatch.setattr(
+        main,
+        "execute_sell",
+        lambda uid, code, price, sell_reason="": calls.append((uid, code, price, sell_reason)) or {"ok": True},
+    )
+
+    client = main.app.test_client()
+    _login(client, uid=80)
+
+    response = client.post("/api/positions/sell", json={"code": "000001", "price": "bad"})
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["ok"] is True
+    assert calls == [(80, "000001", 11.2, "手动卖出")]

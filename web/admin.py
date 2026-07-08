@@ -29,6 +29,15 @@ def _bounded_int_value(raw, default: int, min_value: int, max_value: int) -> int
     return max(min_value, min(max_value, value))
 
 
+def _int_value(raw, default: int | None = None) -> int | None:
+    if raw in (None, ""):
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _optional_int_arg(name: str) -> int | None:
     raw = request.args.get(name)
     if raw in (None, ""):
@@ -252,7 +261,9 @@ def admin_list_admin_users():
 @require_admin_perm("points_manage")
 def admin_add_points(uid):
     d      = request.json or {}
-    amount = int(d.get("amount", 0))
+    amount = _int_value(d.get("amount"))
+    if amount is None:
+        return jsonify({"ok": False, "error": "invalid amount"}), 400
     desc   = d.get("description", "管理员充值")
     r = um.add_points(uid, amount, desc)
     return jsonify(r)

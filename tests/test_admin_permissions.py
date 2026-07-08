@@ -234,6 +234,32 @@ def test_admin_list_endpoints_sanitize_numeric_query_params(isolated_app, monkey
     ]
 
 
+def test_admin_add_points_rejects_invalid_amount(isolated_app, monkeypatch):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(um, permissions=["points_manage"])
+    target_uid = _create_user(um, "points_target")
+
+    import web.admin as admin_api
+
+    calls = []
+    monkeypatch.setattr(
+        admin_api.um,
+        "add_points",
+        lambda uid, amount, desc: calls.append((uid, amount, desc)) or {"ok": True},
+    )
+
+    client = app.test_client()
+    _login_session(client, ops_uid, "ops")
+
+    resp = client.post(f"/api/admin/users/{target_uid}/points", json={"amount": "bad"})
+    data = resp.get_json()
+
+    assert resp.status_code == 400
+    assert data["ok"] is False
+    assert "amount" in data["error"]
+    assert calls == []
+
+
 def test_admin_manual_ip_block_sanitizes_seconds(isolated_app, monkeypatch):
     app, um, _main = isolated_app
     ops_uid = _create_admin(um, permissions=["security_audit"])

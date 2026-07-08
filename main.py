@@ -1422,16 +1422,20 @@ def sell_position():
             if client and client._ok:
                 qs = client.get_quotes([code])
                 if qs:
-                    price = float(qs[0].get("price", 0))
+                    price = _positive_float_value(qs[0].get("price"), 0.0)
         except Exception:
             pass
         if not price:
-            price = float(d.get("price", 0)) or float(bp["cur_price"] or bp["cost_price"])
+            price = (
+                _positive_float_value(d.get("price"), 0.0)
+                or _positive_float_value(bp.get("cur_price"), 0.0)
+                or _positive_float_value(bp.get("cost_price"), 0.0)
+            )
     else:
         pos = s["positions"].get(code)
         if not pos:
             return jsonify({"ok": False, "msg": "持仓不存在"})
-        price = float(d.get("price", pos.get("cost", 0)))
+        price = _positive_float_value(d.get("price"), _positive_float_value(pos.get("cost"), 0.0))
     if not price:
         return jsonify({"ok": False, "msg": "无法获取实时价格，请稍后重试"})
     return jsonify(execute_sell(uid, code, price, sell_reason="手动卖出"))
