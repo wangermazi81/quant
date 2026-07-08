@@ -127,6 +127,12 @@ def admin_users():
     return jsonify({"ok": True, **um.list_users(page, 20, search)})
 
 
+@bp.route("/api/admin/users/admins")
+@require_root_admin
+def admin_list_admin_users():
+    return jsonify({"ok": True, **um.list_admin_users()})
+
+
 @bp.route("/api/admin/users/<int:uid>/points", methods=["POST"])
 @require_admin_perm("points_manage")
 def admin_add_points(uid):

@@ -758,6 +758,22 @@ def list_users(page: int = 1, per_page: int = 20,
                 "per_page": per_page, "users": users}
 
 
+def list_admin_users() -> dict:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id,username,email,points,is_admin,is_active,"
+            "created_at,last_login,register_ip,flagged FROM users"
+            " WHERE is_admin=1"
+            " ORDER BY CASE WHEN lower(username)=? THEN 0 ELSE 1 END, id DESC",
+            (ROOT_ADMIN_USERNAME.lower(),),
+        ).fetchall()
+    users = [dict(r) for r in rows]
+    for u in users:
+        u["is_root_admin"] = is_root_admin_user(u)
+        u["admin_permissions"] = get_admin_permissions(u["id"])
+    return {"total": len(users), "users": users}
+
+
 def admin_permission_catalog() -> list[dict]:
     return [dict(p) for p in ADMIN_PERMISSION_CATALOG]
 

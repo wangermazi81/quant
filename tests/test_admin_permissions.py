@@ -50,6 +50,19 @@ def _create_admin(um, username="ops", permissions=None):
     return uid
 
 
+def _create_user(um, username, is_admin=0):
+    with um._conn() as c:
+        um._create_user(
+            c,
+            username,
+            f"{username}@example.com",
+            "pass123",
+            is_admin=is_admin,
+            points=100,
+        )
+        return c.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()["id"]
+
+
 def _login_session(client, uid, username, is_admin=True):
     with client.session_transaction() as sess:
         sess["user_id"] = uid
@@ -91,6 +104,39 @@ def test_admin_endpoint_requires_matching_permission(isolated_app):
     allowed = client.get("/api/admin/users")
     assert allowed.status_code == 200
     assert allowed.get_json()["ok"] is True
+
+
+def test_promoted_admin_with_stale_session_can_use_granted_permission(isolated_app):
+    app, um, _main = isolated_app
+    uid = _create_user(um, "fresh_admin", is_admin=0)
+
+    client = app.test_client()
+    _login_session(client, uid, "fresh_admin", is_admin=False)
+
+    assert um.set_admin(uid, True)["ok"]
+    assert um.set_admin_permissions(uid, ["dashboard_view"], granted_by=1)["ok"]
+
+    allowed = client.get("/api/admin/stats")
+    assert allowed.status_code == 200
+    assert allowed.get_json()["ok"] is True
+
+
+def test_root_admin_roles_endpoint_lists_admins_beyond_first_user_page(isolated_app):
+    app, um, _main = isolated_app
+    target_uid = _create_user(um, "278259", is_admin=0)
+    for i in range(25):
+        _create_user(um, f"user_{i:02d}", is_admin=0)
+    assert um.set_admin(target_uid, True)["ok"]
+    assert um.set_admin_permissions(target_uid, ["dashboard_view"], granted_by=1)["ok"]
+
+    client = app.test_client()
+    _login_session(client, 1, "admin")
+    resp = client.get("/api/admin/users/admins")
+    data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["ok"] is True
+    assert any(u["username"] == "278259" for u in data["users"])
 
 
 def test_security_audit_endpoints_require_security_permission(isolated_app):

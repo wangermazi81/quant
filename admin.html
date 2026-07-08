@@ -1711,7 +1711,7 @@ async function renderRoles(){
   }
   grid.innerHTML = '<div class="empty" style="padding:36px;color:var(--text2)"><span class="loading-spin"></span> 正在加载权限目录...</div>';
   await loadPermissionCatalog();
-  const r = await fetch(`${API}/admin/users?page=1&search=`,{credentials:'include'});
+  const r = await fetch(`${API}/admin/users/admins`,{credentials:'include'});
   const d = r.ok ? await r.json() : {users:[]};
   const admins = (d.users || []).filter(u=>u.is_admin);
   const catalogCard = `

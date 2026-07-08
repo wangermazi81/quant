@@ -122,6 +122,8 @@ def auth_me():
     if not user:
         session.clear()
         return jsonify({"ok": False, "logged_in": False})
+    session["username"] = user["username"]
+    session["is_admin"] = bool(user["is_admin"])
     return jsonify({
         "ok":        True,
         "logged_in": True,

@@ -172,22 +172,36 @@ def require_auth(f):
     return wrapper
 
 
+def current_session_user():
+    uid = session.get("user_id")
+    if not uid:
+        return None
+    user = um.get_user(uid)
+    if not user:
+        return None
+    session["username"] = user.get("username")
+    session["is_admin"] = bool(user.get("is_admin"))
+    return user
+
+
+def current_session_is_admin() -> bool:
+    user = current_session_user()
+    return bool(user and user.get("is_admin"))
+
+
 def require_admin(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         if not session.get("user_id"):
             return jsonify({"ok": False, "error": "请先登录", "code": 401}), 401
-        if not session.get("is_admin"):
+        if not current_session_is_admin():
             return jsonify({"ok": False, "error": "无管理员权限", "code": 403}), 403
         return f(*args, **kwargs)
     return wrapper
 
 
 def is_root_admin_session() -> bool:
-    uid = session.get("user_id")
-    if not uid:
-        return False
-    return um.is_root_admin_user(um.get_user(uid))
+    return um.is_root_admin_user(current_session_user())
 
 
 def current_admin_permissions() -> list[str]:
@@ -218,7 +232,7 @@ def require_admin_perm(perm_key: str):
         def wrapper(*args, **kwargs):
             if not session.get("user_id"):
                 return jsonify({"ok": False, "error": "please login", "code": 401}), 401
-            if not session.get("is_admin"):
+            if not current_session_is_admin():
                 return jsonify({"ok": False, "error": "admin required", "code": 403}), 403
             if not is_root_admin_session() and perm_key not in current_admin_permissions():
                 return jsonify({
