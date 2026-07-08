@@ -1228,21 +1228,26 @@ def bridge_report_signal(signal_id):
 def execute():
     uid    = session["user_id"]
     s      = get_user_state(uid)
-    data   = request.json
+    data   = request.json or {}
     code   = data.get("code")
     action = data.get("action")
     item   = next((q for q in s["queue"] if q["code"] == code), None)
 
     if not item:
         if action == "buy":
-            price  = float(data.get("price", 0))
+            price  = _positive_float_value(data.get("price"))
+            if price is None:
+                return jsonify({"ok": False, "msg": "invalid price"})
             name   = data.get("name", code)
             shares = data.get("shares")
             if not shares:
                 budget = s["capital"] * s["position_ratio"]
                 shares = int(budget / price / 100) * 100 if price > 0 else 100
                 shares = max(shares, 100)
-            res = execute_buy(uid, code, name, price, int(shares), reason="手动买入")
+            shares = _int_value(shares)
+            if shares is None:
+                return jsonify({"ok": False, "msg": "invalid shares"})
+            res = execute_buy(uid, code, name, price, shares, reason="手动买入")
             return jsonify(res)
         return jsonify({"ok": False, "msg": "未找到"})
 
@@ -1334,12 +1339,14 @@ def clear_queue():
 def queue_add():
     uid   = session["user_id"]
     s     = get_user_state(uid)
-    d     = request.json
+    d     = request.json or {}
     code  = d.get("code", "")
-    price = float(d.get("price", 0))
+    price = _positive_float_value(d.get("price"))
     name  = d.get("name", code)
     if not code:
         return jsonify({"ok": False, "msg": "code 缺失"})
+    if price is None:
+        return jsonify({"ok": False, "msg": "invalid price"})
     if any(q["code"] == code for q in s["queue"]):
         return jsonify({"ok": True, "msg": "已在队列"})
     budget = s["capital"] * s["position_ratio"]
@@ -1840,7 +1847,7 @@ def paper_manual_sell():
         pass
     # 实时价拉不到时，再用前端传的 price 作 fallback
     if not price:
-        price = float(d.get("price", 0))
+        price = _positive_float_value(d.get("price"), 0.0)
     if not price:
         return jsonify({"ok": False, "msg": "无法获取实时价格，请稍后重试"})
     return jsonify(execute_sell(uid, code, price, sell_reason="手动卖出"))

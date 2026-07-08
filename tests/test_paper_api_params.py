@@ -1,5 +1,6 @@
 import os
 import sys
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -118,4 +119,48 @@ def test_paper_buy_rejects_missing_live_cash_before_deducting(monkeypatch):
     assert response.status_code == 400
     assert data["ok"] is False
     assert data["need_live_cash"] is True
+    assert calls == []
+
+
+def test_paper_sell_rejects_invalid_fallback_price(monkeypatch):
+    calls = []
+    fake_quote = types.SimpleNamespace(get_client=lambda: None)
+    monkeypatch.setitem(sys.modules, "ths_quote", fake_quote)
+    monkeypatch.setattr(main, "execute_sell", lambda *args, **kwargs: calls.append(("execute", args)) or {"ok": True})
+
+    client = main.app.test_client()
+    _login(client)
+
+    response = client.post("/api/paper/sell", json={"code": "000001", "price": "bad"})
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["ok"] is False
+    assert calls == []
+
+
+def test_queue_add_rejects_invalid_price(monkeypatch):
+    client = main.app.test_client()
+    _login(client, uid=78)
+
+    response = client.post("/api/queue/add", json={"code": "000001", "price": "bad"})
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["ok"] is False
+    assert main.get_user_state(78)["queue"] == []
+
+
+def test_execute_manual_buy_rejects_invalid_price_before_execution(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "execute_buy", lambda *args, **kwargs: calls.append(("execute", args)) or {"ok": True})
+
+    client = main.app.test_client()
+    _login(client, uid=79)
+
+    response = client.post("/api/execute", json={"action": "buy", "code": "000001", "price": "bad"})
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["ok"] is False
     assert calls == []
