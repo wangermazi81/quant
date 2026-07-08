@@ -118,6 +118,32 @@ def migrate_users_db():
         );
         CREATE INDEX IF NOT EXISTS idx_admin_perms_user ON admin_user_permissions(user_id);
 
+        CREATE TABLE IF NOT EXISTS security_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type  TEXT NOT NULL,
+            severity    TEXT DEFAULT 'low',
+            ip          TEXT DEFAULT '',
+            user_id     INTEGER,
+            method      TEXT DEFAULT '',
+            path        TEXT DEFAULT '',
+            status_code INTEGER,
+            user_agent  TEXT DEFAULT '',
+            detail      TEXT DEFAULT '',
+            created_at  TEXT DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_sec_events_created ON security_events(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_sec_events_ip ON security_events(ip, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_sec_events_type ON security_events(event_type, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS ip_blocks (
+            ip            TEXT PRIMARY KEY,
+            reason        TEXT DEFAULT '',
+            blocked_until REAL NOT NULL,
+            created_at    TEXT DEFAULT (datetime('now','localtime')),
+            updated_at    TEXT DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_ip_blocks_until ON ip_blocks(blocked_until);
+
         -- 用户运行日志（每用户独立）
         CREATE TABLE IF NOT EXISTS user_logs (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,

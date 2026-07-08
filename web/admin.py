@@ -2,6 +2,7 @@
 from flask import Blueprint, request, jsonify, session
 
 import user_manager as um
+import app_security as sec
 from app_state import require_admin, require_admin_perm, require_root_admin
 
 bp = Blueprint("admin", __name__)
@@ -51,6 +52,58 @@ def admin_get_logs():
     limit      = int(request.args.get("limit", 500))
     logs = um.get_all_logs(uid=int(uid_filter) if uid_filter else None, limit=limit)
     return jsonify({"ok": True, "logs": logs})
+
+
+@bp.route("/api/admin/security/events")
+@require_admin_perm("security_audit")
+def admin_security_events():
+    limit = int(request.args.get("limit", 200))
+    ip = (request.args.get("ip") or "").strip()
+    event_type = (request.args.get("event_type") or "").strip()
+    return jsonify({
+        "ok": True,
+        "events": sec.list_security_events(limit=limit, ip=ip, event_type=event_type),
+    })
+
+
+@bp.route("/api/admin/security/ip_blocks")
+@require_admin_perm("security_audit")
+def admin_security_ip_blocks():
+    return jsonify({"ok": True, "blocks": sec.list_ip_blocks()})
+
+
+@bp.route("/api/admin/security/ip_blocks", methods=["POST"])
+@require_admin_perm("security_audit")
+def admin_security_block_ip():
+    d = request.json or {}
+    ip = (d.get("ip") or "").strip()
+    if not ip:
+        return jsonify({"ok": False, "error": "ip required"}), 400
+    seconds = int(d.get("seconds") or 900)
+    reason = (d.get("reason") or "manual admin block").strip()
+    sec.block_ip(ip, seconds=seconds, reason=reason)
+    sec.record_security_event(
+        "manual_ip_block",
+        severity="medium",
+        ip=ip,
+        user_id=session.get("user_id"),
+        detail=reason,
+    )
+    return jsonify({"ok": True, "blocks": sec.list_ip_blocks()})
+
+
+@bp.route("/api/admin/security/ip_blocks/<path:ip>", methods=["DELETE"])
+@require_admin_perm("security_audit")
+def admin_security_release_ip(ip):
+    ip = (ip or "").strip()
+    sec.release_ip_block(ip)
+    sec.record_security_event(
+        "manual_ip_release",
+        severity="medium",
+        ip=ip,
+        user_id=session.get("user_id"),
+    )
+    return jsonify({"ok": True, "blocks": sec.list_ip_blocks()})
 
 
 # ── 用户与积分管理 ────────────────────────────────────────────

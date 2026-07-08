@@ -1,0 +1,8 @@
+[jwalpha-anti-crawl]
+enabled = true
+filter = jwalpha-anti-crawl
+logpath = /var/log/nginx/access.log
+maxretry = 25
+findtime = 300
+bantime = 1800
+action = iptables-multiport[name=jwalpha, port="http,https"]

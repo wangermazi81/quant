@@ -16,10 +16,15 @@ os.environ.setdefault("ADMIN_PASSWORD", "adminpass123")
 def isolated_app(tmp_path, monkeypatch):
     import db_migration as dbm
     import user_manager as um
+    import app_security as sec
 
     db_path = str(tmp_path / "users_test.db")
     monkeypatch.setattr(um, "DB_PATH", db_path)
     monkeypatch.setattr(dbm, "USERS_DB", db_path)
+    monkeypatch.setattr(sec, "SECURITY_DB", db_path)
+    monkeypatch.setattr(sec, "_security_tables_ready", False)
+    sec._ip_blocks.clear()
+    sec._suspicious_hits.clear()
     um.init_db()
     dbm.migrate_users_db()
 
@@ -84,6 +89,22 @@ def test_admin_endpoint_requires_matching_permission(isolated_app):
 
     assert um.set_admin_permissions(ops_uid, ["dashboard_view", "user_manage"], granted_by=1)["ok"]
     allowed = client.get("/api/admin/users")
+    assert allowed.status_code == 200
+    assert allowed.get_json()["ok"] is True
+
+
+def test_security_audit_endpoints_require_security_permission(isolated_app):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(um, permissions=["dashboard_view"])
+
+    client = app.test_client()
+    _login_session(client, ops_uid, "ops")
+    denied = client.get("/api/admin/security/events")
+    assert denied.status_code == 403
+    assert denied.get_json()["missing_permission"] == "security_audit"
+
+    assert um.set_admin_permissions(ops_uid, ["security_audit"], granted_by=1)["ok"]
+    allowed = client.get("/api/admin/security/events")
     assert allowed.status_code == 200
     assert allowed.get_json()["ok"] is True
 
