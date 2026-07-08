@@ -236,14 +236,14 @@ def api_stock_score():
 @rate_limit(60, 3600, scope="ai", key_func=user_key, message="AI 调用过于频繁，请稍后再试")
 @require_auth
 def ai_analyze():
-    err = _deduct("ai_analysis", f"AI分析 {(request.json or {}).get('code','')}")
+    uid  = session["user_id"]
+    d    = request.get_json(silent=True) or {}
+    code = str(d.get("code") or "").strip()
+    if not code:
+        return jsonify({"ok": False, "error": "invalid code"}), 400
+    err = _deduct("ai_analysis", f"AI分析 {code}")
     if err:
         return jsonify(err), 402
-    uid  = session["user_id"]
-    d    = request.json
-    code = d.get("code", "").strip()
-    if not code:
-        return jsonify({"ok": False, "error": "请输入股票代码"})
     name = dm.get_stock_name(code) or code
     df   = dm.get_local(code)
     # 修复：本地 CSV 不存在 / 为空 / 行数 < 30（"半残"）/ 过期（停留多日前）都触发 pytdx 补抓
@@ -323,14 +323,14 @@ def ai_analyze():
 def ai_analyze_async():
     """异步 AI 分析：立即返回 task_id，前端轮询进度和结果。"""
     import uuid as _uuid
-    err = _deduct("ai_analysis", f"AI分析 {(request.json or {}).get('code','')}")
+    uid  = session["user_id"]
+    d    = request.get_json(silent=True) or {}
+    code = str(d.get("code") or "").strip()
+    if not code:
+        return jsonify({"ok": False, "error": "invalid code"}), 400
+    err = _deduct("ai_analysis", f"AI分析 {code}")
     if err:
         return jsonify(err), 402
-    uid  = session["user_id"]
-    d    = request.json or {}
-    code = d.get("code", "").strip()
-    if not code:
-        return jsonify({"ok": False, "error": "请输入股票代码"})
     task_id = _uuid.uuid4().hex[:12]
     with _ai_tasks_lock:
         _ai_tasks[task_id] = {"status": "pending", "uid": uid, "code": code}
