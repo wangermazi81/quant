@@ -428,7 +428,7 @@ def _lhb_preload_window(now: datetime) -> bool:
 
 def _lhb_retry_interval(now: datetime) -> int:
     hm = now.hour * 100 + now.minute
-    return 60 if 1520 <= hm < 1630 else 300
+    return 60 if 1520 <= hm < 1845 else 300
 
 
 def _maybe_preload_lhb(now: datetime, state: dict, now_ts: float | None = None) -> bool:

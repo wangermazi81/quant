@@ -79,7 +79,7 @@ def test_lhb_preloader_keeps_retrying_until_late_evening(monkeypatch):
     first = review_engine._maybe_preload_lhb(
         datetime(2026, 7, 8, 16, 31, 0), state, now_ts=2000.0
     )
-    too_soon = review_engine._maybe_preload_lhb(
+    quick_retry = review_engine._maybe_preload_lhb(
         datetime(2026, 7, 8, 16, 34, 0), state, now_ts=2180.0
     )
     late_retry = review_engine._maybe_preload_lhb(
@@ -90,9 +90,31 @@ def test_lhb_preloader_keeps_retrying_until_late_evening(monkeypatch):
     )
 
     assert first is False
-    assert too_soon is False
+    assert quick_retry is False
     assert late_retry is False
     assert after_window is False
+    assert calls == [1, 2]
+
+
+def test_lhb_preloader_keeps_one_minute_retry_until_finalization(monkeypatch):
+    calls = []
+
+    def fake_preload_today():
+        calls.append(len(calls) + 1)
+        return False
+
+    monkeypatch.setitem(sys.modules, "lhb_engine", types.SimpleNamespace(preload_today=fake_preload_today))
+    state = {}
+
+    first = review_engine._maybe_preload_lhb(
+        datetime(2026, 7, 8, 16, 31, 0), state, now_ts=2000.0
+    )
+    retry = review_engine._maybe_preload_lhb(
+        datetime(2026, 7, 8, 16, 32, 1), state, now_ts=2061.0
+    )
+
+    assert first is False
+    assert retry is False
     assert calls == [1, 2]
 
 
