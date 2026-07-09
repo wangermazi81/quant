@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import user_manager as um
 import app_security as sec
 import datasource_config
 import tushare_provider
+from analytics import relay_factor_mining
 from app_state import BASE_DIR, require_admin, require_admin_perm, require_root_admin
 
 bp = Blueprint("admin", __name__)
@@ -116,6 +118,45 @@ def _data_dir_status() -> dict:
         "ok": bool(exists),
         "exists": bool(exists),
         "writable": bool(exists and os.access(str(directory), os.W_OK)),
+    }
+
+
+def _factor_mining_root() -> Path:
+    return (BASE_DIR / "data" / "research" / "relay_factor").resolve()
+
+
+def _read_json_file(path: Path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def _latest_factor_mining_dir() -> Path | None:
+    root = _factor_mining_root()
+    if not root.exists() or not root.is_dir():
+        return None
+    candidates = [item for item in root.iterdir() if item.is_dir() and (item / "walkforward_report.json").exists()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item.stat().st_mtime)
+
+
+def _factor_mining_payload(run_dir: Path | None) -> dict:
+    if run_dir is None:
+        return {"ok": True, "found": False, "report": None, "run_id": None}
+    report_path = run_dir / "walkforward_report.json"
+    report = _read_json_file(report_path, {})
+    candidates_path = run_dir / "latest_candidates.json"
+    candidates = _read_json_file(candidates_path, report.get("latest_candidates", []))
+    if isinstance(report, dict):
+        report["latest_candidates"] = candidates if isinstance(candidates, list) else []
+    return {
+        "ok": True,
+        "found": True,
+        "run_id": run_dir.name,
+        "updated_at": _safe_mtime(report_path),
+        "report": report,
     }
 
 
@@ -270,6 +311,41 @@ def admin_datasource_test():
     result = tushare_provider.test_connection(token, mode=mode)
     status = 200 if result.get("ok") else 400
     return jsonify(result), status
+
+
+@bp.route("/api/admin/factor-mining/latest", methods=["GET"])
+@require_admin_perm("strategy_manage")
+def admin_factor_mining_latest():
+    return jsonify(_factor_mining_payload(_latest_factor_mining_dir()))
+
+
+@bp.route("/api/admin/factor-mining/run", methods=["POST"])
+@require_admin_perm("strategy_manage")
+def admin_factor_mining_run():
+    body = request.json or {}
+    n_stocks = _bounded_int_value(body.get("n_stocks"), 30, 5, 300)
+    days = _bounded_int_value(body.get("days"), 90, 40, 260)
+    train_days = _bounded_int_value(body.get("train_days"), 30, 10, 120)
+    test_days = _bounded_int_value(body.get("test_days"), 10, 5, 60)
+    hold_days = _bounded_int_value(body.get("hold_days"), 2, 1, 10)
+    top_k = _bounded_int_value(body.get("top_k"), 5, 1, 20)
+
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_dir = _factor_mining_root() / run_id
+    try:
+        report = relay_factor_mining.run_relay_research(
+            out_dir=out_dir,
+            n_stocks=n_stocks,
+            days=days,
+            train_days=train_days,
+            test_days=test_days,
+            hold_days=hold_days,
+            top_k=top_k,
+            include_market_signals=True,
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "run_id": run_id}), 500
+    return jsonify({"ok": True, "run_id": run_id, "report": report})
 
 
 @bp.route("/api/admin/permissions/catalog")

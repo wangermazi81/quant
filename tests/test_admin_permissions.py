@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from pathlib import Path
 
 import pytest
@@ -182,6 +183,92 @@ def test_security_audit_endpoints_require_security_permission(isolated_app):
     allowed = client.get("/api/admin/security/events")
     assert allowed.status_code == 200
     assert allowed.get_json()["ok"] is True
+
+
+def test_factor_mining_latest_requires_strategy_permission_and_returns_report(isolated_app, monkeypatch, tmp_path):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(um, permissions=["dashboard_view"])
+
+    import web.admin as admin_api
+
+    monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
+    run_dir = tmp_path / "data" / "research" / "relay_factor" / "20260709-101500"
+    run_dir.mkdir(parents=True)
+    report = {
+        "status": "ok",
+        "reason": "ok",
+        "generated_at": "2026-07-09 10:15:00",
+        "config": {"with_market_signals": True},
+        "summary": {
+            "feature_rows": 100,
+            "trusted_feature_rows": 96,
+            "hit_rate": 0.62,
+            "total_return_pct": 8.5,
+            "max_drawdown_pct": -2.1,
+            "latest_market_data_status": "ok",
+            "latest_market_emotion_score": 68.2,
+        },
+        "latest_candidates": [
+            {"ts_code": "000001.SZ", "relay_score": 78.1, "confidence": 0.781, "positive_factors": ["volume_confirmation"]}
+        ],
+    }
+    (run_dir / "walkforward_report.json").write_text(json.dumps(report), encoding="utf-8")
+    (run_dir / "latest_candidates.json").write_text(json.dumps(report["latest_candidates"]), encoding="utf-8")
+
+    client = app.test_client()
+    _login_session(client, ops_uid, "ops")
+    denied = client.get("/api/admin/factor-mining/latest")
+    assert denied.status_code == 403
+    assert denied.get_json()["missing_permission"] == "strategy_manage"
+
+    assert um.set_admin_permissions(ops_uid, ["strategy_manage"], granted_by=1)["ok"]
+    allowed = client.get("/api/admin/factor-mining/latest")
+    data = allowed.get_json()
+
+    assert allowed.status_code == 200
+    assert data["ok"] is True
+    assert data["found"] is True
+    assert data["run_id"] == "20260709-101500"
+    assert data["report"]["summary"]["trusted_feature_rows"] == 96
+    assert data["report"]["latest_candidates"][0]["ts_code"] == "000001.SZ"
+
+
+def test_factor_mining_run_requires_strategy_permission_and_invokes_research(isolated_app, monkeypatch, tmp_path):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(um, permissions=["strategy_manage"])
+
+    import web.admin as admin_api
+
+    calls = []
+
+    def fake_run_relay_research(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "ok",
+            "reason": "ok",
+            "generated_at": "2026-07-09 10:30:00",
+            "summary": {"feature_rows": 10, "trusted_feature_rows": 10},
+            "latest_candidates": [],
+        }
+
+    monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(admin_api.relay_factor_mining, "run_relay_research", fake_run_relay_research, raising=False)
+
+    client = app.test_client()
+    _login_session(client, ops_uid, "ops")
+    resp = client.post(
+        "/api/admin/factor-mining/run",
+        json={"n_stocks": 25, "days": 80, "train_days": 30, "test_days": 10, "hold_days": 2, "top_k": 4},
+    )
+    data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["ok"] is True
+    assert data["report"]["status"] == "ok"
+    assert calls
+    assert calls[0]["n_stocks"] == 25
+    assert calls[0]["include_market_signals"] is True
+    assert str(calls[0]["out_dir"]).startswith(str(tmp_path / "data" / "research" / "relay_factor"))
 
 
 def test_admin_list_endpoints_sanitize_numeric_query_params(isolated_app, monkeypatch):

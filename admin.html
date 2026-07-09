@@ -883,6 +883,81 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
       </div>
     </div>
 
+    <!-- ===== AI因子挖掘 ===== -->
+    <div class="page" id="page-factor-mining">
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <span><i class="fas fa-microscope"></i> AI 因子挖掘</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-outline" onclick="loadFactorMining()"><i class="fas fa-sync-alt"></i> 刷新</button>
+            <button class="btn btn-primary" id="fm-run-btn" onclick="runFactorMining()"><i class="fas fa-play"></i> 开始挖掘</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="form-group" style="margin:0;width:120px">
+            <label class="form-label">股票数</label>
+            <input id="fm-n-stocks" class="form-input" type="number" min="5" max="300" value="30">
+          </div>
+          <div class="form-group" style="margin:0;width:120px">
+            <label class="form-label">回看天数</label>
+            <input id="fm-days" class="form-input" type="number" min="40" max="260" value="90">
+          </div>
+          <div class="form-group" style="margin:0;width:120px">
+            <label class="form-label">训练天数</label>
+            <input id="fm-train-days" class="form-input" type="number" min="10" max="120" value="30">
+          </div>
+          <div class="form-group" style="margin:0;width:120px">
+            <label class="form-label">测试天数</label>
+            <input id="fm-test-days" class="form-input" type="number" min="5" max="60" value="10">
+          </div>
+          <div class="form-group" style="margin:0;width:120px">
+            <label class="form-label">持仓天数</label>
+            <input id="fm-hold-days" class="form-input" type="number" min="1" max="10" value="2">
+          </div>
+          <div class="form-group" style="margin:0;width:120px">
+            <label class="form-label">候选数</label>
+            <input id="fm-top-k" class="form-input" type="number" min="1" max="20" value="5">
+          </div>
+          <span id="fm-msg" style="font-size:12px;color:var(--text2);padding-bottom:9px"></span>
+        </div>
+      </div>
+
+      <div class="stat-grid" style="margin-bottom:16px">
+        <div class="stat-card blue">
+          <div class="sc-icon"><i class="fas fa-shield-alt"></i></div>
+          <div class="sc-body"><div class="sc-label">状态</div><div class="sc-value" id="fm-status">—</div><div class="sc-sub" id="fm-updated">尚未加载</div></div>
+        </div>
+        <div class="stat-card green">
+          <div class="sc-icon"><i class="fas fa-database"></i></div>
+          <div class="sc-body"><div class="sc-label">可信样本</div><div class="sc-value" id="fm-trusted">—</div><div class="sc-sub" id="fm-market">数据状态 —</div></div>
+        </div>
+        <div class="stat-card orange">
+          <div class="sc-icon"><i class="fas fa-bullseye"></i></div>
+          <div class="sc-body"><div class="sc-label">胜率</div><div class="sc-value" id="fm-hit-rate">—</div><div class="sc-sub" id="fm-trades">交易样本 —</div></div>
+        </div>
+        <div class="stat-card purple">
+          <div class="sc-icon"><i class="fas fa-chart-line"></i></div>
+          <div class="sc-body"><div class="sc-label">总收益</div><div class="sc-value" id="fm-total-return">—</div><div class="sc-sub" id="fm-drawdown">最大回撤 —</div></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title"><i class="fas fa-list-ol"></i> 最新候选</div>
+        <table>
+          <thead><tr><th>日期</th><th>代码</th><th>分数</th><th>置信度</th><th>市场</th><th>仓位</th><th>止损/止盈</th><th>正向因素</th><th>风险因素</th></tr></thead>
+          <tbody id="fm-candidates"><tr><td colspan="9" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><i class="fas fa-chart-area"></i> Walk-forward 窗口</div>
+        <table>
+          <thead><tr><th>训练区间</th><th>测试区间</th><th>方向</th><th>交易数</th><th>胜率</th><th>收益</th><th>回撤</th></tr></thead>
+          <tbody id="fm-windows"><tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- ===== AI接口设置 ===== -->
     <div class="page" id="page-ai-config">
       <div class="card" style="max-width:680px">
@@ -1168,6 +1243,7 @@ const MENU = [
   {id:'reset-requests', icon:'fas fa-key',         label:'找回申请', group:'系统管理'},
   {id:'notify-config', icon:'fas fa-bell',          label:'通知设置', group:'系统管理'},
   {id:'stats',         icon:'fas fa-chart-bar',       label:'使用统计',  group:'数据分析'},
+  {id:'factor-mining', icon:'fas fa-microscope',      label:'AI因子挖掘', group:'数据分析'},
   {id:'announcements', icon:'fas fa-bullhorn',         label:'公告管理',  group:'内容管理'},
   {id:'changelog',     icon:'fas fa-history',          label:'更新日志',  group:'内容管理'},
   {id:'feedback',      icon:'fas fa-comment-dots',     label:'问题反馈',  group:'内容管理'},
@@ -1185,13 +1261,14 @@ const PAGE_PERMISSIONS = {
   'reset-requests': 'user_manage',
   'notify-config': 'content_manage',
   stats: 'dashboard_view',
+  'factor-mining': 'strategy_manage',
   announcements: 'content_manage',
   changelog: 'content_manage',
   feedback: 'content_manage',
 };
 const PAGE_NAMES = {
   'dashboard':'工作台','users':'用户管理','roles':'角色权限',
-  'points':'积分流水','stats':'使用统计','announcements':'公告管理',
+  'points':'积分流水','stats':'使用统计','factor-mining':'AI因子挖掘','announcements':'公告管理',
   'invites':'邀请码','reset-requests':'找回申请','notify-config':'通知设置','feedback':'问题反馈','point-costs':'积分设置','datasource-config':'数据源配置','ai-config':'AI接口设置',
   'user-center':'个人中心','change-pwd':'修改密码','notifications':'系统通知',
   'changelog':'更新日志',
@@ -1320,6 +1397,7 @@ function navigate(id, addTabFlag=true){
   if(id==='notify-config') loadNotifyConfig();
   if(id==='point-costs') loadPointCosts();
   if(id==='datasource-config') loadDatasourceConfig();
+  if(id==='factor-mining') loadFactorMining();
   if(id==='ai-config') loadAiConfig();
   if(id==='notifications') renderNotifications();
 }
@@ -2199,6 +2277,171 @@ async function _annFetch(method, path, body, timeoutMs){
   }catch(e){
     clearTimeout(tid);
     return {ok:false, error: e.name==='AbortError' ? '请求超时（后端无响应）' : ('网络错误：'+(e.message||e))};
+  }
+}
+
+// ================================================================
+// AI因子挖掘
+// ================================================================
+function fmSetText(id, text){
+  const el = document.getElementById(id);
+  if(el) el.textContent = text;
+}
+
+function fmNumText(v){
+  if(v===null || v===undefined || v==='') return '—';
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toLocaleString('zh-CN') : String(v);
+}
+
+function fmRateText(v){
+  if(v===null || v===undefined || v==='') return '—';
+  const n = Number(v);
+  return Number.isFinite(n) ? `${(n*100).toFixed(1)}%` : '—';
+}
+
+function fmPctText(v){
+  if(v===null || v===undefined || v==='') return '—';
+  const n = Number(v);
+  return Number.isFinite(n) ? `${n.toFixed(2)}%` : '—';
+}
+
+function fmReadInt(id, fallback){
+  const el = document.getElementById(id);
+  const n = Number.parseInt(el ? el.value : '', 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function fmStatusText(status){
+  if(status === 'ok') return '可用';
+  if(status === 'degraded') return '降级';
+  if(!status) return '未运行';
+  return status;
+}
+
+function fmListText(items){
+  if(!Array.isArray(items) || !items.length) return '—';
+  return items.map(x=>esc(x)).join('、');
+}
+
+async function loadFactorMining(){
+  const msg = document.getElementById('fm-msg');
+  if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '加载最新结果…'; }
+  const r = await _annFetch('GET', '/admin/factor-mining/latest');
+  renderFactorMining(r);
+}
+
+function renderFactorMining(r){
+  const msg = document.getElementById('fm-msg');
+  const candidateBody = document.getElementById('fm-candidates');
+  const windowBody = document.getElementById('fm-windows');
+  if(!r || !r.ok){
+    const error = (r && r.error) || '加载失败';
+    if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
+    if(candidateBody) candidateBody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
+    if(windowBody) windowBody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
+    return;
+  }
+
+  if(!r.found && !r.report){
+    fmSetText('fm-status','未运行');
+    fmSetText('fm-updated','没有历史报告');
+    fmSetText('fm-trusted','—');
+    fmSetText('fm-market','数据状态 —');
+    fmSetText('fm-hit-rate','—');
+    fmSetText('fm-trades','交易样本 —');
+    fmSetText('fm-total-return','—');
+    fmSetText('fm-drawdown','最大回撤 —');
+    if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '暂无挖掘结果'; }
+    if(candidateBody) candidateBody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:36px;color:var(--text3)">暂无候选</td></tr>';
+    if(windowBody) windowBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text3)">暂无窗口结果</td></tr>';
+    return;
+  }
+
+  const report = r.report || {};
+  const summary = report.summary || {};
+  const config = report.config || {};
+  const candidates = Array.isArray(report.latest_candidates) ? report.latest_candidates : [];
+  const windows = Array.isArray(report.windows) ? report.windows : [];
+  const updated = r.updated_at || report.generated_at || '';
+  const marketStatus = summary.latest_market_data_status || 'not_checked';
+  const marketReason = summary.latest_market_data_reason || '';
+  const emotion = summary.latest_market_emotion_score;
+
+  fmSetText('fm-status', fmStatusText(report.status));
+  fmSetText('fm-updated', `${updated || '生成时间未知'}${r.run_id ? ' / '+r.run_id : ''}`);
+  fmSetText('fm-trusted', `${fmNumText(summary.trusted_feature_rows)} / ${fmNumText(summary.feature_rows)}`);
+  fmSetText('fm-market', `${marketStatus}${emotion!==null && emotion!==undefined ? ' / 情绪 '+emotion : ''}`);
+  fmSetText('fm-hit-rate', fmRateText(summary.hit_rate));
+  fmSetText('fm-trades', `交易样本 ${fmNumText(summary.trade_count)} / 窗口 ${fmNumText(summary.window_count)}`);
+  fmSetText('fm-total-return', fmPctText(summary.total_return_pct));
+  fmSetText('fm-drawdown', `最大回撤 ${fmPctText(summary.max_drawdown_pct)}`);
+  if(msg){
+    msg.style.color = report.status === 'ok' ? 'var(--green)' : 'var(--orange)';
+    msg.textContent = report.reason || marketReason || `参数：${config.n_stocks || '—'}股 / ${config.days || '—'}天`;
+  }
+
+  if(candidateBody){
+    if(candidates.length){
+      candidateBody.innerHTML = candidates.map(c=>`
+        <tr>
+          <td>${esc(c.trade_date || '')}</td>
+          <td><b>${esc(c.ts_code || c.name || '')}</b></td>
+          <td>${fmNumText(c.relay_score)}</td>
+          <td>${fmRateText(c.confidence)}</td>
+          <td>${esc(c.market_regime || '')}<br><span style="font-size:11px;color:var(--text3)">${esc(c.market_data_status || '')}</span></td>
+          <td>${fmRateText(c.position_pct)}</td>
+          <td>${fmRateText(c.stop_loss)} / ${fmRateText(c.take_profit)}</td>
+          <td>${fmListText(c.positive_factors)}</td>
+          <td>${fmListText(c.risk_flags || c.negative_factors)}</td>
+        </tr>`).join('');
+    }else{
+      const reason = report.reason || marketReason || '当前没有满足数据可信和候选条件的结果';
+      candidateBody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:36px;color:var(--text3)">${esc(reason)}</td></tr>`;
+    }
+  }
+
+  if(windowBody){
+    const recentWindows = windows.slice(-8).reverse();
+    if(recentWindows.length){
+      windowBody.innerHTML = recentWindows.map(w=>`
+        <tr>
+          <td>${esc(w.train_start || '')} 至 ${esc(w.train_end || '')}</td>
+          <td>${esc(w.test_start || '')} 至 ${esc(w.test_end || '')}</td>
+          <td>${Number(w.direction) >= 0 ? '正向' : '反向'}</td>
+          <td>${fmNumText(w.trade_count)}</td>
+          <td>${fmRateText(w.hit_rate)}</td>
+          <td>${fmPctText(w.total_return_pct)}</td>
+          <td>${fmPctText(w.max_drawdown_pct)}</td>
+        </tr>`).join('');
+    }else{
+      windowBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text3)">暂无可用窗口，通常是可信样本不足</td></tr>';
+    }
+  }
+}
+
+async function runFactorMining(){
+  const btn = document.getElementById('fm-run-btn');
+  const msg = document.getElementById('fm-msg');
+  const body = {
+    n_stocks: fmReadInt('fm-n-stocks', 30),
+    days: fmReadInt('fm-days', 90),
+    train_days: fmReadInt('fm-train-days', 30),
+    test_days: fmReadInt('fm-test-days', 10),
+    hold_days: fmReadInt('fm-hold-days', 2),
+    top_k: fmReadInt('fm-top-k', 5),
+  };
+  if(btn) btn.disabled = true;
+  if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '正在挖掘，可能需要几分钟…'; }
+  const r = await _annFetch('POST', '/admin/factor-mining/run', body, 300000);
+  if(btn) btn.disabled = false;
+  if(r && r.ok){
+    showToast('AI因子挖掘完成','success');
+    renderFactorMining({ok:true, found:true, run_id:r.run_id, report:r.report});
+  }else{
+    const error = (r && r.error) || '挖掘失败';
+    if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
+    showToast(error,'error');
   }
 }
 
