@@ -591,6 +591,14 @@ def _download_one(code: str, start_date: str) -> dict:
         symbol = _tx_symbol(code)
         end    = datetime.today().strftime("%Y%m%d")
         start  = start_date.replace("-", "")
+        csv_path = DATA_DIR / f"{code}.csv"
+        existing_latest = None
+        if csv_path.exists():
+            try:
+                old_dates = pd.read_csv(csv_path, usecols=["date"])
+                existing_latest = pd.to_datetime(old_dates["date"], errors="coerce").max()
+            except Exception:
+                existing_latest = None
 
         ds_cfg = datasource_config.get_internal_config()
         use_tushare = (
@@ -618,6 +626,15 @@ def _download_one(code: str, start_date: str) -> dict:
                 except Exception as _tse:
                     logger.info(f"[{code}] Tushare源失败({_tse})")
                     df = None
+                if df is not None and not df.empty and existing_latest is not None and not pd.isna(existing_latest):
+                    fetched_latest = pd.to_datetime(df.get("date"), errors="coerce").max()
+                    if not pd.isna(fetched_latest) and fetched_latest < existing_latest:
+                        msg = f"Tushare最新日期 {fetched_latest.date()} 早于现有缓存 {existing_latest.date()}"
+                        logger.info(f"[{code}] {msg}")
+                        if ds_cfg.get("fallback_enabled", True):
+                            df = None
+                        else:
+                            return {"ok": False, "code": code, "msg": msg}
                 if (df is None or df.empty) and not ds_cfg.get("fallback_enabled", True):
                     return {"ok": False, "code": code, "msg": "Tushare 无数据，且未启用回退数据源"}
 
@@ -657,8 +674,14 @@ def _download_one(code: str, start_date: str) -> dict:
         df = _clean_kline(df)
         if df is None or df.empty:
             return {"ok": False, "code": code, "msg": "清洗后无有效数据"}
+        new_latest = pd.to_datetime(df["date"], errors="coerce").max()
+        if existing_latest is not None and not pd.isna(existing_latest) and not pd.isna(new_latest) and new_latest < existing_latest:
+            return {
+                "ok": False,
+                "code": code,
+                "msg": f"下载结果最新日期 {new_latest.date()} 早于现有缓存 {existing_latest.date()}，已拒绝覆盖",
+            }
 
-        csv_path = DATA_DIR / f"{code}.csv"
         df[required].to_csv(csv_path, index=False, encoding="utf-8")
         logger.info(f"已保存 {csv_path} ({len(df)} 行, 前复权+已清洗)")
 

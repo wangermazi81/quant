@@ -81,9 +81,34 @@ def build_panel_from_cache(
         min_history = days
 
     csvs = sorted(_DATA_DIR.glob("*.csv"))
-    per: dict[str, dict[str, pd.Series]] = {}
+    ranked_csvs: list[tuple[pd.Timestamp, int, str, Path]] = []
     skipped_short = 0
     for csv in csvs:
+        try:
+            dates = pd.read_csv(csv, usecols=["date"])
+        except Exception:
+            continue
+        if len(dates) < min_history:
+            skipped_short += 1
+            continue
+        parsed = pd.to_datetime(dates["date"], errors="coerce").dropna()
+        if parsed.empty:
+            continue
+        ranked_csvs.append((parsed.max().normalize(), len(dates), csv.stem, csv))
+
+    if n_stocks is not None and ranked_csvs:
+        latest_counts: dict[pd.Timestamp, int] = {}
+        for latest, _rows, _code, _csv in ranked_csvs:
+            latest_counts[latest] = latest_counts.get(latest, 0) + 1
+        eligible_dates = [date for date, count in latest_counts.items() if count >= n_stocks]
+        if eligible_dates:
+            target_latest = max(eligible_dates)
+            ranked_csvs = [item for item in ranked_csvs if item[0] == target_latest]
+            logger.info(f"[scorer] 选用覆盖率满足 {n_stocks} 只的最新截面: {target_latest.date()}")
+
+    ranked_csvs.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    per: dict[str, dict[str, pd.Series]] = {}
+    for _latest, _rows, _code, csv in ranked_csvs:
         # 关键：先按 min_history 过滤，再用 n_stocks 限制结果数量；
         # 否则若前 N 个 CSV 都是新股会全被丢，结果空。
         if n_stocks is not None and len(per) >= n_stocks:
