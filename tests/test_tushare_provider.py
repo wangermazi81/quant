@@ -351,6 +351,7 @@ def test_fetch_minute_kline_uses_replay_rt_min(monkeypatch):
                     {
                         "ts_code": "000001.SZ",
                         "freq": "1MIN",
+                        "trade_date": "20260709",
                         "time": "2026-07-09 10:01:00",
                         "open": 10.4,
                         "high": 10.5,
@@ -401,6 +402,7 @@ def test_fetch_minute_kline_prefers_fast_rt_min_with_large_limit(monkeypatch):
                 "data": [{
                     "ts_code": "000001.SZ",
                     "freq": "1MIN",
+                    "trade_date": "20260709",
                     "time": "2026-07-09 10:01:00",
                     "open": 10.4,
                     "high": 10.5,

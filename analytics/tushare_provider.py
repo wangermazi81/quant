@@ -164,10 +164,10 @@ def _normalize_minute_frame(df: pd.DataFrame | None) -> pd.DataFrame:
     rename = {
         "time": "datetime",
         "trade_time": "datetime",
-        "trade_date": "datetime",
         "vol": "volume",
     }
     data = df.rename(columns={k: v for k, v in rename.items() if k in df.columns}).copy()
+    data = data.loc[:, ~data.columns.duplicated()]
     required = ["datetime", "open", "high", "low", "close", "volume"]
     if any(c not in data.columns for c in required):
         return pd.DataFrame(columns=columns)
