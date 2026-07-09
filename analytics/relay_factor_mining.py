@@ -243,7 +243,26 @@ def walk_forward_relay(
     return {"windows": windows, "trades": trades, "summary": summary}
 
 
-def build_latest_candidates(features: pd.DataFrame, top_k: int = 10, hold_days: int = 2) -> list[dict[str, Any]]:
+def _candidate_tier(score_percentile: float, risk_flags: Sequence[str]) -> str:
+    if score_percentile >= 0.97 and not risk_flags:
+        return "strong"
+    if score_percentile >= 0.90:
+        return "watch"
+    return "observe"
+
+
+def _candidate_pool_size(top_k: int, candidate_pool_size: int | None) -> int:
+    if candidate_pool_size is not None:
+        return max(top_k, int(candidate_pool_size))
+    return max(top_k, min(120, max(80, top_k * 6)))
+
+
+def build_latest_candidates(
+    features: pd.DataFrame,
+    top_k: int = 10,
+    hold_days: int = 2,
+    candidate_pool_size: int | None = None,
+) -> list[dict[str, Any]]:
     if features.empty:
         return []
     latest_date = features["trade_date"].max()
@@ -252,19 +271,37 @@ def build_latest_candidates(features: pd.DataFrame, top_k: int = 10, hold_days: 
         trusted_values = latest["market_data_trusted"].map(_is_trusted_marker)
         if not bool(trusted_values.all()):
             return []
-    latest = latest.sort_values("relay_score", ascending=False).head(top_k)
+    latest = latest.sort_values("relay_score", ascending=False).reset_index(drop=True)
+    latest_count = len(latest)
+    if latest_count == 0:
+        return []
+    pool_size = min(_candidate_pool_size(top_k, candidate_pool_size), latest_count)
+    latest = latest.head(pool_size).copy()
     candidates: list[dict[str, Any]] = []
-    for _, row in latest.iterrows():
+    for idx, row in latest.iterrows():
         score = float(row["relay_score"])
         risk_flags = [flag for flag in str(row.get("risk_flags", "")).split(",") if flag]
-        confidence = max(0.0, min(1.0, score / 100.0))
-        position_pct = 0.08 if risk_flags else 0.12
+        rank = int(idx) + 1
+        score_percentile = 1.0 - ((rank - 1) / max(latest_count - 1, 1))
+        confidence = max(0.0, min(1.0, score / 100.0 * 0.45 + score_percentile * 0.55 - min(len(risk_flags), 3) * 0.03))
+        tier = _candidate_tier(score_percentile, risk_flags)
+        if tier == "strong":
+            position_pct = 0.12 if not risk_flags else 0.08
+        elif tier == "watch":
+            position_pct = 0.08 if not risk_flags else 0.05
+        else:
+            position_pct = 0.0
         candidates.append(
             {
                 "ts_code": str(row["ts_code"]),
                 "name": str(row["ts_code"]),
                 "trade_date": str(row["trade_date"]),
                 "strategy_key": "relay_factor_mining_v1",
+                "candidate_rank": rank,
+                "candidate_tier": tier,
+                "candidate_pool_size": pool_size,
+                "latest_universe_size": latest_count,
+                "score_percentile": round(score_percentile, 4),
                 "relay_score": round(score, 4),
                 "confidence": round(confidence, 4),
                 "market_regime": _market_regime(row),
@@ -355,6 +392,7 @@ def run_relay_research(
     step_days: int | None = None,
     hold_days: int = 2,
     top_k: int = 5,
+    candidate_pool_size: int | None = None,
     market_signal_frame: pd.DataFrame | None = None,
     include_market_signals: bool = False,
 ) -> dict[str, Any]:
@@ -368,7 +406,16 @@ def run_relay_research(
     features = apply_market_signals(features_raw, market_signal_frame)
     training_features = features[features["market_data_trusted"]] if "market_data_trusted" in features.columns else features
     wf = walk_forward_relay(training_features, labels, train_days=train_days, test_days=test_days, step_days=step_days, top_k=top_k)
-    candidates = build_latest_candidates(features, top_k=top_k, hold_days=hold_days)
+    candidates = build_latest_candidates(
+        features,
+        top_k=top_k,
+        hold_days=hold_days,
+        candidate_pool_size=candidate_pool_size,
+    )
+    tier_counts: dict[str, int] = {}
+    for candidate in candidates:
+        tier = str(candidate.get("candidate_tier", "unknown"))
+        tier_counts[tier] = tier_counts.get(tier, 0) + 1
     latest_market = _latest_market_summary(features)
     summary = {
         **wf["summary"],
@@ -381,6 +428,8 @@ def run_relay_research(
         "latest_market_emotion_score": latest_market.get("market_emotion_score"),
         "lookahead_policy": "features_current_or_past_labels_t_plus_1",
         "latest_trade_date": features["trade_date"].max() if not features.empty else None,
+        "latest_candidate_count": int(len(candidates)),
+        "latest_candidate_tier_counts": tier_counts,
     }
     min_dates = train_days + test_days
     unique_dates = int(training_features["trade_date"].nunique()) if not training_features.empty else 0
@@ -397,6 +446,7 @@ def run_relay_research(
             "step_days": step_days or test_days,
             "hold_days": hold_days,
             "top_k": top_k,
+            "candidate_pool_size": _candidate_pool_size(top_k, candidate_pool_size),
             "include_market_signals": include_market_signals or market_signal_frame is not None,
         },
         "summary": summary,
@@ -428,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--test-days", type=int, default=10)
     parser.add_argument("--hold-days", type=int, default=2)
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--candidate-pool-size", type=int, default=None)
     parser.add_argument("--out-dir", type=str, default=None)
     parser.add_argument("--with-market-signals", action="store_true", help="gate research with market breadth and turnover quality signals")
     args = parser.parse_args(argv)
@@ -439,6 +490,7 @@ def main(argv: list[str] | None = None) -> int:
         test_days=args.test_days,
         hold_days=args.hold_days,
         top_k=args.top_k,
+        candidate_pool_size=args.candidate_pool_size,
         include_market_signals=args.with_market_signals,
     )
     print(json.dumps({"status": report["status"], "summary": report["summary"]}, ensure_ascii=False, indent=2))

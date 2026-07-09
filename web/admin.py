@@ -323,12 +323,13 @@ def admin_factor_mining_latest():
 @require_admin_perm("strategy_manage")
 def admin_factor_mining_run():
     body = request.json or {}
-    n_stocks = _bounded_int_value(body.get("n_stocks"), 30, 5, 300)
-    days = _bounded_int_value(body.get("days"), 90, 40, 260)
-    train_days = _bounded_int_value(body.get("train_days"), 30, 10, 120)
+    n_stocks = _bounded_int_value(body.get("n_stocks"), 800, 5, 2000)
+    days = _bounded_int_value(body.get("days"), 180, 60, 320)
+    train_days = _bounded_int_value(body.get("train_days"), 60, 10, 160)
     test_days = _bounded_int_value(body.get("test_days"), 10, 5, 60)
     hold_days = _bounded_int_value(body.get("hold_days"), 2, 1, 10)
-    top_k = _bounded_int_value(body.get("top_k"), 5, 1, 20)
+    top_k = _bounded_int_value(body.get("top_k"), 10, 1, 50)
+    candidate_pool_size = _bounded_int_value(body.get("candidate_pool_size"), 100, top_k, 300)
 
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = _factor_mining_root() / run_id
@@ -341,6 +342,7 @@ def admin_factor_mining_run():
             test_days=test_days,
             hold_days=hold_days,
             top_k=top_k,
+            candidate_pool_size=candidate_pool_size,
             include_market_signals=True,
         )
     except Exception as exc:

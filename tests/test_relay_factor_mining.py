@@ -99,6 +99,50 @@ def test_run_research_writes_report_and_latest_candidates(tmp_path):
     )
 
 
+def test_latest_candidates_keep_research_pool_larger_than_trade_top_k():
+    rows = []
+    for idx in range(10):
+        rows.append(
+            {
+                "trade_date": "2026-07-09",
+                "ts_code": f"00000{idx}",
+                "relay_score": 100 - idx * 3,
+                "ret_5": 0.03,
+                "volume_ratio_20": 1.5,
+                "near_high_20": 0.95,
+                "limit_count_20": 1,
+                "risk_flags": "",
+                "available_at": "2026-07-09 15:00:00",
+            }
+        )
+    features = pd.DataFrame(rows)
+
+    candidates = relay.build_latest_candidates(features, top_k=2, candidate_pool_size=6)
+
+    assert len(candidates) == 6
+    assert candidates[0]["candidate_rank"] == 1
+    assert candidates[0]["candidate_tier"] == "strong"
+    assert candidates[0]["score_percentile"] == 1.0
+    assert candidates[-1]["candidate_pool_size"] == 6
+    assert candidates[-1]["latest_universe_size"] == 10
+
+
+def test_run_research_reports_candidate_pool_summary(tmp_path):
+    result = relay.run_relay_research(
+        panel=_panel(days=55),
+        out_dir=tmp_path,
+        train_days=25,
+        test_days=10,
+        hold_days=2,
+        top_k=1,
+        candidate_pool_size=3,
+    )
+
+    assert result["config"]["candidate_pool_size"] == 3
+    assert result["summary"]["latest_candidate_count"] == 3
+    assert sum(result["summary"]["latest_candidate_tier_counts"].values()) == 3
+
+
 def test_run_research_degrades_when_samples_are_insufficient(tmp_path):
     result = relay.run_relay_research(panel=_panel(days=12), out_dir=tmp_path, train_days=20, test_days=5)
 

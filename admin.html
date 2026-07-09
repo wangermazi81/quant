@@ -896,15 +896,15 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
           <div class="form-group" style="margin:0;width:120px">
             <label class="form-label">股票数</label>
-            <input id="fm-n-stocks" class="form-input" type="number" min="5" max="300" value="30">
+            <input id="fm-n-stocks" class="form-input" type="number" min="50" max="2000" value="800">
           </div>
           <div class="form-group" style="margin:0;width:120px">
             <label class="form-label">回看天数</label>
-            <input id="fm-days" class="form-input" type="number" min="40" max="260" value="90">
+            <input id="fm-days" class="form-input" type="number" min="60" max="320" value="180">
           </div>
           <div class="form-group" style="margin:0;width:120px">
             <label class="form-label">训练天数</label>
-            <input id="fm-train-days" class="form-input" type="number" min="10" max="120" value="30">
+            <input id="fm-train-days" class="form-input" type="number" min="10" max="160" value="60">
           </div>
           <div class="form-group" style="margin:0;width:120px">
             <label class="form-label">测试天数</label>
@@ -916,7 +916,11 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
           </div>
           <div class="form-group" style="margin:0;width:120px">
             <label class="form-label">候选数</label>
-            <input id="fm-top-k" class="form-input" type="number" min="1" max="20" value="5">
+            <input id="fm-top-k" class="form-input" type="number" min="1" max="50" value="10">
+          </div>
+          <div class="form-group" style="margin:0;width:120px">
+            <label class="form-label">展示池</label>
+            <input id="fm-candidate-pool" class="form-input" type="number" min="10" max="300" value="100">
           </div>
           <span id="fm-msg" style="font-size:12px;color:var(--text2);padding-bottom:9px"></span>
         </div>
@@ -944,8 +948,8 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
       <div class="card" style="margin-bottom:16px">
         <div class="card-title"><i class="fas fa-list-ol"></i> 最新候选</div>
         <table>
-          <thead><tr><th>日期</th><th>代码</th><th>分数</th><th>置信度</th><th>市场</th><th>仓位</th><th>止损/止盈</th><th>正向因素</th><th>风险因素</th></tr></thead>
-          <tbody id="fm-candidates"><tr><td colspan="9" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr></tbody>
+          <thead><tr><th>日期</th><th>排名</th><th>代码</th><th>档位</th><th>分数</th><th>置信度</th><th>市场</th><th>仓位</th><th>止损/止盈</th><th>正向因素</th><th>风险因素</th></tr></thead>
+          <tbody id="fm-candidates"><tr><td colspan="11" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr></tbody>
         </table>
       </div>
 
@@ -2324,6 +2328,13 @@ function fmListText(items){
   return items.map(x=>esc(x)).join('、');
 }
 
+function fmTierText(tier){
+  if(tier === 'strong') return '强候选';
+  if(tier === 'watch') return '观察';
+  if(tier === 'observe') return '仅参考';
+  return tier || '—';
+}
+
 async function loadFactorMining(){
   const msg = document.getElementById('fm-msg');
   if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '加载最新结果…'; }
@@ -2338,7 +2349,7 @@ function renderFactorMining(r){
   if(!r || !r.ok){
     const error = (r && r.error) || '加载失败';
     if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
-    if(candidateBody) candidateBody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
+    if(candidateBody) candidateBody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
     if(windowBody) windowBody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
     return;
   }
@@ -2353,7 +2364,7 @@ function renderFactorMining(r){
     fmSetText('fm-total-return','—');
     fmSetText('fm-drawdown','最大回撤 —');
     if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '暂无挖掘结果'; }
-    if(candidateBody) candidateBody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:36px;color:var(--text3)">暂无候选</td></tr>';
+    if(candidateBody) candidateBody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:36px;color:var(--text3)">暂无候选</td></tr>';
     if(windowBody) windowBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text3)">暂无窗口结果</td></tr>';
     return;
   }
@@ -2373,7 +2384,7 @@ function renderFactorMining(r){
   fmSetText('fm-trusted', `${fmNumText(summary.trusted_feature_rows)} / ${fmNumText(summary.feature_rows)}`);
   fmSetText('fm-market', `${marketStatus}${emotion!==null && emotion!==undefined ? ' / 情绪 '+emotion : ''}`);
   fmSetText('fm-hit-rate', fmRateText(summary.hit_rate));
-  fmSetText('fm-trades', `交易样本 ${fmNumText(summary.trade_count)} / 窗口 ${fmNumText(summary.window_count)}`);
+  fmSetText('fm-trades', `交易样本 ${fmNumText(summary.trade_count)} / 候选 ${fmNumText(summary.latest_candidate_count || candidates.length)}`);
   fmSetText('fm-total-return', fmPctText(summary.total_return_pct));
   fmSetText('fm-drawdown', `最大回撤 ${fmPctText(summary.max_drawdown_pct)}`);
   if(msg){
@@ -2386,7 +2397,9 @@ function renderFactorMining(r){
       candidateBody.innerHTML = candidates.map(c=>`
         <tr>
           <td>${esc(c.trade_date || '')}</td>
+          <td>${fmNumText(c.candidate_rank)}</td>
           <td><b>${esc(c.ts_code || c.name || '')}</b></td>
+          <td>${esc(fmTierText(c.candidate_tier))}<br><span style="font-size:11px;color:var(--text3)">分位 ${fmRateText(c.score_percentile)}</span></td>
           <td>${fmNumText(c.relay_score)}</td>
           <td>${fmRateText(c.confidence)}</td>
           <td>${esc(c.market_regime || '')}<br><span style="font-size:11px;color:var(--text3)">${esc(c.market_data_status || '')}</span></td>
@@ -2397,7 +2410,7 @@ function renderFactorMining(r){
         </tr>`).join('');
     }else{
       const reason = report.reason || marketReason || '当前没有满足数据可信和候选条件的结果';
-      candidateBody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:36px;color:var(--text3)">${esc(reason)}</td></tr>`;
+      candidateBody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:36px;color:var(--text3)">${esc(reason)}</td></tr>`;
     }
   }
 
@@ -2424,12 +2437,13 @@ async function runFactorMining(){
   const btn = document.getElementById('fm-run-btn');
   const msg = document.getElementById('fm-msg');
   const body = {
-    n_stocks: fmReadInt('fm-n-stocks', 30),
-    days: fmReadInt('fm-days', 90),
-    train_days: fmReadInt('fm-train-days', 30),
+    n_stocks: fmReadInt('fm-n-stocks', 800),
+    days: fmReadInt('fm-days', 180),
+    train_days: fmReadInt('fm-train-days', 60),
     test_days: fmReadInt('fm-test-days', 10),
     hold_days: fmReadInt('fm-hold-days', 2),
-    top_k: fmReadInt('fm-top-k', 5),
+    top_k: fmReadInt('fm-top-k', 10),
+    candidate_pool_size: fmReadInt('fm-candidate-pool', 100),
   };
   if(btn) btn.disabled = true;
   if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '正在挖掘，可能需要几分钟…'; }
