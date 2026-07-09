@@ -231,13 +231,19 @@ def test_fetch_pages_concurrently_runs_more_than_one_page_at_once():
     assert [row["page"] for row in rows] == [2, 3, 4, 5]
 
 
-def test_market_breadth_uses_dynamic_three_market_snapshot_and_turnover_uses_two_market_index(monkeypatch):
+def test_market_breadth_uses_dynamic_three_market_snapshot_and_turnover_uses_two_market_index(monkeypatch, tmp_path):
     snapshot = {
         "source": "eastmoney_three_market",
         "stat_date": "2026-07-06",
         "turnover": {"today": 31124, "amount": 31124.43, "source": "eastmoney_three_market", "degraded": False},
         "breadth": {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
     }
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(
+        market_stats,
+        "fetch_tushare_replay_market_snapshot",
+        lambda date_text=None: (_ for _ in ()).throw(RuntimeError("tushare unavailable")),
+    )
     monkeypatch.setattr(market_stats, "fetch_eastmoney_three_market_snapshot", lambda date_text=None: snapshot, raising=False)
     monkeypatch.setattr(market_stats, "_turnover_from_eastmoney_index", lambda date_text=None: {"today": 30949, "amount": 30948.86, "source": "eastmoney_index", "stat_date": "2026-07-06", "degraded": False})
     monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [])
@@ -308,7 +314,7 @@ def test_market_snapshot_metrics_fetches_snapshot_and_trend_concurrently(monkeyp
     assert metrics["turnover"]["trend"][-1]["amount"] == 30949
 
 
-def test_market_snapshot_metrics_repairs_historical_turnover_with_official_fallback(monkeypatch, tmp_path):
+def test_market_snapshot_metrics_ignores_low_trust_cache_and_fetches_tushare(monkeypatch, tmp_path):
     snapshot = {
         "source": "eastmoney_three_market",
         "stat_date": "2026-07-06",
@@ -317,6 +323,13 @@ def test_market_snapshot_metrics_repairs_historical_turnover_with_official_fallb
     }
     monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
     market_stats.save_market_snapshot(snapshot)
+    fresh_snapshot = {
+        "source": "tushare_replay_daily",
+        "stat_date": "2026-07-06",
+        "turnover": {"today": 30944, "amount": 30944.46, "source": "tushare_replay_daily_info", "degraded": False},
+        "breadth": {"source": "tushare_replay_daily", "up": 1900, "down": 3500, "flat": 119, "total": 5519, "coverage": 1.0, "degraded": False},
+    }
+    monkeypatch.setattr(market_stats, "fetch_tushare_replay_market_snapshot", lambda date_text=None: fresh_snapshot)
     monkeypatch.setattr(
         market_stats,
         "_turnover_from_eastmoney_index",
@@ -327,12 +340,13 @@ def test_market_snapshot_metrics_repairs_historical_turnover_with_official_fallb
 
     metrics = market_stats.get_market_snapshot_metrics("2026-07-06")
 
+    assert metrics["breadth"]["source"] == "tushare_replay_daily"
     assert metrics["breadth"]["total"] == 5519
-    assert metrics["turnover"]["source"] == "official_exchange"
+    assert metrics["turnover"]["source"] == "tushare_replay_daily_info"
     assert metrics["turnover"]["amount"] == 30944.46
 
 
-def test_market_breadth_uses_cached_snapshot_but_turnover_repairs_cached_three_market_amount(monkeypatch, tmp_path):
+def test_market_breadth_and_turnover_ignore_low_trust_cached_three_market_snapshot(monkeypatch, tmp_path):
     snapshot = {
         "source": "eastmoney_three_market",
         "stat_date": "2026-07-06",
@@ -341,6 +355,13 @@ def test_market_breadth_uses_cached_snapshot_but_turnover_repairs_cached_three_m
     }
     monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
     market_stats.save_market_snapshot(snapshot)
+    fresh_snapshot = {
+        "source": "tushare_replay_daily",
+        "stat_date": "2026-07-06",
+        "turnover": {"today": 30949, "amount": 30948.86, "source": "tushare_replay_daily_info", "degraded": False},
+        "breadth": {"source": "tushare_replay_daily", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "coverage": 1.0, "degraded": False},
+    }
+    monkeypatch.setattr(market_stats, "fetch_tushare_replay_market_snapshot", lambda date_text=None: fresh_snapshot)
     monkeypatch.setattr(
         market_stats,
         "fetch_eastmoney_three_market_snapshot",
@@ -353,9 +374,9 @@ def test_market_breadth_uses_cached_snapshot_but_turnover_repairs_cached_three_m
     breadth = market_stats.get_market_breadth(date_text="2026-07-06")
     turnover = market_stats.get_market_turnover("2026-07-06")
 
-    assert breadth["source"] == "eastmoney_three_market"
+    assert breadth["source"] == "tushare_replay_daily"
     assert breadth["total"] == 5519
-    assert turnover["source"] == "eastmoney_index_daily"
+    assert turnover["source"] == "tushare_replay_daily_info"
     assert turnover["today"] == 30949
 
 
@@ -625,3 +646,121 @@ def test_eastmoney_index_rows_match_two_market_turnover_quote():
     assert turnover["source"] == "eastmoney_index"
     assert turnover["stat_date"] == "2026-07-07"
     assert turnover["degraded"] is False
+
+
+def _sample_tushare_snapshot():
+    from tushare_replay import snapshot_from_rt_k_rows
+
+    return snapshot_from_rt_k_rows(
+        [
+            {"ts_code": "600001.SH", "trade_date": "20260708", "pct_chg": 10.0, "amount": 1_200_000_000_000},
+            {"ts_code": "000001.SZ", "trade_date": "20260708", "pct_chg": 2.5, "amount": 2_000_000_000_000},
+            {"ts_code": "430001.BJ", "trade_date": "20260708", "pct_chg": -10.0, "amount": 500_000_000_000},
+            {"ts_code": "300001.SZ", "trade_date": "20260708", "pct_chg": 0.0, "amount": 0},
+        ],
+        date_text="20260708",
+    )
+
+
+def test_tushare_replay_rt_k_snapshot_counts_breadth_and_two_market_turnover():
+    snapshot = _sample_tushare_snapshot()
+
+    assert snapshot["source"] == "tushare_replay_rt_k"
+    assert snapshot["stat_date"] == "2026-07-08"
+    assert snapshot["breadth"]["up"] == 2
+    assert snapshot["breadth"]["flat"] == 1
+    assert snapshot["breadth"]["down"] == 1
+    assert snapshot["breadth"]["limit_up"] == 1
+    assert snapshot["breadth"]["limit_dn"] == 1
+    assert snapshot["breadth"]["distribution"]["limit_up"] == 1
+    assert snapshot["breadth"]["distribution"]["limit_down"] == 1
+    assert snapshot["turnover"]["amount"] == 32000.0
+    assert snapshot["turnover"]["source"] == "tushare_replay_rt_k"
+
+
+def test_tushare_replay_daily_snapshot_uses_daily_source_and_daily_info_turnover():
+    from tushare_replay import _daily_info_two_market_amount, snapshot_from_daily_rows
+
+    rows = [
+        {"ts_code": "600001.SH", "trade_date": "20260708", "pct_chg": 10.0, "amount": 1_200_000},
+        {"ts_code": "000001.SZ", "trade_date": "20260708", "pct_chg": -2.5, "amount": 2_000_000},
+        {"ts_code": "430001.BJ", "trade_date": "20260708", "pct_chg": 1.0, "amount": 500_000},
+    ]
+    info_rows = [
+        {"ts_code": "SH_MARKET", "amount": 11956.51},
+        {"ts_code": "SZ_MARKET", "amount": 13725.36},
+    ]
+
+    snapshot = snapshot_from_daily_rows(rows, "20260708")
+    amount = _daily_info_two_market_amount(info_rows)
+
+    assert snapshot["source"] == "tushare_replay_daily"
+    assert snapshot["breadth"]["source"] == "tushare_replay_daily"
+    assert snapshot["turnover"]["amount"] == 0.03
+    assert amount == 25681.87
+
+
+def test_low_trust_old_market_snapshot_cache_is_ignored(monkeypatch, tmp_path):
+    old_snapshot = {
+        "source": "eastmoney_three_market",
+        "stat_date": "2026-07-06",
+        "turnover": {"amount": 31124.43, "source": "eastmoney_three_market"},
+        "breadth": {"coverage": 0.94, "source": "eastmoney_three_market", "degraded": False},
+    }
+    cache_path = tmp_path / "20260706.json"
+    cache_path.write_text(__import__("json").dumps(old_snapshot), encoding="utf-8")
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+
+    assert market_stats.load_cached_market_snapshot("20260706") is None
+
+
+def test_market_breadth_prefers_tushare_replay_before_eastmoney(monkeypatch, tmp_path):
+    snapshot = _sample_tushare_snapshot()
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(market_stats, "fetch_tushare_replay_market_snapshot", lambda date_text=None: snapshot)
+    monkeypatch.setattr(
+        market_stats,
+        "fetch_eastmoney_three_market_snapshot",
+        lambda date_text=None: (_ for _ in ()).throw(AssertionError("eastmoney should not be used when tushare replay works")),
+    )
+
+    breadth = market_stats.get_market_breadth(date_text="20260708")
+
+    assert breadth["source"] == "tushare_replay_rt_k"
+    assert breadth["up"] == 2
+
+
+def test_market_turnover_prefers_tushare_replay_before_eastmoney(monkeypatch, tmp_path):
+    snapshot = _sample_tushare_snapshot()
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(market_stats, "fetch_tushare_replay_market_snapshot", lambda date_text=None: snapshot)
+    monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [])
+    monkeypatch.setattr(
+        market_stats,
+        "_turnover_from_eastmoney_index",
+        lambda date_text=None: (_ for _ in ()).throw(AssertionError("eastmoney turnover should not be used when tushare replay works")),
+    )
+
+    turnover = market_stats.get_market_turnover(date_text="20260708")
+
+    assert turnover["source"] == "tushare_replay_rt_k"
+    assert turnover["amount"] == 32000.0
+
+
+def test_market_snapshot_metrics_keeps_tushare_turnover_from_same_snapshot(monkeypatch, tmp_path):
+    snapshot = _sample_tushare_snapshot()
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(market_stats, "fetch_tushare_replay_market_snapshot", lambda date_text=None: snapshot)
+    monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [])
+    monkeypatch.setattr(
+        market_stats,
+        "_turnover_from_eastmoney_index",
+        lambda date_text=None: (_ for _ in ()).throw(AssertionError("metrics should keep tushare turnover")),
+    )
+
+    metrics = market_stats.get_market_snapshot_metrics("20260708")
+
+    assert metrics["source"] == "tushare_replay_rt_k"
+    assert metrics["breadth"]["source"] == "tushare_replay_rt_k"
+    assert metrics["turnover"]["source"] == "tushare_replay_rt_k"
+    assert metrics["turnover"]["amount"] == 32000.0

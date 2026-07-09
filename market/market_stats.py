@@ -77,6 +77,11 @@ VERIFIED_MARKET_SNAPSHOTS = {
         },
     },
 }
+TRUSTED_MARKET_SNAPSHOT_SOURCES = {
+    "eastmoney_three_market_verified",
+    "tushare_replay_daily",
+    "tushare_replay_daily_info",
+}
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -176,6 +181,15 @@ def load_cached_market_snapshot(date_text: str | None) -> dict | None:
         return None
     if not isinstance(snapshot.get("breadth"), dict) or not isinstance(snapshot.get("turnover"), dict):
         return None
+    source = str(snapshot.get("source") or "")
+    breadth_source = str((snapshot.get("breadth") or {}).get("source") or "")
+    turnover_source = str((snapshot.get("turnover") or {}).get("source") or "")
+    if source not in TRUSTED_MARKET_SNAPSHOT_SOURCES and breadth_source not in TRUSTED_MARKET_SNAPSHOT_SOURCES:
+        return None
+    if turnover_source and turnover_source not in TRUSTED_MARKET_SNAPSHOT_SOURCES:
+        return None
+    if _safe_float((snapshot.get("breadth") or {}).get("coverage"), 1.0) < MIN_QUOTE_COVERAGE:
+        return None
     if _is_explicit_today_request(date_text):
         turnover = snapshot.get("turnover") or {}
         breadth = snapshot.get("breadth") or {}
@@ -203,6 +217,25 @@ def save_market_snapshot(snapshot: dict | None) -> None:
 
 def _historical_market_snapshot(date_text: str | None) -> dict | None:
     return get_verified_market_snapshot(date_text) or load_cached_market_snapshot(date_text)
+
+
+def fetch_tushare_replay_market_snapshot(date_text: str | None = None) -> dict:
+    from tushare_replay import fetch_daily_market_snapshot
+
+    snapshot = fetch_daily_market_snapshot(date_text)
+    save_market_snapshot(snapshot)
+    return snapshot
+
+
+def _fetch_primary_market_snapshot(date_text: str | None = None) -> dict:
+    snapshot = _historical_market_snapshot(date_text)
+    if snapshot:
+        return snapshot
+    try:
+        return fetch_tushare_replay_market_snapshot(date_text)
+    except Exception as exc:
+        logger.warning(f"[market_stats] tushare replay snapshot failed: {exc}")
+    return fetch_eastmoney_three_market_snapshot(date_text)
 
 
 def parse_legu_activity(df: pd.DataFrame) -> dict:
@@ -706,7 +739,15 @@ def _snapshot_turnover_is_verified_or_two_market(snapshot: dict | None) -> bool:
         return False
     turnover = snapshot.get("turnover") or {}
     source = str(turnover.get("source") or snapshot.get("source") or "")
-    return source in {"eastmoney_three_market_verified", "eastmoney_index", "eastmoney_index_daily", "tdx_index"}
+    return source in {
+        "eastmoney_three_market_verified",
+        "eastmoney_index",
+        "eastmoney_index_daily",
+        "tdx_index",
+        "tushare_replay_rt_k",
+        "tushare_replay_daily",
+        "tushare_replay_daily_info",
+    }
 
 
 def _turnover_with_trend(turnover: dict, trend: list[dict] | None = None) -> dict:
@@ -727,12 +768,15 @@ def get_market_snapshot_metrics(date_text: str | None = None) -> dict:
     same paged Eastmoney snapshot twice on a cold request.
     """
     with ThreadPoolExecutor(max_workers=3) as executor:
-        snapshot_future = executor.submit(lambda: _historical_market_snapshot(date_text) or fetch_eastmoney_three_market_snapshot(date_text))
+        snapshot_future = executor.submit(lambda: _fetch_primary_market_snapshot(date_text))
         turnover_future = executor.submit(lambda: _turnover_from_eastmoney_index(date_text))
         trend_future = executor.submit(_safe_turnover_trend)
         snapshot = snapshot_future.result()
         try:
-            turnover_source = turnover_future.result()
+            if _snapshot_turnover_is_verified_or_two_market(snapshot):
+                turnover_source = snapshot.get("turnover")
+            else:
+                turnover_source = turnover_future.result()
         except Exception as exc:
             logger.warning(f"[market_stats] eastmoney index turnover for metrics failed: {exc}")
             if _snapshot_turnover_is_verified_or_two_market(snapshot):
@@ -770,6 +814,18 @@ def get_market_breadth(expected_count: int | None = None, date_text: str | None 
     snapshot = _historical_market_snapshot(date_text)
     if snapshot:
         return snapshot["breadth"]
+
+    try:
+        snapshot = fetch_tushare_replay_market_snapshot(date_text)
+        if _is_explicit_today_request(date_text) and (snapshot.get("breadth") or {}).get("degraded"):
+            return {
+                "source": "none",
+                "degraded": True,
+                "reason": f"official breadth unavailable for requested {_date_ymd(date_text)}: {(snapshot.get('breadth') or {}).get('reason', 'degraded breadth')}",
+            }
+        return snapshot["breadth"]
+    except Exception as exc:
+        logger.warning(f"[market_stats] tushare replay breadth failed: {exc}")
 
     try:
         snapshot = fetch_eastmoney_three_market_snapshot(date_text)
@@ -841,6 +897,11 @@ def get_market_turnover(date_text: str | None = None, prefer_official: bool | No
                 logger.warning(f"[market_stats] eastmoney index turnover for cached historical snapshot failed: {exc}")
         else:
             try:
+                snapshot = fetch_tushare_replay_market_snapshot(date_text)
+                return _turnover_from_snapshot_with_trend(snapshot)
+            except Exception as exc:
+                logger.warning(f"[market_stats] historical tushare replay turnover unavailable: {exc}")
+            try:
                 fetch_eastmoney_three_market_snapshot(date_text)
                 return _turnover_with_trend(_turnover_from_eastmoney_index(date_text))
             except Exception as exc:
@@ -864,6 +925,12 @@ def get_market_turnover(date_text: str | None = None, prefer_official: bool | No
             trend[-1]["amount"] = result["today"]
         result["trend"] = trend
         return result
+
+    try:
+        snapshot = fetch_tushare_replay_market_snapshot(date_text)
+        return _turnover_from_snapshot_with_trend(snapshot)
+    except Exception as exc:
+        logger.warning(f"[market_stats] tushare replay turnover failed: {exc}")
 
     try:
         return _turnover_with_trend(_turnover_from_eastmoney_index(date_text))
