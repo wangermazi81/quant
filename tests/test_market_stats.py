@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import _pathsetup  # noqa: F401
 
 import market_stats
+import tushare_replay
 
 
 def test_parse_legu_activity_uses_complete_breadth_counts():
@@ -43,6 +44,23 @@ def test_parse_legu_activity_uses_complete_breadth_counts():
     assert breadth["limit_dn"] == 25
     assert breadth["source"] == "legu"
     assert breadth["degraded"] is False
+
+
+def test_fetch_tushare_replay_market_snapshot_uses_project_module(monkeypatch, tmp_path):
+    snapshot = {
+        "source": "tushare_replay_daily",
+        "stat_date": "2026-07-08",
+        "turnover": {"amount": 25000, "source": "tushare_replay_daily_info", "degraded": False},
+        "breadth": {"up": 3000, "down": 2000, "flat": 100, "total": 5100, "source": "tushare_replay_daily", "degraded": False},
+    }
+
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(tushare_replay, "fetch_daily_market_snapshot", lambda date_text=None: snapshot)
+
+    result = market_stats.fetch_tushare_replay_market_snapshot("20260708")
+
+    assert result["source"] == "tushare_replay_daily"
+    assert (tmp_path / "20260708.json").exists()
 
 
 def test_quote_breadth_marks_low_coverage_as_degraded():

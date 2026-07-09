@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from analytics.factors_zoo.scorer import build_panel_from_cache
+from analytics.market_signal_quality import apply_market_signals, build_market_signal_frame
 
 _ROOT = Path(__file__).resolve().parent.parent
 _OUT_BASE = _ROOT / "data" / "research" / "relay_factor"
@@ -247,6 +248,10 @@ def build_latest_candidates(features: pd.DataFrame, top_k: int = 10, hold_days: 
         return []
     latest_date = features["trade_date"].max()
     latest = features[features["trade_date"] == latest_date].copy()
+    if "market_data_trusted" in latest.columns:
+        trusted_values = latest["market_data_trusted"].map(_is_trusted_marker)
+        if not bool(trusted_values.all()):
+            return []
     latest = latest.sort_values("relay_score", ascending=False).head(top_k)
     candidates: list[dict[str, Any]] = []
     for _, row in latest.iterrows():
@@ -262,7 +267,10 @@ def build_latest_candidates(features: pd.DataFrame, top_k: int = 10, hold_days: 
                 "strategy_key": "relay_factor_mining_v1",
                 "relay_score": round(score, 4),
                 "confidence": round(confidence, 4),
-                "market_regime": "unknown",
+                "market_regime": _market_regime(row),
+                "market_emotion_score": _maybe_float(row.get("market_emotion_score")),
+                "market_data_status": str(row.get("market_data_status", "not_checked")),
+                "market_source": str(row.get("market_source", "")),
                 "positive_factors": _positive_factors(row),
                 "negative_factors": risk_flags,
                 "risk_flags": risk_flags,
@@ -280,6 +288,40 @@ def build_latest_candidates(features: pd.DataFrame, top_k: int = 10, hold_days: 
     return candidates
 
 
+def _maybe_float(value) -> float | None:
+    try:
+        if value in (None, "") or pd.isna(value):
+            return None
+        return round(float(value), 4)
+    except Exception:
+        return None
+
+
+def _is_trusted_marker(value: Any) -> bool:
+    if value is True:
+        return True
+    if value is False or value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except Exception:
+        pass
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "ok"}
+    return bool(value)
+
+
+def _market_regime(row: pd.Series) -> str:
+    score = _maybe_float(row.get("market_emotion_score"))
+    if score is None:
+        return "unknown"
+    if score >= 70:
+        return "strong"
+    if score <= 35:
+        return "weak"
+    return "neutral"
+
 def _positive_factors(row: pd.Series) -> list[str]:
     factors = []
     if float(row.get("ret_5", 0.0) or 0.0) > 0:
@@ -290,6 +332,8 @@ def _positive_factors(row: pd.Series) -> list[str]:
         factors.append("near_20d_high")
     if float(row.get("limit_count_20", 0.0) or 0.0) >= 1:
         factors.append("recent_limit_strength")
+    if float(row.get("market_emotion_score", 0.0) or 0.0) >= 65:
+        factors.append("supportive_market_emotion")
     return factors
 
 
@@ -311,25 +355,37 @@ def run_relay_research(
     step_days: int | None = None,
     hold_days: int = 2,
     top_k: int = 5,
+    market_signal_frame: pd.DataFrame | None = None,
+    include_market_signals: bool = False,
 ) -> dict[str, Any]:
     if panel is None:
         panel, _codes = build_panel_from_cache(n_stocks=n_stocks, days=days, min_history=min(days, 60))
     out_path = Path(out_dir) if out_dir is not None else _OUT_BASE / datetime.now().strftime("%Y%m%d-%H%M%S")
-    features = build_feature_frame(panel)
+    features_raw = build_feature_frame(panel)
     labels = build_label_frame(panel, hold_days=hold_days)
-    wf = walk_forward_relay(features, labels, train_days=train_days, test_days=test_days, step_days=step_days, top_k=top_k)
+    if market_signal_frame is None and include_market_signals:
+        market_signal_frame = build_market_signal_frame(features_raw["trade_date"].unique())
+    features = apply_market_signals(features_raw, market_signal_frame)
+    training_features = features[features["market_data_trusted"]] if "market_data_trusted" in features.columns else features
+    wf = walk_forward_relay(training_features, labels, train_days=train_days, test_days=test_days, step_days=step_days, top_k=top_k)
     candidates = build_latest_candidates(features, top_k=top_k, hold_days=hold_days)
+    latest_market = _latest_market_summary(features)
     summary = {
         **wf["summary"],
         "feature_rows": int(len(features)),
+        "trusted_feature_rows": int(len(training_features)),
         "label_rows": int(len(labels)),
+        "market_signal_rows": int(0 if market_signal_frame is None else len(market_signal_frame)),
+        "latest_market_data_status": latest_market.get("market_data_status"),
+        "latest_market_data_reason": latest_market.get("market_data_reason"),
+        "latest_market_emotion_score": latest_market.get("market_emotion_score"),
         "lookahead_policy": "features_current_or_past_labels_t_plus_1",
         "latest_trade_date": features["trade_date"].max() if not features.empty else None,
     }
     min_dates = train_days + test_days
-    unique_dates = int(features["trade_date"].nunique()) if not features.empty else 0
+    unique_dates = int(training_features["trade_date"].nunique()) if not training_features.empty else 0
     status = "ok" if wf["summary"].get("window_count", 0) > 0 else "degraded"
-    reason = "ok" if status == "ok" else f"insufficient samples: need {min_dates} feature dates, got {unique_dates}"
+    reason = "ok" if status == "ok" else f"insufficient trusted samples: need {min_dates} feature dates, got {unique_dates}"
     report = {
         "status": status,
         "reason": reason,
@@ -341,15 +397,28 @@ def run_relay_research(
             "step_days": step_days or test_days,
             "hold_days": hold_days,
             "top_k": top_k,
+            "include_market_signals": include_market_signals or market_signal_frame is not None,
         },
         "summary": summary,
         "windows": wf["windows"],
         "trades": wf["trades"],
+        "latest_candidates": candidates,
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
     _write_outputs(out_path, features, labels, report, candidates)
     return report
 
+
+def _latest_market_summary(features: pd.DataFrame) -> dict[str, Any]:
+    if features.empty or "market_data_status" not in features.columns:
+        return {"market_data_status": "not_checked", "market_data_reason": "", "market_emotion_score": None}
+    latest_date = features["trade_date"].max()
+    latest = features[features["trade_date"] == latest_date].iloc[0]
+    return {
+        "market_data_status": str(latest.get("market_data_status", "not_checked")),
+        "market_data_reason": str(latest.get("market_data_reason", "")),
+        "market_emotion_score": _maybe_float(latest.get("market_emotion_score")),
+    }
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Relay factor mining research")
@@ -360,6 +429,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hold-days", type=int, default=2)
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--out-dir", type=str, default=None)
+    parser.add_argument("--with-market-signals", action="store_true", help="gate research with market breadth and turnover quality signals")
     args = parser.parse_args(argv)
     report = run_relay_research(
         out_dir=args.out_dir,
@@ -369,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         test_days=args.test_days,
         hold_days=args.hold_days,
         top_k=args.top_k,
+        include_market_signals=args.with_market_signals,
     )
     print(json.dumps({"status": report["status"], "summary": report["summary"]}, ensure_ascii=False, indent=2))
     return 0 if report["status"] in {"ok", "degraded"} else 1

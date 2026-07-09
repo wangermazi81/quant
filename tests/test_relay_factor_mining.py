@@ -105,3 +105,18 @@ def test_run_research_degrades_when_samples_are_insufficient(tmp_path):
     assert result["status"] == "degraded"
     assert result["summary"]["window_count"] == 0
     assert "insufficient" in result["reason"]
+
+
+def test_cli_passes_market_signal_flag(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run_relay_research(**kwargs):
+        captured.update(kwargs)
+        return {"status": "ok", "summary": {}}
+
+    monkeypatch.setattr(relay, "run_relay_research", fake_run_relay_research)
+
+    code = relay.main(["--with-market-signals", "--out-dir", str(tmp_path)])
+
+    assert code == 0
+    assert captured["include_market_signals"] is True

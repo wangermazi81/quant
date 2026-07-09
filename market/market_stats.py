@@ -220,7 +220,10 @@ def _historical_market_snapshot(date_text: str | None) -> dict | None:
 
 
 def fetch_tushare_replay_market_snapshot(date_text: str | None = None) -> dict:
-    from tushare_replay import fetch_daily_market_snapshot
+    try:
+        from .tushare_replay import fetch_daily_market_snapshot
+    except ImportError:
+        from tushare_replay import fetch_daily_market_snapshot
 
     snapshot = fetch_daily_market_snapshot(date_text)
     save_market_snapshot(snapshot)
