@@ -36,6 +36,8 @@ _TRUSTED_TWO_MARKET_TURNOVER_SOURCES = {
     "eastmoney_index_daily",
     "tdx_index",
     "official_exchange",
+    "tushare_replay_daily",
+    "tushare_replay_daily_info",
 }
 
 
