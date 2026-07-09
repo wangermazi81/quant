@@ -60,6 +60,51 @@ def test_feature_frame_is_point_in_time_and_has_required_fields():
     assert {"ret_5", "volume_ratio_20", "near_high_20", "relay_score", "risk_flags"}.issubset(baseline.columns)
 
 
+def test_factor_mining_rules_are_normalized_and_explainable():
+    rules = relay.normalize_mining_rules(
+        {
+            "weights": {"ret_5": 0.4, "unknown_factor": 999},
+            "risk_thresholds": {"high_volatility": 0.05},
+            "tier_thresholds": {"strong_percentile": 0.96, "watch_percentile": 0.88},
+            "filters": {"min_volume_ratio_20": 1.2, "exclude_high_risk": True},
+        }
+    )
+
+    assert rules["weights"]["ret_5"] == 0.4
+    assert "unknown_factor" not in rules["weights"]
+    assert rules["risk_thresholds"]["high_volatility"] == 0.05
+    assert rules["tier_thresholds"]["strong_percentile"] == 0.96
+    assert rules["filters"]["exclude_high_risk"] is True
+    assert rules["descriptions"]["weights"]["ret_5"]
+
+
+def test_custom_factor_weights_change_relay_score():
+    panel = _panel(days=55)
+    baseline = relay.build_feature_frame(panel)
+    custom = relay.build_feature_frame(
+        panel,
+        mining_rules={
+            "weights": {
+                "ret_5": 0.0,
+                "ret_10": 0.0,
+                "ret_20": 0.0,
+                "volume_ratio_20": 0.8,
+                "amount_ratio_20": 0.0,
+                "near_high_20": 0.0,
+                "limit_count_20": 0.0,
+                "volatility_10": 0.0,
+                "overheat_ret_3": 0.0,
+            }
+        },
+    )
+
+    compare_date = baseline["trade_date"].sort_values().unique()[-1]
+    before = baseline[baseline["trade_date"] == compare_date].sort_values("ts_code").reset_index(drop=True)
+    after = custom[custom["trade_date"] == compare_date].sort_values("ts_code").reset_index(drop=True)
+
+    assert not before["relay_score"].round(8).equals(after["relay_score"].round(8))
+
+
 def test_label_frame_uses_next_day_entry_and_future_exit_only_as_label():
     dates = pd.bdate_range("2026-01-02", periods=4)
     close = pd.DataFrame({"AAA": [10.0, 20.0, 10.0, 10.0]}, index=dates)
@@ -127,6 +172,49 @@ def test_latest_candidates_keep_research_pool_larger_than_trade_top_k():
     assert candidates[-1]["latest_universe_size"] == 10
 
 
+def test_latest_candidates_apply_visible_filters_and_custom_tiers():
+    features = pd.DataFrame(
+        [
+            {
+                "trade_date": "2026-07-09",
+                "ts_code": "AAA",
+                "relay_score": 90,
+                "ret_5": 0.05,
+                "volume_ratio_20": 2.0,
+                "near_high_20": 0.98,
+                "limit_count_20": 2,
+                "risk_flags": "",
+                "available_at": "2026-07-09 15:00:00",
+            },
+            {
+                "trade_date": "2026-07-09",
+                "ts_code": "BBB",
+                "relay_score": 80,
+                "ret_5": 0.02,
+                "volume_ratio_20": 0.8,
+                "near_high_20": 0.90,
+                "limit_count_20": 0,
+                "risk_flags": "weak_volume",
+                "available_at": "2026-07-09 15:00:00",
+            },
+        ]
+    )
+
+    candidates = relay.build_latest_candidates(
+        features,
+        top_k=2,
+        candidate_pool_size=2,
+        mining_rules={
+            "tier_thresholds": {"strong_percentile": 0.9, "watch_percentile": 0.7},
+            "filters": {"min_volume_ratio_20": 1.0, "exclude_high_risk": True},
+        },
+    )
+
+    assert [c["ts_code"] for c in candidates] == ["AAA"]
+    assert candidates[0]["candidate_tier"] == "strong"
+    assert candidates[0]["active_filters"]["min_volume_ratio_20"] == 1.0
+
+
 def test_run_research_reports_candidate_pool_summary(tmp_path):
     result = relay.run_relay_research(
         panel=_panel(days=55),
@@ -139,6 +227,8 @@ def test_run_research_reports_candidate_pool_summary(tmp_path):
     )
 
     assert result["config"]["candidate_pool_size"] == 3
+    assert result["mining_rules"]["weights"]["ret_5"] == relay.DEFAULT_MINING_RULES["weights"]["ret_5"]
+    assert result["condition_explain"]
     assert result["summary"]["latest_candidate_count"] == 3
     assert sum(result["summary"]["latest_candidate_tier_counts"].values()) == 3
 

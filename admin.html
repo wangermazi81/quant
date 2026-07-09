@@ -924,6 +924,36 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
           </div>
           <span id="fm-msg" style="font-size:12px;color:var(--text2);padding-bottom:9px"></span>
         </div>
+        <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+            <div>
+              <div style="font-weight:700;color:var(--text1)">挖掘条件与规则控制</div>
+              <div style="font-size:12px;color:var(--text3);margin-top:3px">本次运行会保存实际生效的权重、风险阈值、分层阈值和过滤条件。</div>
+            </div>
+            <button class="btn btn-outline" type="button" onclick="fmResetRules()"><i class="fas fa-undo"></i> 恢复默认</button>
+          </div>
+          <details open>
+            <summary style="cursor:pointer;color:var(--text2);font-size:13px;margin-bottom:10px">展开 / 收起高级规则</summary>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px">
+              <div>
+                <div style="font-weight:700;margin-bottom:8px;color:var(--text2)">评分权重</div>
+                <div id="fm-rule-weights" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px"></div>
+              </div>
+              <div>
+                <div style="font-weight:700;margin-bottom:8px;color:var(--text2)">风险阈值</div>
+                <div id="fm-rule-risks" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px"></div>
+              </div>
+              <div>
+                <div style="font-weight:700;margin-bottom:8px;color:var(--text2)">分层与过滤</div>
+                <div id="fm-rule-tiers" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:8px"></div>
+                <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);margin-bottom:8px"><input id="fm-rule-strong-no-risk" type="checkbox" checked> 强候选必须无风险旗标</label>
+                <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);margin-bottom:8px"><input id="fm-filter-exclude-risk" type="checkbox"> 排除带风险旗标候选</label>
+                <div id="fm-rule-filters" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px"></div>
+              </div>
+            </div>
+          </details>
+          <div id="fm-rule-explain" style="margin-top:12px;font-size:12px;color:var(--text3);line-height:1.7"></div>
+        </div>
       </div>
 
       <div class="stat-grid" style="margin-bottom:16px">
@@ -2335,9 +2365,85 @@ function fmTierText(tier){
   return tier || '—';
 }
 
+const FM_DEFAULT_RULES = {
+  weights: {ret_5:0.18, ret_10:0.12, ret_20:0.12, volume_ratio_20:0.16, amount_ratio_20:0.10, near_high_20:0.16, limit_count_20:0.10, volatility_10:-0.08, overheat_ret_3:-0.08},
+  risk_thresholds: {overextended_3d:0.24, high_volatility:0.08, weak_volume:0.75, deep_drawdown:-0.18},
+  tier_thresholds: {strong_percentile:0.97, watch_percentile:0.90, strong_requires_no_risk:true},
+  filters: {min_relay_score:null, min_volume_ratio_20:null, min_near_high_20:null, exclude_high_risk:false}
+};
+
+const FM_RULE_LABELS = {
+  ret_5:'5日动量', ret_10:'10日动量', ret_20:'20日动量', volume_ratio_20:'20日量比', amount_ratio_20:'20日额比', near_high_20:'接近20日高点', limit_count_20:'20日涨停次数', volatility_10:'10日波动惩罚', overheat_ret_3:'3日过热惩罚',
+  overextended_3d:'3日涨幅过热', high_volatility:'10日高波动', weak_volume:'弱量阈值', deep_drawdown:'20日深回撤',
+  strong_percentile:'强候选分位', watch_percentile:'观察分位', min_relay_score:'最低评分', min_volume_ratio_20:'最低量比', min_near_high_20:'最低接近高点'
+};
+
+function fmCloneRules(rules){ return JSON.parse(JSON.stringify(rules || FM_DEFAULT_RULES)); }
+function fmRuleInputId(group, key){ return `fm-rule-${group}-${key}`; }
+function fmRuleNumber(group, key, value, step='0.01'){
+  return `<label style="font-size:12px;color:var(--text2)">${esc(FM_RULE_LABELS[key] || key)}<input id="${fmRuleInputId(group,key)}" class="form-input" type="number" step="${step}" value="${value ?? ''}" placeholder="默认"></label>`;
+}
+
+function fmRenderRuleEditor(rules){
+  const next = fmCloneRules(rules);
+  const weights = document.getElementById('fm-rule-weights');
+  const risks = document.getElementById('fm-rule-risks');
+  const tiers = document.getElementById('fm-rule-tiers');
+  const filters = document.getElementById('fm-rule-filters');
+  if(weights) weights.innerHTML = Object.entries(next.weights || {}).map(([k,v])=>fmRuleNumber('weights', k, v)).join('');
+  if(risks) risks.innerHTML = Object.entries(next.risk_thresholds || {}).map(([k,v])=>fmRuleNumber('risk_thresholds', k, v)).join('');
+  if(tiers) tiers.innerHTML = ['strong_percentile','watch_percentile'].map(k=>fmRuleNumber('tier_thresholds', k, (next.tier_thresholds || {})[k])).join('');
+  if(filters) filters.innerHTML = ['min_relay_score','min_volume_ratio_20','min_near_high_20'].map(k=>fmRuleNumber('filters', k, (next.filters || {})[k])).join('');
+  const strongNoRisk = document.getElementById('fm-rule-strong-no-risk');
+  const excludeRisk = document.getElementById('fm-filter-exclude-risk');
+  if(strongNoRisk) strongNoRisk.checked = (next.tier_thresholds || {}).strong_requires_no_risk !== false;
+  if(excludeRisk) excludeRisk.checked = !!((next.filters || {}).exclude_high_risk);
+}
+
+function fmReadRuleFloat(group, key){
+  const el = document.getElementById(fmRuleInputId(group, key));
+  if(!el || String(el.value).trim()==='') return null;
+  const v = Number(el.value);
+  return Number.isFinite(v) ? v : null;
+}
+
+function fmReadMiningRules(){
+  const rules = fmCloneRules(FM_DEFAULT_RULES);
+  Object.keys(rules.weights).forEach(k=>{ const v=fmReadRuleFloat('weights', k); if(v!==null) rules.weights[k]=v; });
+  Object.keys(rules.risk_thresholds).forEach(k=>{ const v=fmReadRuleFloat('risk_thresholds', k); if(v!==null) rules.risk_thresholds[k]=v; });
+  ['strong_percentile','watch_percentile'].forEach(k=>{ const v=fmReadRuleFloat('tier_thresholds', k); if(v!==null) rules.tier_thresholds[k]=v; });
+  ['min_relay_score','min_volume_ratio_20','min_near_high_20'].forEach(k=>{ rules.filters[k]=fmReadRuleFloat('filters', k); });
+  rules.tier_thresholds.strong_requires_no_risk = !!document.getElementById('fm-rule-strong-no-risk')?.checked;
+  rules.filters.exclude_high_risk = !!document.getElementById('fm-filter-exclude-risk')?.checked;
+  return rules;
+}
+
+function fmResetRules(){
+  fmRenderRuleEditor(FM_DEFAULT_RULES);
+  fmRenderRuleExplain({mining_rules:FM_DEFAULT_RULES, condition_explain:[]});
+}
+
+function fmRenderRuleExplain(report){
+  const el = document.getElementById('fm-rule-explain');
+  if(!el) return;
+  const rules = (report && report.mining_rules) || FM_DEFAULT_RULES;
+  const filters = (rules.filters || {});
+  const activeFilters = Object.entries(filters).filter(([,v])=>v!==null && v!==false && v!=='').map(([k,v])=>`${FM_RULE_LABELS[k] || k}: ${v}`);
+  const explain = (report && Array.isArray(report.condition_explain) && report.condition_explain.length) ? report.condition_explain : [];
+  el.innerHTML = `
+    <div><b>当前生效规则：</b>权重 ${Object.entries(rules.weights || {}).map(([k,v])=>`${FM_RULE_LABELS[k] || k}=${v}`).join('，')}</div>
+    <div><b>风险阈值：</b>${Object.entries(rules.risk_thresholds || {}).map(([k,v])=>`${FM_RULE_LABELS[k] || k}=${v}`).join('，')}</div>
+    <div><b>分层：</b>强候选≥${(rules.tier_thresholds || {}).strong_percentile}，观察≥${(rules.tier_thresholds || {}).watch_percentile}，强候选无风险=${(rules.tier_thresholds || {}).strong_requires_no_risk !== false ? '是' : '否'}</div>
+    <div><b>过滤：</b>${activeFilters.length ? activeFilters.join('，') : '未启用额外过滤'}</div>
+    ${explain.length ? `<div style="margin-top:4px"><b>引擎说明：</b>${explain.map(esc).join('；')}</div>` : ''}`;
+}
+
 async function loadFactorMining(){
   const msg = document.getElementById('fm-msg');
   if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '加载最新结果…'; }
+  const rules = await _annFetch('GET', '/admin/factor-mining/rules');
+  if(rules && rules.ok) fmRenderRuleEditor(rules.mining_rules || FM_DEFAULT_RULES);
+  else fmRenderRuleEditor(FM_DEFAULT_RULES);
   const r = await _annFetch('GET', '/admin/factor-mining/latest');
   renderFactorMining(r);
 }
@@ -2351,6 +2457,7 @@ function renderFactorMining(r){
     if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
     if(candidateBody) candidateBody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
     if(windowBody) windowBody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
+    fmRenderRuleExplain({mining_rules:FM_DEFAULT_RULES, condition_explain:[]});
     return;
   }
 
@@ -2366,10 +2473,13 @@ function renderFactorMining(r){
     if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '暂无挖掘结果'; }
     if(candidateBody) candidateBody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:36px;color:var(--text3)">暂无候选</td></tr>';
     if(windowBody) windowBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text3)">暂无窗口结果</td></tr>';
+    fmRenderRuleExplain({mining_rules:FM_DEFAULT_RULES, condition_explain:[]});
     return;
   }
 
   const report = r.report || {};
+  if(report.mining_rules) fmRenderRuleEditor(report.mining_rules);
+  fmRenderRuleExplain(report);
   const summary = report.summary || {};
   const config = report.config || {};
   const candidates = Array.isArray(report.latest_candidates) ? report.latest_candidates : [];
@@ -2444,6 +2554,7 @@ async function runFactorMining(){
     hold_days: fmReadInt('fm-hold-days', 2),
     top_k: fmReadInt('fm-top-k', 10),
     candidate_pool_size: fmReadInt('fm-candidate-pool', 100),
+    mining_rules: fmReadMiningRules(),
   };
   if(btn) btn.disabled = true;
   if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '正在挖掘，可能需要几分钟…'; }

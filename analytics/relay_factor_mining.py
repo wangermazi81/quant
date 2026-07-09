@@ -25,6 +25,68 @@ _OUT_BASE = _ROOT / "data" / "research" / "relay_factor"
 
 _REQUIRED = ("close", "high", "volume")
 
+DEFAULT_MINING_RULES: dict[str, Any] = {
+    "weights": {
+        "ret_5": 0.18,
+        "ret_10": 0.12,
+        "ret_20": 0.12,
+        "volume_ratio_20": 0.16,
+        "amount_ratio_20": 0.10,
+        "near_high_20": 0.16,
+        "limit_count_20": 0.10,
+        "volatility_10": -0.08,
+        "overheat_ret_3": -0.08,
+    },
+    "risk_thresholds": {
+        "overextended_3d": 0.24,
+        "high_volatility": 0.08,
+        "weak_volume": 0.75,
+        "deep_drawdown": -0.18,
+    },
+    "tier_thresholds": {
+        "strong_percentile": 0.97,
+        "watch_percentile": 0.90,
+        "strong_requires_no_risk": True,
+    },
+    "filters": {
+        "min_relay_score": None,
+        "min_volume_ratio_20": None,
+        "min_near_high_20": None,
+        "exclude_high_risk": False,
+    },
+}
+
+_RULE_DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "weights": {
+        "ret_5": "5 day momentum rank weight",
+        "ret_10": "10 day momentum rank weight",
+        "ret_20": "20 day momentum rank weight",
+        "volume_ratio_20": "volume expansion rank weight versus 20 day average",
+        "amount_ratio_20": "turnover amount expansion rank weight versus 20 day average",
+        "near_high_20": "distance to 20 day high rank weight",
+        "limit_count_20": "recent limit-up count rank weight",
+        "volatility_10": "10 day volatility penalty weight",
+        "overheat_ret_3": "3 day overheated momentum penalty weight",
+    },
+    "risk_thresholds": {
+        "overextended_3d": "flag when 3 day return is above this value",
+        "high_volatility": "flag when 10 day volatility is above this value",
+        "weak_volume": "flag when volume ratio is below this value",
+        "deep_drawdown": "flag when 20 day drawdown is below this value",
+    },
+    "tier_thresholds": {
+        "strong_percentile": "minimum score percentile for strong tier",
+        "watch_percentile": "minimum score percentile for watch tier",
+        "strong_requires_no_risk": "strong tier requires an empty risk flag list",
+    },
+    "filters": {
+        "min_relay_score": "drop candidates below this relay score when set",
+        "min_volume_ratio_20": "drop candidates below this volume ratio when set",
+        "min_near_high_20": "drop candidates below this 20 day high proximity when set",
+        "exclude_high_risk": "drop candidates that have any risk flag",
+    },
+}
+
 
 def _to_float_frame(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -57,26 +119,108 @@ def _rank(df: pd.DataFrame, ascending: bool = True) -> pd.DataFrame:
     return df.rank(axis=1, pct=True, ascending=ascending, na_option="keep")
 
 
-def _risk_flags(row: pd.Series) -> str:
+def _copy_default_rules() -> dict[str, Any]:
+    return json.loads(json.dumps(DEFAULT_MINING_RULES))
+
+
+def _clean_float(value: Any, default: float | None, minimum: float | None = None, maximum: float | None = None) -> float | None:
+    if value in (None, ""):
+        return default
+    try:
+        out = float(value)
+    except Exception:
+        return default
+    if not np.isfinite(out):
+        return default
+    if minimum is not None:
+        out = max(minimum, out)
+    if maximum is not None:
+        out = min(maximum, out)
+    return round(out, 6)
+
+
+def normalize_mining_rules(raw: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return a safe, explicit factor-mining rule set.
+
+    The API accepts only known keys. Unknown or invalid frontend fields are
+    ignored so a saved report always shows the exact rules that were applied.
+    """
+    rules = _copy_default_rules()
+    raw = raw if isinstance(raw, dict) else {}
+
+    weight_raw = raw.get("weights") if isinstance(raw.get("weights"), dict) else {}
+    for key, default in DEFAULT_MINING_RULES["weights"].items():
+        rules["weights"][key] = _clean_float(weight_raw.get(key), float(default), -2.0, 2.0)
+
+    risk_raw = raw.get("risk_thresholds") if isinstance(raw.get("risk_thresholds"), dict) else {}
+    risk_bounds = {
+        "overextended_3d": (-0.5, 1.5),
+        "high_volatility": (0.0, 1.0),
+        "weak_volume": (0.0, 10.0),
+        "deep_drawdown": (-1.0, 0.5),
+    }
+    for key, default in DEFAULT_MINING_RULES["risk_thresholds"].items():
+        lo, hi = risk_bounds[key]
+        rules["risk_thresholds"][key] = _clean_float(risk_raw.get(key), float(default), lo, hi)
+
+    tier_raw = raw.get("tier_thresholds") if isinstance(raw.get("tier_thresholds"), dict) else {}
+    strong = _clean_float(tier_raw.get("strong_percentile"), DEFAULT_MINING_RULES["tier_thresholds"]["strong_percentile"], 0.0, 1.0)
+    watch = _clean_float(tier_raw.get("watch_percentile"), DEFAULT_MINING_RULES["tier_thresholds"]["watch_percentile"], 0.0, 1.0)
+    if watch is not None and strong is not None and watch > strong:
+        watch = strong
+    rules["tier_thresholds"]["strong_percentile"] = strong
+    rules["tier_thresholds"]["watch_percentile"] = watch
+    rules["tier_thresholds"]["strong_requires_no_risk"] = bool(
+        tier_raw.get("strong_requires_no_risk", DEFAULT_MINING_RULES["tier_thresholds"]["strong_requires_no_risk"])
+    )
+
+    filter_raw = raw.get("filters") if isinstance(raw.get("filters"), dict) else {}
+    rules["filters"]["min_relay_score"] = _clean_float(filter_raw.get("min_relay_score"), None, -200.0, 200.0)
+    rules["filters"]["min_volume_ratio_20"] = _clean_float(filter_raw.get("min_volume_ratio_20"), None, 0.0, 20.0)
+    rules["filters"]["min_near_high_20"] = _clean_float(filter_raw.get("min_near_high_20"), None, 0.0, 2.0)
+    rules["filters"]["exclude_high_risk"] = bool(filter_raw.get("exclude_high_risk", False))
+    rules["descriptions"] = _RULE_DESCRIPTIONS
+    return rules
+
+
+def condition_explain(rules: dict[str, Any]) -> list[str]:
+    weights = rules["weights"]
+    risk = rules["risk_thresholds"]
+    tiers = rules["tier_thresholds"]
+    filters = rules["filters"]
+    active_filters = [f"{key}>={value}" for key, value in filters.items() if value not in (None, False)]
+    return [
+        "relay_score = weighted cross-sectional ranks of momentum, volume, amount, high proximity and limit strength, minus volatility and 3 day overheat penalties",
+        "weights: " + ", ".join(f"{key}={value}" for key, value in weights.items()),
+        "risk flags: " + ", ".join(f"{key}={value}" for key, value in risk.items()),
+        "tiers: strong>={strong_percentile}, watch>={watch_percentile}, strong_requires_no_risk={strong_requires_no_risk}".format(**tiers),
+        "filters: " + (", ".join(active_filters) if active_filters else "none"),
+    ]
+
+
+def _risk_flags(row: pd.Series, rules: dict[str, Any] | None = None) -> str:
+    thresholds = normalize_mining_rules(rules)["risk_thresholds"] if rules is None or "risk_thresholds" not in rules else rules["risk_thresholds"]
     flags: list[str] = []
-    if float(row.get("ret_3", 0.0) or 0.0) > 0.24:
+    if float(row.get("ret_3", 0.0) or 0.0) > thresholds["overextended_3d"]:
         flags.append("overextended_3d")
-    if float(row.get("volatility_10", 0.0) or 0.0) > 0.08:
+    if float(row.get("volatility_10", 0.0) or 0.0) > thresholds["high_volatility"]:
         flags.append("high_volatility")
-    if float(row.get("volume_ratio_20", 1.0) or 1.0) < 0.75:
+    if float(row.get("volume_ratio_20", 1.0) or 1.0) < thresholds["weak_volume"]:
         flags.append("weak_volume")
-    if float(row.get("drawdown_20", 0.0) or 0.0) < -0.18:
+    if float(row.get("drawdown_20", 0.0) or 0.0) < thresholds["deep_drawdown"]:
         flags.append("deep_drawdown")
     return ",".join(flags)
 
 
-def build_feature_frame(panel: dict[str, pd.DataFrame]) -> pd.DataFrame:
+def build_feature_frame(panel: dict[str, pd.DataFrame], mining_rules: dict[str, Any] | None = None) -> pd.DataFrame:
     """Build point-in-time relay features as a long DataFrame.
 
     Every feature uses only the current row and historical rows. The row is
     marked available at the signal date close (15:00), so consumers must use it
     for next-session decisions unless they have intraday equivalents.
     """
+    rules = normalize_mining_rules(mining_rules)
+    weights = rules["weights"]
     p = _aligned_panel(panel)
     close = p["close"]
     high = p["high"]
@@ -96,15 +240,15 @@ def build_feature_frame(panel: dict[str, pd.DataFrame]) -> pd.DataFrame:
     limit_count_20 = (ret_1 >= 0.095).rolling(20, min_periods=5).sum()
 
     relay_score = (
-        _rank(ret_5) * 0.18
-        + _rank(ret_10) * 0.12
-        + _rank(ret_20) * 0.12
-        + _rank(volume_ratio_20) * 0.16
-        + _rank(amount_ratio_20) * 0.10
-        + _rank(near_high_20) * 0.16
-        + _rank(limit_count_20) * 0.10
-        - _rank(volatility_10) * 0.08
-        - _rank(ret_3.clip(lower=0.0)) * 0.08
+        _rank(ret_5) * weights["ret_5"]
+        + _rank(ret_10) * weights["ret_10"]
+        + _rank(ret_20) * weights["ret_20"]
+        + _rank(volume_ratio_20) * weights["volume_ratio_20"]
+        + _rank(amount_ratio_20) * weights["amount_ratio_20"]
+        + _rank(near_high_20) * weights["near_high_20"]
+        + _rank(limit_count_20) * weights["limit_count_20"]
+        + _rank(volatility_10) * weights["volatility_10"]
+        + _rank(ret_3.clip(lower=0.0)) * weights["overheat_ret_3"]
     ) * 100.0
 
     fields = {
@@ -133,7 +277,7 @@ def build_feature_frame(panel: dict[str, pd.DataFrame]) -> pd.DataFrame:
     out["available_at"] = out["trade_date"] + " 15:00:00"
     out["feature_as_of"] = out["trade_date"]
     out["decision_time"] = "next_session"
-    out["risk_flags"] = out.apply(_risk_flags, axis=1)
+    out["risk_flags"] = out.apply(lambda row: _risk_flags(row, rules), axis=1)
     return out
 
 
@@ -243,10 +387,11 @@ def walk_forward_relay(
     return {"windows": windows, "trades": trades, "summary": summary}
 
 
-def _candidate_tier(score_percentile: float, risk_flags: Sequence[str]) -> str:
-    if score_percentile >= 0.97 and not risk_flags:
+def _candidate_tier(score_percentile: float, risk_flags: Sequence[str], rules: dict[str, Any] | None = None) -> str:
+    tiers = normalize_mining_rules(rules)["tier_thresholds"] if rules is None or "tier_thresholds" not in rules else rules["tier_thresholds"]
+    if score_percentile >= tiers["strong_percentile"] and (not tiers["strong_requires_no_risk"] or not risk_flags):
         return "strong"
-    if score_percentile >= 0.90:
+    if score_percentile >= tiers["watch_percentile"]:
         return "watch"
     return "observe"
 
@@ -262,15 +407,26 @@ def build_latest_candidates(
     top_k: int = 10,
     hold_days: int = 2,
     candidate_pool_size: int | None = None,
+    mining_rules: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if features.empty:
         return []
+    rules = normalize_mining_rules(mining_rules)
+    active_filters = rules["filters"]
     latest_date = features["trade_date"].max()
     latest = features[features["trade_date"] == latest_date].copy()
     if "market_data_trusted" in latest.columns:
         trusted_values = latest["market_data_trusted"].map(_is_trusted_marker)
         if not bool(trusted_values.all()):
             return []
+    if active_filters["min_relay_score"] is not None:
+        latest = latest[latest["relay_score"] >= active_filters["min_relay_score"]]
+    if active_filters["min_volume_ratio_20"] is not None and "volume_ratio_20" in latest.columns:
+        latest = latest[latest["volume_ratio_20"] >= active_filters["min_volume_ratio_20"]]
+    if active_filters["min_near_high_20"] is not None and "near_high_20" in latest.columns:
+        latest = latest[latest["near_high_20"] >= active_filters["min_near_high_20"]]
+    if active_filters["exclude_high_risk"] and "risk_flags" in latest.columns:
+        latest = latest[latest["risk_flags"].fillna("").astype(str).str.len() == 0]
     latest = latest.sort_values("relay_score", ascending=False).reset_index(drop=True)
     latest_count = len(latest)
     if latest_count == 0:
@@ -284,7 +440,7 @@ def build_latest_candidates(
         rank = int(idx) + 1
         score_percentile = 1.0 - ((rank - 1) / max(latest_count - 1, 1))
         confidence = max(0.0, min(1.0, score / 100.0 * 0.45 + score_percentile * 0.55 - min(len(risk_flags), 3) * 0.03))
-        tier = _candidate_tier(score_percentile, risk_flags)
+        tier = _candidate_tier(score_percentile, risk_flags, rules)
         if tier == "strong":
             position_pct = 0.12 if not risk_flags else 0.08
         elif tier == "watch":
@@ -308,9 +464,10 @@ def build_latest_candidates(
                 "market_emotion_score": _maybe_float(row.get("market_emotion_score")),
                 "market_data_status": str(row.get("market_data_status", "not_checked")),
                 "market_source": str(row.get("market_source", "")),
-                "positive_factors": _positive_factors(row),
+                "positive_factors": _positive_factors(row, rules),
                 "negative_factors": risk_flags,
                 "risk_flags": risk_flags,
+                "active_filters": {key: value for key, value in active_filters.items() if value not in (None, False)},
                 "entry_mode": "next_session_watch_or_limit_board",
                 "entry_zone": "avoid_chasing_above_limit_queue_plan",
                 "position_pct": position_pct,
@@ -359,13 +516,16 @@ def _market_regime(row: pd.Series) -> str:
         return "weak"
     return "neutral"
 
-def _positive_factors(row: pd.Series) -> list[str]:
+def _positive_factors(row: pd.Series, rules: dict[str, Any] | None = None) -> list[str]:
+    active_rules = normalize_mining_rules(rules)
+    volume_bar = active_rules["filters"].get("min_volume_ratio_20") or 1.2
+    near_high_bar = active_rules["filters"].get("min_near_high_20") or 0.92
     factors = []
     if float(row.get("ret_5", 0.0) or 0.0) > 0:
         factors.append("positive_5d_momentum")
-    if float(row.get("volume_ratio_20", 0.0) or 0.0) > 1.2:
+    if float(row.get("volume_ratio_20", 0.0) or 0.0) > volume_bar:
         factors.append("volume_confirmation")
-    if float(row.get("near_high_20", 0.0) or 0.0) > 0.92:
+    if float(row.get("near_high_20", 0.0) or 0.0) > near_high_bar:
         factors.append("near_20d_high")
     if float(row.get("limit_count_20", 0.0) or 0.0) >= 1:
         factors.append("recent_limit_strength")
@@ -395,11 +555,13 @@ def run_relay_research(
     candidate_pool_size: int | None = None,
     market_signal_frame: pd.DataFrame | None = None,
     include_market_signals: bool = False,
+    mining_rules: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    rules = normalize_mining_rules(mining_rules)
     if panel is None:
         panel, _codes = build_panel_from_cache(n_stocks=n_stocks, days=days, min_history=min(days, 60))
     out_path = Path(out_dir) if out_dir is not None else _OUT_BASE / datetime.now().strftime("%Y%m%d-%H%M%S")
-    features_raw = build_feature_frame(panel)
+    features_raw = build_feature_frame(panel, mining_rules=rules)
     labels = build_label_frame(panel, hold_days=hold_days)
     if market_signal_frame is None and include_market_signals:
         market_signal_frame = build_market_signal_frame(features_raw["trade_date"].unique())
@@ -411,6 +573,7 @@ def run_relay_research(
         top_k=top_k,
         hold_days=hold_days,
         candidate_pool_size=candidate_pool_size,
+        mining_rules=rules,
     )
     tier_counts: dict[str, int] = {}
     for candidate in candidates:
@@ -450,6 +613,8 @@ def run_relay_research(
             "include_market_signals": include_market_signals or market_signal_frame is not None,
         },
         "summary": summary,
+        "mining_rules": rules,
+        "condition_explain": condition_explain(rules),
         "windows": wf["windows"],
         "trades": wf["trades"],
         "latest_candidates": candidates,

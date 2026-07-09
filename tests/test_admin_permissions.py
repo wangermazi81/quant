@@ -258,7 +258,15 @@ def test_factor_mining_run_requires_strategy_permission_and_invokes_research(iso
     _login_session(client, ops_uid, "ops")
     resp = client.post(
         "/api/admin/factor-mining/run",
-        json={"n_stocks": 25, "days": 80, "train_days": 30, "test_days": 10, "hold_days": 2, "top_k": 4},
+        json={
+            "n_stocks": 25,
+            "days": 80,
+            "train_days": 30,
+            "test_days": 10,
+            "hold_days": 2,
+            "top_k": 4,
+            "mining_rules": {"filters": {"min_volume_ratio_20": 1.1}},
+        },
     )
     data = resp.get_json()
 
@@ -268,6 +276,7 @@ def test_factor_mining_run_requires_strategy_permission_and_invokes_research(iso
     assert calls
     assert calls[0]["n_stocks"] == 25
     assert calls[0]["include_market_signals"] is True
+    assert calls[0]["mining_rules"]["filters"]["min_volume_ratio_20"] == 1.1
     assert str(calls[0]["out_dir"]).startswith(str(tmp_path / "data" / "research" / "relay_factor"))
 
 

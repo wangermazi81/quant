@@ -319,6 +319,13 @@ def admin_factor_mining_latest():
     return jsonify(_factor_mining_payload(_latest_factor_mining_dir()))
 
 
+@bp.route("/api/admin/factor-mining/rules", methods=["GET"])
+@require_admin_perm("strategy_manage")
+def admin_factor_mining_rules():
+    rules = relay_factor_mining.normalize_mining_rules(None)
+    return jsonify({"ok": True, "mining_rules": rules, "condition_explain": relay_factor_mining.condition_explain(rules)})
+
+
 @bp.route("/api/admin/factor-mining/run", methods=["POST"])
 @require_admin_perm("strategy_manage")
 def admin_factor_mining_run():
@@ -330,6 +337,7 @@ def admin_factor_mining_run():
     hold_days = _bounded_int_value(body.get("hold_days"), 2, 1, 10)
     top_k = _bounded_int_value(body.get("top_k"), 10, 1, 50)
     candidate_pool_size = _bounded_int_value(body.get("candidate_pool_size"), 100, top_k, 300)
+    mining_rules = body.get("mining_rules") if isinstance(body.get("mining_rules"), dict) else None
 
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = _factor_mining_root() / run_id
@@ -344,6 +352,7 @@ def admin_factor_mining_run():
             top_k=top_k,
             candidate_pool_size=candidate_pool_size,
             include_market_signals=True,
+            mining_rules=mining_rules,
         )
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc), "run_id": run_id}), 500
