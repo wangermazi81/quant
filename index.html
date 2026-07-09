@@ -417,8 +417,24 @@ tr:hover td{background:var(--card)}
 .kl-src{font-size:11px;color:var(--t4);padding:2px 7px;background:var(--inp);border-radius:4px}
 .kl-close{background:none;border:none;color:var(--t3);cursor:pointer;font-size:20px;padding:0 4px;line-height:1}
 .kl-close:hover{color:var(--t1)}
-.kl-body{padding:10px 14px 6px;background:#0d1117}
+.kl-body{padding:10px 14px 6px;background:#0d1117;display:grid;grid-template-columns:minmax(0,1fr) 258px;gap:10px;align-items:stretch}
+.kl-chart-wrap{min-width:0}
 .kl-info{display:flex;gap:14px;padding:6px 14px 10px;font-size:11px;flex-wrap:wrap}
+.kl-book{border:1px solid var(--b1);background:#10161f;border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px;min-height:0}
+.kl-book-top{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:start;border-bottom:1px solid var(--b1);padding-bottom:8px}
+.kl-book-name{font-size:11px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kl-book-price{font-size:22px;font-weight:800;line-height:1;color:var(--t1)}
+.kl-book-meta{font-size:11px;color:var(--t4);text-align:right;white-space:nowrap}
+.kl-book-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;min-height:0}
+.kl-book-side{display:flex;flex-direction:column;gap:3px}
+.kl-book-side h4{margin:0 0 2px;font-size:11px;color:var(--t3);font-weight:700}
+.kl-book-row{display:grid;grid-template-columns:28px minmax(48px,1fr) minmax(54px,1fr);gap:4px;align-items:center;font-size:11px;font-family:Consolas,monospace;line-height:18px;border-radius:4px;padding:0 3px;background:rgba(255,255,255,.015)}
+.kl-book-row .lv{color:var(--t4);font-family:inherit}
+.kl-book-row .px{text-align:right;font-family:inherit}
+.kl-book-row .vol{text-align:right;color:var(--t3);font-family:inherit}
+.kl-book-row.ask .px{color:#ef4444}.kl-book-row.bid .px{color:#22c55e}
+.kl-book-empty{height:100%;display:flex;align-items:center;justify-content:center;color:var(--t4);font-size:12px;text-align:center;padding:18px}
+@media(max-width:820px){.kl-body{grid-template-columns:1fr}.kl-book{min-height:190px}.kl-hd{flex-wrap:wrap}.kl-title{flex-basis:100%}}
 
 /* 已入队徽标 */
 .btn-queued{background:#1a4731!important;color:var(--gl)!important;border:1px solid var(--green)!important;cursor:default!important}
@@ -5297,13 +5313,13 @@ async function api(path,method='GET',body=null){
 function closeKL(){ document.getElementById('klOverlay').classList.remove('show') }
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeKL() })
 
-const KL_STATE = { code:'', name:'', mode:'minute', minute:null, daily:null }
+const KL_STATE = { code:'', name:'', mode:'second', second:null, minute:null, daily:null, orderBook:null }
 
 function _setKLineTabs(mode){
+  document.getElementById('klTabSecond')?.classList.toggle('active', mode==='second')
   document.getElementById('klTabMinute')?.classList.toggle('active', mode==='minute')
   document.getElementById('klTabDaily')?.classList.toggle('active', mode==='daily')
 }
-
 async function switchKLineMode(mode){
   await _renderKLineMode(mode, false)
 }
@@ -5316,56 +5332,66 @@ async function _renderKLineMode(mode, allowFallback){
   const ctx = cvs.getContext('2d')
   ctx.clearRect(0,0,cvs.width,cvs.height)
   document.getElementById('klInfo').innerHTML = ''
-  document.getElementById('klSrc').textContent = mode==='minute' ? '分时加载中...' : '日K加载中...'
+  const loadingText = mode==='second' ? '秒级加载中...' : (mode==='minute' ? '分时加载中...' : '日K加载中...')
+  document.getElementById('klSrc').textContent = loadingText
 
-  const key = mode==='minute' ? 'minute' : 'daily'
-  let resp = KL_STATE[key]
+  const apiPath = mode==='second' ? '/kline/'+stateCode+'/seconds' : (mode==='minute' ? '/kline/'+stateCode+'/minute' : '/kline/'+stateCode)
+  let resp = KL_STATE[mode]
   if(!resp){
-    resp = await api(mode==='minute' ? '/kline/'+stateCode+'/minute' : '/kline/'+stateCode)
+    resp = await api(apiPath)
     if(KL_STATE.code!==stateCode) return
-    KL_STATE[key] = resp
+    KL_STATE[mode] = resp
   }
   if(KL_STATE.code!==stateCode || KL_STATE.mode!==mode) return
 
   if(!resp?.ok || !resp.data?.length){
+    if(mode==='second' && allowFallback) return _renderKLineMode('minute', true)
     if(mode==='minute' && allowFallback) return _renderKLineMode('daily', false)
     document.getElementById('klSrc').textContent=''
-    document.getElementById('klInfo').innerHTML = mode==='minute'
-      ? '<span style="color:var(--rl)">⚠ 暂无分时数据，请切换日K查看历史走势</span>'
-      : '<span style="color:var(--rl)">⚠ 暂无数据 — 请先在「策略中心 → 数据管理」下载该股历史数据</span>'
+    const label = mode==='second' ? '秒级 Tick' : (mode==='minute' ? '分时数据' : '历史数据')
+    document.getElementById('klInfo').innerHTML = '<span style="color:var(--rl)">暂无'+label+'</span>'
     return
   }
 
   const _klSrc = document.getElementById('klSrc')
+  if(mode==='second'){
+    _klSrc.textContent = resp.source==='tushare_ticks' ? 'Tushare 秒级' : '秒级成交'
+    drawSecondLine(cvs, resp.data)
+    return
+  }
   if(mode==='minute'){
     _klSrc.textContent = resp.source==='tushare_minute' ? 'Tushare 分时' : '分钟分时'
     drawMinuteLine(cvs, resp.data)
     return
   }
   if(resp.stale){
-    _klSrc.innerHTML = '<span style="color:var(--rl)" title="'+(resp.msg||'本地缓存可能过期').replace(/"/g,'')+'">⚠ 本地缓存·可能过期</span>'
+    _klSrc.innerHTML = '<span style="color:var(--rl)" title="'+(resp.msg||'本地缓存可能过期').replace(/"/g,'')+'">本地缓存·可能过期</span>'
   } else {
     _klSrc.textContent = resp.source==='tdx' ? 'TDX实时' : '本地数据'
   }
   drawKLine(cvs, resp.data)
 }
-
 async function showKLine(code, name){
   const ov = document.getElementById('klOverlay')
   document.getElementById('klTitle').textContent = `${code}  ${name}`
   document.getElementById('klSrc').textContent = '加载中...'
   document.getElementById('klInfo').innerHTML = ''
+  const book = document.getElementById('klBook')
+  if(book) book.innerHTML = '<div class="kl-book-empty">五档盘口加载中...</div>'
   const cvs = document.getElementById('klCanvas')
   const ctx  = cvs.getContext('2d')
   ctx.clearRect(0,0,cvs.width,cvs.height)
   KL_STATE.code = code
   KL_STATE.name = name
-  KL_STATE.mode = 'minute'
+  KL_STATE.mode = 'second'
+  KL_STATE.second = null
   KL_STATE.minute = null
   KL_STATE.daily = null
-  _setKLineTabs('minute')
+  KL_STATE.orderBook = null
+  _setKLineTabs('second')
   ov.classList.add('show')
-  await _renderKLineMode('minute', true)
+  _renderOrderBook(code)
+  await _renderKLineMode('second', true)
 }
 function _normDate(d){
   // 统一把各种日期格式转成 "YYYY-MM-DD" 字符串
@@ -5393,6 +5419,132 @@ function _fmtMinuteLabel(d){
   if(/^\d{2}:\d{2}/.test(raw)) return raw.slice(0,5)
   if(raw.length>=16) return raw.slice(11,16)
   return raw.slice(0,5)
+}
+
+
+function _fmtSecondLabel(d){
+  const raw = String(d.datetime || d.date || '')
+  if(/^\d{2}:\d{2}:\d{2}/.test(raw)) return raw.slice(0,8)
+  if(raw.length>=19) return raw.slice(11,19)
+  return raw.slice(0,8)
+}
+function _fmtVol(v){
+  const n=+(v||0)
+  if(!Number.isFinite(n)) return '--'
+  if(Math.abs(n)>=100000000) return (n/100000000).toFixed(2)+'?'
+  if(Math.abs(n)>=10000) return (n/10000).toFixed(1)+'?'
+  return Math.round(n).toString()
+}
+function _fmtPx(v){ const n=+v; return Number.isFinite(n)&&n>0 ? n.toFixed(2) : '--' }
+async function _renderOrderBook(code){
+  const el=document.getElementById('klBook')
+  if(!el) return
+  el.innerHTML='<div class="kl-book-empty">五档盘口加载中...</div>'
+  const stateCode=code
+  const resp=await api('/quote/'+code+'/order_book')
+  if(KL_STATE.code!==stateCode) return
+  KL_STATE.orderBook=resp
+  if(!resp?.ok || !resp.data){
+    el.innerHTML='<div class="kl-book-empty">暂无实时五档盘口</div>'
+    return
+  }
+  const d=resp.data
+  const ch=+(d.change_pct||0)
+  const up=ch>=0
+  const color=up?'#ef4444':'#22c55e'
+  const asks=[...(d.asks||[])].sort((a,b)=>(b.level||0)-(a.level||0))
+  const bids=[...(d.bids||[])].sort((a,b)=>(a.level||0)-(b.level||0))
+  const sideHtml=(rows,type)=>rows.map(r=>`<div class="kl-book-row ${type}"><span class="lv">${type==='ask'?'卖':'买'}${r.level}</span><span class="px">${_fmtPx(r.price)}</span><span class="vol">${_fmtVol(r.volume)}</span></div>`).join('')
+  el.innerHTML=`
+    <div class="kl-book-top">
+      <div><div class="kl-book-name">${d.name||KL_STATE.name||d.code||''}</div><div class="kl-book-price" style="color:${color}">${_fmtPx(d.price)}</div></div>
+      <div class="kl-book-meta"><div style="color:${color};font-weight:700">${ch>=0?'+':''}${ch.toFixed(2)}%</div><div>${String(d.trade_time||'').slice(11,19)}</div></div>
+    </div>
+    <div class="kl-book-grid">
+      <div class="kl-book-side"><h4>卖盘</h4>${sideHtml(asks,'ask')}</div>
+      <div class="kl-book-side"><h4>买盘</h4>${sideHtml(bids,'bid')}</div>
+    </div>`
+}
+function drawSecondLine(canvas, rawData){
+  const data = [...rawData]
+    .map(d=>({...d, price:+d.price, volume:+(d.volume||0), prev_price:+(d.prev_price||0)}))
+    .filter(d=>Number.isFinite(d.price) && d.price>0)
+    .sort((a,b)=>String(a.datetime||a.date).localeCompare(String(b.datetime||b.date)))
+  const n = data.length; if(!n) return
+
+  const rect = canvas.getBoundingClientRect()
+  const dpr = window.devicePixelRatio||1
+  canvas.width = rect.width*dpr
+  canvas.height = rect.height*dpr
+  const ctx = canvas.getContext('2d')
+  ctx.scale(dpr,dpr)
+  const RW=rect.width, RH=rect.height
+  const PAD={t:18,r:62,b:42,l:12}
+  const VOL_H=Math.floor(RH*.18)
+  const LH=RH-PAD.t-PAD.b-VOL_H-10
+  const CW=RW-PAD.l-PAD.r
+  const prices=data.map(d=>d.price)
+  const vols=data.map(d=>d.volume||0)
+  const firstRef=data.find(d=>Number.isFinite(d.prev_price)&&d.prev_price>0)?.prev_price || prices[0]
+  const maxP=Math.max(...prices, firstRef)*1.001
+  const minP=Math.min(...prices, firstRef)*0.999
+  const pRng=maxP-minP||1
+  const maxV=Math.max(...vols)||1
+  const x=i=>PAD.l + (n===1 ? CW/2 : CW*i/(n-1))
+  const py=p=>PAD.t + LH*(1-(p-minP)/pRng)
+  const vy=v=>PAD.t+LH+10+VOL_H*(1-v/maxV)
+
+  ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,RW,RH)
+  ctx.strokeStyle='#1e2530'; ctx.lineWidth=1
+  for(let j=0;j<=4;j++){
+    const y=PAD.t+LH/4*j
+    ctx.beginPath(); ctx.moveTo(PAD.l,y); ctx.lineTo(PAD.l+CW,y); ctx.stroke()
+    const price=maxP-(pRng/4)*j
+    ctx.fillStyle='#6e7681'; ctx.font='10px monospace'; ctx.textAlign='left'
+    ctx.fillText(price.toFixed(2), PAD.l+CW+5, y+4)
+  }
+  const refY=py(firstRef)
+  ctx.setLineDash([4,4]); ctx.strokeStyle='rgba(148,163,184,.55)'
+  ctx.beginPath(); ctx.moveTo(PAD.l,refY); ctx.lineTo(PAD.l+CW,refY); ctx.stroke(); ctx.setLineDash([])
+
+  const grad=ctx.createLinearGradient(0,PAD.t,0,PAD.t+LH)
+  grad.addColorStop(0,'rgba(20,184,166,.25)')
+  grad.addColorStop(1,'rgba(20,184,166,0)')
+  ctx.beginPath(); data.forEach((d,i)=>{ const xx=x(i), yy=py(d.price); i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy) })
+  ctx.lineTo(x(n-1), PAD.t+LH); ctx.lineTo(x(0), PAD.t+LH); ctx.closePath(); ctx.fillStyle=grad; ctx.fill()
+
+  ctx.strokeStyle='#14b8a6'; ctx.lineWidth=1.8; ctx.beginPath()
+  data.forEach((d,i)=>{ const xx=x(i), yy=py(d.price); i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy) })
+  ctx.stroke()
+  const last=data[n-1]
+  ctx.fillStyle='#14b8a6'; ctx.beginPath(); ctx.arc(x(n-1), py(last.price), 3, 0, Math.PI*2); ctx.fill()
+
+  const barW=Math.max(1, Math.floor(CW/Math.max(n,1))*.58)
+  vols.forEach((v,i)=>{
+    const up=i===0 ? data[i].price>=firstRef : data[i].price>=data[i-1].price
+    ctx.fillStyle=up?'rgba(239,68,68,.45)':'rgba(34,197,94,.45)'
+    const top=vy(v), bot=PAD.t+LH+10+VOL_H
+    ctx.fillRect(x(i)-barW/2, top, barW, bot-top)
+  })
+
+  ctx.strokeStyle='#21262d'; ctx.beginPath(); ctx.moveTo(PAD.l,PAD.t+LH+5); ctx.lineTo(PAD.l+CW,PAD.t+LH+5); ctx.stroke()
+  ctx.fillStyle='#484f58'; ctx.font='9px monospace'; ctx.textAlign='center'
+  const step=Math.max(1,Math.ceil(n/6))
+  data.forEach((d,i)=>{ if(i%step===0 || i===n-1) ctx.fillText(_fmtSecondLabel(d), x(i), RH-PAD.b+14) })
+
+  const change=last.price-firstRef
+  const pct=firstRef ? (change/firstRef*100) : 0
+  const color=change>=0?'#ef4444':'#22c55e'
+  const hi=Math.max(...prices), lo=Math.min(...prices)
+  document.getElementById('klInfo').innerHTML=`
+    <span>?? <b style="color:${color}">${last.price.toFixed(2)}</b></span>
+    <span style="color:${color};font-weight:700">${change>=0?'+':''}${change.toFixed(2)} / ${pct>=0?'+':''}${pct.toFixed(2)}%</span>
+    <span>?? <b>${firstRef.toFixed(2)}</b></span>
+    <span>? <b style="color:#ef4444">${hi.toFixed(2)}</b></span>
+    <span>? <b style="color:#22c55e">${lo.toFixed(2)}</b></span>
+    <span>?? <b>${_fmtVol(last.volume)}</b></span>
+    <span style="color:var(--t4);margin-left:8px">${String(last.datetime||last.date||'')}</span>
+  `
 }
 
 function drawMinuteLine(canvas, rawData){
@@ -6418,14 +6570,16 @@ window.api = async function(path, method='GET', body=null){
     <div class="kl-hd">
       <span class="kl-title" id="klTitle">股票走势</span>
       <div class="kl-tabs" role="tablist" aria-label="图表类型">
-        <button class="kl-tab active" id="klTabMinute" type="button" role="tab" onclick="switchKLineMode('minute')">分时</button>
+        <button class="kl-tab active" id="klTabSecond" type="button" role="tab" onclick="switchKLineMode('second')">秒级</button>
+        <button class="kl-tab" id="klTabMinute" type="button" role="tab" onclick="switchKLineMode('minute')">分时</button>
         <button class="kl-tab" id="klTabDaily" type="button" role="tab" onclick="switchKLineMode('daily')">日K</button>
       </div>
       <span class="kl-src" id="klSrc"></span>
       <button class="kl-close" onclick="closeKL()">✕</button>
     </div>
     <div class="kl-body">
-      <canvas id="klCanvas" style="width:100%;height:380px;display:block"></canvas>
+      <div class="kl-chart-wrap"><canvas id="klCanvas" style="width:100%;height:380px;display:block"></canvas></div>
+      <div class="kl-book" id="klBook"><div class="kl-book-empty">暂无实时五档盘口</div></div>
     </div>
     <div class="kl-info" id="klInfo"></div>
   </div>

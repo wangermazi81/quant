@@ -161,7 +161,9 @@ def test_fetch_realtime_quotes_uses_replay_rt_tick(monkeypatch):
 
     assert calls[0]["url"] == "https://ai-tool.indevs.in/tushare/pro/rt_tick"
     assert calls[0]["params"]["ts_code"] == "000001.SZ"
-    assert rows == [{
+    assert len(rows) == 1
+    row = rows[0]
+    assert row | {
         "code": "000001",
         "ts_code": "000001.SZ",
         "name": "Ping An",
@@ -180,8 +182,112 @@ def test_fetch_realtime_quotes_uses_replay_rt_tick(monkeypatch):
         "ask1_vol": 6800.0,
         "source": "tushare_rt_tick",
         "level": "L1-5",
-    }]
+    } == row
+    assert row["bid2"] == 0.0
+    assert row["ask5_vol"] == 0.0
 
+
+
+def test_fetch_tick_series_uses_replay_a_share_ticks(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "api_name": "a_share_ticks",
+                "code": 0,
+                "data": [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260709",
+                        "time": "2026-07-09 09:30:02",
+                        "price": 10.51,
+                        "vol": 1200.0,
+                        "amount": 12612.0,
+                        "prev_price": 10.50,
+                        "kind": "U",
+                    },
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260709",
+                        "time": "2026-07-09 09:30:01",
+                        "price": 10.50,
+                        "vol": 800.0,
+                        "amount": 8400.0,
+                        "prev_price": 10.49,
+                        "kind": "D",
+                    },
+                ],
+            }
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append({"url": url, "params": params, "headers": headers, "timeout": timeout})
+        return FakeResponse()
+
+    monkeypatch.setattr(tp.requests, "get", fake_get)
+
+    df = tp.fetch_tick_series("000001", trade_date="20260709", limit=2, token="api-key", mode="replay")
+
+    assert calls[0]["url"] == "https://ai-tool.indevs.in/tushare/pro/a_share_ticks"
+    assert calls[0]["params"] == {"ts_code": "000001.SZ", "trade_date": "20260709", "limit": 2}
+    assert df.to_dict("records") == [
+        {
+            "datetime": pd.Timestamp("2026-07-09 09:30:01"),
+            "price": 10.50,
+            "volume": 800.0,
+            "amount": 8400.0,
+            "prev_price": 10.49,
+            "kind": "D",
+        },
+        {
+            "datetime": pd.Timestamp("2026-07-09 09:30:02"),
+            "price": 10.51,
+            "volume": 1200.0,
+            "amount": 12612.0,
+            "prev_price": 10.50,
+            "kind": "U",
+        },
+    ]
+
+
+def test_fetch_order_book_normalizes_five_levels(monkeypatch):
+    monkeypatch.setattr(tp, "fetch_realtime_quotes", lambda codes, token=None, mode=None: [{
+        "code": "000001",
+        "ts_code": "000001.SZ",
+        "name": "Ping An",
+        "trade_time": "2026-07-09 10:01:02",
+        "price": 10.49,
+        "last_close": 10.60,
+        "open": 10.55,
+        "high": 10.70,
+        "low": 10.40,
+        "amount": 1294500.0,
+        "change_pct": -1.0377,
+        "bid1": 10.49,
+        "bid1_vol": 9100.0,
+        "ask1": 10.50,
+        "ask1_vol": 6800.0,
+        "bid2": 10.48,
+        "bid2_vol": 4300.0,
+        "ask2": 10.51,
+        "ask2_vol": 3900.0,
+    }])
+
+    book = tp.fetch_order_book("000001", token="api-key", mode="replay")
+
+    assert book["code"] == "000001"
+    assert book["price"] == 10.49
+    assert book["bids"][:2] == [
+        {"level": 1, "price": 10.49, "volume": 9100.0},
+        {"level": 2, "price": 10.48, "volume": 4300.0},
+    ]
+    assert book["asks"][:2] == [
+        {"level": 1, "price": 10.50, "volume": 6800.0},
+        {"level": 2, "price": 10.51, "volume": 3900.0},
+    ]
 
 def test_fetch_minute_kline_uses_replay_rt_min(monkeypatch):
     calls = []

@@ -186,6 +186,47 @@ def get_minute_kline(code: str, date: str) -> dict:
     return result
 
 
+def get_second_ticks(code: str, date: str | None = None) -> dict:
+    """Fetch second-level tick series from selected Tushare replay datasource."""
+    cfg = _tushare_cfg()
+    if cfg:
+        try:
+            df = tushare_provider.fetch_tick_series(
+                code,
+                trade_date=date,
+                limit=240,
+                token=cfg.get("tushare_token"),
+                mode=cfg.get("tushare_mode"),
+            )
+            if df is not None and not df.empty:
+                out = df.copy()
+                out["datetime"] = out["datetime"].apply(lambda v: v.strftime("%Y-%m-%d %H:%M:%S") if hasattr(v, "strftime") else str(v))
+                result = {}
+                for col in ("datetime", "price", "volume", "amount", "prev_price", "kind"):
+                    result[col] = out[col].tolist() if col in out.columns else []
+                return result
+        except Exception as exc:
+            logger.warning(f"Tushare second ticks failed {code} {date}: {exc}")
+    return {"datetime": [], "price": [], "volume": [], "amount": [], "prev_price": [], "kind": []}
+
+
+def get_order_book(code: str) -> dict:
+    """Fetch current five-level bid/ask book from selected Tushare realtime snapshot."""
+    cfg = _tushare_cfg()
+    if cfg:
+        try:
+            book = tushare_provider.fetch_order_book(
+                code,
+                token=cfg.get("tushare_token"),
+                mode=cfg.get("tushare_mode"),
+            )
+            if book:
+                return book
+        except Exception as exc:
+            logger.warning(f"Tushare order book failed {code}: {exc}")
+    return {}
+
+
 def is_trading_time() -> bool:
     """判断是否在 A 股交易时间"""
     now = datetime.now()

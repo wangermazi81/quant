@@ -136,6 +136,50 @@ def api_kline(code):
 
     return jsonify({"ok": False, "data": [], "msg": "暂无数据，请先在「数据管理」下载"})
 
+
+@bp.route("/api/kline/<code>/seconds")
+def api_second_kline(code):
+    """Second-level tick data for the stock chart modal."""
+    try:
+        date_text = (request.args.get("date") or datetime.now().strftime("%Y%m%d")).strip()
+        raw = md.get_second_ticks(code, date_text)
+        times = raw.get("datetime") or []
+        if not times:
+            return jsonify({"ok": False, "code": code, "data": [], "source": "tushare_ticks", "msg": "no second data"})
+        data = []
+        fallback = [None] * len(times)
+        zeroes = [0] * len(times)
+        blanks = [""] * len(times)
+        for idx, dt in enumerate(times):
+            dt_text = str(dt)
+            data.append({
+                "date": dt_text[11:19] if len(dt_text) >= 19 else dt_text,
+                "datetime": dt_text,
+                "price": (raw.get("price") or fallback)[idx],
+                "volume": (raw.get("volume") or zeroes)[idx],
+                "amount": (raw.get("amount") or zeroes)[idx],
+                "prev_price": (raw.get("prev_price") or fallback)[idx],
+                "kind": (raw.get("kind") or blanks)[idx],
+            })
+        return jsonify({"ok": True, "code": code, "source": "tushare_ticks", "freq": "tick", "data": data})
+    except Exception as exc:
+        logger.warning(f"second kline api failed {code}: {exc}")
+        return jsonify({"ok": False, "code": code, "data": [], "error": str(exc)})
+
+
+@bp.route("/api/quote/<code>/order_book")
+def api_order_book(code):
+    """Realtime five-level bid/ask book for the stock chart modal."""
+    try:
+        book = md.get_order_book(code)
+        if not book:
+            return jsonify({"ok": False, "code": code, "data": {}, "msg": "no order book"})
+        return jsonify({"ok": True, "code": code, "source": book.get("source", "realtime"), "data": book})
+    except Exception as exc:
+        logger.warning(f"order book api failed {code}: {exc}")
+        return jsonify({"ok": False, "code": code, "data": {}, "error": str(exc)})
+
+
 @bp.route("/api/kline/<code>/minute")
 def api_minute_kline(code):
     """Minute K-line data for the stock chart modal."""

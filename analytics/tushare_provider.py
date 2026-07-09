@@ -160,6 +160,7 @@ def _normalize_minute_frame(df: pd.DataFrame | None) -> pd.DataFrame:
     return data[columns]
 
 
+
 def _normalize_replay_quote(row: dict) -> dict:
     ts_code = str(row.get("ts_code") or row.get("code") or "")
     price = _num(row.get("price", row.get("close", row.get("close_price"))))
@@ -167,7 +168,7 @@ def _normalize_replay_quote(row: dict) -> dict:
     change_pct = _num(row.get("change_pct"))
     if not change_pct and last_close:
         change_pct = round((price - last_close) / last_close * 100, 4)
-    return {
+    data = {
         "code": _plain_code(ts_code),
         "ts_code": ts_code or _ts_code(str(row.get("code") or "")),
         "name": str(row.get("name") or ""),
@@ -180,13 +181,48 @@ def _normalize_replay_quote(row: dict) -> dict:
         "vol": _num(row.get("volume", row.get("vol"))),
         "amount": _num(row.get("amount")),
         "change_pct": change_pct,
-        "bid1": _num(row.get("bid_price1")),
-        "bid1_vol": _num(row.get("bid_volume1")),
-        "ask1": _num(row.get("ask_price1")),
-        "ask1_vol": _num(row.get("ask_volume1")),
         "source": "tushare_rt_tick",
         "level": "L1-5",
     }
+    for level in range(1, 6):
+        data[f"bid{level}"] = _num(row.get(f"bid_price{level}"))
+        data[f"bid{level}_vol"] = _num(row.get(f"bid_volume{level}"))
+        data[f"ask{level}"] = _num(row.get(f"ask_price{level}"))
+        data[f"ask{level}_vol"] = _num(row.get(f"ask_volume{level}"))
+    return data
+
+
+def _normalize_tick_frame(df: pd.DataFrame | None) -> pd.DataFrame:
+    columns = ["datetime", "price", "volume", "amount", "prev_price", "kind"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+    rename = {"time": "datetime", "vol": "volume"}
+    data = df.rename(columns={k: v for k, v in rename.items() if k in df.columns}).copy()
+    if "datetime" not in data.columns or "price" not in data.columns:
+        return pd.DataFrame(columns=columns)
+    data["datetime"] = pd.to_datetime(data["datetime"], errors="coerce")
+    for col in ("price", "volume", "amount", "prev_price"):
+        if col in data.columns:
+            data[col] = pd.to_numeric(data[col], errors="coerce")
+        else:
+            data[col] = 0.0
+    if "kind" not in data.columns:
+        data["kind"] = ""
+    data = data.dropna(subset=["datetime", "price"]).sort_values("datetime").reset_index(drop=True)
+    return data[columns]
+
+
+def _five_level_side(row: dict, side: str) -> list[dict]:
+    prefix = "bid" if side == "bid" else "ask"
+    return [
+        {
+            "level": level,
+            "price": _num(row.get(f"{prefix}{level}")),
+            "volume": _num(row.get(f"{prefix}{level}_vol")),
+        }
+        for level in range(1, 6)
+    ]
+
 
 def _apply_qfq(daily: pd.DataFrame, factors: pd.DataFrame | None) -> pd.DataFrame:
     if factors is None or factors.empty or "adj_factor" not in factors.columns:
@@ -284,6 +320,55 @@ def fetch_realtime_quotes(
         return []
     rows = _replay_get("rt_tick", token, {"ts_code": ts_codes}, timeout=15)
     return [_normalize_replay_quote(row) for row in rows]
+
+
+
+def fetch_tick_series(
+    code: str,
+    trade_date: str | None = None,
+    limit: int | None = 240,
+    token: str | None = None,
+    mode: str | None = None,
+) -> pd.DataFrame:
+    resolved_mode = _mode(mode)
+    token = token or datasource_config.resolve_tushare_token(mode=resolved_mode)
+    if not token or resolved_mode != "replay":
+        return _normalize_tick_frame(None)
+    params: dict[str, Any] = {"ts_code": _ts_code(code)}
+    if trade_date:
+        params["trade_date"] = _date_text(trade_date)
+    if limit:
+        params["limit"] = int(limit)
+    rows = _replay_get("a_share_ticks", token, params, timeout=25)
+    return _normalize_tick_frame(pd.DataFrame(rows))
+
+
+def fetch_order_book(
+    code: str,
+    token: str | None = None,
+    mode: str | None = None,
+) -> dict:
+    rows = fetch_realtime_quotes([code], token=token, mode=mode)
+    if not rows:
+        return {}
+    row = rows[0]
+    return {
+        "code": row.get("code", _plain_code(str(row.get("ts_code") or code))),
+        "ts_code": row.get("ts_code") or _ts_code(code),
+        "name": row.get("name", ""),
+        "trade_time": row.get("trade_time", ""),
+        "price": _num(row.get("price")),
+        "last_close": _num(row.get("last_close")),
+        "open": _num(row.get("open")),
+        "high": _num(row.get("high")),
+        "low": _num(row.get("low")),
+        "amount": _num(row.get("amount")),
+        "change_pct": _num(row.get("change_pct")),
+        "bids": _five_level_side(row, "bid"),
+        "asks": _five_level_side(row, "ask"),
+        "source": row.get("source", "tushare_rt_tick"),
+        "level": row.get("level", "L1-5"),
+    }
 
 
 def fetch_minute_kline(
