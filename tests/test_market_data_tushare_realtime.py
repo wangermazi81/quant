@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -79,3 +79,72 @@ def test_minute_kline_uses_tushare_when_selected(monkeypatch, tmp_path):
         "amount": [10450.0],
         "is_complete": [True],
     }
+
+
+def test_second_ticks_reuse_short_memory_cache(monkeypatch):
+    monkeypatch.setattr(md.datasource_config, "get_internal_config", lambda: {
+        "provider": "tushare",
+        "tushare_enabled": True,
+        "tushare_mode": "replay",
+        "tushare_token": "tok",
+    })
+    if hasattr(md, "clear_intraday_kline_cache"):
+        md.clear_intraday_kline_cache()
+    calls = []
+    frame = pd.DataFrame({
+        "datetime": pd.to_datetime(["2026-07-10 09:30:01"]),
+        "price": [10.5],
+        "volume": [800.0],
+        "amount": [8400.0],
+        "prev_price": [10.49],
+        "kind": ["U"],
+    })
+
+    def fake_fetch(code, trade_date=None, limit=None, token=None, mode=None):
+        calls.append((code, trade_date, limit, token, mode))
+        return frame
+
+    monkeypatch.setattr(md.tushare_provider, "fetch_tick_series", fake_fetch)
+
+    first = md.get_second_ticks("000001.SZ", "20260710")
+    second = md.get_second_ticks("SZ000001", "20260710")
+
+    assert first == second
+    assert first["price"] == [10.5]
+    assert len(calls) == 1
+
+
+def test_minute_kline_reuse_short_memory_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr(md, "MINUTE_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(md.datasource_config, "get_internal_config", lambda: {
+        "provider": "tushare",
+        "tushare_enabled": True,
+        "tushare_mode": "replay",
+        "tushare_token": "tok",
+    })
+    if hasattr(md, "clear_intraday_kline_cache"):
+        md.clear_intraday_kline_cache()
+    calls = []
+    frame = pd.DataFrame({
+        "datetime": pd.to_datetime(["2026-07-10 10:01:00"]),
+        "open": [10.4],
+        "high": [10.5],
+        "low": [10.3],
+        "close": [10.45],
+        "volume": [1000.0],
+        "amount": [10450.0],
+        "is_complete": [True],
+    })
+
+    def fake_fetch(code, freq="1MIN", limit=None, token=None, mode=None):
+        calls.append((code, freq, limit, token, mode))
+        return frame
+
+    monkeypatch.setattr(md.tushare_provider, "fetch_minute_kline", fake_fetch)
+
+    first = md.get_minute_kline("600000.SH", "20260710")
+    second = md.get_minute_kline("SH600000", "20260710")
+
+    assert first == second
+    assert first["close"] == [10.45]
+    assert len(calls) == 1

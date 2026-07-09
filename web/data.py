@@ -1,4 +1,4 @@
-﻿"""数据管理 + K 线 API 蓝图。"""
+"""数据管理 + K 线 API 蓝图。"""
 import threading
 import uuid
 import logging
@@ -28,6 +28,20 @@ def _most_recent_trading_day() -> str:
     elif wd == 6:             # 周日 → 周五
         d -= timedelta(days=2)
     return d.strftime("%Y-%m-%d")
+
+
+def _request_trade_date(code: str) -> str:
+    explicit = (request.args.get("date") or "").strip().replace("-", "")[:8]
+    if explicit:
+        return explicit
+    try:
+        book = md.get_order_book(code)
+        trade_time = str(book.get("trade_time") or "")
+        if len(trade_time) >= 10:
+            return trade_time[:10].replace("-", "")
+    except Exception as exc:
+        logger.debug(f"latest trade date lookup failed {code}: {exc}")
+    return datetime.now().strftime("%Y%m%d")
 
 
 @bp.route("/api/data/stocks")
@@ -141,7 +155,7 @@ def api_kline(code):
 def api_second_kline(code):
     """Second-level tick data for the stock chart modal."""
     try:
-        date_text = (request.args.get("date") or datetime.now().strftime("%Y%m%d")).strip()
+        date_text = _request_trade_date(code)
         raw = md.get_second_ticks(code, date_text)
         times = raw.get("datetime") or []
         if not times:
@@ -184,7 +198,7 @@ def api_order_book(code):
 def api_minute_kline(code):
     """Minute K-line data for the stock chart modal."""
     try:
-        date_text = (request.args.get("date") or datetime.now().strftime("%Y%m%d")).strip()
+        date_text = _request_trade_date(code)
         raw = md.get_minute_kline(code, date_text)
         times = raw.get("datetime") or []
         if not times:

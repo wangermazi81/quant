@@ -1,4 +1,5 @@
-﻿import os
+import os
+import time
 import akshare as ak
 import pandas as pd
 import numpy as np
@@ -17,6 +18,40 @@ except Exception:  # pragma: no cover - optional selectable datasource
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DAILY_CACHE_DIR  = os.path.join(BASE_DIR, "data", "daily")
 MINUTE_CACHE_DIR = os.path.join(BASE_DIR, "data", "minute")
+INTRADAY_CACHE_TTL_SECONDS = int(os.getenv("KLINE_INTRADAY_CACHE_TTL", "45"))
+ORDER_BOOK_CACHE_TTL_SECONDS = int(os.getenv("KLINE_ORDER_BOOK_CACHE_TTL", "5"))
+_INTRADAY_CACHE: dict[tuple, tuple[float, dict]] = {}
+
+
+def _plain_stock_code(code: str) -> str:
+    raw = str(code or "").strip().upper()
+    if "." in raw:
+        raw = raw.split(".", 1)[0]
+    if raw[:2] in {"SZ", "SH", "BJ"}:
+        raw = raw[2:]
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return (digits[-6:] if digits else raw[-6:]).zfill(6)
+
+
+def _cache_get(key: tuple, ttl: int) -> dict | None:
+    item = _INTRADAY_CACHE.get(key)
+    if not item:
+        return None
+    ts, value = item
+    if time.monotonic() - ts > ttl:
+        _INTRADAY_CACHE.pop(key, None)
+        return None
+    return {k: (v.copy() if isinstance(v, list) else v) for k, v in value.items()}
+
+
+def _cache_set(key: tuple, value: dict) -> dict:
+    snap = {k: (v.copy() if isinstance(v, list) else v) for k, v in value.items()}
+    _INTRADAY_CACHE[key] = (time.monotonic(), snap)
+    return {k: (v.copy() if isinstance(v, list) else v) for k, v in snap.items()}
+
+
+def clear_intraday_kline_cache() -> None:
+    _INTRADAY_CACHE.clear()
 
 
 def _tushare_cfg() -> dict | None:
@@ -102,6 +137,7 @@ def get_kline(code: str, period: int = 60) -> pd.DataFrame:
 
 
 def _fetch_kline_remote(code: str, period: int = 60) -> pd.DataFrame:
+    code = _plain_stock_code(code)
     try:
         df = ak.stock_zh_a_hist(
             symbol=code, period="daily",
@@ -128,6 +164,12 @@ def _fetch_kline_remote(code: str, period: int = 60) -> pd.DataFrame:
 
 def get_minute_kline(code: str, date: str) -> dict:
     """Fetch 1-minute bars, preferring selected Tushare replay when enabled."""
+    code = _plain_stock_code(code)
+    cache_key = ("minute", code, str(date or ""))
+    cached = _cache_get(cache_key, INTRADAY_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return cached
+
     cfg = _tushare_cfg()
     if cfg:
         try:
@@ -144,7 +186,7 @@ def get_minute_kline(code: str, date: str) -> dict:
                 result = {}
                 for col in ("datetime", "open", "high", "low", "close", "volume", "amount", "is_complete"):
                     result[col] = out[col].tolist() if col in out.columns else []
-                return result
+                return _cache_set(cache_key, result)
         except Exception as exc:
             logger.warning(f"Tushare minute kline failed {code} {date}: {exc}")
 
@@ -183,11 +225,17 @@ def get_minute_kline(code: str, date: str) -> dict:
     result = {}
     for col in ("datetime", "open", "high", "low", "close", "volume"):
         result[col] = df[col].tolist() if col in df.columns else []
-    return result
+    return _cache_set(cache_key, result)
 
 
 def get_second_ticks(code: str, date: str | None = None) -> dict:
     """Fetch second-level tick series from selected Tushare replay datasource."""
+    code = _plain_stock_code(code)
+    cache_key = ("second", code, str(date or ""))
+    cached = _cache_get(cache_key, INTRADAY_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return cached
+
     cfg = _tushare_cfg()
     if cfg:
         try:
@@ -204,14 +252,20 @@ def get_second_ticks(code: str, date: str | None = None) -> dict:
                 result = {}
                 for col in ("datetime", "price", "volume", "amount", "prev_price", "kind"):
                     result[col] = out[col].tolist() if col in out.columns else []
-                return result
+                return _cache_set(cache_key, result)
         except Exception as exc:
             logger.warning(f"Tushare second ticks failed {code} {date}: {exc}")
-    return {"datetime": [], "price": [], "volume": [], "amount": [], "prev_price": [], "kind": []}
+    return _cache_set(cache_key, {"datetime": [], "price": [], "volume": [], "amount": [], "prev_price": [], "kind": []})
 
 
 def get_order_book(code: str) -> dict:
     """Fetch current five-level bid/ask book from selected Tushare realtime snapshot."""
+    code = _plain_stock_code(code)
+    cache_key = ("order_book", code)
+    cached = _cache_get(cache_key, ORDER_BOOK_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return cached
+
     cfg = _tushare_cfg()
     if cfg:
         try:
@@ -221,10 +275,10 @@ def get_order_book(code: str) -> dict:
                 mode=cfg.get("tushare_mode"),
             )
             if book:
-                return book
+                return _cache_set(cache_key, book)
         except Exception as exc:
             logger.warning(f"Tushare order book failed {code}: {exc}")
-    return {}
+    return _cache_set(cache_key, {})
 
 
 def is_trading_time() -> bool:

@@ -112,7 +112,7 @@ def test_test_connection_uses_replay_mode(monkeypatch):
     calls = []
 
     def fake_get(url, params=None, headers=None, timeout=None):
-        calls.append({"url": url, "params": params, "headers": headers})
+        calls.append({"url": url, "params": params, "headers": headers, "timeout": timeout})
         return FakeResponse()
 
     monkeypatch.setattr(tp.requests, "get", fake_get)
@@ -152,7 +152,7 @@ def test_fetch_realtime_quotes_uses_replay_rt_tick(monkeypatch):
             }
 
     def fake_get(url, params=None, headers=None, timeout=None):
-        calls.append({"url": url, "params": params, "headers": headers})
+        calls.append({"url": url, "params": params, "headers": headers, "timeout": timeout})
         return FakeResponse()
 
     monkeypatch.setattr(tp.requests, "get", fake_get)
@@ -160,6 +160,7 @@ def test_fetch_realtime_quotes_uses_replay_rt_tick(monkeypatch):
     rows = tp.fetch_realtime_quotes(["000001"], token="api-key", mode="replay")
 
     assert calls[0]["url"] == "https://ai-tool.indevs.in/tushare/pro/rt_tick"
+    assert calls[0]["timeout"] <= 8
     assert calls[0]["params"]["ts_code"] == "000001.SZ"
     assert len(rows) == 1
     row = rows[0]
@@ -232,6 +233,7 @@ def test_fetch_tick_series_uses_replay_a_share_ticks(monkeypatch):
     df = tp.fetch_tick_series("000001", trade_date="20260709", limit=2, token="api-key", mode="replay")
 
     assert calls[0]["url"] == "https://ai-tool.indevs.in/tushare/pro/a_share_ticks"
+    assert calls[0]["timeout"] <= 8
     assert calls[0]["params"] == {"ts_code": "000001.SZ", "trade_date": "20260709", "limit": 2}
     assert df.to_dict("records") == [
         {
@@ -345,7 +347,7 @@ def test_fetch_minute_kline_uses_replay_rt_min(monkeypatch):
             }
 
     def fake_get(url, params=None, headers=None, timeout=None):
-        calls.append({"url": url, "params": params, "headers": headers})
+        calls.append({"url": url, "params": params, "headers": headers, "timeout": timeout})
         return FakeResponse()
 
     monkeypatch.setattr(tp.requests, "get", fake_get)
@@ -353,6 +355,7 @@ def test_fetch_minute_kline_uses_replay_rt_min(monkeypatch):
     df = tp.fetch_minute_kline("000001", freq="1MIN", token="api-key", mode="replay")
 
     assert calls[0]["url"] == "https://ai-tool.indevs.in/tushare/pro/rt_min"
+    assert calls[0]["timeout"] <= 8
     assert calls[0]["params"]["ts_code"] == "000001.SZ"
     assert calls[0]["params"]["freq"] == "1MIN"
     assert df.to_dict("records") == [{

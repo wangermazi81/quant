@@ -25,6 +25,7 @@ DEFAULT_REPLAY_BASE_URLS = (
 REPLAY_BASE_URL_ENV = "TUSHARE_REPLAY_BASE_URL"
 VALID_MODES = {"replay", "sdk"}
 VALID_MINUTE_FREQS = {"1MIN", "5MIN", "15MIN", "30MIN", "60MIN"}
+REALTIME_REPLAY_TIMEOUT = 8
 
 
 def _ts_code(code: str) -> str:
@@ -331,7 +332,7 @@ def fetch_realtime_quotes(
     ts_codes = ",".join(_ts_code(code) for code in codes if str(code or "").strip())
     if not ts_codes:
         return []
-    rows = _replay_get("rt_tick", token, {"ts_code": ts_codes}, timeout=15)
+    rows = _replay_get("rt_tick", token, {"ts_code": ts_codes}, timeout=REALTIME_REPLAY_TIMEOUT)
     return [_normalize_replay_quote(row) for row in rows]
 
 
@@ -352,7 +353,7 @@ def fetch_tick_series(
         params["trade_date"] = _date_text(trade_date)
     if limit:
         params["limit"] = int(limit)
-    rows = _replay_get("a_share_ticks", token, params, timeout=25)
+    rows = _replay_get("a_share_ticks", token, params, timeout=REALTIME_REPLAY_TIMEOUT)
     return _normalize_tick_frame(pd.DataFrame(rows))
 
 
@@ -404,7 +405,7 @@ def fetch_minute_kline(
         if limit:
             params["limit"] = int(limit)
         api_name = "a_share_mins" if limit and int(limit) > 1 else "rt_min"
-        rows = _replay_get(api_name, token, params, timeout=20)
+        rows = _replay_get(api_name, token, params, timeout=REALTIME_REPLAY_TIMEOUT)
         return _normalize_minute_frame(pd.DataFrame(rows))
 
     ts = _load_tushare()

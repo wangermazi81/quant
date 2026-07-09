@@ -68,3 +68,55 @@ def test_api_order_book_returns_five_levels(monkeypatch):
     assert payload["ok"] is True
     assert payload["data"]["bids"][0]["price"] == 10.49
     assert payload["data"]["asks"][0]["volume"] == 6800.0
+
+
+def test_api_second_kline_defaults_to_quote_trade_date(monkeypatch):
+    app = Flask(__name__)
+    app.register_blueprint(data_web.bp)
+    calls = []
+
+    monkeypatch.setattr(data_web.md, "get_order_book", lambda code: {"trade_time": "2026-07-09 15:00:00"})
+
+    def fake_ticks(code, date):
+        calls.append((code, date))
+        return {
+            "datetime": ["2026-07-09 09:30:01"],
+            "price": [10.50],
+            "volume": [800.0],
+            "amount": [8400.0],
+            "prev_price": [10.49],
+            "kind": ["U"],
+        }
+
+    monkeypatch.setattr(data_web.md, "get_second_ticks", fake_ticks)
+
+    resp = app.test_client().get("/api/kline/000001/seconds")
+
+    assert resp.status_code == 200
+    assert calls == [("000001", "20260709")]
+
+
+def test_api_minute_kline_defaults_to_quote_trade_date(monkeypatch):
+    app = Flask(__name__)
+    app.register_blueprint(data_web.bp)
+    calls = []
+
+    monkeypatch.setattr(data_web.md, "get_order_book", lambda code: {"trade_time": "2026-07-09 15:00:00"})
+
+    def fake_minute(code, date):
+        calls.append((code, date))
+        return {
+            "datetime": ["2026-07-09 10:01:00"],
+            "open": [10.4],
+            "high": [10.5],
+            "low": [10.3],
+            "close": [10.45],
+            "volume": [1000.0],
+        }
+
+    monkeypatch.setattr(data_web.md, "get_minute_kline", fake_minute)
+
+    resp = app.test_client().get("/api/kline/000001/minute")
+
+    assert resp.status_code == 200
+    assert calls == [("000001", "20260709")]

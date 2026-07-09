@@ -5313,7 +5313,53 @@ async function api(path,method='GET',body=null){
 function closeKL(){ document.getElementById('klOverlay').classList.remove('show') }
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeKL() })
 
-const KL_STATE = { code:'', name:'', mode:'second', second:null, minute:null, daily:null, orderBook:null }
+const KL_STATE = { code:'', rawCode:'', name:'', mode:'second', second:null, minute:null, daily:null, orderBook:null }
+const KL_CLIENT_CACHE = new Map()
+const KL_ORDER_CACHE = new Map()
+
+function _plainKLineCode(code){
+  let raw = String(code||'').trim().toUpperCase()
+  if(raw.includes('.')) raw = raw.split('.')[0]
+  if(['SZ','SH','BJ'].includes(raw.slice(0,2))) raw = raw.slice(2)
+  const digits = raw.replace(/\D/g,'')
+  return (digits ? digits.slice(-6) : raw.slice(-6)).padStart(6,'0')
+}
+function _klineApiPath(mode, code){
+  const c = encodeURIComponent(_plainKLineCode(code))
+  return mode==='second' ? '/kline/'+c+'/seconds' : (mode==='minute' ? '/kline/'+c+'/minute' : '/kline/'+c)
+}
+function _klineCacheTtl(mode){ return mode==='daily' ? 5*60*1000 : 45*1000 }
+function _getKLineEntry(mode, code){
+  const key = mode+':'+_plainKLineCode(code)
+  const hit = KL_CLIENT_CACHE.get(key)
+  if(hit?.resp && Date.now() - hit.ts < _klineCacheTtl(mode)) return hit
+  if(hit?.promise) return hit
+  return null
+}
+function _fetchKLineMode(mode, code){
+  const plain = _plainKLineCode(code)
+  const key = mode+':'+plain
+  const hit = _getKLineEntry(mode, plain)
+  if(hit?.resp) return Promise.resolve(hit.resp)
+  if(hit?.promise) return hit.promise
+  const promise = api(_klineApiPath(mode, plain)).then(resp=>{
+    KL_CLIENT_CACHE.set(key, {resp, ts:Date.now()})
+    return resp
+  }).catch(e=>{
+    KL_CLIENT_CACHE.delete(key)
+    throw e
+  })
+  KL_CLIENT_CACHE.set(key, {promise, ts:Date.now()})
+  return promise
+}
+function _prefetchKLineBundle(code){
+  const plain = _plainKLineCode(code)
+  ;['daily','second','minute'].forEach(mode=>_fetchKLineMode(mode, plain).catch(()=>null))
+}
+function _withTimeout(promise, ms){
+  if(!ms) return promise
+  return Promise.race([promise, new Promise(resolve=>setTimeout(()=>resolve(null), ms))])
+}
 
 function _setKLineTabs(mode){
   document.getElementById('klTabSecond')?.classList.toggle('active', mode==='second')
@@ -5335,12 +5381,12 @@ async function _renderKLineMode(mode, allowFallback){
   const loadingText = mode==='second' ? '秒级加载中...' : (mode==='minute' ? '分时加载中...' : '日K加载中...')
   document.getElementById('klSrc').textContent = loadingText
 
-  const apiPath = mode==='second' ? '/kline/'+stateCode+'/seconds' : (mode==='minute' ? '/kline/'+stateCode+'/minute' : '/kline/'+stateCode)
   let resp = KL_STATE[mode]
   if(!resp){
-    resp = await api(apiPath)
+    const waitMs = allowFallback && mode!=='daily' ? 2200 : 0
+    resp = await _withTimeout(_fetchKLineMode(mode, stateCode), waitMs)
     if(KL_STATE.code!==stateCode) return
-    KL_STATE[mode] = resp
+    if(resp) KL_STATE[mode] = resp
   }
   if(KL_STATE.code!==stateCode || KL_STATE.mode!==mode) return
 
@@ -5373,7 +5419,8 @@ async function _renderKLineMode(mode, allowFallback){
 }
 async function showKLine(code, name){
   const ov = document.getElementById('klOverlay')
-  document.getElementById('klTitle').textContent = `${code}  ${name}`
+  const plain = _plainKLineCode(code)
+  document.getElementById('klTitle').textContent = `${plain}  ${name||plain}`
   document.getElementById('klSrc').textContent = '加载中...'
   document.getElementById('klInfo').innerHTML = ''
   const book = document.getElementById('klBook')
@@ -5381,8 +5428,9 @@ async function showKLine(code, name){
   const cvs = document.getElementById('klCanvas')
   const ctx  = cvs.getContext('2d')
   ctx.clearRect(0,0,cvs.width,cvs.height)
-  KL_STATE.code = code
-  KL_STATE.name = name
+  KL_STATE.code = plain
+  KL_STATE.rawCode = String(code||'')
+  KL_STATE.name = name||plain
   KL_STATE.mode = 'second'
   KL_STATE.second = null
   KL_STATE.minute = null
@@ -5390,7 +5438,8 @@ async function showKLine(code, name){
   KL_STATE.orderBook = null
   _setKLineTabs('second')
   ov.classList.add('show')
-  _renderOrderBook(code)
+  _prefetchKLineBundle(plain)
+  _renderOrderBook(plain)
   await _renderKLineMode('second', true)
 }
 function _normDate(d){
@@ -5440,8 +5489,13 @@ async function _renderOrderBook(code){
   const el=document.getElementById('klBook')
   if(!el) return
   el.innerHTML='<div class="kl-book-empty">五档盘口加载中...</div>'
-  const stateCode=code
-  const resp=await api('/quote/'+code+'/order_book')
+  const stateCode=_plainKLineCode(code)
+  const hit=KL_ORDER_CACHE.get(stateCode)
+  let resp = hit && Date.now()-hit.ts<5000 ? hit.resp : null
+  if(!resp){
+    resp=await api('/quote/'+encodeURIComponent(stateCode)+'/order_book')
+    KL_ORDER_CACHE.set(stateCode,{resp,ts:Date.now()})
+  }
   if(KL_STATE.code!==stateCode) return
   KL_STATE.orderBook=resp
   if(!resp?.ok || !resp.data){
