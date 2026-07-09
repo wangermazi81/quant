@@ -2,6 +2,7 @@
 import threading
 import uuid
 import logging
+import time
 from datetime import datetime, timedelta
 
 from flask import Blueprint, request, jsonify, session
@@ -13,6 +14,8 @@ from app_state import require_auth, _add_log
 logger = logging.getLogger(__name__)
 
 bp = Blueprint("data", __name__)
+_TRADE_DATE_CACHE: dict[str, tuple[float, str]] = {}
+_TRADE_DATE_CACHE_TTL = 60
 
 
 def _most_recent_trading_day() -> str:
@@ -34,11 +37,17 @@ def _request_trade_date(code: str) -> str:
     explicit = (request.args.get("date") or "").strip().replace("-", "")[:8]
     if explicit:
         return explicit
+    key = str(code or "").strip().upper()
+    cached = _TRADE_DATE_CACHE.get(key)
+    if cached and time.monotonic() - cached[0] < _TRADE_DATE_CACHE_TTL:
+        return cached[1]
     try:
         book = md.get_order_book(code)
         trade_time = str(book.get("trade_time") or "")
         if len(trade_time) >= 10:
-            return trade_time[:10].replace("-", "")
+            date_text = trade_time[:10].replace("-", "")
+            _TRADE_DATE_CACHE[key] = (time.monotonic(), date_text)
+            return date_text
     except Exception as exc:
         logger.debug(f"latest trade date lookup failed {code}: {exc}")
     return datetime.now().strftime("%Y%m%d")

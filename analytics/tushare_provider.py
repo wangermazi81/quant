@@ -411,10 +411,7 @@ def fetch_minute_kline(
     ts_code = _ts_code(code)
     if resolved_mode == "replay":
         params: dict[str, Any] = {"ts_code": ts_code, "freq": freq_key}
-        if limit:
-            params["limit"] = int(limit)
-        api_name = "a_share_mins" if limit and int(limit) > 1 else "rt_min"
-        rows = _replay_get(api_name, token, params, timeout=REALTIME_REPLAY_TIMEOUT, max_attempts=1)
+        rows = _replay_get("rt_min", token, params, timeout=REALTIME_REPLAY_TIMEOUT, max_attempts=1)
         return _normalize_minute_frame(pd.DataFrame(rows))
 
     ts = _load_tushare()

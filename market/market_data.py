@@ -255,7 +255,27 @@ def get_second_ticks(code: str, date: str | None = None) -> dict:
                 return _cache_set(cache_key, result)
         except Exception as exc:
             logger.warning(f"Tushare second ticks failed {code} {date}: {exc}")
+        snap = _second_tick_snapshot(code, cache_key)
+        if snap is not None:
+            return snap
     return _cache_set(cache_key, {"datetime": [], "price": [], "volume": [], "amount": [], "prev_price": [], "kind": []})
+
+
+def _second_tick_snapshot(code: str, cache_key: tuple) -> dict | None:
+    book = _cache_get(("order_book", code), INTRADAY_CACHE_TTL_SECONDS) or get_order_book(code)
+    price = book.get("price") if isinstance(book, dict) else None
+    trade_time = str(book.get("trade_time") or "") if isinstance(book, dict) else ""
+    if not price or not trade_time:
+        return None
+    result = {
+        "datetime": [trade_time],
+        "price": [float(price)],
+        "volume": [book.get("volume", 0) or 0],
+        "amount": [book.get("amount", 0) or 0],
+        "prev_price": [book.get("last_close", 0) or 0],
+        "kind": ["SNAPSHOT"],
+    }
+    return _cache_set(cache_key, result)
 
 
 def get_order_book(code: str) -> dict:

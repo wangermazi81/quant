@@ -385,3 +385,41 @@ def test_fetch_minute_kline_uses_replay_rt_min(monkeypatch):
         "amount": 10450.0,
         "is_complete": True,
     }]
+
+
+def test_fetch_minute_kline_prefers_fast_rt_min_with_large_limit(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "api_name": "rt_min",
+                "code": 0,
+                "data": [{
+                    "ts_code": "000001.SZ",
+                    "freq": "1MIN",
+                    "time": "2026-07-09 10:01:00",
+                    "open": 10.4,
+                    "high": 10.5,
+                    "low": 10.3,
+                    "close": 10.45,
+                    "vol": 1000.0,
+                    "amount": 10450.0,
+                    "is_complete": True,
+                }],
+            }
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append({"url": url, "params": params, "timeout": timeout})
+        return FakeResponse()
+
+    monkeypatch.setattr(tp.requests, "get", fake_get)
+
+    df = tp.fetch_minute_kline("000001", freq="1MIN", limit=240, token="api-key", mode="replay")
+
+    assert calls[0]["url"] == "https://ai-tool.indevs.in/tushare/pro/rt_min"
+    assert calls[0]["params"] == {"ts_code": "000001.SZ", "freq": "1MIN"}
+    assert df["close"].tolist() == [10.45]

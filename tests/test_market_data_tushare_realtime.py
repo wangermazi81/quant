@@ -114,6 +114,34 @@ def test_second_ticks_reuse_short_memory_cache(monkeypatch):
     assert len(calls) == 1
 
 
+def test_second_ticks_fallback_to_realtime_order_book(monkeypatch):
+    monkeypatch.setattr(md.datasource_config, "get_internal_config", lambda: {
+        "provider": "tushare",
+        "tushare_enabled": True,
+        "tushare_mode": "replay",
+        "tushare_token": "tok",
+    })
+    if hasattr(md, "clear_intraday_kline_cache"):
+        md.clear_intraday_kline_cache()
+
+    def slow_ticks(*args, **kwargs):
+        raise TimeoutError("slow")
+
+    monkeypatch.setattr(md.tushare_provider, "fetch_tick_series", slow_ticks)
+    monkeypatch.setattr(md.tushare_provider, "fetch_order_book", lambda *args, **kwargs: {
+        "trade_time": "2026-07-09 10:01:02",
+        "price": 10.49,
+        "amount": 1294500.0,
+        "volume": 123400.0,
+    })
+
+    out = md.get_second_ticks("000001.SZ", "20260709")
+
+    assert out["datetime"] == ["2026-07-09 10:01:02"]
+    assert out["price"] == [10.49]
+    assert out["kind"] == ["SNAPSHOT"]
+
+
 def test_minute_kline_reuse_short_memory_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(md, "MINUTE_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(md.datasource_config, "get_internal_config", lambda: {
