@@ -2,6 +2,7 @@ import sys
 import types
 
 import pandas as pd
+import pytest
 
 import analytics.tushare_provider as tp
 
@@ -281,6 +282,22 @@ def test_fetch_tick_series_accepts_exchange_qualified_codes(monkeypatch):
         "600000.SH",
         "600000.SH",
     ]
+
+
+def test_fetch_tick_series_does_not_retry_all_replay_hosts(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tp, "_replay_base_urls", lambda: ("https://one.example/tushare/pro", "https://two.example/tushare/pro"))
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(url)
+        raise tp.requests.Timeout("slow")
+
+    monkeypatch.setattr(tp.requests, "get", fake_get)
+
+    with pytest.raises(RuntimeError):
+        tp.fetch_tick_series("000001", trade_date="20260709", limit=2, token="api-key", mode="replay")
+
+    assert calls == ["https://one.example/tushare/pro/a_share_ticks"]
 
 
 def test_fetch_order_book_normalizes_five_levels(monkeypatch):

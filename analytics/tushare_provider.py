@@ -109,10 +109,19 @@ def _plain_code(ts_code: str) -> str:
     digits = "".join(ch for ch in raw if ch.isdigit())
     return digits[-6:] if digits else raw[-6:]
 
-def _replay_get(api_name: str, token: str, params: dict | None = None, timeout: int = 25) -> list[dict]:
+def _replay_get(
+    api_name: str,
+    token: str,
+    params: dict | None = None,
+    timeout: int = 25,
+    max_attempts: int | None = None,
+) -> list[dict]:
     headers = {"X-API-Key": token, "Accept": "application/json"}
     errors = []
-    for base_url in _replay_base_urls():
+    base_urls = _replay_base_urls()
+    if max_attempts is not None:
+        base_urls = base_urls[:max(1, int(max_attempts))]
+    for base_url in base_urls:
         url = f"{base_url.rstrip('/')}/{api_name}"
         try:
             resp = requests.get(url, params=params or {}, headers=headers, timeout=timeout)
@@ -332,7 +341,7 @@ def fetch_realtime_quotes(
     ts_codes = ",".join(_ts_code(code) for code in codes if str(code or "").strip())
     if not ts_codes:
         return []
-    rows = _replay_get("rt_tick", token, {"ts_code": ts_codes}, timeout=REALTIME_REPLAY_TIMEOUT)
+    rows = _replay_get("rt_tick", token, {"ts_code": ts_codes}, timeout=REALTIME_REPLAY_TIMEOUT, max_attempts=1)
     return [_normalize_replay_quote(row) for row in rows]
 
 
@@ -353,7 +362,7 @@ def fetch_tick_series(
         params["trade_date"] = _date_text(trade_date)
     if limit:
         params["limit"] = int(limit)
-    rows = _replay_get("a_share_ticks", token, params, timeout=REALTIME_REPLAY_TIMEOUT)
+    rows = _replay_get("a_share_ticks", token, params, timeout=REALTIME_REPLAY_TIMEOUT, max_attempts=1)
     return _normalize_tick_frame(pd.DataFrame(rows))
 
 
@@ -405,7 +414,7 @@ def fetch_minute_kline(
         if limit:
             params["limit"] = int(limit)
         api_name = "a_share_mins" if limit and int(limit) > 1 else "rt_min"
-        rows = _replay_get(api_name, token, params, timeout=REALTIME_REPLAY_TIMEOUT)
+        rows = _replay_get(api_name, token, params, timeout=REALTIME_REPLAY_TIMEOUT, max_attempts=1)
         return _normalize_minute_frame(pd.DataFrame(rows))
 
     ts = _load_tushare()
