@@ -176,3 +176,33 @@ def test_minute_kline_reuse_short_memory_cache(monkeypatch, tmp_path):
     assert first == second
     assert first["close"] == [10.45]
     assert len(calls) == 1
+
+
+def test_minute_kline_fallback_to_realtime_order_book(monkeypatch, tmp_path):
+    monkeypatch.setattr(md, "MINUTE_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(md.datasource_config, "get_internal_config", lambda: {
+        "provider": "tushare",
+        "tushare_enabled": True,
+        "tushare_mode": "replay",
+        "tushare_token": "tok",
+    })
+    if hasattr(md, "clear_intraday_kline_cache"):
+        md.clear_intraday_kline_cache()
+
+    def slow_minute(*args, **kwargs):
+        raise TimeoutError("slow")
+
+    monkeypatch.setattr(md.tushare_provider, "fetch_minute_kline", slow_minute)
+    monkeypatch.setattr(md.ak, "stock_zh_a_hist_min_em", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("slow")))
+    monkeypatch.setattr(md.tushare_provider, "fetch_order_book", lambda *args, **kwargs: {
+        "trade_time": "2026-07-09 10:01:02",
+        "price": 10.49,
+        "amount": 1294500.0,
+        "volume": 123400.0,
+    })
+
+    out = md.get_minute_kline("000001.SZ", "20260709")
+
+    assert out["datetime"] == ["2026-07-09 10:01:02"]
+    assert out["open"] == [10.49]
+    assert out["close"] == [10.49]

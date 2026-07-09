@@ -225,6 +225,31 @@ def get_minute_kline(code: str, date: str) -> dict:
     result = {}
     for col in ("datetime", "open", "high", "low", "close", "volume"):
         result[col] = df[col].tolist() if col in df.columns else []
+    if result.get("datetime"):
+        return _cache_set(cache_key, result)
+    snap = _minute_snapshot(code, cache_key)
+    if snap is not None:
+        return snap
+    return result
+
+
+def _minute_snapshot(code: str, cache_key: tuple) -> dict | None:
+    book = _cache_get(("order_book", code), INTRADAY_CACHE_TTL_SECONDS) or get_order_book(code)
+    price = book.get("price") if isinstance(book, dict) else None
+    trade_time = str(book.get("trade_time") or "") if isinstance(book, dict) else ""
+    if not price or not trade_time:
+        return None
+    price = float(price)
+    result = {
+        "datetime": [trade_time],
+        "open": [price],
+        "high": [price],
+        "low": [price],
+        "close": [price],
+        "volume": [book.get("volume", 0) or 0],
+        "amount": [book.get("amount", 0) or 0],
+        "is_complete": [False],
+    }
     return _cache_set(cache_key, result)
 
 
