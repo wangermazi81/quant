@@ -5,7 +5,7 @@
 股票名称：ak.stock_info_a_code_name() 全量缓存，不走东方财富
 """
 
-import json, logging, threading, os, time
+import json, logging, threading, os, time, re
 from pathlib import Path
 from datetime import datetime
 
@@ -47,6 +47,177 @@ _SECTOR_CACHE_TTL = 86400
 _SECTOR_FAILURE_TTL = 900
 _MAX_CONCEPT_SCAN = 12
 _SECTOR_TIMEOUT_GUARD = 8.0
+
+
+def _eastmoney_secid(code: str) -> str:
+    return ("1." if str(code).startswith(("5", "6", "9")) else "0.") + str(code).zfill(6)
+
+
+def _parse_sector_concepts(text: str) -> list[str]:
+    return [x.strip() for x in re.split(r"[,，、]", str(text or "")) if x.strip()]
+
+
+def _infer_stock_sector_by_code(code: str) -> dict:
+    c = str(code or "").zfill(6)
+    if c.startswith(("11", "12")):
+        return {"industry": "可转债", "concepts": []}
+    if c.startswith(("4", "8", "920")):
+        return {"industry": "北交所", "concepts": []}
+    return {"industry": "", "concepts": []}
+
+
+def get_stock_sectors_bulk(codes: list[str]) -> dict[str, dict]:
+    """Fetch industry/concept labels for many stocks from Eastmoney quote list API."""
+    clean_codes = []
+    for code in codes or []:
+        c = str(code or "").zfill(6)
+        if c.isdigit() and c not in clean_codes:
+            clean_codes.append(c)
+    if not clean_codes:
+        return {}
+
+    result: dict[str, dict] = {}
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+    fields = "f12,f100,f103"
+    urls = (
+        "https://push2.eastmoney.com/api/qt/ulist.np/get",
+        "https://48.push2.eastmoney.com/api/qt/ulist.np/get",
+    )
+    for i in range(0, len(clean_codes), 80):
+        batch = clean_codes[i:i + 80]
+        secids = ",".join(_eastmoney_secid(c) for c in batch)
+        last_error = None
+        for url in urls:
+            try:
+                r = _requests.get(
+                    url,
+                    params={"secids": secids, "fields": fields, "fltt": "2", "np": "1"},
+                    headers=headers,
+                    timeout=8,
+                )
+                payload = r.json() or {}
+                rows = ((payload.get("data") or {}).get("diff") or [])
+                for row in rows:
+                    code = str(row.get("f12") or "").zfill(6)
+                    if not code.isdigit():
+                        continue
+                    industry = str(row.get("f100") or "").strip()
+                    concepts = _parse_sector_concepts(row.get("f103"))[:5]
+                    if industry or concepts:
+                        result[code] = {"industry": industry, "concepts": concepts}
+                if all(c in result for c in batch):
+                    break
+            except Exception as e:
+                last_error = e
+        if last_error and not any(c in result for c in batch):
+            logger.warning(f"get_stock_sectors_bulk failed for batch {batch[:3]}...: {last_error}")
+    missing = [code for code in clean_codes if code not in result]
+    if missing:
+        result.update(_fetch_stock_sectors_baostock(missing))
+    for code in clean_codes:
+        if code not in result:
+            inferred = _infer_stock_sector_by_code(code)
+            if inferred.get("industry") or inferred.get("concepts"):
+                result[code] = inferred
+    return result
+
+
+def _baostock_symbol(code: str) -> str:
+    c = str(code).zfill(6)
+    return ("sh." if c.startswith(("5", "6", "9")) else "sz.") + c
+
+
+def _fetch_stock_sectors_baostock(codes: list[str]) -> dict[str, dict]:
+    """Last-resort local-friendly industry fallback. Baostock has industry only."""
+    result: dict[str, dict] = {}
+    try:
+        import contextlib
+        import io
+        import baostock as bs
+    except Exception as e:
+        logger.debug(f"baostock unavailable for sector fallback: {e}")
+        return result
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            login = bs.login()
+        if getattr(login, "error_code", "") != "0":
+            return result
+        for code in codes:
+            c = str(code or "").zfill(6)
+            if not c.isdigit():
+                continue
+            try:
+                rs = bs.query_stock_industry(code=_baostock_symbol(c))
+                while rs.next():
+                    row = dict(zip(rs.fields, rs.get_row_data()))
+                    industry = str(row.get("industry") or "").strip()
+                    if industry:
+                        result[c] = {"industry": industry, "concepts": []}
+                        break
+            except Exception as e:
+                logger.debug(f"baostock sector failed for {c}: {e}")
+                continue
+    except Exception as e:
+        logger.warning(f"baostock sector fallback failed: {e}")
+    finally:
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                bs.logout()
+        except Exception:
+            pass
+    return result
+
+
+def _fetch_stock_sector_eastmoney(code: str) -> dict:
+    """Fast fallback for industry/concept labels from Eastmoney quote API."""
+    bulk = get_stock_sectors_bulk([code])
+    if bulk.get(str(code).zfill(6)):
+        return bulk[str(code).zfill(6)]
+    result = {"industry": "", "concepts": []}
+    params = {"secid": _eastmoney_secid(code), "fields": "f127,f129"}
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+    last_error = None
+    for getter in (_ak_session.get, _requests.get):
+        try:
+            r = getter(
+                "https://push2.eastmoney.com/api/qt/stock/get",
+                params=params,
+                headers=headers,
+                timeout=5,
+            )
+            payload = r.json() or {}
+            data = payload.get("data") or {}
+            industry = str(data.get("f127") or "").strip()
+            concepts = _parse_sector_concepts(data.get("f129"))
+            if industry:
+                result["industry"] = industry
+            if concepts:
+                result["concepts"] = concepts[:5]
+            if result["industry"] or result["concepts"]:
+                return result
+        except Exception as e:
+            last_error = e
+    try:
+        r = _requests.get(
+            "https://push2.eastmoney.com/api/qt/stock/get",
+            params=params,
+            headers=headers,
+            timeout=5,
+            proxies={"http": None, "https": None},
+        )
+        payload = r.json() or {}
+        data = payload.get("data") or {}
+        industry = str(data.get("f127") or "").strip()
+        concepts = _parse_sector_concepts(data.get("f129"))
+        if industry:
+            result["industry"] = industry
+        if concepts:
+            result["concepts"] = concepts[:5]
+    except Exception as e:
+        last_error = e
+    if last_error:
+        logger.warning(f"get_stock_sector eastmoney fallback failed for {code}: {last_error}")
+    return result
 
 
 # ── 市场前缀 ──────────────────────────────────────
@@ -258,7 +429,7 @@ def get_stock_sector(code: str) -> dict:
 
     if result["industry"] and result["concepts"] and now - sector_cached_at < _SECTOR_CACHE_TTL:
         return result
-    if sector_error_at and now - sector_error_at < _SECTOR_FAILURE_TTL:
+    if sector_error_at and now - sector_error_at < _SECTOR_FAILURE_TTL and (result["industry"] or result["concepts"]):
         return result
 
     try:
@@ -299,6 +470,16 @@ def get_stock_sector(code: str) -> dict:
                     continue
     except Exception as e:
         logger.warning(f"get_stock_sector concept list failed for {code}: {e}")
+
+    if not result["industry"] or not concepts:
+        fallback = _fetch_stock_sector_eastmoney(code)
+        if not result["industry"] and fallback.get("industry"):
+            result["industry"] = fallback["industry"]
+        for concept in fallback.get("concepts") or []:
+            if concept not in concepts:
+                concepts.append(concept)
+            if len(concepts) >= 5:
+                break
 
     result["concepts"] = concepts[:5]
 

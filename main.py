@@ -954,6 +954,14 @@ def get_status():
             })
     except Exception:
         pass
+    try:
+        from analytics.factors_zoo import activator as _vibe_act
+        _vibe_cfg = _vibe_act.get(uid) or {}
+        s["vibe_active"] = bool(_vibe_cfg.get("enabled"))
+        s["vibe_factor"] = _vibe_cfg.get("factor_id") or ""
+    except Exception:
+        s["vibe_active"] = False
+        s["vibe_factor"] = ""
     return jsonify(s)
 
 
@@ -2133,13 +2141,21 @@ def api_activate():
     uid       = session["user_id"]
     s         = get_user_state(uid)
     fn        = request.json.get("filename")
+    was_running = bool(s.get("running"))
     s["active_strategy"] = fn
-    _persist_state(uid, active_strategy=fn or "")
+    if fn:
+        s["running"] = True
+        _persist_state(uid, active_strategy=fn, running=1)
+    else:
+        _persist_state(uid, active_strategy="")
     meta_list = sm.list_strategies()
     meta      = next((m for m in meta_list if m["file"] == fn), {})
-    _add_log(uid, f"自动交易策略切换: {meta.get('name', fn) if fn else '默认'}")
+    label     = meta.get('name', fn) if fn else '默认'
+    if fn and not was_running:
+        _add_log(uid, f"自动交易策略切换并启动监控: {label}")
+    else:
+        _add_log(uid, f"自动交易策略切换: {label}")
     return jsonify({"ok": True, "active": fn})
-
 
 @app.route("/api/strategies/rename", methods=["POST"])
 @require_auth

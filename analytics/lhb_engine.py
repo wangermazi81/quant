@@ -7,6 +7,7 @@
 缓存策略：盘中（<15:30）5 分钟；盘后当天缓存；历史数据永久磁盘存储。
 """
 import json
+import importlib
 import logging
 import re
 import time
@@ -237,6 +238,81 @@ def _cache_ttl(cached: dict) -> int:
     if cached.get("complete"):
         return 60
     return 300 if datetime.now().hour < 16 else 60
+
+
+def _enrich_stock_sectors(stocks: list, max_seconds: float = 4.0) -> bool:
+    """Best-effort industry/concept labels for LHB stocks.
+
+    The sector helper has its own disk cache and remote throttling. Keep an
+    outer budget here so the LHB page remains fast even when quote providers
+    are slow or unavailable. Returns True when any stock was updated.
+    """
+    if not isinstance(stocks, list) or not stocks:
+        return False
+    try:
+        dm = importlib.import_module("analytics.data_manager")
+    except Exception:
+        try:
+            dm = importlib.import_module("data_manager")
+        except Exception as e:
+            logger.debug(f"[lhb] sector helper unavailable: {e}")
+            return False
+    get_stock_sector = getattr(dm, "get_stock_sector", None)
+    get_stock_sectors_bulk = getattr(dm, "get_stock_sectors_bulk", None)
+    if not callable(get_stock_sector):
+        return False
+
+    changed = False
+    started = time.monotonic()
+    targets = [str(s.get("code") or "").zfill(6) for s in stocks
+               if isinstance(s, dict) and not (s.get("industry") or s.get("concepts"))]
+    if callable(get_stock_sectors_bulk) and targets:
+        try:
+            sector_map = get_stock_sectors_bulk(targets) or {}
+        except Exception as e:
+            logger.debug(f"[lhb] bulk sector enrich failed: {e}")
+            sector_map = {}
+        for s in stocks:
+            if not isinstance(s, dict) or s.get("industry") or s.get("concepts"):
+                continue
+            sector = sector_map.get(str(s.get("code") or "").zfill(6)) or {}
+            industry = str(sector.get("industry") or "").strip()
+            concepts = [str(x).strip() for x in (sector.get("concepts") or []) if str(x).strip()]
+        if industry or concepts:
+            s["industry"] = industry
+            s["concepts"] = concepts[:5]
+            changed = True
+
+    for s in stocks:
+        if not isinstance(s, dict) or s.get("industry") or s.get("concepts"):
+            continue
+        if str(s.get("name") or "").startswith("退市"):
+            s["industry"] = "退市股"
+            s["concepts"] = []
+            changed = True
+
+    for s in stocks:
+        if not isinstance(s, dict):
+            continue
+        if s.get("industry") or s.get("concepts"):
+            continue
+        if time.monotonic() - started > max_seconds:
+            break
+        code = str(s.get("code") or "").zfill(6)
+        if not code.isdigit():
+            continue
+        try:
+            sector = get_stock_sector(code) or {}
+        except Exception as e:
+            logger.debug(f"[lhb] sector enrich failed for {code}: {e}")
+            continue
+        industry = str(sector.get("industry") or "").strip()
+        concepts = [str(x).strip() for x in (sector.get("concepts") or []) if str(x).strip()]
+        if industry or concepts:
+            s["industry"] = industry
+            s["concepts"] = concepts[:5]
+            changed = True
+    return changed
 
 
 def _fmt(yyyymmdd: str) -> str:
@@ -527,6 +603,8 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
     if not is_today and not force_refresh:
         disk = _disk_get(yyyymmdd)
         if _lhb_cache_ready(disk or {}):
+            if _enrich_stock_sectors(disk.get("stocks") or []):
+                _disk_put(yyyymmdd, disk)
             return disk
 
     # 内存缓存（盘中 5 分钟刷新；盘后不过期）
@@ -537,6 +615,7 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
                 ts, cached = hit
                 ttl = _cache_ttl(cached)
                 if time.time() - ts < ttl:
+                    _enrich_stock_sectors(cached.get("stocks") or [], max_seconds=1.5)
                     return cached
 
     # ── 1. 股票列表 ─────────────────────────────────────────
@@ -546,6 +625,8 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
             disk = _disk_get(yyyymmdd)
             if disk and (is_today or _lhb_cache_ready(disk or {})):
                 logger.info(f"[lhb] {date_str} 用磁盘缓存")
+                if _enrich_stock_sectors(disk.get("stocks") or [], max_seconds=1.5):
+                    _disk_put(yyyymmdd, disk)
                 return disk
         return {"ok": False, "date": date_str, "stocks": [],
                 "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -566,6 +647,8 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
             logger.debug(f"[lhb] 席位 {s['code']} 失败: {e}")
         if i < top_n - 1:
             time.sleep(0.05)
+
+    _enrich_stock_sectors(stocks)
 
     # ── 3. 游资活跃统计 ──────────────────────────────────────
     yz_stat: dict = {}

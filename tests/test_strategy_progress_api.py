@@ -86,3 +86,57 @@ def test_strategy_run_async_rejects_missing_filename_before_deducting(monkeypatc
     assert calls == []
     with main._strat_tasks_lock:
         assert main._strat_tasks == {}
+
+
+def test_strategy_activate_starts_monitoring_for_selected_strategy(monkeypatch):
+    state = {"running": False, "active_strategy": None}
+    persisted = []
+    logs = []
+
+    monkeypatch.setattr(main, "get_user_state", lambda uid: state)
+    monkeypatch.setattr(main, "_persist_state", lambda uid, **fields: persisted.append((uid, fields)))
+    monkeypatch.setattr(main, "_add_log", lambda uid, msg, level="INFO": logs.append((uid, msg, level)))
+    monkeypatch.setattr(main.sm, "list_strategies", lambda: [
+        {"file": "demo_strategy.py", "name": '演示策略'}
+    ])
+
+    client = main.app.test_client()
+    _login(client, uid=10)
+
+    resp = client.post("/api/strategies/activate", json={"filename": "demo_strategy.py"})
+    data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data == {"ok": True, "active": "demo_strategy.py"}
+    assert state["active_strategy"] == "demo_strategy.py"
+    assert state["running"] is True
+    assert any(fields.get("active_strategy") == "demo_strategy.py" for _, fields in persisted)
+    assert any(fields.get("running") == 1 for _, fields in persisted)
+    assert any('演示策略' in msg and '监控' in msg for _, msg, _ in logs)
+
+
+def test_status_reports_vibe_activation_as_monitoring(monkeypatch):
+    state = {"running": False, "active_strategy": None, "scan_progress": {"running": False}}
+    monkeypatch.setattr(main, "get_user_state", lambda uid: state)
+
+    class FakeActivator:
+        @staticmethod
+        def get(uid):
+            return {"enabled": True, "factor_id": "demo_factor"}
+
+    import sys
+    import types
+    fake_pkg = types.ModuleType("analytics.factors_zoo")
+    fake_pkg.activator = FakeActivator
+    monkeypatch.setitem(sys.modules, "analytics.factors_zoo", fake_pkg)
+
+    client = main.app.test_client()
+    _login(client, uid=11)
+
+    resp = client.get("/api/status")
+    data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["running"] is False
+    assert data["vibe_active"] is True
+    assert data["vibe_factor"] == "demo_factor"

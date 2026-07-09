@@ -107,14 +107,15 @@ async function fetchFunds(){
   }catch(e){}
   finally{ _pollInflight.funds = false }
 }
-async function fetchSt(){
-  if(_pollInflight.status) return
+async function fetchSt(force=false){
+  if(_pollInflight.status && !force) return
   _pollInflight.status = true
   try{
   const d=await api('/status'); if(!d) return
+  const monitoring = !!(d.running || d.vibe_active)
   const rb=document.getElementById('runBadge')
-  rb.textContent=d.running?'运行中':'已停止'
-  rb.className='badge '+(d.running?'run':'stop')
+  rb.textContent=monitoring?'运行中':'已停止'
+  rb.className='badge '+(monitoring?'run':'stop')
   document.getElementById('nScanned').textContent=d.scanned||0
   document.getElementById('nExecuted').textContent=d.executed||0
   // 账户信息
@@ -137,8 +138,8 @@ async function fetchSt(){
   if(si&&!si.matches(':focus')) si.value=Math.round((d.single_position_max_ratio||0.2)*100)
   if(mi&&!mi.matches(':focus')) mi.value=d.max_positions||5
   const ss=document.getElementById('scanSt')
-  ss.innerHTML=d.running?'<span class="spin">⟳</span> 监控中':'已停止'
-  ss.style.color=d.running?'var(--gl)':'var(--t3)'
+  ss.innerHTML=monitoring?`<span class="spin">⟳</span> ${d.vibe_active?'Alpha监控中':'监控中'}`:'已停止'
+  ss.style.color=monitoring?'var(--gl)':'var(--t3)'
   // 同步自动执行开关
   if(typeof d.auto_execute !== 'undefined' && d.auto_execute !== _autoExec){
     _autoExec = d.auto_execute
@@ -190,6 +191,12 @@ async function fetchSt(){
     progBar.style.width=''
   }
   }finally{ _pollInflight.status = false }
+}
+function _markMonitorRunning(label='监控中'){
+  const rb=document.getElementById('runBadge')
+  if(rb){ rb.textContent='运行中'; rb.className='badge run' }
+  const ss=document.getElementById('scanSt')
+  if(ss){ ss.innerHTML=`<span class="spin">⟳</span> ${label}`; ss.style.color='var(--gl)' }
 }
 async function fetchPositions(){
   if(!_currentUser) return
@@ -1463,6 +1470,8 @@ async function confirmVibeActivate(){
     const mins = intervalSec >= 60 ? `${Math.floor(intervalSec/60)} 分钟` : `${intervalSec} 秒`
     alert(`⚡ 因子 ${factorId} 已激活！\n\n下次扫描会在 ${mins} 内自动触发（仅交易时段）。\n顶部开关 = ${_tradeMode==='live'?'实盘':'模拟'} 决定下单路径。`)
     renderVibeActivationCard()
+    _markMonitorRunning('Alpha监控中')
+    await fetchSt(true)
   } else {
     alert('激活失败: ' + (r?.error || '未知错误'))
   }
@@ -1617,7 +1626,13 @@ async function delStrat(){
 async function activateStrat(){
   if(_curMode==='factor'){alert('因子库不支持激活自动交易。\n请在策略库中选择策略激活。');return}
   if(!curStrat){alert('请先保存或选择策略');return}
-  await api('/strategies/activate','POST',{filename:curStrat}); fetchSt()
+  const r = await api('/strategies/activate','POST',{filename:curStrat})
+  if(!r?.ok){
+    alert('激活失败：'+(r?.error||'请确认已登录，或查看后端日志'))
+    return
+  }
+  _markMonitorRunning()
+  await fetchSt(true)
   const b=document.getElementById('actBtn'); b.textContent='✅ 已激活'
   setTimeout(()=>b.textContent='⚡ 激活',2000)
 }

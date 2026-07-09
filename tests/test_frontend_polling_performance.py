@@ -71,3 +71,42 @@ def test_public_shell_does_not_block_on_private_account_requests():
         assert "function initAuthenticatedShell()" in text, path
         assert "if(!_currentUser) return" in text, path
         assert "loadStratList(); loadDbList(); loadMarketContext()" in text, path
+
+
+def test_strategy_activation_updates_monitor_status_immediately():
+    for path in STRATEGY_SCAN_FILES:
+        text = path.read_text(encoding="utf-8")
+        start = text.find("async function activateStrat()")
+        end = text.find("async function runScreen", start)
+        assert start != -1 and end != -1, path
+        block = text[start:end]
+        assert "const r = await api('/strategies/activate','POST',{filename:curStrat})" in block, path
+        assert "if(!r?.ok)" in block, path
+        assert "_markMonitorRunning" in block, path
+        assert "await fetchSt(true)" in block, path
+
+    for path in STRATEGY_SCAN_FILES:
+        text = path.read_text(encoding="utf-8")
+        start = text.find("async function fetchSt")
+        assert start != -1, path
+        head = text[start:text.find("{", start) + 120]
+        assert "force=false" in head, path
+        assert "_pollInflight.status && !force" in text[start:start + 250], path
+
+
+def test_vibe_activation_updates_monitor_status_and_status_poll_recognizes_vibe():
+    for path in STRATEGY_SCAN_FILES:
+        text = path.read_text(encoding="utf-8")
+        start = text.find("async function confirmVibeActivate")
+        end = text.find("async function renderVibeActivationCard", start)
+        assert start != -1 and end != -1, path
+        block = text[start:end]
+        assert "_markMonitorRunning('Alpha监控中')" in block, path
+        assert "await fetchSt(true)" in block, path
+
+        start = text.find("async function fetchSt")
+        end = text.find("function _markMonitorRunning", start)
+        assert start != -1 and end != -1, path
+        status_block = text[start:end]
+        assert "const monitoring = !!(d.running || d.vibe_active)" in status_block, path
+        assert "d.vibe_active?'Alpha监控中':'监控中'" in status_block, path

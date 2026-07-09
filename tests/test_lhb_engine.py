@@ -120,6 +120,66 @@ def test_get_lhb_data_does_not_persist_incomplete_historical_payload(monkeypatch
     assert not (tmp_path / "lhb_20260706.json").exists()
 
 
+def test_get_lhb_data_enriches_stocks_with_sector_labels(monkeypatch, tmp_path):
+    monkeypatch.setattr(lhb_engine, "LHB_DIR", tmp_path)
+    monkeypatch.setattr(lhb_engine, "_today", lambda: "20260708")
+    monkeypatch.setattr(lhb_engine, "_fetch_lhb_stocks", lambda yyyymmdd: [
+        {"code": "000001", "name": "Ping An", "branches": [], "youzai": []}
+    ])
+    monkeypatch.setattr(
+        lhb_engine,
+        "_fetch_seat_detail",
+        lambda code, date_str: [{"name": "seat", "buy": 100, "sell": 0, "net": 100}],
+    )
+    monkeypatch.setattr(lhb_engine.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(lhb_engine, "no_proxy", lambda: nullcontext())
+    monkeypatch.setitem(
+        sys.modules,
+        "analytics.data_manager",
+        types.SimpleNamespace(get_stock_sector=lambda code: {"industry": "银行", "concepts": ["大金融", "中特估"]}),
+    )
+
+    data = lhb_engine.get_lhb_data("2026-07-06", force_refresh=True)
+
+    assert data["stocks"][0]["industry"] == "银行"
+    assert data["stocks"][0]["concepts"] == ["大金融", "中特估"]
+
+
+def test_get_lhb_data_enriches_historical_disk_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr(lhb_engine, "LHB_DIR", tmp_path)
+    monkeypatch.setattr(lhb_engine, "_today", lambda: "20260708")
+    (tmp_path / "lhb_20260706.json").write_text(
+        '{"ok": true, "date": "2026-07-06", "stocks": [{"code": "000001", "branches": [{"name": "seat"}]}], "finalized": true}',
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "analytics.data_manager",
+        types.SimpleNamespace(get_stock_sector=lambda code: {"industry": "证券", "concepts": ["券商"]}),
+    )
+
+    data = lhb_engine.get_lhb_data("2026-07-06")
+
+    assert data["stocks"][0]["industry"] == "证券"
+    assert data["stocks"][0]["concepts"] == ["券商"]
+
+
+def test_lhb_sector_enrich_marks_delisted_stocks(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "analytics.data_manager",
+        types.SimpleNamespace(
+            get_stock_sectors_bulk=lambda codes: {},
+            get_stock_sector=lambda code: {"industry": "", "concepts": []},
+        ),
+    )
+    stocks = [{"code": "600636", "name": "退市国化"}]
+
+    assert lhb_engine._enrich_stock_sectors(stocks) is True
+    assert stocks[0]["industry"] == "退市股"
+    assert stocks[0]["concepts"] == []
+
+
 def test_get_lhb_data_refetches_unfinalized_historical_disk_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(lhb_engine, "LHB_DIR", tmp_path)
     monkeypatch.setattr(lhb_engine, "_today", lambda: "20260708")
