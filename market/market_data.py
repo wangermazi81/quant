@@ -1,4 +1,4 @@
-import os
+﻿import os
 import akshare as ak
 import pandas as pd
 import numpy as np
@@ -7,28 +7,75 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+try:
+    import datasource_config
+    import tushare_provider
+except Exception:  # pragma: no cover - optional selectable datasource
+    datasource_config = None  # type: ignore
+    tushare_provider = None  # type: ignore
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DAILY_CACHE_DIR  = os.path.join(BASE_DIR, "data", "daily")
 MINUTE_CACHE_DIR = os.path.join(BASE_DIR, "data", "minute")
 
 
+def _tushare_cfg() -> dict | None:
+    if not datasource_config or not tushare_provider:
+        return None
+    try:
+        cfg = datasource_config.get_internal_config()
+    except Exception:
+        return None
+    if cfg.get("provider") == "tushare" and cfg.get("tushare_enabled"):
+        return cfg
+    return None
+
+
+def _tushare_quotes_frame(rows: list[dict]) -> pd.DataFrame:
+    mapped = []
+    for row in rows or []:
+        mapped.append({
+            "\u4ee3\u7801": row.get("code", ""),
+            "\u540d\u79f0": row.get("name", ""),
+            "\u6700\u65b0\u4ef7": row.get("price", 0),
+            "\u6da8\u8dcc\u5e45": row.get("change_pct", 0),
+            "\u6628\u6536": row.get("last_close", 0),
+            "\u4eca\u5f00": row.get("open", 0),
+            "\u6700\u9ad8": row.get("high", 0),
+            "\u6700\u4f4e": row.get("low", 0),
+            "\u6210\u4ea4\u91cf": row.get("vol", 0),
+            "\u6210\u4ea4\u989d": row.get("amount", 0),
+        })
+    return pd.DataFrame(mapped)
+
 def get_realtime_quotes(codes: list) -> pd.DataFrame:
-    """
-    获取实时行情。
-    codes 为空列表时返回全 A 股行情（供全市场扫描使用）。
-    返回列：代码, 名称, 最新价, 涨跌幅, 涨跌额, 昨收, 今开, 最高, 最低, 成交量, 换手率, 量比
-    """
+    """Fetch realtime A-share quotes, preferring selected Tushare replay when enabled."""
+    cfg = _tushare_cfg()
+    if cfg and codes:
+        try:
+            rows = tushare_provider.fetch_realtime_quotes(
+                codes,
+                token=cfg.get("tushare_token"),
+                mode=cfg.get("tushare_mode"),
+            )
+            if rows:
+                return _tushare_quotes_frame(rows).reset_index(drop=True)
+        except Exception as exc:
+            logger.warning(f"Tushare realtime quotes failed: {exc}")
     try:
         df = ak.stock_zh_a_spot_em()
-        if codes:
-            df = df[df["代码"].isin(codes)].copy()
-        keep = [c for c in
-                ["代码", "名称", "最新价", "涨跌幅", "涨跌额", "昨收", "今开",
-                 "最高", "最低", "成交量", "换手率", "量比"]
-                if c in df.columns]
-        return df[keep].reset_index(drop=True)
+        code_col = "\u4ee3\u7801"
+        if codes and code_col in df.columns:
+            df = df[df[code_col].isin(codes)].copy()
+        keep = [
+            "\u4ee3\u7801", "\u540d\u79f0", "\u6700\u65b0\u4ef7",
+            "\u6da8\u8dcc\u5e45", "\u6da8\u8dcc\u989d", "\u6628\u6536", "\u4eca\u5f00",
+            "\u6700\u9ad8", "\u6700\u4f4e", "\u6210\u4ea4\u91cf", "\u6362\u624b\u7387", "\u91cf\u6bd4",
+        ]
+        keep = [c for c in keep if c in df.columns]
+        return df[keep].reset_index(drop=True) if keep else df.reset_index(drop=True)
     except Exception as e:
-        logger.error(f"获取行情失败: {e}")
+        logger.error(f"realtime quotes failed: {e}")
         return pd.DataFrame()
 
 
@@ -80,12 +127,27 @@ def _fetch_kline_remote(code: str, period: int = 60) -> pd.DataFrame:
 
 
 def get_minute_kline(code: str, date: str) -> dict:
-    """
-    获取 1 分钟 K 线（用于回测精度提升）。
-    date 格式: YYYYMMDD
-    本地缓存路径: data/minute/<code>_<date>.csv
-    返回 dict: {datetime, open, high, low, close, volume}
-    """
+    """Fetch 1-minute bars, preferring selected Tushare replay when enabled."""
+    cfg = _tushare_cfg()
+    if cfg:
+        try:
+            df = tushare_provider.fetch_minute_kline(
+                code,
+                freq="1MIN",
+                limit=240,
+                token=cfg.get("tushare_token"),
+                mode=cfg.get("tushare_mode"),
+            )
+            if df is not None and not df.empty:
+                out = df.copy()
+                out["datetime"] = out["datetime"].apply(lambda v: v.strftime("%Y-%m-%d %H:%M:%S") if hasattr(v, "strftime") else str(v))
+                result = {}
+                for col in ("datetime", "open", "high", "low", "close", "volume", "amount", "is_complete"):
+                    result[col] = out[col].tolist() if col in out.columns else []
+                return result
+        except Exception as exc:
+            logger.warning(f"Tushare minute kline failed {code} {date}: {exc}")
+
     os.makedirs(MINUTE_CACHE_DIR, exist_ok=True)
     cache_path = os.path.join(MINUTE_CACHE_DIR, f"{code}_{date}.csv")
 
@@ -105,14 +167,18 @@ def get_minute_kline(code: str, date: str) -> dict:
                 adjust="qfq",
             )
             col_map = {
-                "时间": "datetime", "开盘": "open", "最高": "high",
-                "最低": "low",  "收盘": "close", "成交量": "volume",
+                "\u65f6\u95f4": "datetime",
+                "\u5f00\u76d8": "open",
+                "\u6700\u9ad8": "high",
+                "\u6700\u4f4e": "low",
+                "\u6536\u76d8": "close",
+                "\u6210\u4ea4\u91cf": "volume",
             }
             raw = raw.rename(columns={k: v for k, v in col_map.items() if k in raw.columns})
             raw.to_csv(cache_path, index=False)
             df = raw
         except Exception as e:
-            logger.warning(f"分钟线获取失败 {code} {date}: {e}")
+            logger.warning(f"minute kline failed {code} {date}: {e}")
 
     result = {}
     for col in ("datetime", "open", "high", "low", "close", "volume"):

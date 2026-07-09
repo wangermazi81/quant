@@ -123,3 +123,111 @@ def test_test_connection_uses_replay_mode(monkeypatch):
     assert result["mode"] == "replay"
     assert result["rows"] == 1
     assert calls[0]["headers"]["X-API-Key"] == "api-key"
+
+
+def test_fetch_realtime_quotes_uses_replay_rt_tick(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "request_id": "req-1",
+                "code": 0,
+                "api_name": "rt_tick",
+                "data": {
+                    "fields": [
+                        "ts_code", "name", "trade_time", "price", "pre_price",
+                        "high_price", "open_price", "low_price", "volume", "amount",
+                        "ask_price1", "ask_volume1", "bid_price1", "bid_volume1",
+                    ],
+                    "items": [[
+                        "000001.SZ", "Ping An", "2026-07-09 10:01:02", 10.49, 10.60,
+                        10.70, 10.55, 10.40, 123400.0, 1294500.0,
+                        10.50, 6800.0, 10.49, 9100.0,
+                    ]],
+                },
+            }
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append({"url": url, "params": params, "headers": headers})
+        return FakeResponse()
+
+    monkeypatch.setattr(tp.requests, "get", fake_get)
+
+    rows = tp.fetch_realtime_quotes(["000001"], token="api-key", mode="replay")
+
+    assert calls[0]["url"] == "https://ai-tool.indevs.in/tushare/pro/rt_tick"
+    assert calls[0]["params"]["ts_code"] == "000001.SZ"
+    assert rows == [{
+        "code": "000001",
+        "ts_code": "000001.SZ",
+        "name": "Ping An",
+        "trade_time": "2026-07-09 10:01:02",
+        "price": 10.49,
+        "last_close": 10.60,
+        "open": 10.55,
+        "high": 10.70,
+        "low": 10.40,
+        "vol": 123400.0,
+        "amount": 1294500.0,
+        "change_pct": -1.0377,
+        "bid1": 10.49,
+        "bid1_vol": 9100.0,
+        "ask1": 10.50,
+        "ask1_vol": 6800.0,
+        "source": "tushare_rt_tick",
+        "level": "L1-5",
+    }]
+
+
+def test_fetch_minute_kline_uses_replay_rt_min(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "api_name": "rt_min",
+                "code": 0,
+                "data": [
+                    {
+                        "ts_code": "000001.SZ",
+                        "freq": "1MIN",
+                        "time": "2026-07-09 10:01:00",
+                        "open": 10.4,
+                        "high": 10.5,
+                        "low": 10.3,
+                        "close": 10.45,
+                        "vol": 1000.0,
+                        "amount": 10450.0,
+                        "is_complete": True,
+                    }
+                ],
+            }
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append({"url": url, "params": params, "headers": headers})
+        return FakeResponse()
+
+    monkeypatch.setattr(tp.requests, "get", fake_get)
+
+    df = tp.fetch_minute_kline("000001", freq="1MIN", token="api-key", mode="replay")
+
+    assert calls[0]["url"] == "https://ai-tool.indevs.in/tushare/pro/rt_min"
+    assert calls[0]["params"]["ts_code"] == "000001.SZ"
+    assert calls[0]["params"]["freq"] == "1MIN"
+    assert df.to_dict("records") == [{
+        "datetime": pd.Timestamp("2026-07-09 10:01:00"),
+        "open": 10.4,
+        "high": 10.5,
+        "low": 10.3,
+        "close": 10.45,
+        "volume": 1000.0,
+        "amount": 10450.0,
+        "is_complete": True,
+    }]

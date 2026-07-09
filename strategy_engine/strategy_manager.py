@@ -10,6 +10,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+try:
+    import datasource_config
+    import tushare_provider
+except Exception:  # pragma: no cover - optional datasource layer
+    datasource_config = None  # type: ignore
+    tushare_provider = None  # type: ignore
+
 STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"
 STRATEGIES_DIR.mkdir(exist_ok=True)
 
@@ -312,6 +319,20 @@ def _build_data_fns(universe: list):
             return pd.DataFrame()
         requested = [str(code).split(".")[-1][-6:] for code in codes_list]
         live_rows = []
+        try:
+            if datasource_config and tushare_provider:
+                cfg = datasource_config.get_internal_config()
+                if cfg.get("provider") == "tushare" and cfg.get("tushare_enabled"):
+                    qs = tushare_provider.fetch_realtime_quotes(
+                        codes_list,
+                        token=cfg.get("tushare_token"),
+                        mode=cfg.get("tushare_mode"),
+                    )
+                    live_rows = _rows_from_quote_records(qs, codes_list)
+                    if len(live_rows) >= len(set(requested)):
+                        return pd.DataFrame(live_rows)
+        except Exception as exc:
+            logger.debug(f"[SM] Tushare rt_tick quote fallback: {exc}")
         try:
             import ths_quote as _tq
             client = _tq.get_client()

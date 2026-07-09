@@ -5304,7 +5304,9 @@ async function showKLine(code, name){
   ctx.clearRect(0,0,cvs.width,cvs.height)
   ov.classList.add('show')
 
-  const resp = await api('/kline/'+code)
+  let resp = await api('/kline/'+code+'/minute')
+  const usedMinute = !!(resp?.ok && resp.data?.length)
+  if(!usedMinute) resp = await api('/kline/'+code)
   if(!resp?.ok || !resp.data?.length){
     document.getElementById('klSrc').textContent=''
     document.getElementById('klInfo').innerHTML=
@@ -5312,12 +5314,15 @@ async function showKLine(code, name){
     return
   }
   const _klSrc = document.getElementById('klSrc')
-  if(resp.stale){
+  if(usedMinute){
+    _klSrc.textContent = resp.source==='tushare_minute' ? 'Tushare 1分钟' : '1分钟K线'
+  } else if(resp.stale){
     _klSrc.innerHTML = '<span style="color:var(--rl)" title="'+(resp.msg||'本地缓存可能过期').replace(/"/g,'')+'">⚠ 本地缓存·可能过期</span>'
   } else {
     _klSrc.textContent = resp.source==='tdx' ? 'TDX实时' : '本地数据'
   }
   drawKLine(cvs, resp.data)
+
 }
 
 function _normDate(d){

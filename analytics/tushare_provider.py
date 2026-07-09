@@ -24,6 +24,7 @@ DEFAULT_REPLAY_BASE_URLS = (
 )
 REPLAY_BASE_URL_ENV = "TUSHARE_REPLAY_BASE_URL"
 VALID_MODES = {"replay", "sdk"}
+VALID_MINUTE_FREQS = {"1MIN", "5MIN", "15MIN", "30MIN", "60MIN"}
 
 
 def _ts_code(code: str) -> str:
@@ -76,6 +77,24 @@ def _extract_rows(payload: Any) -> list[dict]:
     return []
 
 
+
+
+def _num(value: Any) -> float:
+    try:
+        if value in (None, ""):
+            return 0.0
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def _plain_code(ts_code: str) -> str:
+    raw = str(ts_code or "").strip()
+    if "." in raw:
+        raw = raw.split(".", 1)[0]
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return digits[-6:] if digits else raw[-6:]
+
 def _replay_get(api_name: str, token: str, params: dict | None = None, timeout: int = 25) -> list[dict]:
     headers = {"X-API-Key": token, "Accept": "application/json"}
     errors = []
@@ -112,6 +131,62 @@ def _normalize_daily_frame(df: pd.DataFrame | None) -> pd.DataFrame | None:
     data = data.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
     return data if not data.empty else None
 
+
+
+
+def _normalize_minute_frame(df: pd.DataFrame | None) -> pd.DataFrame:
+    columns = ["datetime", "open", "high", "low", "close", "volume", "amount", "is_complete"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+    rename = {
+        "time": "datetime",
+        "trade_time": "datetime",
+        "trade_date": "datetime",
+        "vol": "volume",
+    }
+    data = df.rename(columns={k: v for k, v in rename.items() if k in df.columns}).copy()
+    required = ["datetime", "open", "high", "low", "close", "volume"]
+    if any(c not in data.columns for c in required):
+        return pd.DataFrame(columns=columns)
+    data["datetime"] = pd.to_datetime(data["datetime"], errors="coerce")
+    for col in ("open", "high", "low", "close", "volume", "amount"):
+        if col in data.columns:
+            data[col] = pd.to_numeric(data[col], errors="coerce")
+    if "amount" not in data.columns:
+        data["amount"] = 0.0
+    if "is_complete" not in data.columns:
+        data["is_complete"] = True
+    data = data.dropna(subset=["datetime", "close"]).sort_values("datetime").reset_index(drop=True)
+    return data[columns]
+
+
+def _normalize_replay_quote(row: dict) -> dict:
+    ts_code = str(row.get("ts_code") or row.get("code") or "")
+    price = _num(row.get("price", row.get("close", row.get("close_price"))))
+    last_close = _num(row.get("pre_price", row.get("pre_close", row.get("last_close"))))
+    change_pct = _num(row.get("change_pct"))
+    if not change_pct and last_close:
+        change_pct = round((price - last_close) / last_close * 100, 4)
+    return {
+        "code": _plain_code(ts_code),
+        "ts_code": ts_code or _ts_code(str(row.get("code") or "")),
+        "name": str(row.get("name") or ""),
+        "trade_time": str(row.get("trade_time") or row.get("time") or ""),
+        "price": price,
+        "last_close": last_close,
+        "open": _num(row.get("open_price", row.get("open"))),
+        "high": _num(row.get("high_price", row.get("high"))),
+        "low": _num(row.get("low_price", row.get("low"))),
+        "vol": _num(row.get("volume", row.get("vol"))),
+        "amount": _num(row.get("amount")),
+        "change_pct": change_pct,
+        "bid1": _num(row.get("bid_price1")),
+        "bid1_vol": _num(row.get("bid_volume1")),
+        "ask1": _num(row.get("ask_price1")),
+        "ask1_vol": _num(row.get("ask_volume1")),
+        "source": "tushare_rt_tick",
+        "level": "L1-5",
+    }
 
 def _apply_qfq(daily: pd.DataFrame, factors: pd.DataFrame | None) -> pd.DataFrame:
     if factors is None or factors.empty or "adj_factor" not in factors.columns:
@@ -193,6 +268,56 @@ def fetch_kline_qfq(
         asset="E",
     )
     return _normalize_daily_frame(df)
+
+
+def fetch_realtime_quotes(
+    codes: list[str],
+    token: str | None = None,
+    mode: str | None = None,
+) -> list[dict]:
+    resolved_mode = _mode(mode)
+    token = token or datasource_config.resolve_tushare_token(mode=resolved_mode)
+    if not token or resolved_mode != "replay":
+        return []
+    ts_codes = ",".join(_ts_code(code) for code in codes if str(code or "").strip())
+    if not ts_codes:
+        return []
+    rows = _replay_get("rt_tick", token, {"ts_code": ts_codes}, timeout=15)
+    return [_normalize_replay_quote(row) for row in rows]
+
+
+def fetch_minute_kline(
+    code: str,
+    freq: str = "1MIN",
+    limit: int | None = None,
+    token: str | None = None,
+    mode: str | None = None,
+) -> pd.DataFrame:
+    resolved_mode = _mode(mode)
+    token = token or datasource_config.resolve_tushare_token(mode=resolved_mode)
+    if not token:
+        return _normalize_minute_frame(None)
+    freq_key = str(freq or "1MIN").strip().upper()
+    if freq_key not in VALID_MINUTE_FREQS:
+        freq_key = "1MIN"
+    ts_code = _ts_code(code)
+    if resolved_mode == "replay":
+        params: dict[str, Any] = {"ts_code": ts_code, "freq": freq_key}
+        if limit:
+            params["limit"] = int(limit)
+        api_name = "a_share_mins" if limit and int(limit) > 1 else "rt_min"
+        rows = _replay_get(api_name, token, params, timeout=20)
+        return _normalize_minute_frame(pd.DataFrame(rows))
+
+    ts = _load_tushare()
+    api = ts.pro_api(token)
+    sdk_freq = freq_key.lower().replace("min", "min")
+    end = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+    df = ts.pro_bar(ts_code=ts_code, api=api, start_date=start, end_date=end, freq=sdk_freq, asset="E")
+    if limit and df is not None and not df.empty:
+        df = df.tail(int(limit))
+    return _normalize_minute_frame(df)
 
 
 def test_connection(token: str | None = None, mode: str | None = None) -> dict:

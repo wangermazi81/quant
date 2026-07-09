@@ -1,4 +1,4 @@
-"""数据管理 + K 线 API 蓝图。"""
+﻿"""数据管理 + K 线 API 蓝图。"""
 import threading
 import uuid
 import logging
@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify, session
 
 import data_manager as dm
+import market_data as md
 from app_state import require_auth, _add_log
 
 logger = logging.getLogger(__name__)
@@ -134,3 +135,32 @@ def api_kline(code):
                         "data": local_records})
 
     return jsonify({"ok": False, "data": [], "msg": "暂无数据，请先在「数据管理」下载"})
+
+@bp.route("/api/kline/<code>/minute")
+def api_minute_kline(code):
+    """Minute K-line data for the stock chart modal."""
+    try:
+        date_text = (request.args.get("date") or datetime.now().strftime("%Y%m%d")).strip()
+        raw = md.get_minute_kline(code, date_text)
+        times = raw.get("datetime") or []
+        if not times:
+            return jsonify({"ok": False, "code": code, "data": [], "source": "minute", "msg": "no minute data"})
+        data = []
+        for idx, dt in enumerate(times):
+            dt_text = str(dt)
+            fallback = [None] * len(times)
+            zeroes = [0] * len(times)
+            data.append({
+                "date": dt_text[11:16] if len(dt_text) >= 16 else dt_text,
+                "datetime": dt_text,
+                "open": (raw.get("open") or fallback)[idx],
+                "close": (raw.get("close") or fallback)[idx],
+                "high": (raw.get("high") or fallback)[idx],
+                "low": (raw.get("low") or fallback)[idx],
+                "volume": (raw.get("volume") or zeroes)[idx],
+                "amount": (raw.get("amount") or zeroes)[idx],
+            })
+        return jsonify({"ok": True, "code": code, "source": "tushare_minute", "freq": "1MIN", "data": data})
+    except Exception as exc:
+        logger.warning(f"minute kline api failed {code}: {exc}")
+        return jsonify({"ok": False, "code": code, "data": [], "error": str(exc)})
