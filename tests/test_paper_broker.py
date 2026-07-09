@@ -53,6 +53,12 @@ def broker(tmp_path, monkeypatch):
 # 1. 买入测试
 # ══════════════════════════════════════════════════════
 class TestBuy:
+    def test_default_capital_is_one_million(self, broker):
+        acct = broker.get_account()
+
+        assert acct["initial_capital"] == 1_000_000.0
+        assert acct["cash"] == 1_000_000.0
+
     def test_buy_success(self, broker):
         """正常买入：资金充足，100整股"""
         result = broker.submit_buy("000001", "平安银行", 12.50, 400, reason="测试买入")
@@ -239,6 +245,56 @@ class TestReset:
         acct = broker.get_account()
         assert acct["cash"] == 200_000.0
         assert acct["initial_capital"] == 200_000.0
+
+    def test_legacy_half_million_position_pnl_scales_to_one_million(self, broker):
+        con = broker._conn()
+        for key, value in {
+            "initial_capital": 500_000.0,
+            "cash": 500_000.0,
+            "peak_equity": 500_000.0,
+            "commission_rate": 0,
+            "min_commission": 0,
+            "tax_rate": 0,
+            "slippage_bps": 0,
+        }.items():
+            con.execute(
+                "INSERT OR REPLACE INTO paper_config(user_id,key,value) VALUES(?,?,?)",
+                (broker._uid, key, str(value)),
+            )
+        con.execute(
+            "DELETE FROM paper_config WHERE user_id=? AND key=?",
+            (broker._uid, "pnl_base_capital"),
+        )
+        con.commit()
+        con.close()
+
+        assert broker.submit_buy("000001", "Legacy", 10.0, 1000)["ok"] is True
+        broker._ensure_user_config()
+
+        positions = broker.get_positions(cur_prices={"000001": 12.0})
+        cost_price = positions[0]["cost_price"]
+        raw_open_pnl = round((12.0 - cost_price) * 1000, 2)
+        assert positions[0]["shares"] == 1000
+        assert positions[0]["cost_price"] == cost_price
+        assert positions[0]["pnl_pct"] == round(raw_open_pnl / (cost_price * 1000) * 100, 2)
+        assert positions[0]["pnl_amount"] == round(raw_open_pnl * 2, 2)
+
+        con = broker._conn()
+        row = con.execute(
+            "SELECT buy_amount FROM paper_positions WHERE user_id=? AND code=?",
+            (broker._uid, "000001"),
+        ).fetchone()
+        con.close()
+        buy_amount = float(row["buy_amount"])
+        _, net_income, _, _ = broker._calc_sell_income(12.0, 1000)
+        raw_sell_pnl = round(net_income - buy_amount, 2)
+        expected_scaled_pnl = round(raw_sell_pnl * 2, 2)
+        cash_before_sell = broker._cash()
+        result = broker.submit_sell("000001", 12.0)
+        assert result["ok"] is True
+        assert result["pnl_pct"] == round(raw_sell_pnl / buy_amount * 100, 4)
+        assert result["pnl"] == expected_scaled_pnl
+        assert result["cash_after"] == round(cash_before_sell + buy_amount + expected_scaled_pnl, 2)
 
 
 # ══════════════════════════════════════════════════════

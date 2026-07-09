@@ -608,7 +608,7 @@ class _Engine:
             res = self._ai_broker().reset(initial_capital)
             self.targets.clear()
             self.today_trades = 0
-            self._log(f"🔄 AI 模拟账户已重置（初始资金¥{(initial_capital or 500000):,.0f}）", "warn")
+            self._log(f"🔄 AI 模拟账户已重置（初始资金¥{(initial_capital or 1000000):,.0f}）", "warn")
             self._push_status()
             return {"ok": True, "msg": "AI 模拟账户已重置", **(res or {})}
         except Exception as e:

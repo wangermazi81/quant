@@ -744,7 +744,7 @@ def do_scan(uid: int):
 
     added = 0
     buy_candidates = [r for r in results if r.get("signal", True)]
-    # 仓位基数：实盘走 live_cash，模拟走 s["capital"]（500000 虚拟资金）
+    # 仓位基数：实盘走 live_cash，模拟走 s["capital"]（默认 1000000 虚拟资金）
     _broker_cfg = um.get_user_broker_config(uid)
     _broker_type = _broker_cfg.get("broker_type", "paper")
     if _broker_type == "live" and not DRY_RUN:

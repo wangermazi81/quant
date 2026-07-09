@@ -82,6 +82,26 @@ def test_paper_reset_rejects_invalid_initial_capital(monkeypatch):
     assert not any(call[0] == "reset" for call in broker.calls)
 
 
+def test_paper_reset_defaults_to_one_million(monkeypatch):
+    broker = FakeBroker()
+    monkeypatch.setattr(main.pb, "get_broker", lambda uid: broker)
+
+    client = main.app.test_client()
+    _login(client)
+
+    response = client.post("/api/paper/reset", json={})
+
+    assert response.status_code == 200
+    assert ("reset", 1_000_000) in broker.calls
+
+
+def test_paper_reset_ui_prompt_defaults_to_one_million():
+    html = Path(__file__).resolve().parents[1].joinpath("index.html").read_text(encoding="utf-8")
+
+    assert "prompt('重置模拟盘——输入初始资金（元）：','1000000')" in html
+    assert "prompt('重置模拟盘——输入初始资金（元）：','500000')" not in html
+
+
 def test_paper_buy_rejects_invalid_price_before_deducting(monkeypatch):
     calls = []
     monkeypatch.setattr(main, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)

@@ -1,4 +1,6 @@
 """管理员 API 蓝图：公告管理 / 日志 / 统计 / 用户与积分管理。"""
+from __future__ import annotations
+
 import os
 import re
 from datetime import datetime

@@ -131,7 +131,7 @@ async function fetchSt(){
   const di=document.getElementById('cfgDailyLimit')
   const si=document.getElementById('cfgSingleCap')
   const mi=document.getElementById('cfgMaxPos')
-  if(ci&&!ci.matches(':focus')) ci.value=d.capital||500000
+  if(ci&&!ci.matches(':focus')) ci.value=d.capital||1000000
   if(ri&&!ri.matches(':focus')) ri.value=Math.round((d.position_ratio||0.2)*100)
   if(di&&!di.matches(':focus')) di.value=d.max_daily_trades||3
   if(si&&!si.matches(':focus')) si.value=Math.round((d.single_position_max_ratio||0.2)*100)
@@ -283,7 +283,7 @@ async function sellPos(code, price){
 }
 
 async function saveAccount(){
-  const cap=parseFloat(document.getElementById('cfgCapital').value)||500000
+  const cap=parseFloat(document.getElementById('cfgCapital').value)||1000000
   const rat=parseFloat(document.getElementById('cfgRatio').value)||20
   const dlm=parseInt(document.getElementById('cfgDailyLimit').value)||3
   const scap=parseFloat(document.getElementById('cfgSingleCap').value)||20
@@ -1156,7 +1156,7 @@ async function vibeQuickBuy(rowIdx){
       liveCash = parseFloat((cfgResp?.config || {}).live_cash || 0)
     } catch(e){}
     if(!liveCash || liveCash <= 0){
-      alert('⚠️ 实盘下单前必须先配置 xiadan 真账户余额\n\n请回到顶部 🔴 实盘 开关 → 点开二次确认 Modal → 在余额栏填入 200000（或你 xiadan 上的真实可用金额）\n\n这样系统才能按 20% 仓位 × 真余额 算出正确手数（而不是用模拟盘 500000 的虚假基数导致超限被金额护栏拒）')
+      alert('⚠️ 实盘下单前必须先配置 xiadan 真账户余额\n\n请回到顶部 🔴 实盘 开关 → 点开二次确认 Modal → 在余额栏填入 200000（或你 xiadan 上的真实可用金额）\n\n这样系统才能按 20% 仓位 × 真余额 算出正确手数（而不是用模拟盘 1000000 的虚假基数导致超限被金额护栏拒）')
       return
     }
   }
@@ -3298,8 +3298,8 @@ function pbCalcShares(){
   if(!price || price<=0){ document.getElementById('pbPreview').textContent=''; return }
   // 从状态读取资金和仓位比例
   const capEl = document.getElementById('nCapital')
-  const capStr = capEl?.textContent?.replace(/[¥,]/g,'') || '500000'
-  const cap = parseFloat(capStr) || 500000
+  const capStr = capEl?.textContent?.replace(/[¥,]/g,'') || '1000000'
+  const cap = parseFloat(capStr) || 1000000
   const ratio = 0.20  // 默认20%仓位
   const budget = cap * ratio
   const shares = Math.max(100, Math.floor(budget / price / 100) * 100)
@@ -3508,7 +3508,7 @@ async function paperSell(code, name, price){
 }
 
 async function resetPaper(){
-  const cap = prompt('重置模拟盘——输入初始资金（元）：','500000')
+  const cap = prompt('重置模拟盘——输入初始资金（元）：','1000000')
   if(!cap||isNaN(+cap)||+cap<10000) return
   if(!confirm(`确认重置模拟盘？\n初始资金：¥${(+cap).toLocaleString()}\n\n⚠️ 所有成交、持仓、净值记录将被清空！`)) return
   const r = await api('/paper/reset','POST',{initial_capital:+cap})

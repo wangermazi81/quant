@@ -11,6 +11,8 @@
 ⚠️ SESSION_COOKIE_SECURE 由环境变量控制，默认关闭。仅当站点已上 HTTPS 后再设
    SESSION_COOKIE_SECURE=1，否则浏览器在 HTTP 下不回传 Secure cookie → 全员登录失效。
 """
+from __future__ import annotations
+
 import os
 import re
 import sqlite3

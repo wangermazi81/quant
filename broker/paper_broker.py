@@ -27,7 +27,7 @@ DEFAULT_SLIPPAGE_BPS    = 3
 DEFAULT_STOP_LOSS       = -0.05
 DEFAULT_TAKE_PROFIT     = 0.10
 DEFAULT_MAX_HOLD_DAYS   = 10
-DEFAULT_INITIAL_CAPITAL = 500_000.0
+DEFAULT_INITIAL_CAPITAL = 1_000_000.0
 # 封板/跌停封单金额阈值（元）：仅在 SealTracker 不可用时作回退兜底使用。
 # 主路径走综合强弱评分（见 analytics/seal_tracker.py）。
 DEFAULT_SEAL_BAN_THRESHOLD = 50_000_000.0
@@ -146,6 +146,7 @@ class PaperBroker:
             defaults = {
                 "initial_capital": str(DEFAULT_INITIAL_CAPITAL),
                 "cash":            str(DEFAULT_INITIAL_CAPITAL),
+                "pnl_base_capital": str(DEFAULT_INITIAL_CAPITAL),
                 "commission_rate": str(DEFAULT_COMMISSION_RATE),
                 "min_commission":  str(DEFAULT_MIN_COMMISSION),
                 "tax_rate":        str(DEFAULT_TAX_RATE),
@@ -161,6 +162,23 @@ class PaperBroker:
                     (self._uid, k, v),
                 )
             con.commit()
+        else:
+            cfg_rows = con.execute(
+                "SELECT key,value FROM paper_config WHERE user_id=?",
+                (self._uid,),
+            ).fetchall()
+            cfg = {r["key"]: r["value"] for r in cfg_rows}
+            if "pnl_base_capital" not in cfg:
+                old_initial = float(cfg.get("initial_capital") or DEFAULT_INITIAL_CAPITAL)
+                current_cash = float(cfg.get("cash") or 0.0)
+                current_peak = float(cfg.get("peak_equity") or old_initial)
+                self._set_cfg(con, "pnl_base_capital", old_initial)
+                if old_initial < DEFAULT_INITIAL_CAPITAL:
+                    delta = DEFAULT_INITIAL_CAPITAL - old_initial
+                    self._set_cfg(con, "initial_capital", DEFAULT_INITIAL_CAPITAL)
+                    self._set_cfg(con, "cash", round(current_cash + delta, 2))
+                    self._set_cfg(con, "peak_equity", max(current_peak + delta, DEFAULT_INITIAL_CAPITAL))
+                con.commit()
         con.close()
 
     # ── 配置 ─────────────────────────────────────────
@@ -178,6 +196,13 @@ class PaperBroker:
             "INSERT OR REPLACE INTO paper_config(user_id,key,value) VALUES(?,?,?)",
             (self._uid, key, str(value)),
         )
+
+    def _pnl_scale(self) -> float:
+        base = self._cfg("pnl_base_capital") or DEFAULT_INITIAL_CAPITAL
+        return DEFAULT_INITIAL_CAPITAL / base if base > 0 else 1.0
+
+    def _scale_pnl_amount(self, amount: float) -> float:
+        return round(amount * self._pnl_scale(), 2)
 
     def get_config(self) -> dict:
         con = self._conn()
@@ -208,7 +233,7 @@ class PaperBroker:
             con = self._conn()
             cash = self._cash()
             positions = con.execute(
-                "SELECT code,shares,cost_price FROM paper_positions WHERE user_id=?",
+                "SELECT code,shares,cost_price,buy_amount FROM paper_positions WHERE user_id=?",
                 (self._uid,),
             ).fetchall()
             # 未传实时价时主动拉一次 TDX 行情。否则快照按成本价计市值，
@@ -231,7 +256,13 @@ class PaperBroker:
                 (cur_prices or {}).get(p["code"], p["cost_price"]) * p["shares"]
                 for p in positions
             )
-            equity = cash + mval
+            scaled_position_value = sum(
+                p["buy_amount"] + self._scale_pnl_amount(
+                    ((cur_prices or {}).get(p["code"], p["cost_price"]) - p["cost_price"]) * p["shares"]
+                )
+                for p in positions
+            )
+            equity = cash + scaled_position_value
             peak = self._cfg("peak_equity") or equity
             if equity > peak:
                 peak = equity
@@ -488,12 +519,12 @@ class PaperBroker:
                 (self._uid,),
             ).fetchone()
             cash     = float(cash_row["value"]) if cash_row else 0.0
-            new_cash = round(cash + net_income, 2)
-
             now_str   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             buy_cost  = pos["buy_amount"]
-            pnl       = round(net_income - buy_cost, 2)
-            pnl_pct   = round(pnl / buy_cost * 100, 4) if buy_cost > 0 else 0
+            raw_pnl   = round(net_income - buy_cost, 2)
+            pnl       = self._scale_pnl_amount(raw_pnl)
+            pnl_pct   = round(raw_pnl / buy_cost * 100, 4) if buy_cost > 0 else 0
+            new_cash  = round(cash + buy_cost + pnl, 2)
             buy_dt    = datetime.strptime(pos["buy_time"][:10], "%Y-%m-%d")
             hold_days = (datetime.now() - buy_dt).days
 
@@ -613,8 +644,14 @@ class PaperBroker:
         # 市值优先用实时价（传入 cur_prices 时），否则退回成本价。
         # 这样账户权益/收益率能体现浮动盈亏，实现实时收益跟踪。
         cur_prices = cur_prices or {}
-        mval    = sum((cur_prices.get(p["code"]) or p["cost_price"]) * p["shares"] for p in positions)
-        equity  = round(cash + mval, 2)
+        mval = sum((cur_prices.get(p["code"]) or p["cost_price"]) * p["shares"] for p in positions)
+        scaled_position_value = sum(
+            p["buy_amount"] + self._scale_pnl_amount(
+                ((cur_prices.get(p["code"]) or p["cost_price"]) - p["cost_price"]) * p["shares"]
+            )
+            for p in positions
+        )
+        equity  = round(cash + scaled_position_value, 2)
         return {
             "initial_capital": initial,
             "cash":            round(cash, 2),
@@ -650,7 +687,7 @@ class PaperBroker:
             shares     = r["shares"]
             cur_price  = (cur_prices or {}).get(code, cost_price)
             pnl_pct    = round((cur_price - cost_price) / cost_price * 100, 2) if cost_price else 0
-            pnl_amt    = round((cur_price - cost_price) * shares, 2)
+            pnl_amt    = self._scale_pnl_amount((cur_price - cost_price) * shares)
             hold_days  = (datetime.now() - datetime.strptime(r["buy_time"][:10], "%Y-%m-%d")).days
             # 防御：名称含 ? / 空 / 与 code 相同 / 长度 <2，则从 stock_names.json 重新查询
             nm = r["name"]
@@ -797,7 +834,7 @@ class PaperBroker:
             con = self._conn()
             for tbl in ("paper_orders", "paper_trades", "paper_positions", "paper_equity"):
                 con.execute(f"DELETE FROM {tbl} WHERE user_id=?", (self._uid,))
-            for k, v in [("cash", cap), ("initial_capital", cap), ("peak_equity", cap)]:
+            for k, v in [("cash", cap), ("initial_capital", cap), ("pnl_base_capital", cap), ("peak_equity", cap)]:
                 con.execute(
                     "INSERT OR REPLACE INTO paper_config(user_id,key,value) VALUES(?,?,?)",
                     (self._uid, k, str(v)),

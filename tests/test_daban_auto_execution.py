@@ -151,6 +151,37 @@ def test_lianban_ride_auto_paper_sell_on_stop_loss(scan_env, monkeypatch):
     assert not any(p["code"] == "000005" for p in broker.get_positions())
 
 
+def test_do_scan_cloud_path_auto_sells_paper_stop_loss(scan_env, monkeypatch):
+    user_id, _ = scan_env
+    state = _state(user_id, auto_execute=False)
+    state["active_strategy"] = "ma_cross"
+    assert main.execute_buy(user_id, "000006", "CloudStop", 10.0, 1000)["ok"]
+
+    broker = pb.get_broker(user_id)
+    conn = broker._conn()
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "UPDATE paper_positions SET buy_time=? WHERE user_id=? AND code=?",
+        (yesterday, user_id, "000006"),
+    )
+    conn.commit()
+    conn.close()
+
+    class QuoteClient:
+        _ok = True
+
+        def get_quotes(self, codes):
+            return [{"code": "000006", "price": 9.4, "last_close": 9.5}]
+
+    monkeypatch.setattr(ths_quote, "get_client", lambda *a, **k: QuoteClient())
+    monkeypatch.setattr(sm, "run", lambda *a, **k: {"results": [], "scanned": 0})
+
+    main.do_scan(user_id)
+
+    assert "000006" not in state["positions"]
+    assert not any(p["code"] == "000006" for p in broker.get_positions())
+
+
 def test_paper_position_keeps_original_strategy_after_switch(scan_env, monkeypatch):
     user_id, _ = scan_env
     _mock_scan(monkeypatch, position_ratio=0.15)
