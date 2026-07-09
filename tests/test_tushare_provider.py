@@ -253,6 +253,34 @@ def test_fetch_tick_series_uses_replay_a_share_ticks(monkeypatch):
     ]
 
 
+def test_fetch_tick_series_accepts_exchange_qualified_codes(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"code": 0, "data": []}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(params.copy())
+        return FakeResponse()
+
+    monkeypatch.setattr(tp.requests, "get", fake_get)
+
+    for code in ("000001.SZ", "SZ000001", "sz000001", "600000.SH", "SH600000"):
+        tp.fetch_tick_series(code, trade_date="20260709", limit=2, token="api-key", mode="replay")
+
+    assert [call["ts_code"] for call in calls] == [
+        "000001.SZ",
+        "000001.SZ",
+        "000001.SZ",
+        "600000.SH",
+        "600000.SH",
+    ]
+
+
 def test_fetch_order_book_normalizes_five_levels(monkeypatch):
     monkeypatch.setattr(tp, "fetch_realtime_quotes", lambda codes, token=None, mode=None: [{
         "code": "000001",

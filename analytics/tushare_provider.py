@@ -28,7 +28,20 @@ VALID_MINUTE_FREQS = {"1MIN", "5MIN", "15MIN", "30MIN", "60MIN"}
 
 
 def _ts_code(code: str) -> str:
-    c = str(code or "").strip().zfill(6)
+    raw = str(code or "").strip().upper()
+    suffix = ""
+    if "." in raw:
+        raw_code, raw_suffix = raw.rsplit(".", 1)
+        if raw_suffix in {"SZ", "SH", "BJ"}:
+            suffix = raw_suffix
+        raw = raw_code
+    elif raw[:2] in {"SZ", "SH", "BJ"}:
+        suffix = raw[:2]
+
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    c = (digits[-6:] if digits else raw[-6:]).zfill(6)
+    if suffix:
+        return f"{c}.{suffix}"
     if c.startswith(("4", "8", "920")):
         return f"{c}.BJ"
     if c.startswith(("5", "6", "9")):
