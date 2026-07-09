@@ -841,6 +841,41 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
       </div>
     </div>
 
+    <!-- ===== 行情数据源配置 ===== -->
+    <div class="page" id="page-datasource-config">
+      <div class="card" style="max-width:680px">
+        <div class="card-title"><i class="fas fa-database"></i> 行情数据源配置</div>
+        <div style="font-size:12px;color:var(--text2);margin-bottom:16px">
+          选择全平台历史日线优先数据源。Tushare 失败时可自动回退到当前数据源，避免策略扫描和回测中断。
+        </div>
+        <div class="form-group">
+          <label class="form-label">优先数据源</label>
+          <select id="dsc-provider" class="form-input" onchange="dscProviderChanged()">
+            <option value="current">当前数据源（AkShare / 同花顺 / 东方财富等）</option>
+            <option value="tushare">Tushare Pro</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tushare Token（留空 = 保持不变）</label>
+          <input id="dsc-token" class="form-input" type="password" placeholder="请输入 Tushare Pro Token" autocomplete="new-password">
+          <div id="dsc-current" style="margin-top:6px;font-size:12px;color:var(--text3)">当前 Token: 未配置</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" id="dsc-tushare-enabled"> 启用 Tushare Pro
+          </label>
+          <label class="form-label" style="display:flex;align-items:center;gap:8px;margin-top:8px">
+            <input type="checkbox" id="dsc-fallback-enabled"> Tushare 无数据或异常时回退当前数据源
+          </label>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+          <button class="btn btn-primary" onclick="dscSave()"><i class="fas fa-save"></i> 保存并生效</button>
+          <button class="btn btn-outline" onclick="dscTest()"><i class="fas fa-plug"></i> 测试 Tushare</button>
+        </div>
+        <div id="dsc-msg" style="margin-top:12px;font-size:13px;color:var(--text2)"></div>
+      </div>
+    </div>
+
     <!-- ===== AI接口设置 ===== -->
     <div class="page" id="page-ai-config">
       <div class="card" style="max-width:680px">
@@ -1120,6 +1155,7 @@ const MENU = [
   {id:'roles',     icon:'fas fa-shield-alt',      label:'角色权限', group:'系统管理'},
   {id:'points',    icon:'fas fa-coins',           label:'积分流水', group:'系统管理'},
   {id:'point-costs', icon:'fas fa-sliders-h',     label:'积分设置', group:'系统管理'},
+  {id:'datasource-config', icon:'fas fa-database', label:'数据源配置', group:'系统管理'},
   {id:'ai-config',  icon:'fas fa-robot',          label:'AI接口设置', group:'系统管理'},
   {id:'invites',   icon:'fas fa-ticket-alt',      label:'邀请码',   group:'系统管理'},
   {id:'reset-requests', icon:'fas fa-key',         label:'找回申请', group:'系统管理'},
@@ -1136,6 +1172,7 @@ const PAGE_PERMISSIONS = {
   roles: 'admin_grant',
   points: 'points_manage',
   'point-costs': 'points_manage',
+  'datasource-config': 'data_config',
   'ai-config': 'ai_config',
   invites: 'invite_manage',
   'reset-requests': 'user_manage',
@@ -1148,7 +1185,7 @@ const PAGE_PERMISSIONS = {
 const PAGE_NAMES = {
   'dashboard':'工作台','users':'用户管理','roles':'角色权限',
   'points':'积分流水','stats':'使用统计','announcements':'公告管理',
-  'invites':'邀请码','reset-requests':'找回申请','notify-config':'通知设置','feedback':'问题反馈','point-costs':'积分设置','ai-config':'AI接口设置',
+  'invites':'邀请码','reset-requests':'找回申请','notify-config':'通知设置','feedback':'问题反馈','point-costs':'积分设置','datasource-config':'数据源配置','ai-config':'AI接口设置',
   'user-center':'个人中心','change-pwd':'修改密码','notifications':'系统通知',
   'changelog':'更新日志',
 };
@@ -1275,6 +1312,7 @@ function navigate(id, addTabFlag=true){
   if(id==='reset-requests') loadResetRequests();
   if(id==='notify-config') loadNotifyConfig();
   if(id==='point-costs') loadPointCosts();
+  if(id==='datasource-config') loadDatasourceConfig();
   if(id==='ai-config') loadAiConfig();
   if(id==='notifications') renderNotifications();
 }
@@ -2154,6 +2192,59 @@ async function _annFetch(method, path, body, timeoutMs){
   }catch(e){
     clearTimeout(tid);
     return {ok:false, error: e.name==='AbortError' ? '请求超时（后端无响应）' : ('网络错误：'+(e.message||e))};
+  }
+}
+
+// ================================================================
+// 行情数据源配置（当前源 / Tushare Pro）
+// ================================================================
+async function loadDatasourceConfig(){
+  const msg = document.getElementById('dsc-msg');
+  if(msg) msg.textContent = '加载中…';
+  const r = await _annFetch('GET', '/admin/datasource/config');
+  if(!r || !r.ok){
+    if(msg){ msg.style.color = 'var(--red)'; msg.textContent = (r&&r.error)||'加载失败'; }
+    return;
+  }
+  document.getElementById('dsc-provider').value = r.provider || 'current';
+  document.getElementById('dsc-token').value = '';
+  document.getElementById('dsc-tushare-enabled').checked = !!r.tushare_enabled;
+  document.getElementById('dsc-fallback-enabled').checked = r.fallback_enabled !== false;
+  document.getElementById('dsc-current').textContent = '当前 Token: ' + (r.tushare_token_masked || '未配置');
+  dscProviderChanged();
+  if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = `当前优先数据源：${r.provider === 'tushare' ? 'Tushare Pro' : '当前数据源'}`; }
+}
+
+function dscProviderChanged(){
+  const provider = document.getElementById('dsc-provider').value;
+  if(provider === 'tushare') document.getElementById('dsc-tushare-enabled').checked = true;
+}
+
+async function dscSave(){
+  const body = {
+    provider: document.getElementById('dsc-provider').value,
+    tushare_enabled: document.getElementById('dsc-tushare-enabled').checked,
+    fallback_enabled: document.getElementById('dsc-fallback-enabled').checked,
+  };
+  const token = document.getElementById('dsc-token').value.trim();
+  if(token) body.tushare_token = token;
+  const r = await _annFetch('POST', '/admin/datasource/config', body);
+  if(r && r.ok){ showToast('数据源配置已保存，即时生效','success'); loadDatasourceConfig(); }
+  else showToast((r&&r.error)||'保存失败','error');
+}
+
+async function dscTest(){
+  const msg = document.getElementById('dsc-msg');
+  msg.style.color = 'var(--text2)'; msg.textContent = '正在测试 Tushare 连接…';
+  const token = document.getElementById('dsc-token').value.trim();
+  const body = token ? {tushare_token: token} : {};
+  const r = await _annFetch('POST', '/admin/datasource/test', body, 30000);
+  if(r && r.ok){
+    msg.style.color = 'var(--green)';
+    msg.textContent = `Tushare 连接正常，样例 ${r.sample || '000001.SZ'} 返回 ${r.rows || 0} 条日线`;
+  }else{
+    msg.style.color = 'var(--red)';
+    msg.textContent = (r&&r.error)||'测试失败';
   }
 }
 

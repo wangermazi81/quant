@@ -10,6 +10,8 @@ from flask import Blueprint, request, jsonify, session
 
 import user_manager as um
 import app_security as sec
+import datasource_config
+import tushare_provider
 from app_state import BASE_DIR, require_admin, require_admin_perm, require_root_admin
 
 bp = Blueprint("admin", __name__)
@@ -237,6 +239,35 @@ def admin_system_status():
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "checks": checks,
     })
+
+
+@bp.route("/api/admin/datasource/config", methods=["GET"])
+@require_admin_perm("data_config")
+def admin_datasource_config_get():
+    cfg = datasource_config.get_config()
+    return jsonify({"ok": True, **cfg})
+
+
+@bp.route("/api/admin/datasource/config", methods=["POST"])
+@require_admin_perm("data_config")
+def admin_datasource_config_save():
+    try:
+        cfg = datasource_config.save_config(request.json or {})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "config": cfg})
+
+
+@bp.route("/api/admin/datasource/test", methods=["POST"])
+@require_admin_perm("data_config")
+def admin_datasource_test():
+    body = request.json or {}
+    token = (body.get("tushare_token") or "").strip()
+    if not token:
+        token = datasource_config.resolve_tushare_token()
+    result = tushare_provider.test_connection(token)
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
 
 
 @bp.route("/api/admin/permissions/catalog")

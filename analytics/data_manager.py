@@ -12,6 +12,12 @@ from datetime import datetime
 import pandas as pd
 import akshare as ak
 
+try:
+    import datasource_config
+    import tushare_provider
+except Exception:  # pragma: no cover - package import fallback for tests/tools
+    from . import datasource_config, tushare_provider  # type: ignore
+
 # ── 强制 akshare 不走代理（直连国内行情接口）───────────────
 # requests 底层：trust_env=False 完全忽略系统代理
 import requests as _requests
@@ -586,20 +592,42 @@ def _download_one(code: str, start_date: str) -> dict:
         end    = datetime.today().strftime("%Y%m%d")
         start  = start_date.replace("-", "")
 
+        ds_cfg = datasource_config.get_internal_config()
+        use_tushare = (
+            ds_cfg.get("provider") == "tushare"
+            and bool(ds_cfg.get("tushare_enabled"))
+            and bool(ds_cfg.get("tushare_token"))
+        )
+
         # 临时清除代理环境变量（akshare 走 urllib3，直接受 env 影响）
         _tmp = {k: os.environ.pop(k) for k in list(_PROXY_KEYS) if k in os.environ}
         logger.info(f"下载 {code}({symbol}) {start}~{end} ...")
         src = "腾讯"
+        df = None
         try:
-            try:
-                # adjust="qfq" 前复权 —— 必须与 baostock(adjustflag=2)/优矿(AdjGet) 口径一致；
-                # 不复权数据在除权日有价格断崖，回测会误触发止损、收益完全失真
-                df = ak.stock_zh_a_hist_tx(symbol=symbol, start_date=start, end_date=end,
-                                           adjust="qfq")
-            except Exception as _te:
-                logger.info(f"[{code}] 腾讯源失败({_te})，降级 baostock")
-                df = None
-            # 降级链：腾讯 → baostock → 优矿
+            if use_tushare:
+                src = "tushare"
+                try:
+                    df = tushare_provider.fetch_kline_qfq(
+                        code, start, end, token=ds_cfg.get("tushare_token")
+                    )
+                except Exception as _tse:
+                    logger.info(f"[{code}] Tushare源失败({_tse})")
+                    df = None
+                if (df is None or df.empty) and not ds_cfg.get("fallback_enabled", True):
+                    return {"ok": False, "code": code, "msg": "Tushare 无数据，且未启用回退数据源"}
+
+            if df is None or df.empty:
+                src = "腾讯"
+                try:
+                    # adjust="qfq" 前复权 —— 必须与 baostock(adjustflag=2)/优矿(AdjGet) 口径一致；
+                    # 不复权数据在除权日有价格断崖，回测会误触发止损、收益完全失真
+                    df = ak.stock_zh_a_hist_tx(symbol=symbol, start_date=start, end_date=end,
+                                               adjust="qfq")
+                except Exception as _te:
+                    logger.info(f"[{code}] 腾讯源失败({_te})，降级 baostock")
+                    df = None
+            # 降级链：Tushare(可选) → 腾讯 → baostock → 优矿
             if df is None or df.empty:
                 src = "baostock"
                 df  = _fetch_kline_baostock(code, start_date, datetime.today().strftime("%Y-%m-%d"))
@@ -610,7 +638,7 @@ def _download_one(code: str, start_date: str) -> dict:
             os.environ.update(_tmp)   # 还原，避免影响其他请求（如 AI 接口）
 
         if df is None or df.empty:
-            return {"ok": False, "code": code, "msg": "腾讯/baostock/优矿 三源均无数据"}
+            return {"ok": False, "code": code, "msg": "Tushare/腾讯/baostock/优矿 均无数据"}
         if src != "腾讯":
             logger.info(f"[{code}] 已用降级数据源: {src}")
 
