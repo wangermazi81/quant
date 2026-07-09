@@ -410,6 +410,10 @@ tr:hover td{background:var(--card)}
 .kl-box{background:#161b22;border:1px solid var(--b1);border-radius:12px;width:940px;max-width:96vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.7)}
 .kl-hd{padding:12px 16px;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:8px}
 .kl-title{font-size:15px;font-weight:700;color:var(--t1);flex:1}
+.kl-tabs{display:flex;align-items:center;gap:2px;padding:2px;background:#0d1117;border:1px solid var(--b1);border-radius:7px}
+.kl-tab{height:24px;padding:0 10px;border:0;border-radius:5px;background:transparent;color:var(--t3);font-size:12px;font-weight:700;cursor:pointer;line-height:24px;transition:.15s}
+.kl-tab:hover{color:var(--t1);background:rgba(255,255,255,.04)}
+.kl-tab.active{color:#fff;background:var(--blue)}
 .kl-src{font-size:11px;color:var(--t4);padding:2px 7px;background:var(--inp);border-radius:4px}
 .kl-close{background:none;border:none;color:var(--t3);cursor:pointer;font-size:20px;padding:0 4px;line-height:1}
 .kl-close:hover{color:var(--t1)}
@@ -5293,38 +5297,76 @@ async function api(path,method='GET',body=null){
 function closeKL(){ document.getElementById('klOverlay').classList.remove('show') }
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeKL() })
 
-async function showKLine(code, name){
-  const ov = document.getElementById('klOverlay')
-  document.getElementById('klTitle').textContent = `${code}  ${name}`
-  document.getElementById('klSrc').textContent   = '加载中...'
-  document.getElementById('klInfo').innerHTML    = ''
-  // 清空画布
-  const cvs = document.getElementById('klCanvas')
-  const ctx  = cvs.getContext('2d')
-  ctx.clearRect(0,0,cvs.width,cvs.height)
-  ov.classList.add('show')
+const KL_STATE = { code:'', name:'', mode:'minute', minute:null, daily:null }
 
-  let resp = await api('/kline/'+code+'/minute')
-  const usedMinute = !!(resp?.ok && resp.data?.length)
-  if(!usedMinute) resp = await api('/kline/'+code)
+function _setKLineTabs(mode){
+  document.getElementById('klTabMinute')?.classList.toggle('active', mode==='minute')
+  document.getElementById('klTabDaily')?.classList.toggle('active', mode==='daily')
+}
+
+async function switchKLineMode(mode){
+  await _renderKLineMode(mode, false)
+}
+
+async function _renderKLineMode(mode, allowFallback){
+  const stateCode = KL_STATE.code
+  KL_STATE.mode = mode
+  _setKLineTabs(mode)
+  const cvs = document.getElementById('klCanvas')
+  const ctx = cvs.getContext('2d')
+  ctx.clearRect(0,0,cvs.width,cvs.height)
+  document.getElementById('klInfo').innerHTML = ''
+  document.getElementById('klSrc').textContent = mode==='minute' ? '分时加载中...' : '日K加载中...'
+
+  const key = mode==='minute' ? 'minute' : 'daily'
+  let resp = KL_STATE[key]
+  if(!resp){
+    resp = await api(mode==='minute' ? '/kline/'+stateCode+'/minute' : '/kline/'+stateCode)
+    if(KL_STATE.code!==stateCode) return
+    KL_STATE[key] = resp
+  }
+  if(KL_STATE.code!==stateCode || KL_STATE.mode!==mode) return
+
   if(!resp?.ok || !resp.data?.length){
+    if(mode==='minute' && allowFallback) return _renderKLineMode('daily', false)
     document.getElementById('klSrc').textContent=''
-    document.getElementById('klInfo').innerHTML=
-      '<span style="color:var(--rl)">⚠ 暂无数据 — 请先在「策略中心 → 数据管理」下载该股历史数据</span>'
+    document.getElementById('klInfo').innerHTML = mode==='minute'
+      ? '<span style="color:var(--rl)">⚠ 暂无分时数据，请切换日K查看历史走势</span>'
+      : '<span style="color:var(--rl)">⚠ 暂无数据 — 请先在「策略中心 → 数据管理」下载该股历史数据</span>'
     return
   }
+
   const _klSrc = document.getElementById('klSrc')
-  if(usedMinute){
-    _klSrc.textContent = resp.source==='tushare_minute' ? 'Tushare 1分钟' : '1分钟K线'
-  } else if(resp.stale){
+  if(mode==='minute'){
+    _klSrc.textContent = resp.source==='tushare_minute' ? 'Tushare 分时' : '分钟分时'
+    drawMinuteLine(cvs, resp.data)
+    return
+  }
+  if(resp.stale){
     _klSrc.innerHTML = '<span style="color:var(--rl)" title="'+(resp.msg||'本地缓存可能过期').replace(/"/g,'')+'">⚠ 本地缓存·可能过期</span>'
   } else {
     _klSrc.textContent = resp.source==='tdx' ? 'TDX实时' : '本地数据'
   }
   drawKLine(cvs, resp.data)
-
 }
 
+async function showKLine(code, name){
+  const ov = document.getElementById('klOverlay')
+  document.getElementById('klTitle').textContent = `${code}  ${name}`
+  document.getElementById('klSrc').textContent = '加载中...'
+  document.getElementById('klInfo').innerHTML = ''
+  const cvs = document.getElementById('klCanvas')
+  const ctx  = cvs.getContext('2d')
+  ctx.clearRect(0,0,cvs.width,cvs.height)
+  KL_STATE.code = code
+  KL_STATE.name = name
+  KL_STATE.mode = 'minute'
+  KL_STATE.minute = null
+  KL_STATE.daily = null
+  _setKLineTabs('minute')
+  ov.classList.add('show')
+  await _renderKLineMode('minute', true)
+}
 function _normDate(d){
   // 统一把各种日期格式转成 "YYYY-MM-DD" 字符串
   if(!d) return ''
@@ -5346,6 +5388,95 @@ function _normDate(d){
   return s.slice(0,10)
 }
 
+function _fmtMinuteLabel(d){
+  const raw = String(d.datetime || d.date || '')
+  if(/^\d{2}:\d{2}/.test(raw)) return raw.slice(0,5)
+  if(raw.length>=16) return raw.slice(11,16)
+  return raw.slice(0,5)
+}
+
+function drawMinuteLine(canvas, rawData){
+  const data = [...rawData]
+    .map(d=>({...d, close:+d.close, open:+d.open, high:+d.high, low:+d.low, volume:+(d.volume||0)}))
+    .filter(d=>Number.isFinite(d.close))
+    .sort((a,b)=>String(a.datetime||a.date).localeCompare(String(b.datetime||b.date)))
+  const n = data.length; if(!n) return
+
+  const rect = canvas.getBoundingClientRect()
+  const dpr = window.devicePixelRatio||1
+  canvas.width = rect.width*dpr
+  canvas.height = rect.height*dpr
+  const ctx = canvas.getContext('2d')
+  ctx.scale(dpr,dpr)
+  const RW=rect.width, RH=rect.height
+  const PAD={t:18,r:62,b:42,l:12}
+  const VOL_H=Math.floor(RH*.18)
+  const LH=RH-PAD.t-PAD.b-VOL_H-10
+  const CW=RW-PAD.l-PAD.r
+  const closes=data.map(d=>d.close)
+  const highs=data.map(d=>Number.isFinite(d.high)?d.high:d.close)
+  const lows=data.map(d=>Number.isFinite(d.low)?d.low:d.close)
+  const vols=data.map(d=>d.volume||0)
+  const ref=Number.isFinite(data[0].open)&&data[0].open>0 ? data[0].open : closes[0]
+  const maxP=Math.max(...highs, ref)*1.001
+  const minP=Math.min(...lows, ref)*0.999
+  const pRng=maxP-minP||1
+  const maxV=Math.max(...vols)||1
+  const x=i=>PAD.l + (n===1 ? CW/2 : CW*i/(n-1))
+  const py=p=>PAD.t + LH*(1-(p-minP)/pRng)
+  const vy=v=>PAD.t+LH+10+VOL_H*(1-v/maxV)
+
+  ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,RW,RH)
+  ctx.strokeStyle='#1e2530'; ctx.lineWidth=1
+  for(let j=0;j<=4;j++){
+    const y=PAD.t+LH/4*j
+    ctx.beginPath(); ctx.moveTo(PAD.l,y); ctx.lineTo(PAD.l+CW,y); ctx.stroke()
+    const price=maxP-(pRng/4)*j
+    ctx.fillStyle='#6e7681'; ctx.font='10px monospace'; ctx.textAlign='left'
+    ctx.fillText(price.toFixed(2), PAD.l+CW+5, y+4)
+  }
+  const refY=py(ref)
+  ctx.setLineDash([4,4]); ctx.strokeStyle='rgba(148,163,184,.55)'
+  ctx.beginPath(); ctx.moveTo(PAD.l,refY); ctx.lineTo(PAD.l+CW,refY); ctx.stroke(); ctx.setLineDash([])
+
+  const grad=ctx.createLinearGradient(0,PAD.t,0,PAD.t+LH)
+  grad.addColorStop(0,'rgba(59,130,246,.28)')
+  grad.addColorStop(1,'rgba(59,130,246,0)')
+  ctx.beginPath(); data.forEach((d,i)=>{ const xx=x(i), yy=py(d.close); i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy) })
+  ctx.lineTo(x(n-1), PAD.t+LH); ctx.lineTo(x(0), PAD.t+LH); ctx.closePath(); ctx.fillStyle=grad; ctx.fill()
+
+  ctx.strokeStyle='#58a6ff'; ctx.lineWidth=1.8; ctx.beginPath()
+  data.forEach((d,i)=>{ const xx=x(i), yy=py(d.close); i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy) })
+  ctx.stroke()
+  const last=data[n-1]
+  ctx.fillStyle='#58a6ff'; ctx.beginPath(); ctx.arc(x(n-1), py(last.close), 3, 0, Math.PI*2); ctx.fill()
+
+  const barW=Math.max(1, Math.floor(CW/Math.max(n,1))*.58)
+  vols.forEach((v,i)=>{
+    const up=i===0 ? data[i].close>=ref : data[i].close>=data[i-1].close
+    ctx.fillStyle=up?'rgba(239,68,68,.45)':'rgba(34,197,94,.45)'
+    const top=vy(v), bot=PAD.t+LH+10+VOL_H
+    ctx.fillRect(x(i)-barW/2, top, barW, bot-top)
+  })
+
+  ctx.strokeStyle='#21262d'; ctx.beginPath(); ctx.moveTo(PAD.l,PAD.t+LH+5); ctx.lineTo(PAD.l+CW,PAD.t+LH+5); ctx.stroke()
+  ctx.fillStyle='#484f58'; ctx.font='9px monospace'; ctx.textAlign='center'
+  const step=Math.max(1,Math.ceil(n/6))
+  data.forEach((d,i)=>{ if(i%step===0 || i===n-1) ctx.fillText(_fmtMinuteLabel(d), x(i), RH-PAD.b+14) })
+
+  const change=last.close-ref
+  const pct=ref ? (change/ref*100) : 0
+  const color=change>=0?'#ef4444':'#22c55e'
+  const hi=Math.max(...highs), lo=Math.min(...lows)
+  document.getElementById('klInfo').innerHTML=`
+    <span>最新 <b style="color:${color}">${last.close.toFixed(2)}</b></span>
+    <span style="color:${color};font-weight:700">${change>=0?'+':''}${change.toFixed(2)} / ${pct>=0?'+':''}${pct.toFixed(2)}%</span>
+    <span>均线参考 <b>${ref.toFixed(2)}</b></span>
+    <span>高 <b style="color:#ef4444">${hi.toFixed(2)}</b></span>
+    <span>低 <b style="color:#22c55e">${lo.toFixed(2)}</b></span>
+    <span style="color:var(--t4);margin-left:8px">${String(last.datetime||last.date||'')}</span>
+  `
+}
 function drawKLine(canvas, rawData){
   // 统一日期格式，按升序排列
   const data = [...rawData].map(d=>({...d, date:_normDate(d.date)})).sort((a,b)=>a.date<b.date?-1:1)
@@ -6285,7 +6416,11 @@ window.api = async function(path, method='GET', body=null){
 <div class="kl-overlay" id="klOverlay" onclick="if(event.target===this)closeKL()">
   <div class="kl-box">
     <div class="kl-hd">
-      <span class="kl-title" id="klTitle">日K线</span>
+      <span class="kl-title" id="klTitle">股票走势</span>
+      <div class="kl-tabs" role="tablist" aria-label="图表类型">
+        <button class="kl-tab active" id="klTabMinute" type="button" role="tab" onclick="switchKLineMode('minute')">分时</button>
+        <button class="kl-tab" id="klTabDaily" type="button" role="tab" onclick="switchKLineMode('daily')">日K</button>
+      </div>
       <span class="kl-src" id="klSrc"></span>
       <button class="kl-close" onclick="closeKL()">✕</button>
     </div>
