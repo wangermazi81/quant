@@ -609,7 +609,11 @@ def _download_one(code: str, start_date: str) -> dict:
                 src = "tushare"
                 try:
                     df = tushare_provider.fetch_kline_qfq(
-                        code, start, end, token=ds_cfg.get("tushare_token")
+                        code,
+                        start,
+                        end,
+                        token=ds_cfg.get("tushare_token"),
+                        mode=ds_cfg.get("tushare_mode"),
                     )
                 except Exception as _tse:
                     logger.info(f"[{code}] Tushare源失败({_tse})")

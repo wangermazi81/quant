@@ -31,6 +31,7 @@ def test_admin_datasource_config_save_masks_token(isolated_app, monkeypatch, tmp
     resp = client.post("/api/admin/datasource/config", json={
         "provider": "tushare",
         "tushare_enabled": True,
+        "tushare_mode": "replay",
         "tushare_token": "abcdef1234567890",
         "fallback_enabled": True,
     })
@@ -39,6 +40,7 @@ def test_admin_datasource_config_save_masks_token(isolated_app, monkeypatch, tmp
     assert resp.status_code == 200
     assert data["ok"] is True
     assert data["config"]["provider"] == "tushare"
+    assert data["config"]["tushare_mode"] == "replay"
     assert data["config"]["tushare_token_masked"] == "abcd********7890"
     assert "tushare_token" not in data["config"]
 
@@ -49,13 +51,13 @@ def test_admin_datasource_test_uses_posted_or_saved_token(isolated_app, monkeypa
 
     monkeypatch.setattr(admin_api.datasource_config, "CONFIG_FILE", tmp_path / "datasource_config.json")
     calls = []
-    monkeypatch.setattr(admin_api.tushare_provider, "test_connection", lambda token=None: calls.append(token) or {"ok": True, "rows": 1})
+    monkeypatch.setattr(admin_api.tushare_provider, "test_connection", lambda token=None, mode=None: calls.append((token, mode)) or {"ok": True, "rows": 1, "mode": mode})
 
     client = app.test_client()
     _login_session(client, 1, "admin")
-    client.post("/api/admin/datasource/config", json={"provider": "tushare", "tushare_token": "saved-token"})
+    client.post("/api/admin/datasource/config", json={"provider": "tushare", "tushare_mode": "replay", "tushare_token": "saved-token"})
     resp = client.post("/api/admin/datasource/test", json={})
 
     assert resp.status_code == 200
     assert resp.get_json()["ok"] is True
-    assert calls == ["saved-token"]
+    assert calls == [("saved-token", "replay")]

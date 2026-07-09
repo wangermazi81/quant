@@ -19,9 +19,9 @@ def test_download_one_uses_tushare_when_selected(monkeypatch, tmp_path):
     monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
     monkeypatch.setattr(dm, "get_stock_name", lambda code: "平安银行")
     monkeypatch.setattr(dm.datasource_config, "get_internal_config", lambda: {
-        "provider": "tushare", "tushare_enabled": True, "fallback_enabled": True, "tushare_token": "tok"
+        "provider": "tushare", "tushare_mode": "replay", "tushare_enabled": True, "fallback_enabled": True, "tushare_token": "tok"
     })
-    monkeypatch.setattr(dm.tushare_provider, "fetch_kline_qfq", lambda code, start, end, token=None: _frame())
+    monkeypatch.setattr(dm.tushare_provider, "fetch_kline_qfq", lambda code, start, end, token=None, mode=None: _frame())
     monkeypatch.setattr(dm.ak, "stock_zh_a_hist_tx", lambda **kwargs: (_ for _ in ()).throw(AssertionError("current source should not be used")))
 
     result = dm._download_one("000001", "2026-07-01")
@@ -36,9 +36,9 @@ def test_download_one_falls_back_when_tushare_empty(monkeypatch, tmp_path):
     monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
     monkeypatch.setattr(dm, "get_stock_name", lambda code: "平安银行")
     monkeypatch.setattr(dm.datasource_config, "get_internal_config", lambda: {
-        "provider": "tushare", "tushare_enabled": True, "fallback_enabled": True, "tushare_token": "tok"
+        "provider": "tushare", "tushare_mode": "replay", "tushare_enabled": True, "fallback_enabled": True, "tushare_token": "tok"
     })
-    monkeypatch.setattr(dm.tushare_provider, "fetch_kline_qfq", lambda code, start, end, token=None: None)
+    monkeypatch.setattr(dm.tushare_provider, "fetch_kline_qfq", lambda code, start, end, token=None, mode=None: None)
     monkeypatch.setattr(dm.ak, "stock_zh_a_hist_tx", lambda **kwargs: _frame(20.0))
 
     result = dm._download_one("000001", "2026-07-01")

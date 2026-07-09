@@ -11,10 +11,12 @@ from typing import Any
 
 CONFIG_FILE = Path(__file__).parent.parent / "data" / "datasource_config.json"
 VALID_PROVIDERS = {"current", "tushare"}
+VALID_TUSHARE_MODES = {"replay", "sdk"}
 
 DEFAULT_CONFIG = {
     "provider": "current",
     "tushare_enabled": False,
+    "tushare_mode": "replay",
     "tushare_token": "",
     "fallback_enabled": True,
 }
@@ -47,6 +49,8 @@ def _normalize(raw: dict | None) -> dict:
     cfg["provider"] = provider
     cfg["tushare_enabled"] = _coerce_bool(cfg.get("tushare_enabled"), provider == "tushare")
     cfg["fallback_enabled"] = _coerce_bool(cfg.get("fallback_enabled"), True)
+    mode = str(cfg.get("tushare_mode") or "replay").strip().lower()
+    cfg["tushare_mode"] = mode if mode in VALID_TUSHARE_MODES else "replay"
     cfg["tushare_token"] = str(cfg.get("tushare_token") or "").strip()
     return cfg
 
@@ -72,7 +76,11 @@ def _public(cfg: dict) -> dict:
 
 def get_internal_config() -> dict:
     cfg = _read_raw()
-    token = cfg.get("tushare_token") or os.environ.get("TUSHARE_TOKEN", "")
+    mode = str(cfg.get("tushare_mode") or "replay").strip().lower()
+    if mode == "replay":
+        token = cfg.get("tushare_token") or os.environ.get("TUSHARE_REPLAY_API_KEY", "") or os.environ.get("TUSHARE_TOKEN", "")
+    else:
+        token = cfg.get("tushare_token") or os.environ.get("TUSHARE_TOKEN", "")
     cfg["tushare_token"] = str(token or "").strip()
     return cfg
 
@@ -85,7 +93,7 @@ def save_config(patch: dict | None) -> dict:
     current = _read_raw()
     patch = patch or {}
     merged = current.copy()
-    for key in ("provider", "tushare_enabled", "fallback_enabled"):
+    for key in ("provider", "tushare_mode", "tushare_enabled", "fallback_enabled"):
         if key in patch:
             merged[key] = patch[key]
     if str(patch.get("tushare_token") or "").strip():
@@ -96,7 +104,13 @@ def save_config(patch: dict | None) -> dict:
     return _public(merged)
 
 
-def resolve_tushare_token(cfg: dict | None = None) -> str:
+def resolve_tushare_token(cfg: dict | None = None, mode: str | None = None) -> str:
     data = cfg or get_internal_config()
-    return str((data or {}).get("tushare_token") or os.environ.get("TUSHARE_TOKEN", "")).strip()
+    token = str((data or {}).get("tushare_token") or "").strip()
+    if token:
+        return token
+    resolved_mode = str(mode or (data or {}).get("tushare_mode") or "replay").strip().lower()
+    if resolved_mode == "replay":
+        return str(os.environ.get("TUSHARE_REPLAY_API_KEY", "") or os.environ.get("TUSHARE_TOKEN", "")).strip()
+    return str(os.environ.get("TUSHARE_TOKEN", "")).strip()
 

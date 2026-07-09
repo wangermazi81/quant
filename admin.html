@@ -856,9 +856,16 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">Tushare Token（留空 = 保持不变）</label>
-          <input id="dsc-token" class="form-input" type="password" placeholder="请输入 Tushare Pro Token" autocomplete="new-password">
-          <div id="dsc-current" style="margin-top:6px;font-size:12px;color:var(--text3)">当前 Token: 未配置</div>
+          <label class="form-label">Tushare 接口类型</label>
+          <select id="dsc-mode" class="form-input">
+            <option value="replay">Replay HTTP API（X-API-Key）</option>
+            <option value="sdk">官方 SDK Token</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tushare Token / API Key（留空 = 保持不变）</label>
+          <input id="dsc-token" class="form-input" type="password" placeholder="请输入 Tushare Token 或 Replay API Key" autocomplete="new-password">
+          <div id="dsc-current" style="margin-top:6px;font-size:12px;color:var(--text3)">当前 Token/API Key: 未配置</div>
         </div>
         <div class="form-group">
           <label class="form-label" style="display:flex;align-items:center;gap:8px">
@@ -2207,10 +2214,11 @@ async function loadDatasourceConfig(){
     return;
   }
   document.getElementById('dsc-provider').value = r.provider || 'current';
+  document.getElementById('dsc-mode').value = r.tushare_mode || 'replay';
   document.getElementById('dsc-token').value = '';
   document.getElementById('dsc-tushare-enabled').checked = !!r.tushare_enabled;
   document.getElementById('dsc-fallback-enabled').checked = r.fallback_enabled !== false;
-  document.getElementById('dsc-current').textContent = '当前 Token: ' + (r.tushare_token_masked || '未配置');
+  document.getElementById('dsc-current').textContent = '当前 Token/API Key: ' + (r.tushare_token_masked || '未配置');
   dscProviderChanged();
   if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = `当前优先数据源：${r.provider === 'tushare' ? 'Tushare Pro' : '当前数据源'}`; }
 }
@@ -2223,6 +2231,7 @@ function dscProviderChanged(){
 async function dscSave(){
   const body = {
     provider: document.getElementById('dsc-provider').value,
+    tushare_mode: document.getElementById('dsc-mode').value,
     tushare_enabled: document.getElementById('dsc-tushare-enabled').checked,
     fallback_enabled: document.getElementById('dsc-fallback-enabled').checked,
   };
@@ -2237,11 +2246,12 @@ async function dscTest(){
   const msg = document.getElementById('dsc-msg');
   msg.style.color = 'var(--text2)'; msg.textContent = '正在测试 Tushare 连接…';
   const token = document.getElementById('dsc-token').value.trim();
-  const body = token ? {tushare_token: token} : {};
+  const body = {tushare_mode: document.getElementById('dsc-mode').value};
+  if(token) body.tushare_token = token;
   const r = await _annFetch('POST', '/admin/datasource/test', body, 30000);
   if(r && r.ok){
     msg.style.color = 'var(--green)';
-    msg.textContent = `Tushare 连接正常，样例 ${r.sample || '000001.SZ'} 返回 ${r.rows || 0} 条日线`;
+    msg.textContent = `Tushare ${r.mode || 'replay'} 连接正常，样例 ${r.sample || '000001.SZ'} 返回 ${r.rows || 0} 条日线`;
   }else{
     msg.style.color = 'var(--red)';
     msg.textContent = (r&&r.error)||'测试失败';

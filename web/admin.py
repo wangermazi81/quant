@@ -262,10 +262,12 @@ def admin_datasource_config_save():
 @require_admin_perm("data_config")
 def admin_datasource_test():
     body = request.json or {}
+    saved = datasource_config.get_internal_config()
+    mode = (body.get("tushare_mode") or saved.get("tushare_mode") or "replay").strip().lower()
     token = (body.get("tushare_token") or "").strip()
     if not token:
-        token = datasource_config.resolve_tushare_token()
-    result = tushare_provider.test_connection(token)
+        token = datasource_config.resolve_tushare_token(saved, mode=mode)
+    result = tushare_provider.test_connection(token, mode=mode)
     status = 200 if result.get("ok") else 400
     return jsonify(result), status
 
