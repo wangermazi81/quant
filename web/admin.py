@@ -15,6 +15,7 @@ import datasource_config
 import tushare_provider
 from analytics import relay_factor_mining
 from analytics import ai_trader as ai_trader_engine
+from analytics import auto_factor_scheduler
 from app_state import BASE_DIR, require_admin, require_admin_perm, require_root_admin
 
 bp = Blueprint("admin", __name__)
@@ -638,6 +639,22 @@ def admin_ai_trade_decision_run():
     _save_ai_trade_decision(payload)
     _apply_ai_trade_decision_to_watchlist(payload)
     return jsonify(payload)
+
+
+@bp.route("/api/admin/ai-trade-decision/auto/status", methods=["GET"])
+@require_root_admin
+def admin_ai_trade_auto_status():
+    return jsonify(auto_factor_scheduler.get_status())
+
+
+@bp.route("/api/admin/ai-trade-decision/auto/run", methods=["POST"])
+@require_root_admin
+def admin_ai_trade_auto_run():
+    body = request.json or {}
+    job = str(body.get("job") or "full_after_close")
+    result = auto_factor_scheduler.run_job(job, force=True)
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
 
 
 @bp.route("/api/admin/permissions/catalog")

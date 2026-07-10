@@ -3247,6 +3247,12 @@ def _start_background_services():
         research_center.run_concept_scheduler()
     except Exception as _rc:
         logger.warning(f"概念日更调度器启动失败: {_rc}")
+    # AI因子挖掘 → 次日候选池 → 竞价AI决策自动调度（仅使用root admin账号配置）
+    try:
+        from analytics import auto_factor_scheduler
+        auto_factor_scheduler.start_background_scheduler()
+    except Exception as _afs:
+        logger.warning(f"AI因子自动调度器启动失败: {_afs}")
     # 启动时全量清理隔日遗留信号（兜底：内存态 today_date 初始化即今天时，
     # _reset_daily_if_needed 不触发，僵尸信号会继续累进资金检查）
     try:

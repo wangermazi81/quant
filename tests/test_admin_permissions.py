@@ -417,6 +417,39 @@ def test_ai_trade_decision_is_root_only_and_updates_watchlist(isolated_app, monk
     assert next(item for item in watchlist if item["code"] == "000001")["status"] == "ready"
 
 
+def test_ai_trade_auto_scheduler_endpoints_are_root_only(isolated_app, monkeypatch):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(um, permissions=["strategy_manage"])
+
+    import web.admin as admin_api
+
+    monkeypatch.setattr(
+        admin_api.auto_factor_scheduler,
+        "get_status",
+        lambda: {"ok": True, "enabled": True, "running": False, "history": [], "next_runs": {}},
+    )
+    monkeypatch.setattr(
+        admin_api.auto_factor_scheduler,
+        "run_job",
+        lambda job, force=False: {"ok": True, "job": job, "force": force},
+    )
+
+    client = app.test_client()
+    _login_session(client, ops_uid, "ops")
+    denied = client.get("/api/admin/ai-trade-decision/auto/status")
+    assert denied.status_code == 403
+    assert denied.get_json()["code"] == "root_admin_required"
+
+    _login_session(client, 1, "admin")
+    status = client.get("/api/admin/ai-trade-decision/auto/status")
+    assert status.status_code == 200
+    assert status.get_json()["enabled"] is True
+
+    run = client.post("/api/admin/ai-trade-decision/auto/run", json={"job": "ai_decision"})
+    assert run.status_code == 200
+    assert run.get_json() == {"ok": True, "job": "ai_decision", "force": True}
+
+
 def test_admin_list_endpoints_sanitize_numeric_query_params(isolated_app, monkeypatch):
     app, um, _main = isolated_app
     ops_uid = _create_admin(

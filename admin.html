@@ -1036,6 +1036,19 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
       </div>
 
       <div class="card" style="margin-bottom:16px">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <span><i class="fas fa-clock"></i> 自动任务</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-outline" onclick="loadAiTradeAutoStatus()"><i class="fas fa-sync-alt"></i> 状态</button>
+            <button class="btn btn-outline" onclick="runAiTradeAutoJob('data_refresh')"><i class="fas fa-database"></i> 刷新数据</button>
+            <button class="btn btn-outline" onclick="runAiTradeAutoJob('factor_mining')"><i class="fas fa-microscope"></i> 自动挖掘</button>
+            <button class="btn btn-outline" onclick="runAiTradeAutoJob('ai_decision')"><i class="fas fa-brain"></i> AI决策</button>
+          </div>
+        </div>
+        <div id="atd-auto-status" style="font-size:13px;color:var(--text2);line-height:1.8">加载中...</div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
         <div class="card-title"><i class="fas fa-star"></i> 当前候选池</div>
         <table>
           <thead><tr><th>日期</th><th>代码</th><th>名称</th><th>排名</th><th>置信度</th><th>状态</th><th>来源</th></tr></thead>
@@ -2808,12 +2821,61 @@ function renderAiTradeDecision(data){
   }
 }
 
+function renderAiTradeAutoStatus(data){
+  const box = document.getElementById('atd-auto-status');
+  if(!box) return;
+  const next = data?.next_runs || {};
+  const history = Array.isArray(data?.history) ? data.history.slice(0, 5) : [];
+  const state = data?.running ? `运行中：${esc(data.current_job || '')}` : (data?.enabled ? '已启用' : '已停用');
+  const rows = history.length ? history.map(item=>{
+    const ok = item.ok ? '<span style="color:var(--green);font-weight:700">成功</span>' : '<span style="color:var(--red);font-weight:700">失败</span>';
+    const result = item.result || {};
+    const extra = result.run_id || result.error || result.reason || (result.candidate_count!==undefined ? `候选 ${result.candidate_count}` : '');
+    return `<div>${esc(item.time || '')} / ${esc(item.job || '')}${item.slot?`(${esc(item.slot)})`:''} / ${ok} ${esc(extra || '')}</div>`;
+  }).join('') : '<div style="color:var(--text3)">暂无自动任务记录</div>';
+  box.innerHTML = `
+    <div><b>${state}</b>；下次数据刷新：${esc(next.data_refresh || '—')}；下次因子挖掘：${esc(next.factor_mining || '—')}；下次AI决策：${esc(next.ai_decision || '—')}</div>
+    <div style="margin-top:8px;color:var(--text3)">默认盘后自动刷新市场/龙虎榜数据，17:05 自动挖掘并导入次日候选池，09:15/09:25 自动用 admin 的AI交易配置做竞价判断；实盘不会自动买入。</div>
+    <div style="margin-top:8px">${rows}</div>`;
+}
+
+async function loadAiTradeAutoStatus(){
+  if(!isRootAdmin()) return;
+  const box = document.getElementById('atd-auto-status');
+  if(box) box.textContent = '加载中...';
+  const r = await _annFetch('GET', '/admin/ai-trade-decision/auto/status');
+  if(r && r.ok) renderAiTradeAutoStatus(r);
+  else if(box) box.innerHTML = `<span style="color:var(--red)">${esc((r && r.error) || '自动任务状态加载失败')}</span>`;
+}
+
+async function runAiTradeAutoJob(job){
+  if(!isRootAdmin()){
+    navigate('403');
+    return;
+  }
+  const labelMap = {data_refresh:'刷新数据', factor_mining:'自动挖掘', ai_decision:'AI决策', full_after_close:'盘后全流程'};
+  if(!confirm(`确认立即运行「${labelMap[job] || job}」？`)) return;
+  const box = document.getElementById('atd-auto-status');
+  if(box) box.textContent = '任务运行中，请等待...';
+  const r = await _annFetch('POST', '/admin/ai-trade-decision/auto/run', {job}, 300000);
+  if(r && r.ok){
+    showToast(`${labelMap[job] || job} 已完成`, 'success');
+    loadAiTradeAutoStatus();
+    loadAiTradeDecision();
+  }else{
+    const error = (r && (r.error || r.message)) || '自动任务执行失败';
+    showToast(error, 'error');
+    loadAiTradeAutoStatus();
+  }
+}
+
 async function loadAiTradeDecision(){
   if(!isRootAdmin()){
     navigate('403');
     return;
   }
   const maxCandidates = fmReadInt('atd-max', 6);
+  loadAiTradeAutoStatus();
   const cBody = document.getElementById('atd-candidates');
   if(cBody) cBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:28px;color:var(--text3)">加载中...</td></tr>';
   const r = await _annFetch('GET', `/admin/ai-trade-decision/latest?max_candidates=${encodeURIComponent(maxCandidates)}`);
