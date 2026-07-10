@@ -39,11 +39,14 @@ def test_default_daban_strategy_keeps_existing_global_parameters():
 
 
 def test_main_routes_daban_ride_checks_through_runtime_helper():
-    source = (Path(__file__).parent.parent / "main.py").read_text(encoding="utf-8")
+    # 工单4 后打板 Ride 决策包装在 core/daban_state.py，策略判定仍在 main.py
+    root = Path(__file__).parent.parent
+    main_source = (root / "main.py").read_text(encoding="utf-8")
+    state_source = (root / "core" / "daban_state.py").read_text(encoding="utf-8")
 
-    assert "import daban_strategy_runtime as daban_runtime" in source
-    assert "daban_runtime.is_daban_ride_strategy" in source
-    assert "daban_runtime.ride_params_for_strategy" in source
+    assert "import daban_strategy_runtime as daban_runtime" in main_source
+    assert "daban_runtime.is_daban_ride_strategy" in main_source
+    assert "daban_runtime.ride_params_for_strategy" in state_source
 
     hardcoded_checks = [
         '(p.get("strategy") or "") == "da_ban"',
@@ -51,4 +54,5 @@ def test_main_routes_daban_ride_checks_through_runtime_helper():
         '(active == "da_ban")',
     ]
     for check in hardcoded_checks:
-        assert check not in source
+        assert check not in main_source
+        assert check not in state_source

@@ -26,7 +26,6 @@ from broker import paper_broker as pb
 from core import user_manager as um
 from core import notification_manager as nm
 from core import order_sizing  # 下单仓位/手数纯函数（从 do_scan 抽出，有回归测试 tests/test_order_sizing.py）
-from core import daban_ride  # 打板 Ride 卖出决策纯函数（从本文件抽出，有回归测试 tests/test_daban_ride.py）
 from core import daban_strategy_runtime as daban_runtime
 from core import sell_rules  # 账户默认止损/止盈/超期决策纯函数（与 paper_broker 共用，tests/test_sell_rules.py）
 from pathlib import Path
@@ -398,48 +397,11 @@ def _auto_buy(uid: int, item: dict):
         _add_log(uid, f"❌ 自动买入异常: {code} — {e}", "error")
 
 
-_DABAN_PEAKS: dict = {}   # (uid, code) -> 持仓期最高价（Ride 追踪止盈用）
-_DABAN_PEAKS_FILE = BASE_DIR / "data" / "daban_peaks.json"
-
-
-def _load_daban_peaks():
-    """启动时加载模拟盘持仓期峰值。
-    ★ 跟实盘 um.update_live_peak 一致：peak 持久化，重启不丢失，
-    否则回落止盈会因 peak 被重置成成本价而失真（高位回落判断算不准、漏卖）。"""
-    try:
-        if _DABAN_PEAKS_FILE.exists():
-            raw = json.loads(_DABAN_PEAKS_FILE.read_text(encoding="utf-8"))
-            for k, v in raw.items():
-                uid_s, code = k.split("|", 1)
-                _DABAN_PEAKS[(int(uid_s), code)] = float(v)
-            logger.info(f"[daban] 已加载持仓峰值缓存 {len(_DABAN_PEAKS)} 条")
-    except Exception as e:
-        logger.warning(f"[daban] 加载峰值缓存失败: {e}")
-
-
-def _save_daban_peaks():
-    try:
-        raw = {f"{uid}|{code}": v for (uid, code), v in _DABAN_PEAKS.items()}
-        _DABAN_PEAKS_FILE.write_text(json.dumps(raw), encoding="utf-8")
-    except Exception as e:
-        logger.debug(f"[daban] 保存峰值缓存失败: {e}")
-
-
-_load_daban_peaks()
-
-
-# 打板涨停幅度 / Ride 卖出决策已抽到 core/daban_ride.py（纯函数，测试见 tests/test_daban_ride.py）
-
-_LIVE_SELL_PENDING: set = set()   # (uid, code) 已生成卖出信号、等成交确认，避免每轮重复发
-
-
-def _daban_ride_decision(code: str, cost: float, cur: float, last_close: float,
-                         hold_days: int, peak: float, strategy: str = "da_ban"):
-    """打板 Ride 卖出决策（薄包装；逻辑与默认阈值见 core/daban_ride.ride_decision）。"""
-    return daban_ride.ride_decision(
-        code, cost, cur, last_close, hold_days, peak,
-        **daban_runtime.ride_params_for_strategy(strategy)
-    )
+# 打板 Ride 运行态与决策已下沉 core/daban_state.py（工单4）；
+# 此处保留同名绑定：_DABAN_PEAKS/_LIVE_SELL_PENDING 是同一份可变对象（原地增删）。
+from core.daban_state import (  # noqa: E402
+    _DABAN_PEAKS, _LIVE_SELL_PENDING, _daban_ride_decision, _save_daban_peaks,
+)
 
 
 def _check_live_daban_ride(uid: int):
@@ -981,34 +943,8 @@ def set_auto_execute():
 # 本地同花顺交易桥接 API (Cloud-Local Bridge)
 # ══════════════════════════════════════════════════════════════
 
-# ── 实盘下单总闸（前端可一键开关；关闭时不给桥接器任何信号 = 彻底停下单）──
-_BRIDGE_FLAGS_FILE = BASE_DIR / "data" / "bridge_flags.json"
-_live_trade_enabled = {}   # uid -> bool（缺省视为 True=开）
-
-
-def _load_bridge_flags():
-    global _live_trade_enabled
-    try:
-        if _BRIDGE_FLAGS_FILE.exists():
-            _live_trade_enabled = {int(k): bool(v) for k, v in
-                                   json.loads(_BRIDGE_FLAGS_FILE.read_text(encoding="utf-8")).items()}
-    except Exception as e:
-        logger.warning(f"[bridge闸门] 加载失败: {e}")
-
-
-def _save_bridge_flags():
-    try:
-        _BRIDGE_FLAGS_FILE.write_text(
-            json.dumps({str(k): v for k, v in _live_trade_enabled.items()}), encoding="utf-8")
-    except Exception as e:
-        logger.warning(f"[bridge闸门] 保存失败: {e}")
-
-
-def _live_enabled(uid) -> bool:
-    return _live_trade_enabled.get(uid, True)
-
-
-_load_bridge_flags()
+# ── 实盘下单总闸已下沉 core/bridge_state.py（工单4）──
+from core.bridge_state import _live_enabled, set_live_enabled as _set_live_enabled  # noqa: E402
 
 
 @app.route("/api/bridge/signals", methods=["GET"])
@@ -1033,8 +969,7 @@ def get_live_enabled():
 def set_live_enabled():
     uid = session["user_id"]
     en  = bool((request.json or {}).get("enabled", True))
-    _live_trade_enabled[uid] = en
-    _save_bridge_flags()
+    _set_live_enabled(uid, en)
     _add_log(uid, ("✅ 已开启实盘下单（桥接器恢复执行信号）" if en
                    else "🛑 已关闭实盘下单（桥接器不再收到任何信号，不会下单到同花顺）"), "WARN")
     return jsonify({"ok": True, "enabled": en})
