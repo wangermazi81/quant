@@ -69,6 +69,10 @@ else:
 # ── 安全加固：Cookie 硬化 + 安全响应头（详见 app_security.py）──
 from app_security import init_security
 init_security(app)
+
+# 静态资源走 ETag/Last-Modified 协商缓存（工单7：index/admin 内联块已拆到
+# static/app/，max-age=0 保证「改前端刷新即生效」的工作流，304 仅一次往返）。
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 logger.info("安全加固已启用（Cookie 硬化 / 安全响应头 / 限流就绪）"
             + ("；HTTPS Secure Cookie 已开启" if _os.environ.get("SESSION_COOKIE_SECURE", "0") in ("1", "true", "True") else "；SESSION_COOKIE_SECURE 未开（HTTPS 就绪后再开）"))
 

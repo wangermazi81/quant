@@ -1,0 +1,37 @@
+:root{
+  --theme:#FFFFFF; --theme-light:#FFF6EF; --theme-active:#FF7B93;
+  --content-bg:#FCFAF7; --card-bg:#FFFFFF;
+  --blue:#FF7B93; --green:#52B788; --red:#FF6B81; --orange:#E8964A; --purple:#B580E8;
+  --text1:#2D2A26; --text2:#6F6155; --text3:#9C8B7A; --border:#EADCC9;
+  --shadow:0 3px 16px rgba(180,150,110,.10); --radius:12px;
+}
+body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-serif}
+/* 侧栏：浅色协调（白底 + 暖边框 + 深字 + 粉色激活）*/
+.sidebar{background:#fff;border-right:2px solid var(--border);box-shadow:2px 0 18px rgba(180,150,110,.07)}
+.sidebar-logo{border-bottom:1px solid var(--border)}
+.sidebar-logo .logo-icon{color:#FF7B93}
+.sidebar-logo .logo-title{color:#2D2A26}
+.menu-group-title{color:#B6A795}
+.menu-item{color:#6F6155}
+.menu-item:hover{background:#FFF0F3;color:#D6456A}
+.menu-item.active{background:var(--theme-active);color:#fff}
+/* 顶栏：白底深字，与内容统一 */
+.header{background:#fff;border-bottom:2px solid var(--border);color:#2D2A26;box-shadow:0 2px 12px rgba(180,150,110,.05)}
+.header-collapse{color:#9C8B7A}.header-collapse:hover{background:#FFF0F3;color:#D6456A}
+.header-breadcrumb{color:#9C8B7A}.header-breadcrumb span{color:#B6A795}.header-breadcrumb b{color:#2D2A26}
+.header-user{color:#2D2A26}.header-user:hover{background:#FAF6F0}
+.header-divider{background:var(--border)}
+/* 顶栏右侧图标按钮 + 用户名：浅顶栏上原白字不可见 → 改深色 */
+.hbtn{color:#6F6155}.hbtn:hover{background:#FFF0F3;color:#D6456A}
+.h-uname{color:#2D2A26}.h-role{color:#9C8B7A}
+.header-user i{color:#9C8B7A!important}
+.card{border:2px solid var(--border);border-radius:18px;box-shadow:var(--shadow)}
+.btn{border-radius:10px}
+.btn-primary{background:#FF7B93}.btn-primary:hover{filter:brightness(.96)}
+.form-input{border:1px solid var(--border);border-radius:10px;background:#FAF6F0}
+.form-input:focus{border-color:#FF7B93;background:#fff}
+.stat-card{border-radius:16px;border:2px solid var(--border)}
+::selection{background:#FFE0E6;color:#2D2A26}
+*::-webkit-scrollbar{width:9px;height:9px}
+*::-webkit-scrollbar-thumb{background:#E3D3BE;border-radius:6px}
+.tabs-bar .tab.active{color:#FF7B93}
