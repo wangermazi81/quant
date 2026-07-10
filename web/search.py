@@ -6,6 +6,7 @@ from flask import Blueprint, request, jsonify
 from analytics import data_manager as dm
 from analytics import search_manager as search_mgr
 from app_state import require_auth, require_admin_perm
+from web._params import _bounded_int_arg  # noqa: F401  # 本文件与其它蓝图共用
 
 bp = Blueprint("search", __name__)
 
@@ -16,10 +17,6 @@ def _bounded_int_value(raw, default: int, min_value: int, max_value: int) -> int
     except (TypeError, ValueError):
         value = default
     return max(min_value, min(max_value, value))
-
-
-def _bounded_int_arg(name: str, default: int, min_value: int, max_value: int) -> int:
-    return _bounded_int_value(request.args.get(name, default), default, min_value, max_value)
 
 
 @bp.route("/api/stock/news/<code>")

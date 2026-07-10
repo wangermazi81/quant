@@ -197,40 +197,10 @@ app.register_blueprint(_lhb_bp)
 app.register_blueprint(_aitrader_bp)
 
 
-def _bounded_int_arg(name: str, default: int, min_value: int, max_value: int) -> int:
-    try:
-        value = int(request.args.get(name, default))
-    except (TypeError, ValueError):
-        value = default
-    return max(min_value, min(max_value, value))
-
-
-def _positive_float_value(raw, default: float | None = None) -> float | None:
-    if raw in (None, ""):
-        return default
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    return value if value > 0 else None
-
-
-def _float_value(raw, default: float | None = None) -> float | None:
-    if raw in (None, ""):
-        return default
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return None
-
-
-def _int_value(raw, default: int | None = None) -> int | None:
-    if raw in (None, ""):
-        return default
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
+# 请求参数解析助手统一在 web/_params.py（工单4 去重：原 6 份复制粘贴）
+from web._params import (
+    _bounded_int_arg, _positive_float_value, _float_value, _int_value,  # noqa: F401
+)
 
 
 @app.route("/api/health")

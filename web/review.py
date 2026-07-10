@@ -17,17 +17,10 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify
 
 from app_state import require_auth, _deduct
+from web._params import _bounded_int_arg
 
 logger = logging.getLogger(__name__)
 bp = Blueprint("review", __name__)
-
-
-def _bounded_int_arg(name: str, default: int, min_value: int, max_value: int) -> int:
-    try:
-        value = int(request.args.get(name, default))
-    except (TypeError, ValueError):
-        value = default
-    return max(min_value, min(max_value, value))
 
 
 _TRUSTED_TWO_MARKET_TURNOVER_SOURCES = {

@@ -17,16 +17,9 @@ from analytics import relay_factor_mining
 from analytics import ai_trader as ai_trader_engine
 from analytics import auto_factor_scheduler
 from app_state import BASE_DIR, require_admin, require_admin_perm, require_root_admin
+from web._params import _bounded_int_arg, _int_value
 
 bp = Blueprint("admin", __name__)
-
-
-def _bounded_int_arg(name: str, default: int, min_value: int, max_value: int) -> int:
-    try:
-        value = int(request.args.get(name, default))
-    except (TypeError, ValueError):
-        value = default
-    return max(min_value, min(max_value, value))
 
 
 def _bounded_int_value(raw, default: int, min_value: int, max_value: int) -> int:
@@ -35,15 +28,6 @@ def _bounded_int_value(raw, default: int, min_value: int, max_value: int) -> int
     except (TypeError, ValueError):
         value = default
     return max(min_value, min(max_value, value))
-
-
-def _int_value(raw, default: int | None = None) -> int | None:
-    if raw in (None, ""):
-        return default
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
 
 
 def _optional_int_arg(name: str) -> int | None:

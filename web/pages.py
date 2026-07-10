@@ -1,8 +1,9 @@
 """静态页面 + 截图文件服务蓝图。"""
-from flask import Blueprint, jsonify, send_from_directory, request
+from flask import Blueprint, jsonify, send_from_directory
 
 from app_state import BASE_DIR, require_auth
 from core import changelog_manager as clm
+from web._params import _bounded_int_arg
 
 bp = Blueprint("pages", __name__)
 
@@ -12,14 +13,6 @@ def _nocache(resp):
     resp.headers["Pragma"]  = "no-cache"
     resp.headers["Expires"] = "0"
     return resp
-
-
-def _bounded_int_arg(name: str, default: int, min_value: int, max_value: int) -> int:
-    try:
-        value = int(request.args.get(name, default))
-    except (TypeError, ValueError):
-        value = default
-    return max(min_value, min(value, max_value))
 
 
 @bp.route("/")
