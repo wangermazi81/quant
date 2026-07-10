@@ -2,8 +2,11 @@
 # 仅监听本地回环：nginx 在同机通过 127.0.0.1 反代，外部一律走 nginx(80/443)。
 # 即便 ufw 失效，5000 也不会暴露到公网（防御纵深）。
 bind = "127.0.0.1:5000"
-# ⚠️ 必须单 worker：运行态(user_states/SSE 订阅)与扫描调度器都在进程内内存，
-#    多 worker 会各持一份互不相通的状态。等状态外置到 Redis/DB 后才能调大。
+# ⚠️ 必须单 worker：运行态(user_states/SSE 订阅)与交易组调度器（扫描/Vibe）
+#    仍在进程内内存，多 worker 会各持一份互不相通的状态。
+#    工单5 后数据组调度（新闻/复盘/概念/AI因子挖掘）可移到独立进程
+#    quant-scheduler.service（Web 服务加 Environment="THS_EMBED_SCHEDULER=0"），
+#    进一步等状态外置到 Redis/DB 后才能调大 workers。
 workers = 1
 worker_class = "gthread"
 threads = 8                    # SSE 长连接不能独占唯一请求通道；仍保持单进程共享内存状态

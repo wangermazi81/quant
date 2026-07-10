@@ -148,6 +148,11 @@ secure_runtime_secrets "$RUN_USER"
 echo
 echo "[5/6] Restart service"
 systemctl restart "$SERVICE"
+# 数据调度独立进程（工单5）：已安装则一并重启（未安装=单进程模式，跳过）
+if systemctl list-unit-files 2>/dev/null | grep -q "^quant-scheduler.service"; then
+    systemctl restart quant-scheduler
+    echo "Restarted quant-scheduler (data schedulers)."
+fi
 sleep 4
 
 echo

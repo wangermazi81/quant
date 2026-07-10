@@ -1,0 +1,33 @@
+# 见微 Alpha 数据调度独立进程（工单5）
+# 跑新闻聚合/每日复盘/概念日更/AI因子挖掘，与 Web(gunicorn) 分离，
+# 重计算不再占用 Web 进程。
+#
+# 安装（服务器上执行一次）：
+#   sudo cp /opt/quant/deploy/quant-scheduler.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now quant-scheduler
+#
+# ⚠️ 同时给 Web 服务开拆分模式（否则数据组会双跑）：
+#   sudo systemctl edit quant-platform
+#   在 [Service] 段加一行:  Environment="THS_EMBED_SCHEDULER=0"
+#   sudo systemctl restart quant-platform
+#
+# 之后 deploy/server_update.sh 会自动随更新重启本服务。
+
+[Unit]
+Description=Jianwei Alpha data schedulers (news/review/concepts/factor-mining)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=quant
+WorkingDirectory=/opt/quant
+ExecStart=/opt/quant/venv/bin/python scheduler_main.py
+Restart=always
+RestartSec=10
+# 数据调度出问题不应拖垮机器：限内存（1.6G 小机器上留足 Web 空间）
+MemoryMax=600M
+
+[Install]
+WantedBy=multi-user.target

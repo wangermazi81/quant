@@ -219,21 +219,54 @@ def run_scheduler():
         time.sleep(1)
 
 
-# ── 后台服务一次性启动（幂等）──────────────────────────────────
-_bg_lock = threading.Lock()
-_bg_started = False
+# ══════════════════════════════════════════════════════════════
+# 后台服务启动（工单5：按进程归属拆成两组，均幂等）
+#
+#   交易组 start_user_trading_schedulers —— 必须与 Web 同进程：
+#     扫描调度/Vibe 读写 user_states 内存队列与持仓视图，跨进程会导致
+#     监控页看不到队列 + 模拟盘重复买入（状态外置后才能拆，见方案文档阶段二）。
+#
+#   数据组 start_data_schedulers —— 可独立进程（scheduler_main.py）：
+#     新闻聚合/每日复盘/概念日更/AI因子挖掘 只写各自 DB/文件，
+#     Web 路由读 DB，零 user_states 耦合。这四个是后台重负载的大头。
+#
+#   start_background_services() = 两组全启（单进程模式，与拆分前行为一致）。
+# ══════════════════════════════════════════════════════════════
+_trading_lock = threading.Lock()
+_trading_started = False
+_data_lock = threading.Lock()
+_data_started = False
 
 
-def start_background_services():
-    global _bg_started
-    with _bg_lock:
-        if _bg_started:
+def start_user_trading_schedulers():
+    """交易组：自动扫描主循环 + Vibe 因子激活调度 + 启动期状态恢复/信号清理。"""
+    global _trading_started
+    with _trading_lock:
+        if _trading_started:
             return
-        _bg_started = True
+        _trading_started = True
     _restore_all_user_states()
     threading.Thread(target=run_scheduler, daemon=True).start()
     # Vibe Alpha 因子激活调度器（独立线程，每 60s 检查，5 分钟跑一次扫描）
     threading.Thread(target=run_vibe_scheduler, daemon=True, name="vibe-scheduler").start()
+    # 启动时全量清理隔日遗留信号（兜底：内存态 today_date 初始化即今天时，
+    # _reset_daily_if_needed 不触发，僵尸信号会继续累进资金检查）
+    try:
+        _n_expired = um.expire_stale_signals()
+        if _n_expired:
+            logger.info(f"启动清理：{_n_expired} 条隔日遗留交易信号已置为过期")
+    except Exception as _ex:
+        logger.warning(f"启动清理隔日信号失败: {_ex}")
+    logger.info(f"交易调度已启动 DRY_RUN={'开启' if DRY_RUN else '关闭'}")
+
+
+def start_data_schedulers():
+    """数据组：新闻聚合 / 每日复盘 / 概念日更 / AI 因子挖掘（可跑在独立进程）。"""
+    global _data_started
+    with _data_lock:
+        if _data_started:
+            return
+        _data_started = True
     # 财经新闻聚合（盘中每3分钟拉快讯，19:40 抓新闻联播）
     try:
         import news_center
@@ -258,12 +291,10 @@ def start_background_services():
         auto_factor_scheduler.start_background_scheduler()
     except Exception as _afs:
         logger.warning(f"AI因子自动调度器启动失败: {_afs}")
-    # 启动时全量清理隔日遗留信号（兜底：内存态 today_date 初始化即今天时，
-    # _reset_daily_if_needed 不触发，僵尸信号会继续累进资金检查）
-    try:
-        _n_expired = um.expire_stale_signals()
-        if _n_expired:
-            logger.info(f"启动清理：{_n_expired} 条隔日遗留交易信号已置为过期")
-    except Exception as _ex:
-        logger.warning(f"启动清理隔日信号失败: {_ex}")
-    logger.info(f"后台调度已启动 DRY_RUN={'开启' if DRY_RUN else '关闭'}")
+    logger.info("数据调度已启动（新闻/复盘/概念/AI因子挖掘）")
+
+
+def start_background_services():
+    """单进程模式：两组全启（与拆分前 start_background_services 行为一致）。"""
+    start_user_trading_schedulers()
+    start_data_schedulers()

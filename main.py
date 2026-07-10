@@ -218,13 +218,23 @@ from strategy_engine.scan_service import do_scan, _scan_thread_worker  # noqa: E
 # 调度器已下沉 core/schedulers.py（工单4；为调度进程独立做准备）：
 #   run_scheduler / run_vibe_scheduler / 收盘快照与自动终止 / start_background_services
 # ══════════════════════════════════════════════════════════════
-from core.schedulers import start_background_services as _start_background_services  # noqa: E402
+from core.schedulers import (  # noqa: E402
+    start_background_services as _start_background_services,
+    start_user_trading_schedulers as _start_user_trading_schedulers,
+)
 
 
 # 模块级启动：gunicorn 导入 main:app 时不进入 __main__，必须在此启动。
 # 设 THS_NO_SCHEDULER=1 或 QUANT_TEST_IMPORT=1 可禁用（供测试/纯导入场景）。
+# 工单5：THS_EMBED_SCHEDULER=0 = 拆分模式——数据组调度（新闻/复盘/概念/AI因子
+# 挖掘）由独立进程 scheduler_main.py 承担，Web 只跑交易组（扫描/Vibe 必须与
+# user_states 同进程）。默认（不设置）= 单进程全启动，与拆分前行为完全一致。
 if _os.environ.get("THS_NO_SCHEDULER") != "1" and not _TEST_IMPORT:
-    _start_background_services()
+    if _os.environ.get("THS_EMBED_SCHEDULER", "1").strip() == "0":
+        _start_user_trading_schedulers()
+        logger.info("调度拆分模式：数据组（新闻/复盘/概念/AI因子挖掘）由 scheduler_main.py 独立进程承担")
+    else:
+        _start_background_services()
 
 
 if __name__ == "__main__":
