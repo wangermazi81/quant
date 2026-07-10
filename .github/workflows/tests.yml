@@ -36,3 +36,10 @@ jobs:
         run: |
           python _verify_routes.py | tee /tmp/routes.txt
           grep -q "RESULT: IDENTICAL" /tmp/routes.txt
+
+      - name: Verify API doc is up to date (docs/API.md 防过时)
+        env:
+          QUANT_TEST_IMPORT: "1"
+        run: |
+          python tools/gen_api_doc.py
+          git diff --exit-code docs/API.md
