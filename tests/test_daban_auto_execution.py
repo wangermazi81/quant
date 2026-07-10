@@ -204,7 +204,8 @@ def test_paper_position_keeps_original_strategy_after_switch(scan_env, monkeypat
     conn.commit()
     conn.close()
 
-    main._DABAN_PEAKS[(user_id, "000003")] = 11.3
+    from core.daban_state import _DABAN_PEAKS
+    _DABAN_PEAKS[(user_id, "000003")] = 11.3
     state["active_strategy"] = "ma_cross"
 
     class QuoteClient:

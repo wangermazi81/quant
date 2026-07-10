@@ -26,6 +26,22 @@ logger = logging.getLogger("app_state")
 # 各 web 蓝图统一从这里取，避免在子目录里反复 parent.parent 出错。
 BASE_DIR = Path(__file__).resolve().parent
 
+# ── 同花顺操作器句柄（工单4）────────────────────────────────────
+# main._init_runtime() 在 Windows 生产环境注入 THSOperator 实例；
+# 纯导入/云端 Linux 为 None。蓝图一律经 get_operator() 访问，
+# 避免直接 import main（会导致循环依赖）。
+_operator = None
+
+
+def set_operator(op) -> None:
+    global _operator
+    _operator = op
+
+
+def get_operator():
+    return _operator
+
+
 # ══════════════════════════════════════════════════════════════
 # 多用户运行态（进程内内存，单 worker）
 # ══════════════════════════════════════════════════════════════
