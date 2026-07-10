@@ -26,12 +26,11 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from collections import defaultdict, deque
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)

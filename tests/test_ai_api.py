@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import os, requests, time, json
+import os, requests, time
 
 # 管理员密码已改为启动时随机生成；冒烟测试从环境变量读取
 ADMIN_USER = os.environ.get('ADMIN_USERNAME', 'admin')

@@ -1,5 +1,4 @@
 import pandas as pd
-import numpy as np
 import logging
 from market_data import get_realtime_quotes, get_kline
 from config import STRATEGY, MARKET_FILTER

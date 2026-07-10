@@ -272,7 +272,6 @@ class THSOperator:
         失败静默，不影响主流程。
         """
         try:
-            import os, time as _t
             from pathlib import Path
             from datetime import datetime
             proj_root = Path(__file__).resolve().parent.parent
@@ -343,7 +342,6 @@ class THSOperator:
         Win32 xiadan 的 Edit 控件没稳定的 control_id，只能按顺序遍历可见 Edit。
         """
         try:
-            from pywinauto import Application
             if self.main_win is None:
                 return {}
             edits = []
@@ -1231,7 +1229,6 @@ class THSOperator:
         返回 (words, img_path)——如果裁剪了则返回新 OCR 词和裁剪图路径，
         否则原样返回。
         """
-        import re
         # 找 F2/F3 标记（xiadan 菜单栏特征）
         f2_words = [w for w in words if "[F2" in w["text"]]
         f3_words = [w for w in words if "F3" in w["text"]]
@@ -1473,7 +1470,6 @@ class THSOperator:
         这样能把代码列（如 x≈383）和顶部资产数字（如 208374，x≈494/760）区分开，
         避免把资产金额误当成股票代码。返回 (x_center, members) 或 (None, [])。
         """
-        import re
         xs = []
         for r in rows:
             for w in r["words"]:

@@ -1,4 +1,3 @@
-import multiprocessing
 
 # 仅监听本地回环：nginx 在同机通过 127.0.0.1 反代，外部一律走 nginx(80/443)。
 # 即便 ufw 失效，5000 也不会暴露到公网（防御纵深）。

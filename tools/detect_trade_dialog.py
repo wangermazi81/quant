@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """探测同花顺交易弹窗的控件结构"""
-import sys, io, time
+import sys, io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-from pywinauto import Desktop, Application
-import traceback
+from pywinauto import Desktop
 
 def print_tree(elem, depth=0, max_depth=6):
     if depth > max_depth:

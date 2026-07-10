@@ -25,7 +25,7 @@ import logging
 import re
 import sys
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Optional

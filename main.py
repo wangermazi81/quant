@@ -9,14 +9,12 @@ for _k in ("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy",
 
 from flask import Flask, jsonify, request, session, Response
 from flask_cors import CORS
-from functools import wraps
-import threading, schedule, time, logging, uuid, secrets, json, queue as _queue
-from typing import Optional
+import threading, time, logging, secrets, json, queue as _queue
 from datetime import datetime
 from market_data import is_trading_time
 from strategy import scan_all
 from ths_operator import THSOperator
-from config import STOCK_POOL, SCAN_INTERVAL, DRY_RUN, INITIAL_CAPITAL, POSITION_RATIO
+from config import SCAN_INTERVAL, DRY_RUN, INITIAL_CAPITAL
 try:
     from config import DABAN_STOP_LOSS, DABAN_TRAIL, DABAN_MAX_HOLD, DABAN_HOLD_LIMITUP
 except ImportError:
@@ -155,9 +153,8 @@ if not _TEST_IMPORT:
 # ── 共享运行态/通用辅助（见 app_state.py，与各 web 蓝图共用同一份内存状态）──
 from app_state import (
     user_states, _user_state_lock, _sse_subscribers, _sse_lock,
-    _default_user_state, get_user_state, _persist_state, _add_log,
-    _sse_push, _restore_all_user_states, require_auth, require_admin,
-    is_root_admin_session, current_admin_permissions, _deduct,
+    get_user_state, _persist_state, _add_log,
+    _sse_push, _restore_all_user_states, require_auth, is_root_admin_session, current_admin_permissions, _deduct,
 )
 
 # ── 注册 web 蓝图（非交易 API 已从本文件抽出到 web/）──

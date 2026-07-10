@@ -1,6 +1,6 @@
 name: tests
 
-# 每次推送 main / 提 PR 自动跑关键路径单元测试，挡住认证/积分/风控/安全的回归。
+# 每次推送 main / 提 PR：全量单元测试 + 路由基线对比 + ruff lint。
 on:
   push:
     branches: [main]
@@ -15,16 +15,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
-      - name: Install test deps (轻量：仅单测所需，不装行情/AI 重依赖)
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install flask flask-cors pytest
+          pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Run critical-path unit tests
+      - name: Ruff lint
+        run: python -m ruff check .
+
+      - name: Run full test suite
+        env:
+          QUANT_TEST_IMPORT: "1"
+        run: python -m pytest tests -q
+
+      - name: Verify route baseline (接口零变化守卫)
+        env:
+          QUANT_TEST_IMPORT: "1"
         run: |
-          python -m pytest \
-            tests/test_user_manager.py \
-            tests/test_risk.py \
-            tests/test_app_security.py \
-            -v
+          python _verify_routes.py | tee /tmp/routes.txt
+          grep -q "RESULT: IDENTICAL" /tmp/routes.txt

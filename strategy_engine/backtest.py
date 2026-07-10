@@ -30,7 +30,6 @@ import threading as _bt_threading
 import uuid as _bt_uuid
 import time as _bt_time
 from pathlib import Path
-from collections import defaultdict
 
 import numpy as np
 import pandas as pd

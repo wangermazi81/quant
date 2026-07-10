@@ -1,4 +1,4 @@
-import requests, sys, json, time
+import requests, sys, json
 BASE = "http://127.0.0.1:5001"
 s = requests.Session()
 

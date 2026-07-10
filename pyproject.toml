@@ -1,0 +1,33 @@
+# 工具链配置（pytest / ruff）。依赖清单仍在 requirements.txt / requirements-dev.txt。
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+# strategies/ factors/ 是用户自建文件（gitignore），不纳入 lint；
+# _archive/前端/数据目录同理排除。
+exclude = [
+    "_archive",
+    "frontend",
+    "static",
+    "logs",
+    "data",
+    "output",
+    "strategies",
+    "factors",
+    "codex_pytest_tmp",
+    "backups",
+    # 因子库公式文件：统一的模板化导入头是刻意样板，不清理未用导入
+    "analytics/factors_zoo/zoo",
+]
+
+[tool.ruff.lint]
+# 最小规则集起步：F401 未使用导入 / F811 重复定义。
+# E722（裸 except，存量 353 处）在异常治理工单转正，先不开。
+select = ["F401", "F811"]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest fixture 导入后作为测试参数使用，ruff 误报 F811（经典 fixture 模式）
+"tests/test_admin_datasource_api.py" = ["F811"]

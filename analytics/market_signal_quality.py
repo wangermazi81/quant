@@ -7,7 +7,6 @@ are marked untrusted so training and candidate generation can skip them.
 """
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Callable, Iterable
 
 import pandas as pd

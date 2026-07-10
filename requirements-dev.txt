@@ -1,0 +1,4 @@
+# 开发/测试工具依赖（生产不需要）
+pytest>=8.0
+pytest-timeout>=2.3
+ruff>=0.4

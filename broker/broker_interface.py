@@ -4,7 +4,6 @@
 支持: 模拟盘(paper) / easytrader国内券商 / LongBridge / 自定义HTTP
 """
 from abc import ABC, abstractmethod
-from typing import Optional
 import logging
 
 logger = logging.getLogger(__name__)

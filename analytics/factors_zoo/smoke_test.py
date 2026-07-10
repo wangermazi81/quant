@@ -27,7 +27,6 @@ def main() -> int:
     try:
         from analytics.factors_zoo import registry, build_panel, latest_score
         from analytics.factors_zoo import base as zoo_base
-        from analytics.factors_zoo.registry import Registry, SkipAlpha
         passed += _ok("import_package", True, "OK")
     except Exception as e:
         _ok("import_package", False, f"{e}\n{traceback.format_exc()}")

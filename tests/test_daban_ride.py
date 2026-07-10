@@ -115,7 +115,6 @@ class TestEquivalence:
         return False, None, new_peak
 
     def test_matches_original(self):
-        import pytest
         cases = [
             ("600000", 10.0, 9.4, 9.5, 1, 10.0),
             ("600000", 10.0, 11.0, 11.2, 2, 12.0),

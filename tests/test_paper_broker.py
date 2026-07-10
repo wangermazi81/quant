@@ -9,8 +9,6 @@ tests/test_paper_broker.py
 """
 
 import sys
-import os
-import tempfile
 import pytest
 from pathlib import Path
 
@@ -392,7 +390,6 @@ class TestApiSmoke:
         mock_op.THSOperator = MockOperator
         sys.modules["ths_operator"] = mock_op
 
-        import importlib
         if "main" in sys.modules:
             del sys.modules["main"]
 

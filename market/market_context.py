@@ -17,7 +17,6 @@ TradingAgents 的市场环境注入机制。
 
 import logging
 import time
-from functools import lru_cache
 import pandas as pd
 
 logger = logging.getLogger(__name__)

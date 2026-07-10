@@ -2,7 +2,6 @@
 """
 诊断测试脚本: 校验 trade_signals 数据库表的插入、拉取和上报反馈操作是否完全正常。
 """
-import os
 import sys
 from pathlib import Path
 
