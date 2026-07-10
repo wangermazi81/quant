@@ -160,6 +160,105 @@ def _factor_mining_payload(run_dir: Path | None) -> dict:
     }
 
 
+def _factor_watchlist_path() -> Path:
+    return (_factor_mining_root() / "watchlist.json").resolve()
+
+
+def _load_factor_watchlist() -> dict:
+    data = _read_json_file(_factor_watchlist_path(), {})
+    if not isinstance(data, dict):
+        data = {}
+    items = data.get("items") if isinstance(data.get("items"), list) else []
+    return {
+        "updated_at": data.get("updated_at"),
+        "items": [item for item in items if isinstance(item, dict)],
+    }
+
+
+def _save_factor_watchlist(data: dict) -> None:
+    path = _factor_watchlist_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _clean_watchlist_text(value, limit: int = 200) -> str:
+    text = "" if value is None else str(value)
+    text = re.sub(r"[\r\n\t]+", " ", text).strip()
+    return text[:limit]
+
+
+def _watchlist_item_id(item: dict) -> str:
+    raw = f"{item.get('trade_date') or 'unknown'}-{item.get('ts_code') or item.get('code') or ''}"
+    safe = re.sub(r"[^0-9A-Za-z_.-]+", "-", raw).strip("-")
+    return safe or datetime.now().strftime("manual-%Y%m%d%H%M%S")
+
+
+def _sanitize_watchlist_item(raw: dict, run_id: str | None = None, strategy_name: str | None = None) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    ts_code = _clean_watchlist_text(raw.get("ts_code") or raw.get("code"), 32).upper()
+    if not ts_code:
+        return None
+    code = ts_code.split(".")[0]
+    item = {
+        "ts_code": ts_code,
+        "code": code,
+        "name": _clean_watchlist_text(raw.get("name"), 40),
+        "trade_date": _clean_watchlist_text(raw.get("trade_date"), 20),
+        "source_run_id": _clean_watchlist_text(run_id or raw.get("source_run_id") or raw.get("run_id"), 40),
+        "strategy_name": _clean_watchlist_text(strategy_name or raw.get("strategy_name") or "AI因子挖掘候选", 60),
+        "candidate_rank": _int_value(raw.get("candidate_rank"), None),
+        "candidate_tier": _clean_watchlist_text(raw.get("candidate_tier"), 20),
+        "relay_score": raw.get("relay_score"),
+        "confidence": raw.get("confidence"),
+        "score_percentile": raw.get("score_percentile"),
+        "position_pct": raw.get("position_pct"),
+        "stop_loss": raw.get("stop_loss"),
+        "take_profit": raw.get("take_profit"),
+        "hold_days": _int_value(raw.get("hold_days"), None),
+        "positive_factors": raw.get("positive_factors") if isinstance(raw.get("positive_factors"), list) else [],
+        "risk_flags": raw.get("risk_flags") if isinstance(raw.get("risk_flags"), list) else [],
+        "market_regime": _clean_watchlist_text(raw.get("market_regime"), 40),
+        "market_data_status": _clean_watchlist_text(raw.get("market_data_status"), 40),
+        "status": _clean_watchlist_text(raw.get("status") or "pending", 20),
+        "note": _clean_watchlist_text(raw.get("note"), 240),
+    }
+    item["id"] = _watchlist_item_id(item)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    item["created_at"] = _clean_watchlist_text(raw.get("created_at") or now, 30)
+    item["updated_at"] = now
+    return item
+
+
+def _import_factor_candidates_to_watchlist(
+    candidates: list,
+    run_id: str | None = None,
+    strategy_name: str | None = None,
+) -> dict:
+    imported = []
+    for candidate in candidates if isinstance(candidates, list) else []:
+        item = _sanitize_watchlist_item(candidate, run_id=run_id, strategy_name=strategy_name)
+        if item is not None:
+            imported.append(item)
+    if not imported:
+        return {"ok": False, "imported": 0, "total": len(_load_factor_watchlist()["items"])}
+
+    data = _load_factor_watchlist()
+    by_id = {str(item.get("id")): item for item in data["items"] if item.get("id")}
+    for item in imported:
+        previous = by_id.get(item["id"], {})
+        if previous.get("note") and not item.get("note"):
+            item["note"] = previous["note"]
+        if previous.get("status") and previous.get("status") != "pending":
+            item["status"] = previous["status"]
+        item["created_at"] = previous.get("created_at") or item["created_at"]
+        by_id[item["id"]] = item
+    data["items"] = list(by_id.values())
+    _save_factor_watchlist(data)
+    return {"ok": True, "imported": len(imported), "total": len(data["items"]), "items": data["items"]}
+
+
 # ── 公告管理 ──────────────────────────────────────────────────
 @bp.route("/api/admin/announcements", methods=["GET"])
 @require_admin_perm("content_manage")
@@ -356,7 +455,81 @@ def admin_factor_mining_run():
         )
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc), "run_id": run_id}), 500
-    return jsonify({"ok": True, "run_id": run_id, "report": report})
+    watchlist = _import_factor_candidates_to_watchlist(
+        report.get("latest_candidates", []) if isinstance(report, dict) else [],
+        run_id=run_id,
+        strategy_name="AI因子挖掘候选",
+    )
+    return jsonify({"ok": True, "run_id": run_id, "report": report, "watchlist": watchlist})
+
+
+@bp.route("/api/admin/factor-watchlist", methods=["GET"])
+@require_admin_perm("strategy_manage")
+def admin_factor_watchlist_get():
+    data = _load_factor_watchlist()
+    items = sorted(
+        data["items"],
+        key=lambda item: (str(item.get("trade_date") or ""), -int(item.get("candidate_rank") or 999999), str(item.get("code") or "")),
+        reverse=True,
+    )
+    return jsonify({"ok": True, "updated_at": data.get("updated_at"), "items": items})
+
+
+@bp.route("/api/admin/factor-watchlist/import", methods=["POST"])
+@require_admin_perm("strategy_manage")
+def admin_factor_watchlist_import():
+    body = request.json or {}
+    candidates = body.get("candidates")
+    run_id = _clean_watchlist_text(body.get("run_id"), 40)
+    strategy_name = _clean_watchlist_text(body.get("strategy_name") or "AI因子挖掘候选", 60)
+    if not isinstance(candidates, list):
+        payload = _factor_mining_payload(_latest_factor_mining_dir())
+        report = payload.get("report") if isinstance(payload, dict) else None
+        candidates = report.get("latest_candidates", []) if isinstance(report, dict) else []
+        run_id = run_id or _clean_watchlist_text(payload.get("run_id"), 40)
+
+    result = _import_factor_candidates_to_watchlist(candidates, run_id=run_id, strategy_name=strategy_name)
+    if not result.get("ok"):
+        return jsonify({"ok": False, "error": "没有可导入的候选标的"}), 400
+    return jsonify(result)
+
+
+@bp.route("/api/admin/factor-watchlist/<item_id>", methods=["PATCH"])
+@require_admin_perm("strategy_manage")
+def admin_factor_watchlist_update(item_id):
+    body = request.json or {}
+    allowed_status = {"pending", "ready", "bought", "skipped", "watch"}
+    data = _load_factor_watchlist()
+    found = False
+    for item in data["items"]:
+        if str(item.get("id")) != item_id:
+            continue
+        found = True
+        if "status" in body:
+            status = _clean_watchlist_text(body.get("status"), 20)
+            if status not in allowed_status:
+                return jsonify({"ok": False, "error": "状态不合法"}), 400
+            item["status"] = status
+        if "note" in body:
+            item["note"] = _clean_watchlist_text(body.get("note"), 240)
+        item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        break
+    if not found:
+        return jsonify({"ok": False, "error": "候选标的不存在"}), 404
+    _save_factor_watchlist(data)
+    return jsonify({"ok": True})
+
+
+@bp.route("/api/admin/factor-watchlist/<item_id>", methods=["DELETE"])
+@require_admin_perm("strategy_manage")
+def admin_factor_watchlist_delete(item_id):
+    data = _load_factor_watchlist()
+    before = len(data["items"])
+    data["items"] = [item for item in data["items"] if str(item.get("id")) != item_id]
+    if len(data["items"]) == before:
+        return jsonify({"ok": False, "error": "候选标的不存在"}), 404
+    _save_factor_watchlist(data)
+    return jsonify({"ok": True, "total": len(data["items"])})
 
 
 @bp.route("/api/admin/permissions/catalog")

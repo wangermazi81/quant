@@ -556,10 +556,16 @@ def run_relay_research(
     market_signal_frame: pd.DataFrame | None = None,
     include_market_signals: bool = False,
     mining_rules: dict[str, Any] | None = None,
+    require_latest_data: bool = True,
 ) -> dict[str, Any]:
     rules = normalize_mining_rules(mining_rules)
     if panel is None:
-        panel, _codes = build_panel_from_cache(n_stocks=n_stocks, days=days, min_history=min(days, 60))
+        panel, _codes = build_panel_from_cache(
+            n_stocks=n_stocks,
+            days=days,
+            min_history=min(days, 60),
+            require_latest=require_latest_data,
+        )
     out_path = Path(out_dir) if out_dir is not None else _OUT_BASE / datetime.now().strftime("%Y%m%d-%H%M%S")
     features_raw = build_feature_frame(panel, mining_rules=rules)
     labels = build_label_frame(panel, hold_days=hold_days)

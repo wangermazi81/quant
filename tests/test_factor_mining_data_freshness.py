@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 ANALYTICS = ROOT / "analytics"
@@ -79,3 +80,19 @@ def test_build_panel_from_cache_prefers_freshest_files_before_limit(tmp_path, mo
 
     assert codes == ["300001", "600001"]
     assert set(panel["close"].columns) == {"300001", "600001"}
+
+
+def test_build_panel_from_cache_require_latest_rejects_stale_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(scorer, "_DATA_DIR", tmp_path)
+
+    for code in ("000001", "000002"):
+        old = _daily_frame("2026-01-01", 70)
+        old.loc[len(old) - 1, "date"] = "2026-07-07"
+        old.to_csv(tmp_path / f"{code}.csv", index=False)
+
+    fresh = _daily_frame("2026-01-01", 70)
+    fresh.loc[len(fresh) - 1, "date"] = "2026-07-09"
+    fresh.to_csv(tmp_path / "300001.csv", index=False)
+
+    with pytest.raises(ValueError, match="Refresh data before generating live signals"):
+        scorer.build_panel_from_cache(n_stocks=2, days=60, min_history=60, require_latest=True)

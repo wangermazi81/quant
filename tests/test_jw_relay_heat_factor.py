@@ -171,3 +171,60 @@ def test_jw_overheat_avoid_v1_does_not_use_future_rows():
         changed.loc[compare_date],
         check_names=False,
     )
+
+
+def test_jw_ai_voldiff_relay_v2_is_registered_and_computable():
+    reg = Registry()
+
+    assert "jw_ai_voldiff_relay_v2" in reg.list(zoo="jianwei")
+
+    result = reg.compute("jw_ai_voldiff_relay_v2", _panel())
+
+    assert result.shape == _panel()["close"].shape
+    assert np.isfinite(result.dropna(how="all").to_numpy()).all()
+
+
+def test_jw_ai_voldiff_relay_v2_does_not_use_future_rows():
+    reg = Registry()
+    panel = _panel()
+    baseline = reg.compute("jw_ai_voldiff_relay_v2", panel)
+
+    shocked = {k: v.copy() for k, v in panel.items()}
+    for frame in shocked.values():
+        frame.iloc[-1] = frame.iloc[-1] * 100
+    changed = reg.compute("jw_ai_voldiff_relay_v2", shocked)
+
+    compare_date = baseline.index[-2]
+    pd.testing.assert_series_equal(
+        baseline.loc[compare_date],
+        changed.loc[compare_date],
+        check_names=False,
+    )
+
+def test_jw_ai_voldiff_relay_v3_is_registered_and_computable():
+    reg = Registry()
+
+    assert "jw_ai_voldiff_relay_v3" in reg.list(zoo="jianwei")
+
+    result = reg.compute("jw_ai_voldiff_relay_v3", _panel())
+
+    assert result.shape == _panel()["close"].shape
+    assert np.isfinite(result.dropna(how="all").to_numpy()).all()
+
+
+def test_jw_ai_voldiff_relay_v3_does_not_use_future_rows():
+    reg = Registry()
+    panel = _panel()
+    baseline = reg.compute("jw_ai_voldiff_relay_v3", panel)
+
+    shocked = {k: v.copy() for k, v in panel.items()}
+    for frame in shocked.values():
+        frame.iloc[-1] = frame.iloc[-1] * 100
+    changed = reg.compute("jw_ai_voldiff_relay_v3", shocked)
+
+    compare_date = baseline.index[-2]
+    pd.testing.assert_series_equal(
+        baseline.loc[compare_date],
+        changed.loc[compare_date],
+        check_names=False,
+    )

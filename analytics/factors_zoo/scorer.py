@@ -66,6 +66,7 @@ def build_panel_from_cache(
     n_stocks: Optional[int] = None,
     days: int = 252,
     min_history: Optional[int] = None,
+    require_latest: bool = False,
 ) -> tuple[dict[str, pd.DataFrame], list[str]]:
     """从 data/daily/*.csv 拼一个 wide OHLCV panel。
 
@@ -100,9 +101,16 @@ def build_panel_from_cache(
         latest_counts: dict[pd.Timestamp, int] = {}
         for latest, _rows, _code, _csv in ranked_csvs:
             latest_counts[latest] = latest_counts.get(latest, 0) + 1
+        newest_date = max(latest_counts)
+        newest_count = latest_counts[newest_date]
+        if require_latest and newest_count < n_stocks:
+            raise ValueError(
+                f"latest cache date {newest_date.date()} only has {newest_count} eligible stocks; "
+                f"need {n_stocks}. Refresh data before generating live signals."
+            )
         eligible_dates = [date for date, count in latest_counts.items() if count >= n_stocks]
         if eligible_dates:
-            target_latest = max(eligible_dates)
+            target_latest = newest_date if require_latest else max(eligible_dates)
             ranked_csvs = [item for item in ranked_csvs if item[0] == target_latest]
             logger.info(f"[scorer] 选用覆盖率满足 {n_stocks} 只的最新截面: {target_latest.date()}")
 

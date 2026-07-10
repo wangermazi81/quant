@@ -976,10 +976,27 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
       </div>
 
       <div class="card" style="margin-bottom:16px">
-        <div class="card-title"><i class="fas fa-list-ol"></i> 最新候选</div>
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <span><i class="fas fa-list-ol"></i> 最新候选</span>
+          <button class="btn btn-outline" style="padding:6px 12px;font-size:12px" onclick="fmImportWatchlist()"><i class="fas fa-star"></i> 导入次日自选池</button>
+        </div>
         <table>
           <thead><tr><th>日期</th><th>排名</th><th>代码</th><th>档位</th><th>分数</th><th>置信度</th><th>市场</th><th>仓位</th><th>止损/止盈</th><th>正向因素</th><th>风险因素</th></tr></thead>
           <tbody id="fm-candidates"><tr><td colspan="11" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <span><i class="fas fa-star"></i> 次日交易候选自选池</span>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <span id="fm-watch-updated" style="font-size:12px;color:var(--text3)">尚未加载</span>
+            <button class="btn btn-outline" style="padding:6px 12px;font-size:12px" onclick="fmLoadWatchlist()"><i class="fas fa-sync-alt"></i> 刷新</button>
+          </div>
+        </div>
+        <table>
+          <thead><tr><th>日期</th><th>排名</th><th>代码</th><th>策略/档位</th><th>置信度</th><th>计划</th><th>状态</th><th>备注</th><th>操作</th></tr></thead>
+          <tbody id="fm-watchlist"><tr><td colspan="9" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr></tbody>
         </table>
       </div>
 
@@ -2317,6 +2334,9 @@ async function _annFetch(method, path, body, timeoutMs){
 // ================================================================
 // AI因子挖掘
 // ================================================================
+let FM_LAST_FACTOR_REPORT = null;
+let FM_LAST_FACTOR_RUN_ID = '';
+
 function fmSetText(id, text){
   const el = document.getElementById(id);
   if(el) el.textContent = text;
@@ -2446,6 +2466,7 @@ async function loadFactorMining(){
   else fmRenderRuleEditor(FM_DEFAULT_RULES);
   const r = await _annFetch('GET', '/admin/factor-mining/latest');
   renderFactorMining(r);
+  fmLoadWatchlist();
 }
 
 function renderFactorMining(r){
@@ -2453,6 +2474,8 @@ function renderFactorMining(r){
   const candidateBody = document.getElementById('fm-candidates');
   const windowBody = document.getElementById('fm-windows');
   if(!r || !r.ok){
+    FM_LAST_FACTOR_REPORT = null;
+    FM_LAST_FACTOR_RUN_ID = '';
     const error = (r && r.error) || '加载失败';
     if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
     if(candidateBody) candidateBody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
@@ -2462,6 +2485,8 @@ function renderFactorMining(r){
   }
 
   if(!r.found && !r.report){
+    FM_LAST_FACTOR_REPORT = null;
+    FM_LAST_FACTOR_RUN_ID = '';
     fmSetText('fm-status','未运行');
     fmSetText('fm-updated','没有历史报告');
     fmSetText('fm-trusted','—');
@@ -2478,6 +2503,8 @@ function renderFactorMining(r){
   }
 
   const report = r.report || {};
+  FM_LAST_FACTOR_REPORT = report;
+  FM_LAST_FACTOR_RUN_ID = r.run_id || '';
   if(report.mining_rules) fmRenderRuleEditor(report.mining_rules);
   fmRenderRuleExplain(report);
   const summary = report.summary || {};
@@ -2541,6 +2568,93 @@ function renderFactorMining(r){
       windowBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text3)">暂无可用窗口，通常是可信样本不足</td></tr>';
     }
   }
+}
+
+function fmWatchStatusText(status){
+  const map = {pending:'待观察', ready:'可买入', bought:'已买入', skipped:'已跳过', watch:'继续观察'};
+  return map[status] || status || '待观察';
+}
+
+function fmWatchPlanText(item){
+  const hold = item.hold_days ? `${item.hold_days}日` : '按策略';
+  return `仓位 ${fmRateText(item.position_pct)} / 止损 ${fmRateText(item.stop_loss)} / 止盈 ${fmRateText(item.take_profit)} / 持有 ${hold}`;
+}
+
+async function fmLoadWatchlist(){
+  const body = document.getElementById('fm-watchlist');
+  const updated = document.getElementById('fm-watch-updated');
+  if(body) body.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr>';
+  const r = await _annFetch('GET', '/admin/factor-watchlist');
+  if(!r || !r.ok){
+    const error = (r && r.error) || '加载失败';
+    if(body) body.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
+    if(updated) updated.textContent = error;
+    return;
+  }
+  const items = Array.isArray(r.items) ? r.items : [];
+  if(updated) updated.textContent = r.updated_at ? `更新 ${r.updated_at}` : `共 ${items.length} 只`;
+  if(!body) return;
+  if(!items.length){
+    body.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:36px;color:var(--text3)">暂无标的，可从最新候选一键导入</td></tr>';
+    return;
+  }
+  body.innerHTML = items.map(item=>`
+    <tr>
+      <td>${esc(item.trade_date || '')}</td>
+      <td>${fmNumText(item.candidate_rank)}</td>
+      <td><b>${esc(item.ts_code || item.code || '')}</b><br><span style="font-size:11px;color:var(--text3)">${esc(item.name || '')}</span></td>
+      <td>${esc(item.strategy_name || '')}<br><span style="font-size:11px;color:var(--text3)">${esc(fmTierText(item.candidate_tier))} / ${fmNumText(item.relay_score)}</span></td>
+      <td>${fmRateText(item.confidence)}<br><span style="font-size:11px;color:var(--text3)">分位 ${fmRateText(item.score_percentile)}</span></td>
+      <td>${esc(fmWatchPlanText(item))}</td>
+      <td>
+        <select class="form-input" style="min-width:96px;padding:6px 8px" onchange="fmUpdateWatchItem('${escJs(item.id)}',{status:this.value})">
+          ${['pending','ready','bought','skipped','watch'].map(s=>`<option value="${s}" ${item.status===s?'selected':''}>${fmWatchStatusText(s)}</option>`).join('')}
+        </select>
+      </td>
+      <td><input class="form-input" style="min-width:160px;padding:6px 8px" value="${esc(item.note || '')}" placeholder="竞价/消息/风控备注" onchange="fmUpdateWatchItem('${escJs(item.id)}',{note:this.value})"></td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-outline" style="padding:4px 8px;font-size:12px" onclick="fmCopyCode('${escJs(item.code || item.ts_code || '')}')"><i class="fas fa-copy"></i></button>
+        <button class="btn btn-outline" style="padding:4px 8px;font-size:12px" onclick="fmDeleteWatchItem('${escJs(item.id)}')"><i class="fas fa-trash"></i></button>
+      </td>
+    </tr>`).join('');
+}
+
+async function fmImportWatchlist(){
+  const candidates = FM_LAST_FACTOR_REPORT && Array.isArray(FM_LAST_FACTOR_REPORT.latest_candidates) ? FM_LAST_FACTOR_REPORT.latest_candidates : null;
+  if(!candidates || !candidates.length){
+    showToast('暂无最新候选可导入，请先完成因子挖掘', 'warning');
+    return;
+  }
+  const r = await _annFetch('POST', '/admin/factor-watchlist/import', {
+    run_id: FM_LAST_FACTOR_RUN_ID,
+    strategy_name: 'AI因子挖掘候选',
+    candidates,
+  });
+  if(r && r.ok){
+    showToast(`已导入 ${r.imported} 只候选`, 'success');
+    fmLoadWatchlist();
+  }else{
+    showToast((r && r.error) || '导入失败', 'error');
+  }
+}
+
+async function fmUpdateWatchItem(id, patch){
+  const r = await _annFetch('PATCH', `/admin/factor-watchlist/${encodeURIComponent(id)}`, patch);
+  if(r && r.ok) showToast('已更新候选标注', 'success');
+  else showToast((r && r.error) || '更新失败', 'error');
+}
+
+async function fmDeleteWatchItem(id){
+  if(!confirm('确认从次日自选池删除这个标的吗？')) return;
+  const r = await _annFetch('DELETE', `/admin/factor-watchlist/${encodeURIComponent(id)}`);
+  if(r && r.ok){ showToast('已删除', 'success'); fmLoadWatchlist(); }
+  else showToast((r && r.error) || '删除失败', 'error');
+}
+
+function fmCopyCode(code){
+  if(!code){ showToast('代码为空', 'warning'); return; }
+  if(navigator.clipboard) navigator.clipboard.writeText(code).then(()=>showToast('已复制：'+code,'success'),()=>showToast('复制失败','warning'));
+  else showToast('请手动复制：'+code, 'info');
 }
 
 async function runFactorMining(){

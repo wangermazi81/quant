@@ -248,7 +248,9 @@ def test_factor_mining_run_requires_strategy_permission_and_invokes_research(iso
             "reason": "ok",
             "generated_at": "2026-07-09 10:30:00",
             "summary": {"feature_rows": 10, "trusted_feature_rows": 10},
-            "latest_candidates": [],
+            "latest_candidates": [
+                {"ts_code": "000002.SZ", "trade_date": "2026-07-09", "candidate_rank": 1, "confidence": 0.7}
+            ],
         }
 
     monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
@@ -273,11 +275,74 @@ def test_factor_mining_run_requires_strategy_permission_and_invokes_research(iso
     assert resp.status_code == 200
     assert data["ok"] is True
     assert data["report"]["status"] == "ok"
+    assert data["watchlist"]["imported"] == 1
     assert calls
     assert calls[0]["n_stocks"] == 25
     assert calls[0]["include_market_signals"] is True
     assert calls[0]["mining_rules"]["filters"]["min_volume_ratio_20"] == 1.1
     assert str(calls[0]["out_dir"]).startswith(str(tmp_path / "data" / "research" / "relay_factor"))
+    listed = client.get("/api/admin/factor-watchlist").get_json()
+    assert listed["items"][0]["ts_code"] == "000002.SZ"
+
+
+def test_factor_watchlist_import_update_delete_requires_strategy_permission(isolated_app, monkeypatch, tmp_path):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(um, permissions=["dashboard_view"])
+
+    import web.admin as admin_api
+
+    monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
+    client = app.test_client()
+    _login_session(client, ops_uid, "ops")
+
+    denied = client.get("/api/admin/factor-watchlist")
+    assert denied.status_code == 403
+    assert denied.get_json()["missing_permission"] == "strategy_manage"
+
+    assert um.set_admin_permissions(ops_uid, ["strategy_manage"], granted_by=1)["ok"]
+    imported = client.post(
+        "/api/admin/factor-watchlist/import",
+        json={
+            "run_id": "20260709-160000",
+            "strategy_name": "AI因子挖掘候选",
+            "candidates": [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "2026-07-09",
+                    "candidate_rank": 1,
+                    "candidate_tier": "strong",
+                    "relay_score": 88.5,
+                    "confidence": 0.72,
+                    "stop_loss": -0.055,
+                    "take_profit": 0.12,
+                    "positive_factors": ["volume_confirmation"],
+                }
+            ],
+        },
+    )
+    data = imported.get_json()
+    assert imported.status_code == 200
+    assert data["ok"] is True
+    assert data["imported"] == 1
+
+    listed = client.get("/api/admin/factor-watchlist").get_json()
+    item = listed["items"][0]
+    assert item["id"] == "2026-07-09-000001.SZ"
+    assert item["strategy_name"] == "AI因子挖掘候选"
+
+    updated = client.patch(
+        f"/api/admin/factor-watchlist/{item['id']}",
+        json={"status": "ready", "note": "竞价不过热再买"},
+    )
+    assert updated.status_code == 200
+    assert updated.get_json()["ok"] is True
+    listed = client.get("/api/admin/factor-watchlist").get_json()
+    assert listed["items"][0]["status"] == "ready"
+    assert listed["items"][0]["note"] == "竞价不过热再买"
+
+    deleted = client.delete(f"/api/admin/factor-watchlist/{item['id']}")
+    assert deleted.status_code == 200
+    assert client.get("/api/admin/factor-watchlist").get_json()["items"] == []
 
 
 def test_admin_list_endpoints_sanitize_numeric_query_params(isolated_app, monkeypatch):

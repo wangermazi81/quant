@@ -275,6 +275,8 @@ def run_research(
         "rh158_std10",
         "rh158_roc10",
         "gtja191_005",
+        "jw_ai_voldiff_relay_v2",
+        "jw_ai_voldiff_relay_v3",
         "jw_relay_heat_v1",
         "jw_relay_pullback_v1",
         "jw_overheat_avoid_v1",

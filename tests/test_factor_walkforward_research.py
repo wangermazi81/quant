@@ -115,3 +115,49 @@ def test_write_report_uses_readable_utf8_chinese(tmp_path):
     assert text.startswith("# 因子 Walk-Forward 研究报告")
     assert "生成时间" in text
     assert "| 因子 | 窗口 | 正收益窗口 | 交易数 | 胜率 | 总收益% | 平均单次% | 最大回撤% |" in text
+
+def test_run_research_includes_ai_discovered_factor(monkeypatch):
+    dates = pd.bdate_range("2026-01-02", periods=40)
+    close = pd.DataFrame(
+        {
+            "AAA": range(40),
+            "BBB": range(1, 41),
+            "CCC": range(2, 42),
+        },
+        index=dates,
+        dtype=float,
+    ) + 10
+    panel = {
+        "open": close,
+        "high": close * 1.01,
+        "low": close * 0.99,
+        "close": close,
+        "volume": close * 100,
+    }
+    captured = []
+
+    def fake_compute_builtin_factors(_panel, alpha_ids):
+        captured.extend(alpha_ids)
+        return {
+            alpha_id: pd.DataFrame(1.0, index=dates, columns=close.columns)
+            for alpha_id in alpha_ids
+        }
+
+    monkeypatch.setattr(research, "build_panel_from_cache", lambda **kwargs: (panel, list(close.columns)))
+    monkeypatch.setattr(research, "_compute_builtin_factors", fake_compute_builtin_factors)
+    monkeypatch.setattr(research, "build_composite_factors", lambda factors: {})
+    monkeypatch.setattr(
+        research,
+        "walk_forward_factor",
+        lambda alpha_id, *args, **kwargs: {
+            "alpha_id": alpha_id,
+            "summary": {"positive_window_rate": 0.0, "total_return_pct": 0.0},
+            "windows": [],
+            "trades": [],
+        },
+    )
+
+    research.run_research(n_stocks=3, days=40, train_days=10, test_days=5)
+
+    assert "jw_ai_voldiff_relay_v2" in captured
+    assert "jw_ai_voldiff_relay_v3" in captured
