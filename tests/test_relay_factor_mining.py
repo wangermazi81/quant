@@ -172,6 +172,41 @@ def test_latest_candidates_keep_research_pool_larger_than_trade_top_k():
     assert candidates[-1]["latest_universe_size"] == 10
 
 
+def test_latest_candidates_include_human_readable_factor_explanation():
+    features = pd.DataFrame(
+        [
+            {
+                "trade_date": "2026-07-09",
+                "ts_code": "AAA",
+                "relay_score": 91,
+                "ret_5": 0.06,
+                "ret_10": 0.11,
+                "ret_20": 0.18,
+                "volume_ratio_20": 1.9,
+                "amount_ratio_20": 2.1,
+                "near_high_20": 0.98,
+                "limit_count_20": 2,
+                "volatility_10": 0.04,
+                "ret_3": 0.08,
+                "risk_flags": "",
+                "market_emotion_score": 72,
+                "available_at": "2026-07-09 15:00:00",
+            }
+        ]
+    )
+
+    candidate = relay.build_latest_candidates(features, top_k=1, candidate_pool_size=1)[0]
+    explanation = candidate["factor_explain"]
+
+    assert explanation["factor_version"] == "relay_factor_mining_v1"
+    assert "二三板接力" in explanation["summary"]
+    assert explanation["matched_factors"]
+    assert explanation["risk_controls"]
+    assert explanation["trading_plan"]["hold_days"] == 2
+    assert explanation["update_policy"]["signal_refresh"] == "每个交易日收盘后刷新候选池"
+    assert explanation["feature_snapshot"]["volume_ratio_20"] == 1.9
+
+
 def test_latest_candidates_apply_visible_filters_and_custom_tiers():
     features = pd.DataFrame(
         [

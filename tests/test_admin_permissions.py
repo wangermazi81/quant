@@ -316,6 +316,13 @@ def test_factor_watchlist_import_update_delete_requires_strategy_permission(isol
                     "stop_loss": -0.055,
                     "take_profit": 0.12,
                     "positive_factors": ["volume_confirmation"],
+                    "factor_explain": {
+                        "factor_version": "relay_factor_mining_v1",
+                        "summary": "二三板接力情绪强势延续",
+                        "matched_factors": [{"key": "volume_ratio_20", "label": "20日量比", "text": "量能确认"}],
+                        "risk_controls": ["不追一字板排队"],
+                        "trading_plan": {"hold_days": 2, "stop_loss": -0.055, "take_profit": 0.12},
+                    },
                 }
             ],
         },
@@ -329,6 +336,8 @@ def test_factor_watchlist_import_update_delete_requires_strategy_permission(isol
     item = listed["items"][0]
     assert item["id"] == "2026-07-09-000001.SZ"
     assert item["strategy_name"] == "AI因子挖掘候选"
+    assert item["factor_explain"]["factor_version"] == "relay_factor_mining_v1"
+    assert item["factor_explain"]["matched_factors"][0]["label"] == "20日量比"
 
     updated = client.patch(
         f"/api/admin/factor-watchlist/{item['id']}",

@@ -981,8 +981,8 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
           <button class="btn btn-outline" style="padding:6px 12px;font-size:12px" onclick="fmImportWatchlist()"><i class="fas fa-star"></i> 导入次日自选池</button>
         </div>
         <table>
-          <thead><tr><th>日期</th><th>排名</th><th>代码</th><th>档位</th><th>分数</th><th>置信度</th><th>市场</th><th>仓位</th><th>止损/止盈</th><th>正向因素</th><th>风险因素</th></tr></thead>
-          <tbody id="fm-candidates"><tr><td colspan="11" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr></tbody>
+          <thead><tr><th>日期</th><th>排名</th><th>代码</th><th>档位</th><th>分数</th><th>置信度</th><th>市场</th><th>计划</th><th>为什么选它</th><th>风险因素</th></tr></thead>
+          <tbody id="fm-candidates"><tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr></tbody>
         </table>
       </div>
 
@@ -995,8 +995,8 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
           </div>
         </div>
         <table>
-          <thead><tr><th>日期</th><th>排名</th><th>代码</th><th>策略/档位</th><th>置信度</th><th>计划</th><th>状态</th><th>备注</th><th>操作</th></tr></thead>
-          <tbody id="fm-watchlist"><tr><td colspan="9" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr></tbody>
+          <thead><tr><th>日期</th><th>排名</th><th>代码</th><th>策略/档位</th><th>置信度</th><th>计划</th><th>选股理由</th><th>状态</th><th>备注</th><th>操作</th></tr></thead>
+          <tbody id="fm-watchlist"><tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr></tbody>
         </table>
       </div>
 
@@ -1051,8 +1051,8 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
       <div class="card" style="margin-bottom:16px">
         <div class="card-title"><i class="fas fa-star"></i> 当前候选池</div>
         <table>
-          <thead><tr><th>日期</th><th>代码</th><th>名称</th><th>排名</th><th>置信度</th><th>状态</th><th>来源</th></tr></thead>
-          <tbody id="atd-candidates"><tr><td colspan="7" style="text-align:center;padding:28px;color:var(--text3)">加载中...</td></tr></tbody>
+          <thead><tr><th>日期</th><th>代码</th><th>名称</th><th>排名</th><th>置信度</th><th>状态</th><th>来源</th><th>因子理由</th></tr></thead>
+          <tbody id="atd-candidates"><tr><td colspan="8" style="text-align:center;padding:28px;color:var(--text3)">加载中...</td></tr></tbody>
         </table>
       </div>
 
@@ -2448,6 +2448,49 @@ function fmTierText(tier){
   return tier || '—';
 }
 
+function fmMetricText(key, value){
+  if(value===null || value===undefined || value==='') return '—';
+  const n = Number(value);
+  if(!Number.isFinite(n)) return esc(String(value));
+  if(['ret_3','ret_5','ret_10','ret_20','volatility_10','near_high_20'].includes(key)) return fmRateText(n);
+  if(['volume_ratio_20','amount_ratio_20'].includes(key)) return `${n.toFixed(2)}x`;
+  if(key === 'limit_count_20') return String(Math.round(n));
+  return n.toFixed(2);
+}
+
+function fmFactorExplainHtml(item, compact=false){
+  const ex = item && typeof item.factor_explain === 'object' ? item.factor_explain : null;
+  const matched = Array.isArray(ex?.matched_factors) ? ex.matched_factors : [];
+  const riskFactors = Array.isArray(ex?.risk_factors) ? ex.risk_factors : [];
+  const snapshot = ex?.feature_snapshot && typeof ex.feature_snapshot === 'object' ? ex.feature_snapshot : {};
+  const update = ex?.update_policy && typeof ex.update_policy === 'object' ? ex.update_policy : {};
+  const fallbackPositive = Array.isArray(item?.positive_factors) ? item.positive_factors.map(x=>({label:x, text:x})) : [];
+  const fallbackRisk = Array.isArray(item?.risk_flags) ? item.risk_flags.map(x=>({label:x, text:x})) : [];
+  const positives = matched.length ? matched : fallbackPositive;
+  const risks = riskFactors.length ? riskFactors : fallbackRisk;
+  const featureLine = [
+    ['ret_5','5日'], ['volume_ratio_20','量比'], ['amount_ratio_20','额比'], ['near_high_20','近高'], ['limit_count_20','涨停'], ['market_emotion_score','情绪']
+  ].filter(([k])=>snapshot[k]!==undefined && snapshot[k]!==null).map(([k,label])=>`${label} ${fmMetricText(k, snapshot[k])}`).join(' / ');
+  const positiveHtml = positives.length
+    ? positives.slice(0, compact ? 3 : 5).map(x=>`<span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 6px;border-radius:6px;background:rgba(22,163,74,.12);color:var(--green);font-size:11px">${esc(x.label || x.key || x)}</span>`).join('')
+    : '<span style="color:var(--text3)">暂无明显正向标签</span>';
+  const riskHtml = risks.length
+    ? risks.slice(0, compact ? 2 : 4).map(x=>`<span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 6px;border-radius:6px;background:rgba(220,38,38,.10);color:var(--red);font-size:11px">${esc(x.label || x.key || x)}</span>`).join('')
+    : '<span style="color:var(--green)">无显性风险旗标</span>';
+  const summary = ex?.summary || `${esc(item?.strategy_key || item?.strategy_name || 'relay_factor_mining_v1')}：${fmListText(item?.positive_factors)}`;
+  const policy = update.signal_refresh || '每个交易日收盘后刷新候选池';
+  const review = update.factor_review || '每周复盘稳定性，每20个交易日或连续失效时评估权重';
+  return `
+    <div style="min-width:${compact?'220px':'280px'};max-width:420px;line-height:1.55;font-size:12px;color:var(--text2)">
+      <div style="font-weight:700;color:var(--text1);margin-bottom:3px">${esc(ex?.factor_title || '二三板接力情绪强势延续')}</div>
+      <div style="color:var(--text3);margin-bottom:4px">${esc(summary)}</div>
+      <div><b>命中：</b>${positiveHtml}</div>
+      ${featureLine ? `<div style="color:var(--text3);margin-top:3px"><b>数值：</b>${esc(featureLine)}</div>` : ''}
+      <div style="margin-top:3px"><b>风险：</b>${riskHtml}</div>
+      ${compact ? '' : `<details style="margin-top:4px"><summary style="cursor:pointer;color:var(--text3)">更新节奏/交易约束</summary><div style="margin-top:4px;color:var(--text3)">${esc(policy)}；${esc(review)}</div></details>`}
+    </div>`;
+}
+
 const FM_DEFAULT_RULES = {
   weights: {ret_5:0.18, ret_10:0.12, ret_20:0.12, volume_ratio_20:0.16, amount_ratio_20:0.10, near_high_20:0.16, limit_count_20:0.10, volatility_10:-0.08, overheat_ret_3:-0.08},
   risk_thresholds: {overextended_3d:0.24, high_volatility:0.08, weak_volume:0.75, deep_drawdown:-0.18},
@@ -2541,7 +2584,7 @@ function renderFactorMining(r){
     FM_LAST_FACTOR_RUN_ID = '';
     const error = (r && r.error) || '加载失败';
     if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
-    if(candidateBody) candidateBody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
+    if(candidateBody) candidateBody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
     if(windowBody) windowBody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
     fmRenderRuleExplain({mining_rules:FM_DEFAULT_RULES, condition_explain:[]});
     return;
@@ -2559,7 +2602,7 @@ function renderFactorMining(r){
     fmSetText('fm-total-return','—');
     fmSetText('fm-drawdown','最大回撤 —');
     if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '暂无挖掘结果'; }
-    if(candidateBody) candidateBody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:36px;color:var(--text3)">暂无候选</td></tr>';
+    if(candidateBody) candidateBody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">暂无候选</td></tr>';
     if(windowBody) windowBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text3)">暂无窗口结果</td></tr>';
     fmRenderRuleExplain({mining_rules:FM_DEFAULT_RULES, condition_explain:[]});
     return;
@@ -2603,14 +2646,13 @@ function renderFactorMining(r){
           <td>${fmNumText(c.relay_score)}</td>
           <td>${fmRateText(c.confidence)}</td>
           <td>${esc(c.market_regime || '')}<br><span style="font-size:11px;color:var(--text3)">${esc(c.market_data_status || '')}</span></td>
-          <td>${fmRateText(c.position_pct)}</td>
-          <td>${fmRateText(c.stop_loss)} / ${fmRateText(c.take_profit)}</td>
-          <td>${fmListText(c.positive_factors)}</td>
+          <td>${esc(fmWatchPlanText(c))}</td>
+          <td>${fmFactorExplainHtml(c)}</td>
           <td>${fmListText(c.risk_flags || c.negative_factors)}</td>
         </tr>`).join('');
     }else{
       const reason = report.reason || marketReason || '当前没有满足数据可信和候选条件的结果';
-      candidateBody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:36px;color:var(--text3)">${esc(reason)}</td></tr>`;
+      candidateBody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">${esc(reason)}</td></tr>`;
     }
   }
 
@@ -2646,11 +2688,11 @@ function fmWatchPlanText(item){
 async function fmLoadWatchlist(){
   const body = document.getElementById('fm-watchlist');
   const updated = document.getElementById('fm-watch-updated');
-  if(body) body.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr>';
+  if(body) body.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr>';
   const r = await _annFetch('GET', '/admin/factor-watchlist');
   if(!r || !r.ok){
     const error = (r && r.error) || '加载失败';
-    if(body) body.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
+    if(body) body.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
     if(updated) updated.textContent = error;
     return;
   }
@@ -2658,7 +2700,7 @@ async function fmLoadWatchlist(){
   if(updated) updated.textContent = r.updated_at ? `更新 ${r.updated_at}` : `共 ${items.length} 只`;
   if(!body) return;
   if(!items.length){
-    body.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:36px;color:var(--text3)">暂无标的，可从最新候选一键导入</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">暂无标的，可从最新候选一键导入</td></tr>';
     return;
   }
   body.innerHTML = items.map(item=>`
@@ -2669,6 +2711,7 @@ async function fmLoadWatchlist(){
       <td>${esc(item.strategy_name || '')}<br><span style="font-size:11px;color:var(--text3)">${esc(fmTierText(item.candidate_tier))} / ${fmNumText(item.relay_score)}</span></td>
       <td>${fmRateText(item.confidence)}<br><span style="font-size:11px;color:var(--text3)">分位 ${fmRateText(item.score_percentile)}</span></td>
       <td>${esc(fmWatchPlanText(item))}</td>
+      <td>${fmFactorExplainHtml(item, true)}</td>
       <td>
         <select class="form-input" style="min-width:96px;padding:6px 8px" onchange="fmUpdateWatchItem('${escJs(item.id)}',{status:this.value})">
           ${['pending','ready','bought','skipped','watch'].map(s=>`<option value="${s}" ${item.status===s?'selected':''}>${fmWatchStatusText(s)}</option>`).join('')}
@@ -2783,7 +2826,7 @@ function renderAiTradeDecision(data){
   }
   if(cBody){
     if(!candidates.length){
-      cBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:28px;color:var(--text3)">暂无候选，请先在AI因子挖掘页导入次日候选池</td></tr>';
+      cBody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:28px;color:var(--text3)">暂无候选，请先在AI因子挖掘页导入次日候选池</td></tr>';
     }else{
       cBody.innerHTML = candidates.map(item=>`
         <tr>
@@ -2794,6 +2837,7 @@ function renderAiTradeDecision(data){
           <td>${fmRateText(item.confidence)}</td>
           <td>${esc(fmWatchStatusText(item.status || 'pending'))}</td>
           <td>${esc(item.strategy_name || item.source_run_id || '')}</td>
+          <td>${fmFactorExplainHtml(item, true)}</td>
         </tr>`).join('');
     }
   }
@@ -2877,13 +2921,13 @@ async function loadAiTradeDecision(){
   const maxCandidates = fmReadInt('atd-max', 6);
   loadAiTradeAutoStatus();
   const cBody = document.getElementById('atd-candidates');
-  if(cBody) cBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:28px;color:var(--text3)">加载中...</td></tr>';
+  if(cBody) cBody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:28px;color:var(--text3)">加载中...</td></tr>';
   const r = await _annFetch('GET', `/admin/ai-trade-decision/latest?max_candidates=${encodeURIComponent(maxCandidates)}`);
   if(r && r.ok){
     renderAiTradeDecision(r);
   }else{
     const error = (r && (r.error || r.message)) || '加载失败';
-    if(cBody) cBody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:28px;color:var(--red)">${esc(error)}</td></tr>`;
+    if(cBody) cBody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:28px;color:var(--red)">${esc(error)}</td></tr>`;
     showToast(error, 'error');
   }
 }

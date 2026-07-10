@@ -190,6 +190,18 @@ def _clean_watchlist_text(value, limit: int = 200) -> str:
     return text[:limit]
 
 
+def _clean_watchlist_json(value, limit: int = 12000):
+    if not isinstance(value, (dict, list)):
+        return {} if isinstance(value, dict) else None
+    try:
+        text = json.dumps(value, ensure_ascii=False)
+        if len(text) > limit:
+            return {} if isinstance(value, dict) else []
+        return json.loads(text)
+    except Exception:
+        return {} if isinstance(value, dict) else []
+
+
 def _watchlist_item_id(item: dict) -> str:
     raw = f"{item.get('trade_date') or 'unknown'}-{item.get('ts_code') or item.get('code') or ''}"
     safe = re.sub(r"[^0-9A-Za-z_.-]+", "-", raw).strip("-")
@@ -221,6 +233,7 @@ def _sanitize_watchlist_item(raw: dict, run_id: str | None = None, strategy_name
         "hold_days": _int_value(raw.get("hold_days"), None),
         "positive_factors": raw.get("positive_factors") if isinstance(raw.get("positive_factors"), list) else [],
         "risk_flags": raw.get("risk_flags") if isinstance(raw.get("risk_flags"), list) else [],
+        "factor_explain": _clean_watchlist_json(raw.get("factor_explain")) or {},
         "market_regime": _clean_watchlist_text(raw.get("market_regime"), 40),
         "market_data_status": _clean_watchlist_text(raw.get("market_data_status"), 40),
         "status": _clean_watchlist_text(raw.get("status") or "pending", 20),

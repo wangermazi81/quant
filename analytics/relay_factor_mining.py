@@ -87,6 +87,34 @@ _RULE_DESCRIPTIONS: dict[str, dict[str, str]] = {
     },
 }
 
+_SIGNAL_LABELS: dict[str, str] = {
+    "ret_5": "5日动量",
+    "ret_10": "10日动量",
+    "ret_20": "20日动量",
+    "volume_ratio_20": "20日量比",
+    "amount_ratio_20": "20日额比",
+    "near_high_20": "接近20日高点",
+    "limit_count_20": "20日涨停次数",
+    "volatility_10": "10日波动",
+    "overheat_ret_3": "3日过热",
+    "market_emotion_score": "市场情绪分",
+}
+
+_POSITIVE_FACTOR_TEXT: dict[str, tuple[str, str]] = {
+    "positive_5d_momentum": ("短线动量为正", "近5日收益为正，说明短线资金仍在推动。"),
+    "volume_confirmation": ("量能确认", "成交量相对20日均量放大，接力承接更容易被验证。"),
+    "near_20d_high": ("强势区间", "收盘价接近20日高点，趋势位置仍处于强势区。"),
+    "recent_limit_strength": ("涨停基因", "近20日出现过涨停，说明标的具备短线活跃度。"),
+    "supportive_market_emotion": ("市场情绪支持", "市场情绪分较高，接力环境相对友好。"),
+}
+
+_RISK_FACTOR_TEXT: dict[str, str] = {
+    "overextended_3d": "近3日涨幅过热，次日追高容易承接不足。",
+    "high_volatility": "近10日波动偏高，止损触发概率更高。",
+    "weak_volume": "量能低于阈值，接力确认不足。",
+    "deep_drawdown": "距离20日高点回撤偏深，趋势强度不足。",
+}
+
 
 def _to_float_frame(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -402,6 +430,96 @@ def _candidate_pool_size(top_k: int, candidate_pool_size: int | None) -> int:
     return max(top_k, min(120, max(80, top_k * 6)))
 
 
+def _feature_snapshot(row: pd.Series) -> dict[str, float | None]:
+    keys = [
+        "ret_5",
+        "ret_10",
+        "ret_20",
+        "volume_ratio_20",
+        "amount_ratio_20",
+        "near_high_20",
+        "limit_count_20",
+        "volatility_10",
+        "ret_3",
+        "market_emotion_score",
+    ]
+    return {key: _maybe_float(row.get(key)) for key in keys if key in row.index}
+
+
+def _score_inputs(row: pd.Series, rules: dict[str, Any]) -> list[dict[str, Any]]:
+    inputs: list[dict[str, Any]] = []
+    for key, weight in rules["weights"].items():
+        source_key = "ret_3" if key == "overheat_ret_3" else key
+        inputs.append(
+            {
+                "key": key,
+                "label": _SIGNAL_LABELS.get(key, key),
+                "value": _maybe_float(row.get(source_key)),
+                "weight": round(float(weight), 4),
+                "direction": "penalty" if float(weight) < 0 else "positive",
+            }
+        )
+    return inputs
+
+
+def _candidate_factor_explain(
+    row: pd.Series,
+    rules: dict[str, Any],
+    positive_factors: Sequence[str],
+    risk_flags: Sequence[str],
+    tier: str,
+    score: float,
+    confidence: float,
+    position_pct: float,
+    hold_days: int,
+) -> dict[str, Any]:
+    matched = []
+    for key in positive_factors:
+        label, text = _POSITIVE_FACTOR_TEXT.get(key, (key, key))
+        matched.append({"key": key, "label": label, "text": text})
+    risks = [
+        {"key": key, "label": key, "text": _RISK_FACTOR_TEXT.get(key, key)}
+        for key in risk_flags
+    ]
+    risk_summary = "无显性风险旗标" if not risks else "；".join(item["text"] for item in risks)
+    tier_text = {"strong": "强候选", "watch": "观察候选", "observe": "仅参考候选"}.get(tier, tier)
+    return {
+        "factor_version": "relay_factor_mining_v1",
+        "factor_title": "二三板接力情绪强势延续",
+        "summary": f"二三板接力/强势延续复合因子：{tier_text}，评分{round(float(score), 2)}，置信度{round(float(confidence), 4)}。",
+        "matched_factors": matched,
+        "risk_factors": risks,
+        "risk_summary": risk_summary,
+        "score_inputs": _score_inputs(row, rules),
+        "feature_snapshot": _feature_snapshot(row),
+        "market_context": {
+            "regime": _market_regime(row),
+            "emotion_score": _maybe_float(row.get("market_emotion_score")),
+            "data_status": str(row.get("market_data_status", "not_checked")),
+            "source": str(row.get("market_source", "")),
+        },
+        "risk_controls": [
+            "只用于次日观察/竞价/开盘确认，不使用未来收益参与当日选股。",
+            "避免高开过多、封单弱、反复开板或量能确认失败时追入。",
+            "若市场情绪、两市成交额或涨跌结构转弱，降级为观察或放弃。",
+        ],
+        "trading_plan": {
+            "entry_mode": "next_session_watch_or_limit_board",
+            "entry_zone": "avoid_chasing_above_limit_queue_plan",
+            "position_pct": round(float(position_pct), 4),
+            "stop_loss": -0.035,
+            "take_profit": 0.07,
+            "hold_days": int(hold_days),
+            "cancel_conditions": ["market_emotion_drops", "limit_board_opens_repeatedly", "volume_confirm_fails"],
+        },
+        "update_policy": {
+            "signal_refresh": "每个交易日收盘后刷新候选池",
+            "auction_review": "次日9:15和9:25结合竞价/风控再决策",
+            "factor_review": "每周复盘稳定性，每20个交易日或连续3-5天失效时评估权重",
+        },
+    }
+
+
 def build_latest_candidates(
     features: pd.DataFrame,
     top_k: int = 10,
@@ -447,6 +565,18 @@ def build_latest_candidates(
             position_pct = 0.08 if not risk_flags else 0.05
         else:
             position_pct = 0.0
+        positive_factors = _positive_factors(row, rules)
+        factor_explain = _candidate_factor_explain(
+            row,
+            rules,
+            positive_factors=positive_factors,
+            risk_flags=risk_flags,
+            tier=tier,
+            score=score,
+            confidence=confidence,
+            position_pct=position_pct,
+            hold_days=hold_days,
+        )
         candidates.append(
             {
                 "ts_code": str(row["ts_code"]),
@@ -464,9 +594,10 @@ def build_latest_candidates(
                 "market_emotion_score": _maybe_float(row.get("market_emotion_score")),
                 "market_data_status": str(row.get("market_data_status", "not_checked")),
                 "market_source": str(row.get("market_source", "")),
-                "positive_factors": _positive_factors(row, rules),
+                "positive_factors": positive_factors,
                 "negative_factors": risk_flags,
                 "risk_flags": risk_flags,
+                "factor_explain": factor_explain,
                 "active_filters": {key: value for key, value in active_filters.items() if value not in (None, False)},
                 "entry_mode": "next_session_watch_or_limit_board",
                 "entry_zone": "avoid_chasing_above_limit_queue_plan",
