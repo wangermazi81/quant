@@ -120,6 +120,16 @@ def _init_runtime():
     与原内联初始化逐句等价，仅多一层函数封装 + `global operator`。
     """
     global operator
+    # ── 交易模式醒目日志（安全默认值改造：实盘必须 .env 显式双开关）──
+    from config import AUTO_CONFIRM_ORDER, AUTO_CANCEL_UNFILLED, MAX_ORDER_AMOUNT
+    logger.warning(
+        "交易模式=%s | 委托自动确认=%s | 未成交自动撤=%s | 单笔上限=¥%s%s",
+        "模拟盘(DRY_RUN)" if DRY_RUN else "★实盘★",
+        "开" if AUTO_CONFIRM_ORDER else "关",
+        "开" if AUTO_CANCEL_UNFILLED else "关",
+        f"{MAX_ORDER_AMOUNT:,.0f}",
+        "（实盘需在 .env 设 QUANT_LIVE_TRADING=1）" if DRY_RUN else "",
+    )
     # ── 初始化数据库 ──
     um.init_db()
     # 问题反馈表（与 users.db 同库，幂等建表）
