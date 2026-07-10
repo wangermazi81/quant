@@ -39,14 +39,24 @@ def test_default_daban_strategy_keeps_existing_global_parameters():
 
 
 def test_main_routes_daban_ride_checks_through_runtime_helper():
-    # 工单4 后打板 Ride 决策包装在 core/daban_state.py，策略判定仍在 main.py
+    # 工单4 下沉后：打板策略判定分布在 trade_service/scan_service/schedulers，
+    # Ride 决策包装在 core/daban_state.py。全部必须经 daban_runtime 助手，禁止硬编码 "da_ban"。
     root = Path(__file__).parent.parent
-    main_source = (root / "main.py").read_text(encoding="utf-8")
-    state_source = (root / "core" / "daban_state.py").read_text(encoding="utf-8")
+    sources = {
+        name: (root / name).read_text(encoding="utf-8")
+        for name in (
+            "main.py",
+            "core/trade_service.py",
+            "core/daban_state.py",
+            "core/schedulers.py",
+            "strategy_engine/scan_service.py",
+        )
+    }
 
-    assert "import daban_strategy_runtime as daban_runtime" in main_source
-    assert "daban_runtime.is_daban_ride_strategy" in main_source
-    assert "daban_runtime.ride_params_for_strategy" in state_source
+    assert "daban_runtime.is_daban_ride_strategy" in sources["core/trade_service.py"]
+    assert "daban_runtime.is_daban_ride_strategy" in sources["strategy_engine/scan_service.py"]
+    assert "daban_runtime.is_daban_ride_strategy" in sources["core/schedulers.py"]
+    assert "daban_runtime.ride_params_for_strategy" in sources["core/daban_state.py"]
 
     hardcoded_checks = [
         '(p.get("strategy") or "") == "da_ban"',
@@ -54,5 +64,5 @@ def test_main_routes_daban_ride_checks_through_runtime_helper():
         '(active == "da_ban")',
     ]
     for check in hardcoded_checks:
-        assert check not in main_source
-        assert check not in state_source
+        for name, source in sources.items():
+            assert check not in source, f"{name} 出现硬编码打板判定: {check}"
