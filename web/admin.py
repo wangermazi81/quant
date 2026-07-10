@@ -14,6 +14,7 @@ import app_security as sec
 import datasource_config
 import tushare_provider
 from analytics import relay_factor_mining
+from analytics import ai_trader as ai_trader_engine
 from app_state import BASE_DIR, require_admin, require_admin_perm, require_root_admin
 
 bp = Blueprint("admin", __name__)
@@ -257,6 +258,72 @@ def _import_factor_candidates_to_watchlist(
     data["items"] = list(by_id.values())
     _save_factor_watchlist(data)
     return {"ok": True, "imported": len(imported), "total": len(data["items"]), "items": data["items"]}
+
+
+def _ai_trade_decision_path() -> Path:
+    return (_factor_mining_root() / "ai_trade_decision.json").resolve()
+
+
+def _load_ai_trade_decision() -> dict:
+    data = _read_json_file(_ai_trade_decision_path(), {})
+    return data if isinstance(data, dict) else {}
+
+
+def _save_ai_trade_decision(data: dict) -> None:
+    path = _ai_trade_decision_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _factor_watchlist_candidates(max_candidates: int = 6, latest_only: bool = True) -> list[dict]:
+    data = _load_factor_watchlist()
+    allowed_status = {"pending", "ready", "watch"}
+    items = [item for item in data["items"] if str(item.get("status") or "pending") in allowed_status]
+    if latest_only and items:
+        latest_date = max(str(item.get("trade_date") or "") for item in items)
+        if latest_date:
+            items = [item for item in items if str(item.get("trade_date") or "") == latest_date]
+
+    def _rank_value(item: dict) -> int:
+        try:
+            return int(item.get("candidate_rank") or 999999)
+        except (TypeError, ValueError):
+            return 999999
+
+    items.sort(key=lambda item: (str(item.get("trade_date") or ""), -_rank_value(item)), reverse=True)
+    return items[:max_candidates]
+
+
+def _apply_ai_trade_decision_to_watchlist(decision: dict) -> None:
+    results = decision.get("results") if isinstance(decision, dict) else None
+    if not isinstance(results, list):
+        return
+    data = _load_factor_watchlist()
+    by_id = {str(item.get("id")): item for item in data["items"] if item.get("id")}
+    changed = False
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        source = result.get("source") if isinstance(result.get("source"), dict) else {}
+        wid = str(source.get("watchlist_id") or "")
+        item = by_id.get(wid)
+        if not item:
+            continue
+        action = str(result.get("action") or "")
+        if result.get("executed"):
+            item["status"] = "bought"
+        elif action == "BUY" and result.get("risk_ok"):
+            item["status"] = "ready"
+        elif action in {"HOLD", "SKIP"}:
+            item["status"] = "watch"
+        elif result.get("blocked"):
+            item["status"] = "skipped"
+        reason = result.get("reason") or result.get("blocked") or action
+        item["note"] = _clean_watchlist_text(f"AI {action}: {reason}", 240)
+        item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        changed = True
+    if changed:
+        _save_factor_watchlist(data)
 
 
 # ── 公告管理 ──────────────────────────────────────────────────
@@ -530,6 +597,47 @@ def admin_factor_watchlist_delete(item_id):
         return jsonify({"ok": False, "error": "候选标的不存在"}), 404
     _save_factor_watchlist(data)
     return jsonify({"ok": True, "total": len(data["items"])})
+
+
+@bp.route("/api/admin/ai-trade-decision/latest", methods=["GET"])
+@require_root_admin
+def admin_ai_trade_decision_latest():
+    max_candidates = _bounded_int_arg("max_candidates", 6, 1, 20)
+    candidates = _factor_watchlist_candidates(max_candidates=max_candidates, latest_only=True)
+    return jsonify({
+        "ok": True,
+        "candidates": candidates,
+        "decision": _load_ai_trade_decision(),
+    })
+
+
+@bp.route("/api/admin/ai-trade-decision/run", methods=["POST"])
+@require_root_admin
+def admin_ai_trade_decision_run():
+    body = request.json or {}
+    max_candidates = _bounded_int_value(body.get("max_candidates"), 6, 1, 20)
+    execute_paper = bool(body.get("execute_paper"))
+    latest_only = body.get("latest_only") is not False
+    candidates = body.get("candidates") if isinstance(body.get("candidates"), list) else None
+    if candidates is None:
+        candidates = _factor_watchlist_candidates(max_candidates=max_candidates, latest_only=latest_only)
+    if not candidates:
+        return jsonify({"ok": False, "error": "no factor watchlist candidates"}), 400
+    result = ai_trader_engine.get_engine(session["user_id"]).decide_watchlist_candidates(
+        candidates,
+        max_candidates=max_candidates,
+        execute_paper=execute_paper,
+    )
+    if not result.get("ok"):
+        return jsonify(result), 400
+    payload = {
+        **result,
+        "candidate_source": "factor_watchlist",
+        "latest_only": latest_only,
+    }
+    _save_ai_trade_decision(payload)
+    _apply_ai_trade_decision_to_watchlist(payload)
+    return jsonify(payload)
 
 
 @bp.route("/api/admin/permissions/catalog")

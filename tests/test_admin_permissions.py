@@ -345,6 +345,78 @@ def test_factor_watchlist_import_update_delete_requires_strategy_permission(isol
     assert client.get("/api/admin/factor-watchlist").get_json()["items"] == []
 
 
+def test_ai_trade_decision_is_root_only_and_updates_watchlist(isolated_app, monkeypatch, tmp_path):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(um, permissions=["strategy_manage", "dashboard_view"])
+
+    import web.admin as admin_api
+
+    monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
+    client = app.test_client()
+
+    _login_session(client, ops_uid, "ops")
+    denied = client.get("/api/admin/ai-trade-decision/latest")
+    assert denied.status_code == 403
+    assert denied.get_json()["code"] == "root_admin_required"
+
+    _login_session(client, 1, "admin")
+    imported = client.post(
+        "/api/admin/factor-watchlist/import",
+        json={
+            "run_id": "20260709-160000",
+            "strategy_name": "ai-factor",
+            "candidates": [
+                {"ts_code": "000001.SZ", "trade_date": "2026-07-09", "candidate_rank": 1, "confidence": 0.8},
+                {"ts_code": "000002.SZ", "trade_date": "2026-07-09", "candidate_rank": 2, "confidence": 0.7},
+            ],
+        },
+    )
+    assert imported.status_code == 200
+
+    class FakeEngine:
+        def decide_watchlist_candidates(self, candidates, max_candidates=6, execute_paper=False):
+            assert max_candidates == 1
+            assert execute_paper is True
+            assert candidates[0]["code"] == "000001"
+            return {
+                "ok": True,
+                "generated_at": "2026-07-10 09:26:00",
+                "broker_mode": "paper",
+                "execute_paper": True,
+                "selected_count": 1,
+                "token_usage": {"total_tokens": 123, "estimated": False},
+                "results": [
+                    {
+                        "code": "000001",
+                        "name": "000001",
+                        "action": "BUY",
+                        "confidence": 82,
+                        "risk_ok": True,
+                        "executed": False,
+                        "reason": "test buy",
+                        "source": {"watchlist_id": "2026-07-09-000001.SZ"},
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(admin_api.ai_trader_engine, "get_engine", lambda uid: FakeEngine())
+    run = client.post(
+        "/api/admin/ai-trade-decision/run",
+        json={"max_candidates": 1, "execute_paper": True},
+    )
+    data = run.get_json()
+
+    assert run.status_code == 200
+    assert data["ok"] is True
+    assert data["results"][0]["action"] == "BUY"
+    assert data["token_usage"]["total_tokens"] == 123
+
+    latest = client.get("/api/admin/ai-trade-decision/latest").get_json()
+    assert latest["decision"]["results"][0]["code"] == "000001"
+    watchlist = client.get("/api/admin/factor-watchlist").get_json()["items"]
+    assert next(item for item in watchlist if item["code"] == "000001")["status"] == "ready"
+
+
 def test_admin_list_endpoints_sanitize_numeric_query_params(isolated_app, monkeypatch):
     app, um, _main = isolated_app
     ops_uid = _create_admin(

@@ -1311,6 +1311,152 @@ class _Engine:
         return res
 
     # ── 实盘人工确认 ──────────────────────────────────────
+    def _hard_buy_filter(self, d: dict):
+        """Rule guard for auction/open AI buys. LLM may vote BUY, but this gate is final."""
+        if d.get("action") != "BUY":
+            return True, ""
+        quote = self._quote(d.get("code", "")) or {}
+        price = _to_float(d.get("price")) or _to_float(quote.get("price"))
+        change_pct = _to_float(quote.get("change_pct"))
+        open_price = _to_float(quote.get("open"))
+        limit_up = _to_float(quote.get("limit_up"))
+        limit_down = _to_float(quote.get("limit_down"))
+        amount = _to_float(quote.get("amount")) or 0
+        if not price or price <= 0:
+            return False, "invalid realtime price"
+        if limit_up and price >= limit_up * 0.999:
+            return False, "blocked: at/near limit-up, order may not fill"
+        if limit_down and price <= limit_down * 1.001:
+            return False, "blocked: at/near limit-down"
+        if change_pct is not None and change_pct > 7.5:
+            return False, f"blocked: high open/change {change_pct:.2f}%"
+        if change_pct is not None and change_pct < -4.0:
+            return False, f"blocked: weak open/change {change_pct:.2f}%"
+        if open_price and price and open_price > price * 1.075:
+            return False, "blocked: abnormal opening premium"
+        if amount and amount < 3_000_000:
+            return False, "blocked: low auction/realtime turnover"
+        return True, ""
+
+    def decide_watchlist_candidates(self, candidates: list, max_candidates: int = 6, execute_paper: bool = False) -> dict:
+        """Run one root-admin AI decision pass over factor watchlist candidates."""
+        cfg = load_user_trader_config(self.uid)
+        if not cfg.get("enabled") or not cfg.get("api_key"):
+            return {"ok": False, "error": "AI trader model is not enabled or api_key is missing"}
+        if self.running or self.once_running:
+            return {"ok": False, "error": "AI trader is already running"}
+        try:
+            max_candidates = max(1, min(20, int(max_candidates or 6)))
+        except (TypeError, ValueError):
+            max_candidates = 6
+
+        selected = []
+        seen = set()
+        for raw in candidates if isinstance(candidates, list) else []:
+            if not isinstance(raw, dict):
+                continue
+            ts_code = str(raw.get("ts_code") or raw.get("code") or "").strip().upper()
+            code = str(raw.get("code") or ts_code.split(".")[0]).strip()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            item = dict(raw)
+            item["code"] = code
+            item["name"] = str(item.get("name") or code)
+            selected.append(item)
+            if len(selected) >= max_candidates:
+                break
+        if not selected:
+            return {"ok": False, "error": "no usable watchlist candidates"}
+
+        self.stop_flag.clear()
+        token_before = dict(self.token_usage)
+        st = load_settings(self.uid)
+        results = []
+        market_view = self._agent_market(cfg)
+        for item in selected:
+            code = item["code"]
+            name = item.get("name") or code
+            try:
+                decision = self._team_decide(cfg, code, name, market_view, st)
+            except Exception as exc:
+                logger.exception(f"watchlist decision {code}: {exc}")
+                results.append({
+                    "code": code,
+                    "name": name,
+                    "action": "ERROR",
+                    "ok": False,
+                    "blocked": str(exc)[:160],
+                    "source": {"watchlist_id": item.get("id")},
+                })
+                continue
+            if not decision:
+                results.append({
+                    "code": code,
+                    "name": name,
+                    "action": "SKIP",
+                    "ok": False,
+                    "blocked": "insufficient stock data",
+                    "source": {"watchlist_id": item.get("id")},
+                })
+                continue
+
+            decision["source"] = {
+                "watchlist_id": item.get("id"),
+                "source_run_id": item.get("source_run_id"),
+                "strategy_name": item.get("strategy_name"),
+                "candidate_rank": item.get("candidate_rank"),
+                "candidate_tier": item.get("candidate_tier"),
+            }
+            hard_ok, hard_reason = self._hard_buy_filter(decision)
+            risk_ok, risk_reason = (False, hard_reason)
+            if hard_ok:
+                risk_ok, risk_reason = self._risk_gate(decision, st, acct=self._account())
+            decision["risk_ok"] = bool(risk_ok)
+            decision["blocked"] = "" if risk_ok else risk_reason
+            exec_result = None
+            executed = False
+            if execute_paper and decision.get("action") != "HOLD" and risk_ok:
+                if self._broker_mode() == "paper":
+                    exec_result = self._execute(decision, st, source="watchlist_ai", acct=self._account())
+                    executed = bool(exec_result and exec_result.get("ok"))
+                else:
+                    decision["blocked"] = "live broker mode requires manual confirmation"
+                    risk_ok = False
+                    decision["risk_ok"] = False
+            else:
+                self.recent_decisions.append(decision)
+                self._push("ai_decision", decision)
+
+            results.append({
+                "id": decision.get("id"),
+                "code": code,
+                "name": name,
+                "action": decision.get("action"),
+                "confidence": decision.get("confidence"),
+                "price": decision.get("price"),
+                "entry": decision.get("entry"),
+                "stop_loss": decision.get("stop_loss"),
+                "take_profit": decision.get("take_profit"),
+                "reason": decision.get("reason"),
+                "risk_ok": bool(risk_ok),
+                "blocked": decision.get("blocked") or "",
+                "executed": executed,
+                "exec_result": exec_result,
+                "token_usage": decision.get("token_usage"),
+                "source": decision.get("source"),
+            })
+        self._push_status()
+        return {
+            "ok": True,
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "broker_mode": self._broker_mode(),
+            "execute_paper": bool(execute_paper),
+            "selected_count": len(selected),
+            "results": results,
+            "token_usage": self._token_usage_delta(token_before),
+        }
+
     def confirm(self, pid: str, approve: bool) -> dict:
         d = self.pending.pop(pid, None)
         if not d:

@@ -1010,6 +1010,51 @@ body{font-family:'Noto Sans SC','Segoe UI',system-ui,'Microsoft YaHei',sans-seri
     </div>
 
     <!-- ===== AI接口设置 ===== -->
+    <!-- ===== AI交易决策（仅admin） ===== -->
+    <div class="page" id="page-ai-trade-decision">
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <span><i class="fas fa-brain"></i> AI交易决策</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-outline" onclick="loadAiTradeDecision()"><i class="fas fa-sync-alt"></i> 刷新</button>
+            <button class="btn btn-primary" id="atd-run-btn" onclick="runAiTradeDecision()"><i class="fas fa-play"></i> 竞价/开盘决策</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+          <div class="form-group" style="margin:0;width:140px">
+            <label class="form-label">候选数量</label>
+            <input id="atd-max" class="form-input" type="number" min="1" max="20" value="6">
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;color:var(--text2);font-size:13px;padding-bottom:9px">
+            <input id="atd-execute-paper" type="checkbox"> 通过风控后写入AI模拟盘
+          </label>
+          <span id="atd-msg" style="font-size:12px;color:var(--text2);padding-bottom:9px"></span>
+        </div>
+        <div style="font-size:12px;color:var(--text3);margin-top:10px;line-height:1.7">
+          仅最高账号 admin 可用。输入来自“次日交易候选自选池”，AI给出买入/观望判断后，还会经过涨跌停、高开、弱开、成交额、仓位和置信度等硬风控。
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title"><i class="fas fa-star"></i> 当前候选池</div>
+        <table>
+          <thead><tr><th>日期</th><th>代码</th><th>名称</th><th>排名</th><th>置信度</th><th>状态</th><th>来源</th></tr></thead>
+          <tbody id="atd-candidates"><tr><td colspan="7" style="text-align:center;padding:28px;color:var(--text3)">加载中...</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <span><i class="fas fa-clipboard-check"></i> 最近一次AI决策</span>
+          <span id="atd-summary" style="font-size:12px;color:var(--text3)"></span>
+        </div>
+        <table>
+          <thead><tr><th>代码</th><th>动作</th><th>置信度</th><th>价格</th><th>风控</th><th>执行</th><th>理由</th><th>Token</th></tr></thead>
+          <tbody id="atd-results"><tr><td colspan="8" style="text-align:center;padding:36px;color:var(--text3)">暂无决策结果</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="page" id="page-ai-config">
       <div class="card" style="max-width:680px">
         <div class="card-title"><i class="fas fa-robot"></i> AI 大模型接口配置</div>
@@ -1295,6 +1340,7 @@ const MENU = [
   {id:'notify-config', icon:'fas fa-bell',          label:'通知设置', group:'系统管理'},
   {id:'stats',         icon:'fas fa-chart-bar',       label:'使用统计',  group:'数据分析'},
   {id:'factor-mining', icon:'fas fa-microscope',      label:'AI因子挖掘', group:'数据分析'},
+  {id:'ai-trade-decision', icon:'fas fa-brain',       label:'AI交易决策', group:'数据分析'},
   {id:'announcements', icon:'fas fa-bullhorn',         label:'公告管理',  group:'内容管理'},
   {id:'changelog',     icon:'fas fa-history',          label:'更新日志',  group:'内容管理'},
   {id:'feedback',      icon:'fas fa-comment-dots',     label:'问题反馈',  group:'内容管理'},
@@ -1313,13 +1359,15 @@ const PAGE_PERMISSIONS = {
   'notify-config': 'content_manage',
   stats: 'dashboard_view',
   'factor-mining': 'strategy_manage',
+  'ai-trade-decision': 'admin_grant',
   announcements: 'content_manage',
   changelog: 'content_manage',
   feedback: 'content_manage',
 };
+const ROOT_ONLY_PAGES = new Set(['ai-trade-decision']);
 const PAGE_NAMES = {
   'dashboard':'工作台','users':'用户管理','roles':'角色权限',
-  'points':'积分流水','stats':'使用统计','factor-mining':'AI因子挖掘','announcements':'公告管理',
+  'points':'积分流水','stats':'使用统计','factor-mining':'AI因子挖掘','ai-trade-decision':'AI交易决策','announcements':'公告管理',
   'invites':'邀请码','reset-requests':'找回申请','notify-config':'通知设置','feedback':'问题反馈','point-costs':'积分设置','datasource-config':'数据源配置','ai-config':'AI接口设置',
   'user-center':'个人中心','change-pwd':'修改密码','notifications':'系统通知',
   'changelog':'更新日志',
@@ -1339,6 +1387,7 @@ function canPerm(key){
 }
 
 function canPage(id){
+  if(ROOT_ONLY_PAGES.has(id)) return isRootAdmin();
   return canPerm(PAGE_PERMISSIONS[id]);
 }
 
@@ -1449,6 +1498,7 @@ function navigate(id, addTabFlag=true){
   if(id==='point-costs') loadPointCosts();
   if(id==='datasource-config') loadDatasourceConfig();
   if(id==='factor-mining') loadFactorMining();
+  if(id==='ai-trade-decision') loadAiTradeDecision();
   if(id==='ai-config') loadAiConfig();
   if(id==='notifications') renderNotifications();
 }
@@ -2681,6 +2731,125 @@ async function runFactorMining(){
     const error = (r && r.error) || '挖掘失败';
     if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
     showToast(error,'error');
+  }
+}
+
+function atdActionTag(action){
+  const a = String(action || '').toUpperCase();
+  const map = {
+    BUY: ['买入', 'var(--green)'],
+    SELL: ['卖出', 'var(--red)'],
+    HOLD: ['观望', 'var(--text2)'],
+    SKIP: ['跳过', 'var(--text3)'],
+    ERROR: ['异常', 'var(--red)'],
+  };
+  const item = map[a] || [a || '—', 'var(--text3)'];
+  return `<span style="font-weight:700;color:${item[1]}">${item[0]}</span>`;
+}
+
+function atdTokenText(v){
+  if(!v || typeof v !== 'object') return '—';
+  const total = Number(v.total_tokens ?? v.total ?? 0);
+  const prompt = Number(v.prompt_tokens ?? v.input_tokens ?? 0);
+  const completion = Number(v.completion_tokens ?? v.output_tokens ?? 0);
+  if(Number.isFinite(total) && total > 0) return `${total.toLocaleString('zh-CN')} (${prompt || 0}/${completion || 0})`;
+  return '—';
+}
+
+function renderAiTradeDecision(data){
+  const msg = document.getElementById('atd-msg');
+  const cBody = document.getElementById('atd-candidates');
+  const rBody = document.getElementById('atd-results');
+  const summary = document.getElementById('atd-summary');
+  const candidates = Array.isArray(data?.candidates) ? data.candidates : [];
+  const decision = data?.decision && typeof data.decision === 'object' ? data.decision : data;
+  const results = Array.isArray(decision?.results) ? decision.results : [];
+  if(msg){
+    msg.style.color = 'var(--text2)';
+    msg.textContent = decision?.generated_at ? `最近决策 ${decision.generated_at}` : `候选 ${candidates.length} 只`;
+  }
+  if(cBody){
+    if(!candidates.length){
+      cBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:28px;color:var(--text3)">暂无候选，请先在AI因子挖掘页导入次日候选池</td></tr>';
+    }else{
+      cBody.innerHTML = candidates.map(item=>`
+        <tr>
+          <td>${esc(item.trade_date || '')}</td>
+          <td><b>${esc(item.ts_code || item.code || '')}</b></td>
+          <td>${esc(item.name || '')}</td>
+          <td>${fmNumText(item.candidate_rank)}</td>
+          <td>${fmRateText(item.confidence)}</td>
+          <td>${esc(fmWatchStatusText(item.status || 'pending'))}</td>
+          <td>${esc(item.strategy_name || item.source_run_id || '')}</td>
+        </tr>`).join('');
+    }
+  }
+  if(summary){
+    const buys = results.filter(x=>String(x.action || '').toUpperCase()==='BUY').length;
+    const ready = results.filter(x=>x.risk_ok).length;
+    summary.textContent = results.length ? `共 ${results.length} 个决策，买入 ${buys}，风控通过 ${ready}，Token ${atdTokenText(decision.token_usage)}` : '暂无决策结果';
+  }
+  if(rBody){
+    if(!results.length){
+      rBody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:36px;color:var(--text3)">暂无决策结果</td></tr>';
+    }else{
+      rBody.innerHTML = results.map(item=>`
+        <tr>
+          <td><b>${esc(item.code || '')}</b><br><span style="font-size:11px;color:var(--text3)">${esc(item.name || '')}</span></td>
+          <td>${atdActionTag(item.action)}</td>
+          <td>${fmRateText(item.confidence)}</td>
+          <td>${fmNumText(item.price || item.entry)}</td>
+          <td>${item.risk_ok ? '<span style="color:var(--green);font-weight:700">通过</span>' : `<span style="color:var(--red)">${esc(item.blocked || '未通过')}</span>`}</td>
+          <td>${item.executed ? '<span style="color:var(--green);font-weight:700">已写入</span>' : '<span style="color:var(--text3)">未执行</span>'}</td>
+          <td style="min-width:220px">${esc(item.reason || item.blocked || '')}</td>
+          <td>${atdTokenText(item.token_usage)}</td>
+        </tr>`).join('');
+    }
+  }
+}
+
+async function loadAiTradeDecision(){
+  if(!isRootAdmin()){
+    navigate('403');
+    return;
+  }
+  const maxCandidates = fmReadInt('atd-max', 6);
+  const cBody = document.getElementById('atd-candidates');
+  if(cBody) cBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:28px;color:var(--text3)">加载中...</td></tr>';
+  const r = await _annFetch('GET', `/admin/ai-trade-decision/latest?max_candidates=${encodeURIComponent(maxCandidates)}`);
+  if(r && r.ok){
+    renderAiTradeDecision(r);
+  }else{
+    const error = (r && (r.error || r.message)) || '加载失败';
+    if(cBody) cBody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:28px;color:var(--red)">${esc(error)}</td></tr>`;
+    showToast(error, 'error');
+  }
+}
+
+async function runAiTradeDecision(){
+  if(!isRootAdmin()){
+    navigate('403');
+    return;
+  }
+  const btn = document.getElementById('atd-run-btn');
+  const msg = document.getElementById('atd-msg');
+  const body = {
+    max_candidates: fmReadInt('atd-max', 6),
+    execute_paper: !!document.getElementById('atd-execute-paper')?.checked,
+    latest_only: true,
+  };
+  if(btn) btn.disabled = true;
+  if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = 'AI正在读取候选池并决策...'; }
+  const r = await _annFetch('POST', '/admin/ai-trade-decision/run', body, 180000);
+  if(btn) btn.disabled = false;
+  if(r && r.ok){
+    showToast('AI交易决策已完成', 'success');
+    renderAiTradeDecision({candidates: [], decision: r});
+    loadAiTradeDecision();
+  }else{
+    const error = (r && (r.error || r.message)) || 'AI交易决策失败';
+    if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
+    showToast(error, 'error');
   }
 }
 
