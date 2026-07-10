@@ -1,6 +1,10 @@
+# 唯一依赖清单（原项目根目录 requirements.txt 已废弃合并至此）。
+# 开发/测试工具见 requirements-dev.txt。
+
 # ── Web 框架 ──────────────────────────────────────
 flask>=2.3.0
 flask-cors>=4.0.0
+flasgger>=0.9.7          # Swagger UI（ENABLE_SWAGGER=1 才启用，可选装）
 
 # ── 生产 WSGI 服务器（云端必须）────────────────────
 gunicorn>=21.0.0
@@ -8,6 +12,7 @@ gunicorn>=21.0.0
 # ── 数据处理 ──────────────────────────────────────
 pandas>=2.0.0
 numpy>=1.24.0
+scipy>=1.11.0            # 组合优化(analytics/portfolio_optimizer)
 
 # ── 行情数据源 ─────────────────────────────────────
 pytdx>=1.72
@@ -24,6 +29,7 @@ openai>=1.0.0
 # ── 实盘操作（仅 Windows 本地使用，云端请注释掉）──
 # pywinauto>=0.6.8
 # pyautogui>=0.9.54
+# easytrader>=0.21.1     # 可选券商通道(broker_interface 惰性导入，用到再装)
 
 baostock>=0.8.9   # K线降级数据源(免费)
 # uqer            # 优矿(可选,需token,配置 data/datasource_config.json)
