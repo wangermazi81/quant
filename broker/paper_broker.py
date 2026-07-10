@@ -576,8 +576,8 @@ class PaperBroker:
             )
             con.commit()
             con.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[paper uid={self._uid}] 订单流水写库失败（{code} {direction}）: {e}")
 
     # ── 风控检查 ─────────────────────────────────────
     def check_risk_rules(self, cur_prices: dict,

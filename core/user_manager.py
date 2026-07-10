@@ -72,8 +72,8 @@ def _load_point_costs():
             for k, v in (saved or {}).items():
                 if k in POINT_COSTS:
                     POINT_COSTS[k] = max(0, int(v))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[积分价目] point_costs.json 加载失败，使用默认价目: {e}")
 
 
 def get_point_costs() -> dict:
@@ -357,8 +357,8 @@ def register(username: str, email: str, password: str, invite_code: str = "",
                     from datetime import datetime as _dt
                     if str(ic["expires_at"]) < _dt.now().strftime("%Y-%m-%d %H:%M:%S"):
                         return {"ok": False, "error": "邀请码已过期"}
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[邀请码] 过期时间解析失败，按未过期放行: {e}")
             if ic["used_count"] >= ic["max_uses"]:
                 return {"ok": False, "error": "邀请码名额已用完"}
             inviter = ic["created_by"]
@@ -728,8 +728,8 @@ def delete_user(user_id: int) -> dict:
                 cols = [ci[1] for ci in c.execute(f"PRAGMA table_info({t})")]
                 if "user_id" in cols:
                     c.execute(f"DELETE FROM {t} WHERE user_id=?", (user_id,))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"[删除用户 uid={user_id}] 级联清理表 {t} 失败（该表数据可能残留）: {e}")
         c.execute("DELETE FROM users WHERE id=?", (user_id,))
         c.commit()
         return {"ok": True, "username": uname}

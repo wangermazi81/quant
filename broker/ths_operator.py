@@ -517,7 +517,7 @@ class THSOperator:
                 actual_fg = win32gui.GetForegroundWindow()
                 actual_title = ""
                 try: actual_title = win32gui.GetWindowText(actual_fg)
-                except: pass
+                except Exception: pass
                 logger.error(
                     f"❌ xiadan 激活全部失败！当前前台 hwnd={actual_fg} ({actual_title}), "
                     f"目标 hwnd={hwnd}. 拒绝按键避免误操作"

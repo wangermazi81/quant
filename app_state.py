@@ -120,8 +120,8 @@ def get_user_state(uid: int) -> dict:
                 s["single_position_max_ratio"] = float(
                     settings.get("single_position_max_ratio", SINGLE_POSITION_MAX_RATIO) or SINGLE_POSITION_MAX_RATIO)
                 s["active_strategy"]  = settings.get("active_strategy") or None
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"[uid={uid}] 用户设置加载失败，使用默认值（资金/仓位比等按 config 兜底）: {e}")
             # 首次创建时从模拟盘 DB 恢复持仓（修复重启后持仓清空）
             _restore_positions_from_paper(uid, s)
             user_states[uid] = s
@@ -146,8 +146,9 @@ def _add_log(uid: int, msg: str, level: str = "INFO"):
     logger.info(f"[uid={uid}] {msg}")
     try:
         um.add_user_log(uid, msg, level)
-    except Exception:
-        pass
+    except Exception as e:
+        # DB 日志是跨进程可见的唯一通道（调度进程日志靠它进面板），失败必须留痕
+        logger.warning(f"[uid={uid}] 用户日志写库失败: {e}")
     _sse_push(uid, "log", entry)
 
 

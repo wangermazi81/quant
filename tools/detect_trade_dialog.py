@@ -15,7 +15,7 @@ def print_tree(elem, depth=0, max_depth=6):
         auto_id = getattr(elem.element_info, 'automation_id', '') or ""
         try:
             rect = elem.element_info.rectangle
-        except:
+        except Exception:
             rect = "?"
         indent = "  " * depth
         print(f"{indent}[{ctrl_type}] name='{name}' class='{cls}' auto_id='{auto_id}' rect={rect}")
@@ -25,7 +25,7 @@ def print_tree(elem, depth=0, max_depth=6):
         children = elem.children()
         for child in children[:30]:
             print_tree(child, depth + 1, max_depth)
-    except:
+    except Exception:
         pass
 
 d = Desktop(backend="uia")
@@ -39,7 +39,7 @@ for w in d.windows():
         if title:
             all_wins.append((title, cls, w.handle))
             print(f"  [{title}] class={cls} handle={w.handle}")
-    except:
+    except Exception:
         pass
 
 print("\n同花顺主窗口结构:")
@@ -48,7 +48,7 @@ for w in d.windows():
         if "同花顺" in w.window_text():
             print_tree(w, 0, 3)
             break
-    except:
+    except Exception:
         pass
 
 # Win32 backend
@@ -63,5 +63,5 @@ for w in d32.windows():
                 w.print_control_identifiers(depth=4)
             except Exception as e:
                 print(f"  (print_control_identifiers失败: {e})")
-    except:
+    except Exception:
         pass

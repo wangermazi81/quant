@@ -593,17 +593,17 @@ def api_factors_zoo_backtest():
     factor_id = (d.get("factor_id") or "").strip()
     mode      = (d.get("mode") or "manual").strip()
     try:    days = max(60, min(400, int(d.get("days", 200))))
-    except: days = 200
+    except Exception: days = 200
     try:    top_k = max(1, min(50, int(d.get("top_k", 10))))
-    except: top_k = 10
+    except Exception: top_k = 10
     try:    rebalance_days = max(1, min(30, int(d.get("rebalance_days", 5))))
-    except: rebalance_days = 5
+    except Exception: rebalance_days = 5
     try:    hold_days = max(1, min(rebalance_days, int(d.get("hold_days", 5))))
-    except: hold_days = 5
+    except Exception: hold_days = 5
     try:    fee_rate = max(0.0, min(0.01, float(d.get("fee_rate", 0))))
-    except: fee_rate = 0.0
+    except Exception: fee_rate = 0.0
     try:    max_codes = max(10, min(1000, int(d.get("max_codes", 100))))
-    except: max_codes = 100
+    except Exception: max_codes = 100
 
     if not factor_id:
         return jsonify({"ok": False, "error": "factor_id 必填"})

@@ -213,8 +213,9 @@ def bridge_report_signal(signal_id):
             if any(k in (msg or "") for k in ("无持仓", "持仓不足", "可用不足", "可用为0", "数量为0")):
                 try:
                     um.remove_live_position(uid, code)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # 幽灵持仓没清掉 → 台账残留会持续占名额/触发无效卖出信号
+                    logger.warning(f"[实盘回传 uid={uid}] 清理幽灵持仓失败 {code}: {e}")
                 _DABAN_PEAKS.pop((uid, code), None)
         # ★ 桥接器执行失败：把执行队列里的"已买"假象清掉 ★
         # 之前 _auto_buy 把队列项标成 sent/submitted，前端显示"已入队/已买"

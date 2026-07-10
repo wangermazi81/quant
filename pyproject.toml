@@ -24,9 +24,8 @@ exclude = [
 ]
 
 [tool.ruff.lint]
-# 最小规则集起步：F401 未使用导入 / F811 重复定义。
-# E722（裸 except，存量 353 处）在异常治理工单转正，先不开。
-select = ["F401", "F811"]
+# F401 未使用导入 / F811 重复定义 / E722 裸 except（工单6 已清零并转正）
+select = ["E722", "F401", "F811"]
 
 [tool.ruff.lint.per-file-ignores]
 # pytest fixture 导入后作为测试参数使用，ruff 误报 F811（经典 fixture 模式）

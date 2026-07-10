@@ -15,7 +15,7 @@ def print_tree(elem, depth=0, max_depth=4):
         auto_id = getattr(elem.element_info, 'automation_id', '') or ""
         try:
             rect = elem.element_info.rectangle
-        except:
+        except Exception:
             rect = "?"
         indent = "  " * depth
         print(f"{indent}[{ctrl_type}] name='{name}' class='{cls}' auto_id='{auto_id}' rect={rect}")
@@ -42,7 +42,7 @@ for w in d.windows():
             print(f"句柄: {w.handle}")
             print()
             break
-    except:
+    except Exception:
         pass
 
 if ths_win is None:
@@ -65,7 +65,7 @@ try:
             if "同花顺" in w.window_text():
                 w.print_control_identifiers(depth=3)
                 break
-        except:
+        except Exception:
             pass
 except Exception as e:
     print(f"win32 探测失败: {e}")

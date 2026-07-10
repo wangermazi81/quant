@@ -271,8 +271,9 @@ def _check_live_daban_ride(uid: int):
             if new_peak > float(p.get("peak") or 0):
                 try:
                     um.update_live_peak(uid, code, new_peak)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # 峰值没存上 → 回落止盈参照会偏低，可能提前/漏卖，必须留痕
+                    logger.warning(f"[实盘Ride uid={uid}] 持仓峰值持久化失败 {code}: {e}")
         else:
             # 账户默认止损/止盈/超期（决策见 core/sell_rules.account_exit；与 paper_broker 同源）
             pnl = (cur - cost) / cost
@@ -415,6 +416,6 @@ def _paper_live_prices(broker) -> dict:
             codes = [p["code"] for p in positions]
             qs    = client.get_quotes(codes)
             return {q["code"]: q.get("price", 0) for q in qs if q.get("price", 0) > 0}
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[paper] 实时价拉取失败（市值/盈亏按成本价显示）: {e}")
     return {}
