@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict
 
-import sell_rules   # 账户默认止损/止盈/超期决策（纯函数，与 main 实盘共用，测试见 tests/test_sell_rules.py）
+from core import sell_rules  # 账户默认止损/止盈/超期决策（纯函数，与 main 实盘共用，测试见 tests/test_sell_rules.py）
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +243,7 @@ class PaperBroker:
                     _mkt = os.path.join(os.path.dirname(os.path.dirname(__file__)), "market")
                     if _mkt not in sys.path:
                         sys.path.insert(0, _mkt)
-                    import ths_quote as _tq
+                    from market import ths_quote as _tq
                     _cli = _tq.get_client()
                     if _cli and getattr(_cli, "_ok", False):
                         _qs = _cli.get_quotes([p["code"] for p in positions])
@@ -333,7 +333,7 @@ class PaperBroker:
             _mkt = os.path.join(os.path.dirname(os.path.dirname(__file__)), "market")
             if _mkt not in sys.path:
                 sys.path.insert(0, _mkt)
-            import ths_quote as _tq
+            from market import ths_quote as _tq
             _cli = _tq.get_client()
             if _cli and getattr(_cli, "_ok", False):
                 _qs = _cli.get_quotes([code])
@@ -481,7 +481,7 @@ class PaperBroker:
                 _mkt = os.path.join(os.path.dirname(os.path.dirname(__file__)), "market")
                 if _mkt not in sys.path:
                     sys.path.insert(0, _mkt)
-                import ths_quote as _tq
+                from market import ths_quote as _tq
                 _cli = _tq.get_client()
                 if _cli and getattr(_cli, "_ok", False):
                     _qs = _cli.get_quotes([code])

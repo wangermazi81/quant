@@ -14,7 +14,6 @@ from pathlib import Path
 
 # 把项目根目录加入 sys.path，使 _pathsetup 可被 import
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401  # 注入子包路径，使 paper_broker 等扁平名可被解析
 
 # 使用临时数据库，不污染正式数据
 @pytest.fixture
@@ -24,7 +23,7 @@ def broker(tmp_path, monkeypatch):
     引擎已重构为多用户（PaperBroker(user_id)，数据按 user_id 隔离、共享 paper_trading.db）。
     单测隔离：monkeypatch 模块级 DB_PATH 到临时库，再建表 + 用专属 user_id 实例化。
     """
-    import paper_broker as pb
+    from broker import paper_broker as pb
     from datetime import datetime, timedelta
     monkeypatch.setattr(pb, "DB_PATH", tmp_path / "test_paper.db")
     pb.init_paper_db()
@@ -300,7 +299,7 @@ class TestReset:
 # ══════════════════════════════════════════════════════
 class TestAstSafety:
     def _check(self, code):
-        from strategy_manager import ast_check
+        from strategy_engine.strategy_manager import ast_check
         return ast_check(code)
 
     def test_safe_code_passes(self):

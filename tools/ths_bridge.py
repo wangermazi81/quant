@@ -38,7 +38,7 @@ try:
 except ImportError:
     # 兼容直接从同级目录或父级目录查找
     sys.path.insert(0, str(BASE_DIR / "broker"))
-    from ths_operator import THSOperator
+    from broker.ths_operator import THSOperator
 
 # ── 日志配置 ──────────────────────────────────────────────────
 logging.basicConfig(

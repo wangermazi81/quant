@@ -1,7 +1,7 @@
 """用户自助 API 蓝图：积分 / 设置 / AI 与券商配置 / 公告（用户侧）。"""
 from flask import Blueprint, request, jsonify, session
 
-import user_manager as um
+from core import user_manager as um
 from app_state import require_auth, get_user_state, _persist_state, _add_log
 
 bp = Blueprint("user", __name__)

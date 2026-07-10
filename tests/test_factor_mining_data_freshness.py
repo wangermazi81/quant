@@ -12,7 +12,7 @@ ANALYTICS = ROOT / "analytics"
 if str(ANALYTICS) not in sys.path:
     sys.path.insert(0, str(ANALYTICS))
 
-import data_manager as dm  # noqa: E402
+from analytics import data_manager as dm  # noqa: E402
 from analytics.factors_zoo import scorer  # noqa: E402
 
 

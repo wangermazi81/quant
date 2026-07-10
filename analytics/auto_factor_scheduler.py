@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import user_manager as um
+from core import user_manager as um
 from analytics import relay_factor_mining
 from analytics import ai_trader as ai_trader_engine
 
@@ -207,7 +207,7 @@ def next_runs(now: datetime | None = None) -> dict:
 def _run_data_refresh(date_text: str) -> dict:
     details: dict[str, Any] = {"date": date_text}
     try:
-        import data_manager as dm
+        from analytics import data_manager as dm
 
         names = dm.refresh_name_cache()
         details["name_cache_count"] = len(names or {})

@@ -342,7 +342,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     csv_path = Path(args.csv).resolve()
     try:
-        from run_card import RunCard
+        from core.run_card import RunCard
         card = RunCard.start("shadow_account", inputs={"csv": str(csv_path)})
     except Exception:
         card = None

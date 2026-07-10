@@ -1,6 +1,5 @@
 from flask import Flask
 
-import _pathsetup  # noqa: F401
 
 import web.data as data_web
 

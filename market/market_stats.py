@@ -223,7 +223,7 @@ def fetch_tushare_replay_market_snapshot(date_text: str | None = None) -> dict:
     try:
         from .tushare_replay import fetch_daily_market_snapshot
     except ImportError:
-        from tushare_replay import fetch_daily_market_snapshot
+        from market.tushare_replay import fetch_daily_market_snapshot
 
     snapshot = fetch_daily_market_snapshot(date_text)
     save_market_snapshot(snapshot)
@@ -688,7 +688,7 @@ def _turnover_from_official_exchange(date_text: str | None = None) -> dict:
 
 
 def _turnover_from_tdx_index() -> dict:
-    import ths_quote as tq
+    from market import ths_quote as tq
 
     client = tq.get_client()
     if not (client and client._ok):
@@ -872,7 +872,7 @@ def get_market_breadth(expected_count: int | None = None, date_text: str | None 
         logger.warning(f"[market_stats] eastmoney spot breadth failed: {exc}")
 
     try:
-        import strategy_manager as sm
+        from strategy_engine import strategy_manager as sm
 
         quotes = sm._get_full_market_snapshot()
         if quotes:

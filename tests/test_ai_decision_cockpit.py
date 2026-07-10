@@ -1,13 +1,13 @@
-﻿import sys
+from tests._module_stubs import stub_project_module
+import sys
 import types
 from pathlib import Path
 
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
-import ai_analyst
+from analytics import ai_analyst
 
 
 def _sample_kline(rows=80):
@@ -26,8 +26,8 @@ def _sample_kline(rows=80):
 
 
 def test_run_analysis_returns_executable_decision_plan_without_llm(monkeypatch):
-    monkeypatch.setitem(
-        sys.modules,
+    stub_project_module(
+        monkeypatch,
         'market_context',
         types.SimpleNamespace(
             get_market_regime=lambda: {'trend': '强势震荡', 'strength': 72},

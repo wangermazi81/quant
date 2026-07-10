@@ -7,8 +7,8 @@ from datetime import datetime, timedelta
 
 from flask import Blueprint, request, jsonify, session
 
-import data_manager as dm
-import market_data as md
+from analytics import data_manager as dm
+from market import market_data as md
 from app_state import require_auth, _add_log
 
 logger = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ def api_kline(code):
 
     # 3) 本地缺失或过期 → 优先 TDX 实时日K（含当日）
     try:
-        import ths_quote as tq
+        from market import ths_quote as tq
         client = tq.get_client()
         if client and client._ok:
             bars = client.get_kline(code, 120)

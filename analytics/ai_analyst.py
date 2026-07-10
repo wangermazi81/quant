@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 AI 多智能体分析引擎 v2
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -767,7 +767,7 @@ def _get_fundamentals(code: str) -> dict:
                 _os.environ[_k] = _v
     # ③ pytdx：每股净资产/股东/上市日
     try:
-        import ths_quote as _tq
+        from market import ths_quote as _tq
         _c = _tq.get_client()
         fi = _c.get_finance_info(code) if _c else {}
         if fi:
@@ -1047,14 +1047,14 @@ def run_analysis(code: str, name: str, df: pd.DataFrame,
     config_override: 传入则覆盖全局 AI 配置（用于用户自己的 API Key）。
     """
     # ── Level 1: 量化评分（始终运行）─────────────────
-    from stock_scorer import score_stock
+    from analytics.stock_scorer import score_stock
     score_result = score_stock(df)
 
     # ── 市场背景获取 ────────────────────────────────
     market_ctx_text = ""
     market_ctx_data = {}
     try:
-        from market_context import get_market_regime, get_market_summary_text
+        from market.market_context import get_market_regime, get_market_summary_text
         market_ctx_data = get_market_regime()
         market_ctx_text = get_market_summary_text()
     except Exception:
@@ -1127,7 +1127,7 @@ RSI14：{ind['rsi14']}   布林带：上={ind['bb_upper']}  中={ind['bb_mid']} 
         news_data = {}
         news_ctx_text = ""
         try:
-            import news_fetcher as _nf
+            from market import news_fetcher as _nf
             # 传入股票名称，让 Tavily/SerpAPI 搜索更精准
             news_list = _nf.get_stock_news(code, limit=6, name=name)
             sentiment = _nf._simple_sentiment(news_list)

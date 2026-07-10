@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
 os.environ["QUANT_TEST_IMPORT"] = "1"
 os.environ["THS_NO_SCHEDULER"] = "1"
@@ -15,8 +14,8 @@ os.environ.setdefault("ADMIN_PASSWORD", "adminpass123")
 
 @pytest.fixture
 def isolated_app(tmp_path, monkeypatch):
-    import db_migration as dbm
-    import user_manager as um
+    from core import db_migration as dbm
+    from core import user_manager as um
     import app_security as sec
 
     db_path = str(tmp_path / "users_test.db")

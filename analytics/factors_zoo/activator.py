@@ -236,7 +236,7 @@ def run_tick(uid: int, execute_buy_fn, get_paper_cash_fn) -> dict:
 
     if cfg["mode"] == "market_top":
         try:
-            import strategy_manager as sm
+            from strategy_engine import strategy_manager as sm
             universe, _qc = sm._full_market_universe_with_quotes(max_codes=cfg["max_codes"])
             codes = list(universe or [])
             quote_map = {q["code"]: q for q in (_qc or {}).values() if isinstance(q, dict) and q.get("code")}

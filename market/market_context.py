@@ -45,7 +45,7 @@ _CACHE_TTL = 300  # 5 分钟
 def _get_index_bars(code: str, days: int = 60):
     """通过 TDX 获取指数日K线（用 get_index_kline 指定正确市场编号）"""
     try:
-        import ths_quote as tq
+        from market import ths_quote as tq
         client = tq.get_client()
         if not client or not client._ok:
             return None
@@ -112,7 +112,7 @@ def get_market_regime(force_refresh: bool = False) -> dict:
     }
 
     try:
-        import ths_quote as tq
+        from market import ths_quote as tq
         client = tq.get_client()
         if not client or not client._ok:
             _cache.update({"data": result, "ts": now})
@@ -166,7 +166,7 @@ def get_market_regime(force_refresh: bool = False) -> dict:
 
         # 市场宽度修正（涨跌家数比，±8分）：普涨日加分、普跌日减分
         try:
-            import strategy_manager as _sm
+            from strategy_engine import strategy_manager as _sm
             _qs = _sm._get_market_quotes_cached()
             if _qs:
                 _ups = sum(1 for q in _qs if float(q.get("change_pct") or 0) > 0)

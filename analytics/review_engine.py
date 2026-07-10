@@ -1,4 +1,4 @@
-﻿"""每日复盘引擎(review_engine)
+"""每日复盘引擎(review_engine)
 
 收盘后自动：采集复盘数据 → AI 总结(盘面研判/资金题材/要闻影响/明日预案) → JSON 归档。
 
@@ -39,7 +39,7 @@ def _today() -> str:
 def _refresh_market_snapshot(date_str: str) -> bool:
     """Capture the latest Eastmoney whole-market snapshot before archiving review data."""
     try:
-        import market_stats as _mstats
+        from market import market_stats as _mstats
 
         _mstats.fetch_eastmoney_three_market_snapshot(date_str)
         return True
@@ -125,7 +125,7 @@ def _collect_zt(compact: str) -> dict:
 def _collect_turnover(compact: str | None = None) -> dict:
     """两市成交额：今日 + 近20日趋势（单位：亿元）。"""
     try:
-        import market_stats as _mstats
+        from market import market_stats as _mstats
         return _mstats.get_market_turnover(compact)
     except Exception as e:
         logger.debug(f"[review] market_stats 成交额失败: {e}")
@@ -291,7 +291,7 @@ def summarize(data: dict, phase: str = "close") -> str:
     """调用 LLM 生成复盘总结。无 API key 或失败时返回空串（数据归档不受影响）。"""
     global _last_ai_error
     try:
-        import ai_analyst as aa
+        from analytics import ai_analyst as aa
         cfg = aa.resolve_config()
         if not cfg.get("api_key"):
             logger.info("[review] 未配置 AI key，跳过 AI 总结")
@@ -451,7 +451,7 @@ def _maybe_preload_lhb(now: datetime, state: dict, now_ts: float | None = None) 
 
     state["last_try"] = now_ts
     try:
-        import lhb_engine
+        from analytics import lhb_engine
 
         ok = bool(lhb_engine.preload_today())
         state["last_ok"] = ok
@@ -488,7 +488,7 @@ def _maybe_backfill_lhb(now: datetime, state: dict, now_ts: float | None = None)
 
     state["last_try"] = now_ts
     try:
-        import lhb_engine
+        from analytics import lhb_engine
 
         result = lhb_engine.backfill_recent(today=now, days=5, limit=2)
         state["last_result"] = result

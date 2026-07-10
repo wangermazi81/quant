@@ -14,7 +14,7 @@ from pathlib import Path
 
 from flask import session, jsonify
 
-import user_manager as um
+from core import user_manager as um
 from config import (
     INITIAL_CAPITAL, POSITION_RATIO,
     MAX_POSITIONS, SINGLE_POSITION_MAX_RATIO,
@@ -68,7 +68,7 @@ def _restore_positions_from_paper(uid: int, s: dict) -> None:
     实盘用户的模拟盘 DB 通常为空 → 返回空，无副作用。
     """
     try:
-        import paper_broker as pb_mod
+        from broker import paper_broker as pb_mod
         broker = pb_mod.get_broker(uid)
         db_positions = broker.get_positions()   # 不传实时价，cost 即可；浮动盈亏由读取端按实时价算
         restored = {}

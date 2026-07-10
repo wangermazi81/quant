@@ -18,9 +18,8 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
-import backtest
+from strategy_engine import backtest
 
 
 def _synth(n=40, start="2026-01-02"):

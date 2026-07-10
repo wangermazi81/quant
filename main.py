@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os as _os
-import _pathsetup  # noqa: F401  # 必须在其它项目模块 import 之前
 # ── 清除系统代理（akshare 走国内接口，代理反而导致连接失败）──────────
 for _k in ("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy",
            "ALL_PROXY","all_proxy","SOCKS_PROXY","socks_proxy"):
@@ -11,25 +10,25 @@ from flask import Flask, jsonify, request, session, Response
 from flask_cors import CORS
 import threading, time, logging, secrets, json, queue as _queue
 from datetime import datetime
-from market_data import is_trading_time
-from strategy import scan_all
-from ths_operator import THSOperator
+from market.market_data import is_trading_time
+from strategy_engine.strategy import scan_all
+from broker.ths_operator import THSOperator
 from config import SCAN_INTERVAL, DRY_RUN, INITIAL_CAPITAL
 try:
     from config import DABAN_STOP_LOSS, DABAN_TRAIL, DABAN_MAX_HOLD, DABAN_HOLD_LIMITUP
 except ImportError:
     DABAN_STOP_LOSS, DABAN_TRAIL, DABAN_MAX_HOLD, DABAN_HOLD_LIMITUP = -0.05, 0.07, 10, True
-import strategy_manager as sm
-import data_manager as dm
-import ai_analyst as ai
-import factor_manager as fm
-import paper_broker as pb
-import user_manager as um
-import notification_manager as nm
-import order_sizing  # 下单仓位/手数纯函数（从 do_scan 抽出，有回归测试 tests/test_order_sizing.py）
-import daban_ride    # 打板 Ride 卖出决策纯函数（从本文件抽出，有回归测试 tests/test_daban_ride.py）
-import daban_strategy_runtime as daban_runtime
-import sell_rules     # 账户默认止损/止盈/超期决策纯函数（与 paper_broker 共用，tests/test_sell_rules.py）
+from strategy_engine import strategy_manager as sm
+from analytics import data_manager as dm
+from analytics import ai_analyst as ai
+from analytics import factor_manager as fm
+from broker import paper_broker as pb
+from core import user_manager as um
+from core import notification_manager as nm
+from core import order_sizing  # 下单仓位/手数纯函数（从 do_scan 抽出，有回归测试 tests/test_order_sizing.py）
+from core import daban_ride  # 打板 Ride 卖出决策纯函数（从本文件抽出，有回归测试 tests/test_daban_ride.py）
+from core import daban_strategy_runtime as daban_runtime
+from core import sell_rules  # 账户默认止损/止盈/超期决策纯函数（与 paper_broker 共用，tests/test_sell_rules.py）
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -133,13 +132,13 @@ def _init_runtime():
     # ── 初始化数据库 ──
     um.init_db()
     # 问题反馈表（与 users.db 同库，幂等建表）
-    import feedback_manager as fbm
+    from core import feedback_manager as fbm
     fbm.init_db()
-    import changelog_manager as clm
+    from core import changelog_manager as clm
     clm.init_db()
     # 迁移必须在 pb.init_paper_db() 之前，先给旧表加 user_id 列
     try:
-        import db_migration as _dbm
+        from core import db_migration as _dbm
         _dbm.migrate_paper_trading_db()
         _dbm.migrate_users_db()
     except Exception as _e:
@@ -349,7 +348,7 @@ def _check_add_position(uid: int, s: dict, broker_type: str, base_cash: float):
     if not positions:
         return
     try:
-        import ths_quote as tq
+        from market import ths_quote as tq
         client = tq.get_client()
         if not client or not client._ok:
             return
@@ -501,7 +500,7 @@ def _check_live_daban_ride(uid: int):
     codes = [p["code"] for p in positions]
     qmap = {}
     try:
-        import ths_quote as tq
+        from market import ths_quote as tq
         client = tq.get_client()
         if client and client._ok:
             for q in client.get_quotes(codes):
@@ -629,7 +628,7 @@ def _check_paper_risk(uid: int):
         codes = [p["code"] for p in positions]
         qmap  = {}
         try:
-            import ths_quote as tq
+            from market import ths_quote as tq
             client = tq.get_client()
             if client and client._ok:
                 for q in client.get_quotes(codes):
@@ -941,7 +940,7 @@ def get_status():
         #   阶段 A: ths_quote 全市场批量拉行情（universe 构建，30秒）
         #   阶段 B: strategy_manager 策略扫描（逐只 get_kline，2-25 分钟）
         # 哪个 running 就显示哪个，避免阶段 A 结束后卡在 100% 的体验问题
-        import ths_quote as tq
+        from market import ths_quote as tq
         tdx_prog   = tq.get_scan_progress()
         strat_prog = sm.get_scan_progress()
         if tdx_prog.get("running"):
@@ -1400,7 +1399,7 @@ def get_positions_api():
         return jsonify([])
     live = {}
     try:
-        import ths_quote as tq
+        from market import ths_quote as tq
         client = tq.get_client()
         if client and client._ok:
             qs   = client.get_quotes(list(positions.keys()))
@@ -1442,7 +1441,7 @@ def sell_position():
         # 卖出价≈买入价、盈亏只剩费用的假象）
         price = 0.0
         try:
-            import ths_quote as tq
+            from market import ths_quote as tq
             client = tq.get_client()
             if client and client._ok:
                 qs = client.get_quotes([code])
@@ -1487,7 +1486,7 @@ def _paper_live_prices(broker) -> dict:
         positions = broker.get_positions()
         if not positions:
             return {}
-        import ths_quote as tq
+        from market import ths_quote as tq
         client = tq.get_client()
         if client and client._ok:
             codes = [p["code"] for p in positions]
@@ -1807,7 +1806,7 @@ def paper_manual_buy():
     if shares is None:
         return jsonify({"ok": False, "msg": "invalid shares"})
     try:
-        from market_data import is_trading_time
+        from market.market_data import is_trading_time
         if not is_trading_time():
             _add_log(uid, f"⚠️ 非交易时段手动下单: {code} ({name}) — 已按上次收盘价模拟成交", "warning")
     except Exception:
@@ -1866,7 +1865,7 @@ def paper_manual_sell():
     # 的脏值，会导致卖出价≈买入价、盈亏只剩费用 -0.22% 的假象）
     price = 0.0
     try:
-        import ths_quote as tq
+        from market import ths_quote as tq
         client = tq.get_client()
         if client and client._ok:
             qs = client.get_quotes([code])
@@ -2111,7 +2110,7 @@ def api_strat_progress(task_id):
     snap = {"ok": True, "task_id": task_id, "status": task.get("status")}
     # 借用 strategy_manager 的全局扫描进度
     try:
-        import ths_quote as tq
+        from market import ths_quote as tq
         tdx_prog = tq.get_scan_progress()
         strat_prog = sm.get_scan_progress()
         prog = tdx_prog if tdx_prog.get("running") else strat_prog
@@ -2717,7 +2716,7 @@ def api_factors_zoo_progress(task_id):
         }
     # 借用 sm._scan_prog（factor_manager / strategy_manager 共享的全局扫描进度）
     try:
-        import strategy_manager as _sm_mod
+        from strategy_engine import strategy_manager as _sm_mod
         prog = getattr(_sm_mod, "_scan_prog", None) or getattr(_sm_mod, "_tdx_prog", {})
         if isinstance(prog, dict) and prog.get("running"):
             snap["scan_current"] = int(prog.get("current") or 0)
@@ -3020,12 +3019,12 @@ def api_backtest():
         return jsonify(err), 402
 
     if full_market:
-        from backtest import start_backtest_async
+        from strategy_engine.backtest import start_backtest_async
         task_id = start_backtest_async(**bt_kwargs)
         _add_log(uid, f"全市场回测已启动 [{fn}] {d.get('start_date')}~{d.get('end_date')} task={task_id}")
         return jsonify({"ok": True, "async": True, "task_id": task_id})
     else:
-        from backtest import run_backtest
+        from strategy_engine.backtest import run_backtest
         _add_log(uid, f"回测: [{fn}] {d.get('start_date')}~{d.get('end_date')} {mode_label}")
         result = run_backtest(**bt_kwargs)
         if result.get("ok"):
@@ -3039,7 +3038,7 @@ def api_backtest():
 
 @app.route("/api/backtest/task/<task_id>")
 def api_backtest_task(task_id):
-    from backtest import get_backtest_task
+    from strategy_engine.backtest import get_backtest_task
     return jsonify(get_backtest_task(task_id))
 
 
@@ -3047,7 +3046,7 @@ def api_backtest_task(task_id):
 @require_auth
 def api_backtest_cancel(task_id):
     uid = session["user_id"]
-    from backtest import cancel_backtest_task
+    from strategy_engine.backtest import cancel_backtest_task
     result = cancel_backtest_task(task_id)
     if result.get("ok"):
         _add_log(uid, f"⏹ 回测已终止: task={task_id}", "WARN")
@@ -3082,7 +3081,7 @@ def api_portfolio_optimize():
     if not codes:
         return jsonify({"ok": False, "error": "codes 不能为空"})
     try:
-        from portfolio_optimizer import optimize_portfolio
+        from analytics.portfolio_optimizer import optimize_portfolio
         result = optimize_portfolio(codes, mode=mode, capital=capital)
         _add_log(uid, f"组合优化完成: mode={mode} codes={len(codes)}")
         return jsonify(result)
@@ -3244,7 +3243,7 @@ def _start_background_services():
         logger.warning(f"新闻聚合调度器启动失败: {_ne}")
     # 每日复盘（交易日 15:10 收盘版 → 19:50 晚间版，含 AI 总结归档）
     try:
-        import review_engine
+        from analytics import review_engine
         threading.Thread(target=review_engine.run_review_scheduler, daemon=True, name="review-engine").start()
     except Exception as _re:
         logger.warning(f"复盘调度器启动失败: {_re}")

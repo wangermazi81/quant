@@ -368,7 +368,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # Run Card（在自己身上用 Run Card —— 完美的可复现实验场景）
     try:
-        from run_card import RunCard
+        from core.run_card import RunCard
         card = RunCard.start("factor_scoring", inputs={
             "n_stocks": args.n_stocks, "days": args.days,
             "horizons": list(horizons),

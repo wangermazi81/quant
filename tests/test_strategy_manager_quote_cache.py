@@ -1,13 +1,13 @@
+from tests._module_stubs import stub_project_module
 import sys
 import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
 import pandas as pd
 
-import strategy_manager as sm
+from strategy_engine import strategy_manager as sm
 
 
 def test_strategy_quotes_reuse_market_cache_when_tdx_quote_fetch_unavailable(monkeypatch):
@@ -31,7 +31,7 @@ def test_strategy_quotes_reuse_market_cache_when_tdx_quote_fetch_unavailable(mon
         def get_quotes(self, codes):
             return []
 
-    import ths_quote
+    from market import ths_quote
 
     monkeypatch.setattr(ths_quote, "get_client", lambda *args, **kwargs: EmptyClient())
 
@@ -90,7 +90,7 @@ def test_strategy_quotes_merge_partial_live_quotes_with_market_cache(monkeypatch
                 "vol": 3000,
             }]
 
-    import ths_quote
+    from market import ths_quote
 
     monkeypatch.setattr(ths_quote, "get_client", lambda *args, **kwargs: PartialClient())
 
@@ -149,8 +149,8 @@ def test_market_cache_does_not_accept_baostock_code_only_stubs(monkeypatch):
             }
         )
 
-    monkeypatch.setitem(
-        sys.modules,
+    stub_project_module(
+        monkeypatch,
         "ths_quote",
         types.SimpleNamespace(get_client=lambda *args, **kwargs: EmptyTdxClient()),
     )

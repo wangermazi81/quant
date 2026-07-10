@@ -12,7 +12,6 @@ from pathlib import Path
 
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
 import app_security as sec
 from flask import Flask, jsonify

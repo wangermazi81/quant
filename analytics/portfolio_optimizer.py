@@ -130,7 +130,7 @@ def optimize_portfolio(codes: list, mode: str = "equal_weight",
     """
     # Run Card 快照：每次调用产出 logs/runs/<时间戳>-portfolio_optimization/
     try:
-        from run_card import RunCard
+        from core.run_card import RunCard
         _card = RunCard.start("portfolio_optimization", inputs={
             "codes": codes, "mode": mode, "capital": capital, "lookback": lookback,
         })

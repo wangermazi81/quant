@@ -12,7 +12,7 @@ import pandas as pd
 import requests
 
 try:
-    import datasource_config
+    from analytics import datasource_config
 except Exception:  # pragma: no cover - package import fallback for tests/tools
     from . import datasource_config  # type: ignore
 

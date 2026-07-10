@@ -7,7 +7,7 @@ import logging
 
 from flask import Blueprint, request, jsonify, session
 
-import feedback_manager as fbm
+from core import feedback_manager as fbm
 from app_state import require_auth, require_admin_perm, _add_log
 
 logger = logging.getLogger(__name__)

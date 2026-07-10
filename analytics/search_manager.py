@@ -603,7 +603,7 @@ def search_stock_news(code: str, name: str = "", limit: int = 8,
 
     # ── Level 4: 直接抓取 ────────────────────────────
     try:
-        from news_fetcher import get_stock_news
+        from market.news_fetcher import get_stock_news
         results_raw = get_stock_news(code, limit=limit)
         if results_raw:
             normalized = [
@@ -723,7 +723,7 @@ def get_kline_with_fallback(code: str, days: int = 60) -> "pd.DataFrame":
 
     # ── Level 2: TDX ─────────────────────────────────
     try:
-        import ths_quote as tq
+        from market import ths_quote as tq
         client = tq.get_client()
         if client and client._ok:
             raw = client.get_kline(code, days)
@@ -737,7 +737,7 @@ def get_kline_with_fallback(code: str, days: int = 60) -> "pd.DataFrame":
 
     # ── Level 3: 本地 CSV ────────────────────────────
     try:
-        import data_manager as dm
+        from analytics import data_manager as dm
         df = dm.get_local(code)
         if df is not None and not df.empty:
             logger.info(f"[SM] K线-本地CSV: {code} {len(df)}条")

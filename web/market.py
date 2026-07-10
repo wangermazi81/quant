@@ -6,7 +6,7 @@ from copy import deepcopy
 from datetime import datetime
 from time import time
 
-import market_context as mctx
+from market import market_context as mctx
 from app_state import require_auth
 
 bp = Blueprint("market", __name__)
@@ -86,7 +86,7 @@ def _normalize_market_review(review: dict | None) -> dict | None:
         return None
     result = deepcopy(review)
     try:
-        import market_stats as _mstats
+        from market import market_stats as _mstats
 
         result["breadth"] = _mstats.normalize_breadth_quality(result.get("breadth"))
     except Exception:
@@ -132,7 +132,7 @@ def _refresh_archive_market_review(date_text: str | None, archived: dict | None)
     if not isinstance(archived, dict):
         return None
     try:
-        import market_stats as _mstats
+        from market import market_stats as _mstats
 
         breadth = _mstats.get_market_breadth(date_text=date_text)
         turnover = _mstats.get_market_turnover(date_text=date_text)
@@ -154,7 +154,7 @@ def _refresh_archive_market_review(date_text: str | None, archived: dict | None)
 
 def _load_archive_review(date_text: str | None = None) -> dict | None:
     try:
-        import review_engine as re_
+        from analytics import review_engine as re_
     except Exception:
         return None
 
@@ -199,7 +199,7 @@ def api_market_context():
         force = request.args.get("refresh", "0") == "1"
         ctx   = mctx.get_market_regime(force_refresh=force)
         try:
-            import ths_quote as tq
+            from market import ths_quote as tq
             client = tq.get_client()
             if client and client._ok:
                 index_pairs = [(1, "000001"), (0, "399001"), (0, "399006")]
@@ -231,7 +231,7 @@ def api_market_regime():
         description: regime, score, position_multiplier
     """
     try:
-        from market_regime import MarketRegimeDetector
+        from market.market_regime import MarketRegimeDetector
         detector = MarketRegimeDetector()
         result   = detector.detect()
         return jsonify({"ok": True, **result})
@@ -250,7 +250,7 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
     stat_date = f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}" if len(digits) >= 8 else _dt.now().strftime("%Y-%m-%d")
     if len(digits) >= 8:
         try:
-            import market_stats as _mstats
+            from market import market_stats as _mstats
             snapshot = _mstats.get_verified_market_snapshot(date_text)
             if snapshot:
                 return _normalize_market_review({
@@ -295,7 +295,7 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
     # 1. 指数实时价格 —— 优先 TDX，降级 akshare
     index_meta = [(1, "000001", "上证指数"), (0, "399001", "深证成指"), (0, "399006", "创业板指")]
     try:
-        import ths_quote as tq
+        from market import ths_quote as tq
         client = tq.get_client()
         if client and client._ok:
             pairs    = [(mkt, code) for mkt, code, _ in index_meta]
@@ -333,7 +333,7 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
     # 2. Market breadth. Use dedicated market stats sources; strategy quote
     # batches can be incomplete under TDX fallback and must not define breadth.
     try:
-        import market_stats as _mstats
+        from market import market_stats as _mstats
         try:
             metrics = _mstats.get_market_snapshot_metrics(date_text=date_text)
             review["breadth"] = metrics.get("breadth") or {}

@@ -682,7 +682,7 @@ def _load_full_market_data(start_date: str, end_date: str, logs: list,
       Phase 2: TDX 实时行情预筛选 → 按成交量取前 800 只补充 K 线
     progress_fn(current, total, stage) 每步回调，供前端显示进度条。
     """
-    from data_manager import get_local
+    from analytics.data_manager import get_local
     lookback_ts = pd.Timestamp(start_date) - pd.Timedelta(days=120)
     all_data: dict = {}
 
@@ -711,7 +711,7 @@ def _load_full_market_data(start_date: str, end_date: str, logs: list,
     # ── Phase 2: TDX 活跃标的补充 ─────────────────────────────
     _tdx_client = None
     try:
-        import ths_quote as tq
+        from market import ths_quote as tq
         c = tq.get_client()
         if c and c._ok:
             _tdx_client = c
@@ -782,7 +782,7 @@ def _load_data(codes: list, start_date: str, end_date: str, logs: list) -> dict:
     数据加载：本地 CSV 优先，TDX 次选。
     完全移除 akshare 降级（akshare 受代理/网络影响会长时间挂起）。
     """
-    from data_manager import get_local
+    from analytics.data_manager import get_local
     lookback_ts = pd.Timestamp(start_date) - pd.Timedelta(days=120)
     all_data    = {}
 
@@ -792,7 +792,7 @@ def _load_data(codes: list, start_date: str, end_date: str, logs: list) -> dict:
         import sys as _sys, os as _os
         _app_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
         _sys.path.insert(0, _os.path.join(_app_root, "market"))
-        import ths_quote as tq
+        from market import ths_quote as tq
         c = tq.get_client()
         if c and c._ok:
             _tdx_client = c
@@ -942,7 +942,7 @@ def run_backtest(strategy_code: str, codes: list,
         m = results["metrics"]
 
         # 股票名称
-        from data_manager import get_stock_name
+        from analytics.data_manager import get_stock_name
         stock_names = {c: get_stock_name(c) for c in actual_codes}
 
         logs.append({"level": "INFO",

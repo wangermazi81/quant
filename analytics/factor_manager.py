@@ -19,7 +19,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import date
 
+from core import legacy_aliases
+
 logger = logging.getLogger(__name__)
+
+# 用户因子文件(factors/*.py 动态加载)内部使用扁平导入(from indicators import ...)，
+# 依赖别名层解析到真实包模块（同一实例，非 sys.path 注入）。
+legacy_aliases.install()
 
 FACTORS_DIR = Path(__file__).parent.parent / "factors"
 FACTORS_DIR.mkdir(exist_ok=True)
@@ -146,7 +152,7 @@ def save(filename: str, code: str) -> dict:
         return {"ok": False, "msg": "文件名不合法"}
     # 复用 strategy_manager 的 AST 安全检查
     try:
-        import strategy_manager as _sm
+        from strategy_engine import strategy_manager as _sm
         chk = _sm.ast_check(code)
         if not chk["ok"]:
             return {"ok": False, "msg": f"代码安全检查未通过: {chk['msg']}"}
@@ -204,7 +210,7 @@ def _init_kline_pool(n: int = 4) -> list:
         # 建立新连接
         try:
             from pytdx.hq import TdxHq_API
-            from ths_quote import _SERVERS
+            from market.ths_quote import _SERVERS
         except ImportError:
             logger.warning("[FM] pytdx 未安装，无法建立K线连接池")
             return []
@@ -245,7 +251,7 @@ def _fetch_kline_one(args) -> tuple:
     每个线程有专属 api_obj，无锁竞争。
     """
     code, days, api = args
-    from ths_quote import _market
+    from market.ths_quote import _market
     try:
         market = _market(code)
         bars = api.get_security_bars(9, market, code, 0, min(days, 800))
@@ -293,7 +299,7 @@ def _prefetch_klines_parallel(universe: list, fallback_get_kline,
 
     # ── 第一步：从本地 CSV 快速读取（真正并行，无网络延迟）────────────
     try:
-        import data_manager as _dm
+        from analytics import data_manager as _dm
         local_miss = []
         def _read_local(code):
             try:
@@ -425,7 +431,7 @@ def run(filename: str, codes: list, max_codes: int = 0) -> dict:
         if not hasattr(mod, "scan"):
             return {"ok": False, "msg": "因子文件缺少 scan() 函数", "results": []}
 
-        import strategy_manager as sm
+        from strategy_engine import strategy_manager as sm
 
         # ── 确定扫描宇宙 + 行情缓存 ────────────────────────────────
         if not codes:
@@ -447,7 +453,7 @@ def run(filename: str, codes: list, max_codes: int = 0) -> dict:
             universe = codes
             _quote_cache = {}
             try:
-                import ths_quote as _tq
+                from market import ths_quote as _tq
                 client = _tq.get_client()
                 if client and client._ok:
                     qs = client.get_quotes(universe)

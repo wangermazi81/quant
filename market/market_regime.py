@@ -21,7 +21,7 @@ _CACHE_TTL   = 5 * 60   # 5 分钟缓存
 def _get_index_data(code: str, n: int = 60) -> pd.DataFrame:
     """优先 TDX 拉取指数日线，失败则返回空 DataFrame。"""
     try:
-        import ths_quote as tq
+        from market import ths_quote as tq
         client = tq.get_client()
         if client and client._ok:
             bars = client.get_kline(code, n)

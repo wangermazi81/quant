@@ -2,7 +2,7 @@
 from flask import Blueprint, jsonify, send_from_directory, request
 
 from app_state import BASE_DIR, require_auth
-import changelog_manager as clm
+from core import changelog_manager as clm
 
 bp = Blueprint("pages", __name__)
 

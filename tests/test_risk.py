@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
 from risk.manager import RiskManager, RiskContext, RiskAction
 from risk.limits import MaxPositions, MaxDrawdown, BlacklistFilter, SinglePositionLimit

@@ -17,16 +17,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
 # ★ 必须在 import main 之前设：跳过 main 的 import 时副作用（建表/迁移/operator/调度线程）。
 os.environ["QUANT_TEST_IMPORT"] = "1"
 os.environ["THS_NO_SCHEDULER"] = "1"
 
 import pytest
-import user_manager as um
-import db_migration
-import paper_broker as pb
+from core import user_manager as um
+from core import db_migration
+from broker import paper_broker as pb
 import main                                  # keystone 重构后可安全 import
 from app_state import get_user_state, user_states
 
@@ -115,9 +114,9 @@ class TestDoScanQueue:
 
     @pytest.fixture
     def scan(self, uid, monkeypatch):
-        import strategy_manager as sm
-        import notification_manager as nm
-        import ths_quote
+        from strategy_engine import strategy_manager as sm
+        from core import notification_manager as nm
+        from market import ths_quote
         # 交易时段=True；无行情客户端(避网络)；通知 no-op(避线程)；策略仓位配置取默认(走面板比例路径)
         monkeypatch.setattr(main, "is_trading_time", lambda: True)
         monkeypatch.setattr(ths_quote, "get_client", lambda *a, **k: None)
@@ -147,7 +146,7 @@ class TestDoScanQueue:
         self._mock_results(sm, mp, cands)
         s = self._state(uid, capital=500000, ratio=0.2, sp=0.2, maxpos=5)
         main.do_scan(uid)
-        from order_sizing import lot_shares
+        from core.order_sizing import lot_shares
         q = {it["code"]: it for it in s["queue"]}
         assert set(q) == {"000001", "600000", "000002"}
         # 每笔手数 = lot_shares(全仓 × 比例, 价)，验证 order_sizing 在 do_scan 实跑中生效
@@ -181,5 +180,5 @@ class TestDoScanQueue:
         # 面板仓位 50% 但单笔护栏 20% → 实际按 20% 建仓
         s = self._state(uid, capital=500000, ratio=0.5, sp=0.2, maxpos=5)
         main.do_scan(uid)
-        from order_sizing import lot_shares
+        from core.order_sizing import lot_shares
         assert s["queue"][0]["shares"] == lot_shares(500000 * 0.2, 10.0)   # 护栏夹到 20%

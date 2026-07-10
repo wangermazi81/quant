@@ -3,9 +3,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
-import ai_position_sizer as sizer
+from analytics import ai_position_sizer as sizer
 
 
 def test_position_suggestion_is_bounded_by_cash_risk_and_lot_size():

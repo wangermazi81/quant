@@ -9,10 +9,10 @@ from pathlib import Path
 
 from flask import Blueprint, request, jsonify, session
 
-import user_manager as um
+from core import user_manager as um
 import app_security as sec
-import datasource_config
-import tushare_provider
+from analytics import datasource_config
+from analytics import tushare_provider
 from analytics import relay_factor_mining
 from analytics import ai_trader as ai_trader_engine
 from analytics import auto_factor_scheduler
@@ -855,7 +855,7 @@ def admin_revoke_invite(cid):
 
 
 # ── 更新日志管理 ──────────────────────────────────────────────
-import changelog_manager as clm
+from core import changelog_manager as clm
 
 @bp.route("/api/admin/changelog", methods=["GET"])
 @require_admin_perm("content_manage")

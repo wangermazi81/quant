@@ -12,7 +12,7 @@ bp = Blueprint("lhb", __name__)
 
 @bp.route("/api/lhb/data")
 def api_lhb_data():
-    import lhb_engine as le
+    from analytics import lhb_engine as le
     date = (request.args.get("date") or "").strip()
     force = request.args.get("refresh", "0") == "1"
     data = le.get_lhb_data(date or None, force_refresh=force)
@@ -21,5 +21,5 @@ def api_lhb_data():
 
 @bp.route("/api/lhb/dates")
 def api_lhb_dates():
-    import lhb_engine as le
+    from analytics import lhb_engine as le
     return jsonify({"dates": le.get_lhb_dates()})

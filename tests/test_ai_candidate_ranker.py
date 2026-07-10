@@ -3,9 +3,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
-import ai_candidate_ranker as ranker
+from analytics import ai_candidate_ranker as ranker
 
 
 def test_rank_candidates_filters_untradable_names_and_prices():

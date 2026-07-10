@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
+from tests._module_stubs import stub_project_module
 import sys
 import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
-import ai_trader
+from analytics import ai_trader
 
 
 def test_prescreen_uses_research_ranker_when_available(monkeypatch):
@@ -23,7 +23,7 @@ def test_prescreen_uses_research_ranker_when_available(monkeypatch):
             {"code": "000002", "name": "Fast", "score": 99, "as_of_date": as_of_date, "factors": {}}
         ]
     )
-    monkeypatch.setitem(sys.modules, "strategy_manager", FakeStrategyManager)
+    stub_project_module(monkeypatch, "strategy_manager", FakeStrategyManager)
     monkeypatch.setattr(ai_trader, "ai_candidate_ranker", fake_ranker, raising=False)
 
     engine = ai_trader._Engine(101)
@@ -44,7 +44,7 @@ def test_prescreen_falls_back_when_ranker_fails(monkeypatch):
     def _boom(*args, **kwargs):
         raise RuntimeError("ranker unavailable")
 
-    monkeypatch.setitem(sys.modules, "strategy_manager", FakeStrategyManager)
+    stub_project_module(monkeypatch, "strategy_manager", FakeStrategyManager)
     monkeypatch.setattr(ai_trader, "ai_candidate_ranker", types.SimpleNamespace(rank_candidates=_boom), raising=False)
 
     engine = ai_trader._Engine(101)
@@ -68,7 +68,7 @@ def test_build_candidates_prioritizes_strategy_library_results(monkeypatch):
                 ],
             }
 
-    monkeypatch.setitem(sys.modules, "strategy_manager", FakeStrategyManager)
+    stub_project_module(monkeypatch, "strategy_manager", FakeStrategyManager)
     monkeypatch.setattr(ai_trader._Engine, "_account", lambda self: {"positions": {}})
     monkeypatch.setattr(ai_trader._Engine, "_user_state", lambda self: {"queue": [{"code": "000009", "name": "Queued"}]})
     monkeypatch.setattr(ai_trader._Engine, "_prescreen", lambda self, st: [("000010", "Prescreen")])
@@ -104,7 +104,7 @@ def test_strategy_candidates_expand_legacy_single_quality_strategy(monkeypatch):
                 return {"ok": True, "results": [{"code": "600246", "name": "Relay"}]}
             return {"ok": True, "results": []}
 
-    monkeypatch.setitem(sys.modules, "strategy_manager", FakeStrategyManager)
+    stub_project_module(monkeypatch, "strategy_manager", FakeStrategyManager)
 
     engine = ai_trader._Engine(101)
     picks = engine._strategy_candidates({
@@ -131,7 +131,7 @@ def test_strategy_candidates_records_trace_for_ui(monkeypatch):
                 ],
             }
 
-    monkeypatch.setitem(sys.modules, "strategy_manager", FakeStrategyManager)
+    stub_project_module(monkeypatch, "strategy_manager", FakeStrategyManager)
 
     engine = ai_trader._Engine(101)
     picks = engine._strategy_candidates({
@@ -208,7 +208,7 @@ def test_prescreen_rejects_stub_market_quotes(monkeypatch):
                 "000003": {"code": "000003", "name": "000003", "price": 10.0, "change_pct": 0.0, "vol": 1000},
             }
 
-    monkeypatch.setitem(sys.modules, "strategy_manager", FakeStrategyManager)
+    stub_project_module(monkeypatch, "strategy_manager", FakeStrategyManager)
 
     engine = ai_trader._Engine(101)
     assert engine._prescreen({"prescreen_universe": 3, "prescreen_top": 2}) == []

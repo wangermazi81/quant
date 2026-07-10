@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """策略管理器：加载、保存、执行策略文件"""
 
 import json
@@ -8,11 +8,17 @@ import traceback
 import logging
 from pathlib import Path
 
+from core import legacy_aliases
+
 logger = logging.getLogger(__name__)
 
+# 用户策略文件(strategies/*.py 动态加载)内部使用扁平导入(from base import ...)，
+# 依赖别名层解析到真实包模块（同一实例，非 sys.path 注入）。
+legacy_aliases.install()
+
 try:
-    import datasource_config
-    import tushare_provider
+    from analytics import datasource_config
+    from analytics import tushare_provider
 except Exception:  # pragma: no cover - optional datasource layer
     datasource_config = None  # type: ignore
     tushare_provider = None  # type: ignore
@@ -266,7 +272,7 @@ def _build_data_fns(universe: list):
         _strat_prog["code"] = code
         # 1. 本地 CSV
         try:
-            import data_manager as _dm
+            from analytics import data_manager as _dm
             df = _dm.get_local(code)
             if df is not None and not df.empty and len(df) >= 10:
                 return df.tail(days).reset_index(drop=True)
@@ -274,7 +280,7 @@ def _build_data_fns(universe: list):
             pass
         # 2. TDX
         try:
-            import ths_quote as _tq
+            from market import ths_quote as _tq
             client = _tq.get_client()
             if client and client._ok:
                 bars = client.get_kline(code, days)
@@ -334,7 +340,7 @@ def _build_data_fns(universe: list):
         except Exception as exc:
             logger.debug(f"[SM] Tushare rt_tick quote fallback: {exc}")
         try:
-            import ths_quote as _tq
+            from market import ths_quote as _tq
             client = _tq.get_client()
             if client and client._ok:
                 qs = client.get_quotes(codes_list)
@@ -375,7 +381,7 @@ def _refresh_market_cache() -> list:
     """
     # ── 路径 1：TDX ────────────────────────────────────────────────
     try:
-        import ths_quote as _tq
+        from market import ths_quote as _tq
         client = _tq.get_client()
         if client and client._ok:
             all_codes = client.get_all_stock_codes()
@@ -640,7 +646,7 @@ def _get_full_market_snapshot(force_refresh: bool = False) -> list:
     # 路径 2：TDX 全量兜底（akshare 被东财风控/云端不可用时，不依赖东财仍能出数）
     if not quotes:
         try:
-            import ths_quote as _tq
+            from market import ths_quote as _tq
             client = _tq.get_client()
             if client and client._ok:
                 all_codes = client.get_all_stock_codes()

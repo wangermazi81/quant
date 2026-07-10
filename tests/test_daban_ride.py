@@ -11,9 +11,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
-from daban_ride import board_rate, ride_decision
+from core.daban_ride import board_rate, ride_decision
 
 # 固定一套阈值，使测试不依赖 config 当前值
 TH = dict(stop_loss=-0.05, trail=0.07, max_hold=10, hold_limitup=True)

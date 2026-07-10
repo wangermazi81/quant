@@ -42,25 +42,25 @@ from pathlib import Path
 logger = logging.getLogger("ai_trader")
 
 # 复用 ai_analyst 的 LLM / 指标 / 配置基建
-import ai_analyst as _ai
+from analytics import ai_analyst as _ai
 
 try:
-    import ai_candidate_ranker
+    from analytics import ai_candidate_ranker
 except Exception:
     ai_candidate_ranker = None
 
 try:
-    import ai_research_store
+    from analytics import ai_research_store
 except Exception:
     ai_research_store = None
 
 try:
-    import ai_trade_plan
+    from analytics import ai_trade_plan
 except Exception:
     ai_trade_plan = None
 
 try:
-    import ai_position_sizer
+    from analytics import ai_position_sizer
 except Exception:
     ai_position_sizer = None
 
@@ -130,7 +130,7 @@ def load_user_trader_config(uid: int) -> dict:
     """
     cfg = dict(_DEFAULT_TRADER_CFG)
     try:
-        import user_manager as um
+        from core import user_manager as um
         saved = um.get_user_ai_config(uid) or {}
         for k in ("provider", "api_key", "base_url", "model"):
             if saved.get(k):
@@ -151,7 +151,7 @@ def save_user_trader_config(uid: int, patch: dict) -> dict:
     elif patch.get("api_key"):
         cfg["api_key"] = str(patch["api_key"]).strip()
     try:
-        import user_manager as um
+        from core import user_manager as um
         um.save_user_ai_config(
             uid,
             provider=cfg.get("provider", ""),
@@ -190,7 +190,7 @@ def strategy_candidate_catalog() -> list:
     """Return strategy-library entries that AI trading can use as candidate sources."""
     items = []
     try:
-        import strategy_manager as sm
+        from strategy_engine import strategy_manager as sm
         items = sm.list_strategies() or []
     except Exception as e:
         logger.debug(f"strategy_candidate_catalog: {e}")
@@ -538,7 +538,7 @@ class _Engine:
     # ── 工具 ──────────────────────────────────────────────
     def _broker_mode(self) -> str:
         try:
-            import user_manager as um
+            from core import user_manager as um
             from config import DRY_RUN
             bt = um.get_user_broker_config(self.uid).get("broker_type", "paper")
             return "paper" if (DRY_RUN or bt == "paper") else "live"
@@ -554,7 +554,7 @@ class _Engine:
         return AI_UID_OFFSET + self.uid
 
     def _ai_broker(self):
-        import paper_broker as pb
+        from broker import paper_broker as pb
         return pb.get_broker(self._ai_uid())
 
     def _account(self) -> dict:
@@ -591,7 +591,7 @@ class _Engine:
         cur = {}
         if codes:
             try:
-                import ths_quote as tq
+                from market import ths_quote as tq
                 cli = tq.get_client()
                 if cli and getattr(cli, "_ok", False):
                     for q in (cli.get_quotes(codes) or []):
@@ -686,7 +686,7 @@ class _Engine:
         if st.get("ignore_market_time"):
             return True, ""
         try:
-            from market_data import is_trading_time
+            from market.market_data import is_trading_time
             if is_trading_time():
                 return True, ""
             return False, "当前非A股连续竞价时段，AI交易团队已启动但会等待开盘/午休结束后再自动分析。需要盘后测试可勾选「忽略交易时间」或点击「单轮测试」。"
@@ -806,7 +806,7 @@ class _Engine:
         }
         self.candidate_trace = trace
         try:
-            import strategy_manager as sm
+            from strategy_engine import strategy_manager as sm
         except Exception as e:
             self._log(f"⚠ 策略库候选不可用：{e}", "warn")
             trace["strategies"].append({"file": "", "ok": False, "count": 0, "picked": [], "msg": str(e)[:120]})
@@ -876,7 +876,7 @@ class _Engine:
         """全市场量化初筛（无 LLM）：从全市场行情快照按动量+流动性打分，取 top N。
         只做海选，真正的深度分析仍交给 6 个 Agent 团队。"""
         try:
-            import strategy_manager as sm
+            from strategy_engine import strategy_manager as sm
             n_uni = int(st.get("prescreen_universe", 1200) or 1200)
             universe, qc = sm._full_market_universe_with_quotes(max_codes=n_uni)
         except Exception as e:
@@ -957,7 +957,7 @@ class _Engine:
         self._agent_say(None, "market", "thinking")
         ctx = ""
         try:
-            from market_context import get_market_summary_text
+            from market.market_context import get_market_summary_text
             ctx = get_market_summary_text() or ""
         except Exception:
             pass
@@ -975,14 +975,14 @@ class _Engine:
 
     def _stock_context(self, code, name):
         """拉K线 + 指标 + 评分 + 实时行情，组装个股上下文。返回 (ctx_text, quote, ok)。"""
-        from market_data import get_kline
+        from market.market_data import get_kline
         df = get_kline(code, period=80)
         if df is None or df.empty or len(df) < 30:
             return (f"{code} {name}：历史数据不足（需≥30日），无法技术分析。", {}, False)
         ind = _ai._calc_indicators(df)
         hist = _ai._price_history_text(df, days=12)
         try:
-            from stock_scorer import score_stock
+            from analytics.stock_scorer import score_stock
             score = score_stock(df)
         except Exception:
             score = {}
@@ -1003,7 +1003,7 @@ class _Engine:
 
     def _quote(self, code) -> dict:
         try:
-            import ths_quote as tq
+            from market import ths_quote as tq
             client = tq.get_client()
             if client and getattr(client, "_ok", False):
                 qs = client.get_quotes([code]) or []
@@ -1475,7 +1475,7 @@ class _Engine:
         while not self.stop_flag.is_set():
             try:
                 st = load_settings(self.uid)
-                from market_data import is_trading_time
+                from market.market_data import is_trading_time
                 if st["ignore_market_time"] or is_trading_time():
                     self._monitor_once(st)
             except Exception as e:
@@ -1489,7 +1489,7 @@ class _Engine:
             return
         codes = list(positions.keys())
         try:
-            import ths_quote as tq
+            from market import ths_quote as tq
             client = tq.get_client()
             quotes = (client.get_quotes(codes) if client and getattr(client, "_ok", False) else []) or []
         except Exception:

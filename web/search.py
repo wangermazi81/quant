@@ -3,8 +3,8 @@ import json
 
 from flask import Blueprint, request, jsonify
 
-import data_manager as dm
-import search_manager as search_mgr
+from analytics import data_manager as dm
+from analytics import search_manager as search_mgr
 from app_state import require_auth, require_admin_perm
 
 bp = Blueprint("search", __name__)
@@ -28,7 +28,7 @@ def api_stock_news(code):
     """获取个股新闻 + 情绪分析（search_manager 五级降级）"""
     try:
         name = dm.get_stock_name(code) or code
-        from news_fetcher import get_stock_news, _simple_sentiment, news_to_context_text
+        from market.news_fetcher import get_stock_news, _simple_sentiment, news_to_context_text
         news = get_stock_news(code, limit=8, name=name)
         sentiment = _simple_sentiment(news)
         return jsonify({

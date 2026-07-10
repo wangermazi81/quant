@@ -1,3 +1,4 @@
+from tests._module_stubs import stub_project_module
 import sys
 import types
 from pathlib import Path
@@ -5,9 +6,8 @@ from contextlib import nullcontext
 from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
-import lhb_engine
+from analytics import lhb_engine
 
 
 def test_lhb_api_refresh_forwards_force_refresh(monkeypatch):
@@ -24,7 +24,7 @@ def test_lhb_api_refresh_forwards_force_refresh(monkeypatch):
         get_lhb_data=fake_get_lhb_data,
         get_lhb_dates=lambda: ["2026-07-08"],
     )
-    monkeypatch.setitem(sys.modules, "lhb_engine", fake_engine)
+    stub_project_module(monkeypatch, "lhb_engine", fake_engine)
 
     app = Flask(__name__)
     app.register_blueprint(lhb_web.bp)

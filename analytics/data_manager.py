@@ -13,8 +13,8 @@ import pandas as pd
 import akshare as ak
 
 try:
-    import datasource_config
-    import tushare_provider
+    from analytics import datasource_config
+    from analytics import tushare_provider
 except Exception:  # pragma: no cover - package import fallback for tests/tools
     from . import datasource_config, tushare_provider  # type: ignore
 

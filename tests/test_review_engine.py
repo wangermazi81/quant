@@ -1,12 +1,12 @@
-﻿import sys
+from tests._module_stubs import stub_project_module
+import sys
 import types
 from pathlib import Path
 from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
-import review_engine
+from analytics import review_engine
 
 
 def test_lhb_preloader_retries_until_today_is_cached(monkeypatch):
@@ -16,7 +16,7 @@ def test_lhb_preloader_retries_until_today_is_cached(monkeypatch):
         calls.append(len(calls) + 1)
         return len(calls) >= 2
 
-    monkeypatch.setitem(sys.modules, "lhb_engine", types.SimpleNamespace(preload_today=fake_preload_today))
+    stub_project_module(monkeypatch, "lhb_engine", types.SimpleNamespace(preload_today=fake_preload_today))
     state = {}
 
     first = review_engine._maybe_preload_lhb(
@@ -47,7 +47,7 @@ def test_lhb_preloader_retries_quickly_right_after_publish_window(monkeypatch):
         calls.append(len(calls) + 1)
         return len(calls) >= 2
 
-    monkeypatch.setitem(sys.modules, "lhb_engine", types.SimpleNamespace(preload_today=fake_preload_today))
+    stub_project_module(monkeypatch, "lhb_engine", types.SimpleNamespace(preload_today=fake_preload_today))
     state = {}
 
     first = review_engine._maybe_preload_lhb(
@@ -73,7 +73,7 @@ def test_lhb_preloader_keeps_retrying_until_late_evening(monkeypatch):
         calls.append(len(calls) + 1)
         return False
 
-    monkeypatch.setitem(sys.modules, "lhb_engine", types.SimpleNamespace(preload_today=fake_preload_today))
+    stub_project_module(monkeypatch, "lhb_engine", types.SimpleNamespace(preload_today=fake_preload_today))
     state = {}
 
     first = review_engine._maybe_preload_lhb(
@@ -103,7 +103,7 @@ def test_lhb_preloader_keeps_one_minute_retry_until_finalization(monkeypatch):
         calls.append(len(calls) + 1)
         return False
 
-    monkeypatch.setitem(sys.modules, "lhb_engine", types.SimpleNamespace(preload_today=fake_preload_today))
+    stub_project_module(monkeypatch, "lhb_engine", types.SimpleNamespace(preload_today=fake_preload_today))
     state = {}
 
     first = review_engine._maybe_preload_lhb(
@@ -125,7 +125,7 @@ def test_lhb_backfill_runs_after_close_and_throttles(monkeypatch):
         calls.append((today.strftime("%Y-%m-%d"), days, limit))
         return {"checked": ["2026-07-07"], "saved": ["2026-07-07"], "pending": [], "skipped": []}
 
-    monkeypatch.setitem(sys.modules, "lhb_engine", types.SimpleNamespace(backfill_recent=fake_backfill_recent))
+    stub_project_module(monkeypatch, "lhb_engine", types.SimpleNamespace(backfill_recent=fake_backfill_recent))
     state = {}
 
     before_window = review_engine._maybe_backfill_lhb(
@@ -164,7 +164,7 @@ def test_daily_review_without_date_uses_latest_archive_before_market_open(monkey
         list_dates=lambda: ["2026-07-06", "2026-07-03"],
         collect=lambda date_str: (_ for _ in ()).throw(AssertionError("should not live collect before open")),
     )
-    monkeypatch.setitem(sys.modules, "review_engine", fake_review_engine)
+    stub_project_module(monkeypatch, "review_engine", fake_review_engine)
     monkeypatch.setattr(review_web, "datetime", FakeDateTime)
 
     app = Flask(__name__)
@@ -265,7 +265,7 @@ def test_market_review_uses_latest_archive_before_market_open(monkeypatch):
         load=lambda date_str: latest_archive if date_str == "2026-07-06" else None,
         list_dates=lambda limit=10: ["2026-07-06", "2026-07-03"],
     )
-    monkeypatch.setitem(sys.modules, "review_engine", fake_review_engine)
+    stub_project_module(monkeypatch, "review_engine", fake_review_engine)
     monkeypatch.setattr(market_web, "datetime", FakeDateTime)
     monkeypatch.setattr(
         market_web,
@@ -377,8 +377,8 @@ def test_market_review_rebuilds_degraded_explicit_archive_from_three_market_sour
         get_market_breadth=lambda date_text=None: {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
         get_market_turnover=lambda date_text=None: {"source": "official_exchange", "today": 30944.0, "amount": 30944.46, "degraded": False},
     )
-    monkeypatch.setitem(sys.modules, "review_engine", fake_review_engine)
-    monkeypatch.setitem(sys.modules, "market_stats", fake_market_stats)
+    stub_project_module(monkeypatch, "review_engine", fake_review_engine)
+    stub_project_module(monkeypatch, "market_stats", fake_market_stats)
 
     review = market_web._build_market_review("2026-07-06")
 
@@ -401,7 +401,7 @@ def test_market_review_force_refresh_bypasses_preopen_archive(monkeypatch):
         def get_market_breadth(date_text=None):
             return {"source": "eastmoney_spot", "up": 1, "down": 0, "flat": 0, "total": 1}
 
-    monkeypatch.setitem(sys.modules, "market_stats", FakeMarketStats)
+    stub_project_module(monkeypatch, "market_stats", FakeMarketStats)
 
     review = market_web._get_market_review(force_refresh=True)
 
@@ -433,8 +433,8 @@ def test_market_review_reuses_single_three_market_snapshot(monkeypatch):
     )
     fake_ths_quote = types.SimpleNamespace(get_client=lambda: types.SimpleNamespace(_ok=False))
     fake_akshare = types.SimpleNamespace(stock_zh_index_spot_em=lambda: None, stock_board_industry_name_em=lambda: None)
-    monkeypatch.setitem(sys.modules, "market_stats", fake_market_stats)
-    monkeypatch.setitem(sys.modules, "ths_quote", fake_ths_quote)
+    stub_project_module(monkeypatch, "market_stats", fake_market_stats)
+    stub_project_module(monkeypatch, "ths_quote", fake_ths_quote)
     monkeypatch.setitem(sys.modules, "akshare", fake_akshare)
 
     review = market_web._build_market_review(allow_archive=False)
@@ -482,8 +482,8 @@ def test_market_review_uses_direct_sector_source_without_slow_akshare(monkeypatc
             }
 
     fake_requests = types.SimpleNamespace(get=lambda *args, **kwargs: FakeResponse())
-    monkeypatch.setitem(sys.modules, "market_stats", fake_market_stats)
-    monkeypatch.setitem(sys.modules, "ths_quote", fake_ths_quote)
+    stub_project_module(monkeypatch, "market_stats", fake_market_stats)
+    stub_project_module(monkeypatch, "ths_quote", fake_ths_quote)
     monkeypatch.setitem(sys.modules, "akshare", fake_akshare)
     monkeypatch.setitem(sys.modules, "requests", fake_requests)
 
@@ -510,7 +510,7 @@ def test_market_review_uses_historical_archive_when_no_verified_snapshot(monkeyp
         },
     }
     fake_review_engine = types.SimpleNamespace(load=lambda date_str: archive if date_str == "2026-07-02" else None)
-    monkeypatch.setitem(sys.modules, "review_engine", fake_review_engine)
+    stub_project_module(monkeypatch, "review_engine", fake_review_engine)
 
     review = market_web._build_market_review("2026-07-02")
 
@@ -539,7 +539,7 @@ def test_daily_review_api_uses_verified_snapshot_when_historical_archive_missing
     from web.review import bp
 
     monkeypatch.setattr(review_engine, "load", lambda date_str: None)
-    monkeypatch.setitem(sys.modules, "review_engine", review_engine)
+    stub_project_module(monkeypatch, "review_engine", review_engine)
 
     app = Flask(__name__)
     app.register_blueprint(bp)
@@ -574,7 +574,7 @@ def test_daily_review_api_verified_snapshot_overrides_stale_historical_archive(m
         "ai_summary": "old summary with stale market numbers",
     }
     monkeypatch.setattr(review_engine, "load", lambda date_str: stale_archive)
-    monkeypatch.setitem(sys.modules, "review_engine", review_engine)
+    stub_project_module(monkeypatch, "review_engine", review_engine)
 
     app = Flask(__name__)
     app.register_blueprint(bp)
@@ -620,8 +620,8 @@ def test_daily_review_api_repairs_stale_three_market_turnover_archive(monkeypatc
     )
     monkeypatch.setattr(review_engine, "load", lambda date_str: stale_archive)
     monkeypatch.setattr(review_engine, "collect", lambda date_str: (_ for _ in ()).throw(AssertionError("collect should not be needed for archived market metric repair")))
-    monkeypatch.setitem(sys.modules, "review_engine", review_engine)
-    monkeypatch.setitem(sys.modules, "market_stats", fake_market_stats)
+    stub_project_module(monkeypatch, "review_engine", review_engine)
+    stub_project_module(monkeypatch, "market_stats", fake_market_stats)
 
     app = Flask(__name__)
     app.register_blueprint(bp)
@@ -676,7 +676,7 @@ def test_collect_turnover_uses_requested_compact_date(monkeypatch):
             calls.append(date_text)
             return {"today": 123.0, "trend": [], "source": "test"}
 
-    monkeypatch.setitem(sys.modules, "market_stats", FakeMarketStats)
+    stub_project_module(monkeypatch, "market_stats", FakeMarketStats)
 
     turnover = review_engine._collect_turnover("20260703")
 

@@ -1,10 +1,10 @@
+from tests._module_stubs import stub_project_module
 import os
 import sys
 import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
 os.environ["QUANT_TEST_IMPORT"] = "1"
 os.environ["THS_NO_SCHEDULER"] = "1"
@@ -150,7 +150,7 @@ def test_paper_buy_rejects_missing_live_cash_before_deducting(monkeypatch):
 def test_paper_sell_rejects_invalid_fallback_price(monkeypatch):
     calls = []
     fake_quote = types.SimpleNamespace(get_client=lambda: None)
-    monkeypatch.setitem(sys.modules, "ths_quote", fake_quote)
+    stub_project_module(monkeypatch, "ths_quote", fake_quote)
     monkeypatch.setattr(main, "execute_sell", lambda *args, **kwargs: calls.append(("execute", args)) or {"ok": True})
 
     client = main.app.test_client()
@@ -196,7 +196,7 @@ def test_positions_sell_falls_back_to_broker_price_when_request_price_invalid(mo
     broker.positions = [{"code": "000001", "cur_price": 11.2, "cost_price": 10.5}]
     calls = []
     fake_quote = types.SimpleNamespace(get_client=lambda: None)
-    monkeypatch.setitem(sys.modules, "ths_quote", fake_quote)
+    stub_project_module(monkeypatch, "ths_quote", fake_quote)
     monkeypatch.setattr(main, "DRY_RUN", True)
     monkeypatch.setattr(main.pb, "get_broker", lambda uid: broker)
     monkeypatch.setattr(
@@ -225,7 +225,7 @@ def test_backtest_rejects_invalid_numeric_params_before_deducting(monkeypatch):
         run_backtest=lambda **kwargs: calls.append(("run_backtest", kwargs)) or {"ok": True},
         start_backtest_async=lambda **kwargs: calls.append(("start_backtest_async", kwargs)) or "task-1",
     )
-    monkeypatch.setitem(sys.modules, "backtest", fake_backtest)
+    stub_project_module(monkeypatch, "backtest", fake_backtest)
 
     client = main.app.test_client()
     _login(client, uid=81)
@@ -254,7 +254,7 @@ def test_portfolio_optimize_rejects_invalid_capital_before_optimizer(monkeypatch
     fake_optimizer = types.SimpleNamespace(
         optimize_portfolio=lambda *args, **kwargs: calls.append((args, kwargs)) or {"ok": True}
     )
-    monkeypatch.setitem(sys.modules, "portfolio_optimizer", fake_optimizer)
+    stub_project_module(monkeypatch, "portfolio_optimizer", fake_optimizer)
 
     client = main.app.test_client()
     _login(client, uid=82)

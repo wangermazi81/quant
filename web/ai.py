@@ -4,10 +4,10 @@ import logging
 
 from flask import Blueprint, request, jsonify, session
 
-import ai_analyst as ai
-import data_manager as dm
-import stock_scorer as scorer
-import user_manager as um
+from analytics import ai_analyst as ai
+from analytics import data_manager as dm
+from analytics import stock_scorer as scorer
+from core import user_manager as um
 from app_state import BASE_DIR, require_auth, require_admin_perm, _add_log, _deduct
 from app_security import rate_limit, user_key
 
@@ -207,7 +207,7 @@ def api_stock_score():
     # 不存在 / 为空 / 过期 → 从 pytdx 拉最新并回写缓存（与 ai_analyze 口径一致）
     if df is None or df.empty or _kline_is_stale(df):
         try:
-            import ths_quote as tq
+            from market import ths_quote as tq
             import pandas as pd
             client = tq.get_client()
             if client and client._ok:
@@ -250,7 +250,7 @@ def ai_analyze():
     # ★ 新增 _kline_is_stale：旧 CSV 会让指标失真、且与用实时数据的环境结论不一致
     if df is None or df.empty or len(df) < 30 or _kline_is_stale(df):
         try:
-            import ths_quote as tq
+            from market import ths_quote as tq
             import pandas as pd
             client = tq.get_client()
             if client and client._ok:
@@ -272,7 +272,7 @@ def ai_analyze():
 
     realtime_price = realtime_change = None
     try:
-        import ths_quote as tq
+        from market import ths_quote as tq
         client = tq.get_client()
         if client and client._ok:
             qs = client.get_quotes([code])
@@ -343,7 +343,7 @@ def ai_analyze_async():
             df   = dm.get_local(code)
             if df is None or df.empty or len(df) < 30 or _kline_is_stale(df):
                 try:
-                    import ths_quote as tq
+                    from market import ths_quote as tq
                     import pandas as pd
                     client = tq.get_client()
                     if client and client._ok:
@@ -361,7 +361,7 @@ def ai_analyze_async():
                     pass
             realtime_price = realtime_change = None
             try:
-                import ths_quote as tq
+                from market import ths_quote as tq
                 client = tq.get_client()
                 if client and client._ok:
                     qs = client.get_quotes([code])

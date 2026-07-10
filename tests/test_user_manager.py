@@ -14,14 +14,13 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401  # 注入子包路径，使 user_manager 等扁平名可解析
 
 
 @pytest.fixture
 def um(tmp_path, monkeypatch):
     """每个测试一套独立临时库：建表 + 迁移（含 password_reset* 表）。"""
-    import user_manager as _um
-    import db_migration as _dbm
+    from core import user_manager as _um
+    from core import db_migration as _dbm
     db = str(tmp_path / "users_test.db")
     monkeypatch.setattr(_um, "DB_PATH", db)
     monkeypatch.setattr(_dbm, "USERS_DB", db)

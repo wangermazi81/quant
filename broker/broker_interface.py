@@ -45,7 +45,7 @@ class PaperBrokerWrapper(BrokerInterface):
     """包装 paper_broker.PaperBroker 以符合统一接口"""
 
     def __init__(self, user_id: int):
-        from paper_broker import get_broker
+        from broker.paper_broker import get_broker
         self._broker = get_broker(user_id)
 
     def buy(self, code: str, price: float, shares: int, **kwargs) -> dict:
@@ -320,7 +320,7 @@ class CustomHttpBroker(BrokerInterface):
 def get_user_broker(user_id: int) -> BrokerInterface:
     """根据用户的券商配置返回对应的 BrokerInterface 实例"""
     try:
-        import user_manager as um
+        from core import user_manager as um
         cfg = um.get_user_broker_config(user_id)
         broker_type = cfg.get("broker_type", "paper")
         config      = cfg.get("config", {})

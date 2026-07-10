@@ -4,12 +4,11 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
 from flask import Flask
 
 import app_security
-import ai_research_store as store
+from analytics import ai_research_store as store
 from web.ai_trader import bp as ai_trader_bp
 
 

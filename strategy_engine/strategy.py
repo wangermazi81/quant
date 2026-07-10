@@ -1,6 +1,6 @@
 import pandas as pd
 import logging
-from market_data import get_realtime_quotes, get_kline
+from market.market_data import get_realtime_quotes, get_kline
 from config import STRATEGY, MARKET_FILTER
 
 logger = logging.getLogger(__name__)

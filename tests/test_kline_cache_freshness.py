@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from tests._module_stubs import stub_project_module
 import sys
 import types
 from datetime import date, timedelta
@@ -7,7 +8,6 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
 
 def _kline_frame(end_date, periods=30, start_price=10.0):
@@ -33,7 +33,7 @@ def test_factor_prefetch_refreshes_stale_local_cache(monkeypatch):
     calls = []
 
     fake_dm = types.SimpleNamespace(get_local=lambda code: stale.copy())
-    monkeypatch.setitem(sys.modules, "data_manager", fake_dm)
+    stub_project_module(monkeypatch, "data_manager", fake_dm)
     monkeypatch.setattr(fm, "_init_kline_pool", lambda n_workers: [])
 
     def fallback_get_kline(code, days):

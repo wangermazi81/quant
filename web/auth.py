@@ -4,8 +4,8 @@ import logging
 
 from flask import Blueprint, request, jsonify, session
 
-import user_manager as um
-import email_sender as mailer
+from core import user_manager as um
+from core import email_sender as mailer
 from app_security import rate_limit, client_ip, login_locked, login_fail, root_login_fail, login_ok
 
 logger = logging.getLogger(__name__)

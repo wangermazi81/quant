@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
 from analytics import market_signal_quality as msq
 from analytics import relay_factor_mining as relay

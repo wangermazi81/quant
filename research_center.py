@@ -573,7 +573,7 @@ def generate_chain(name: str) -> dict:
     stock_lines = "、".join(f"{s['name']}({s['code']})" for s in stocks)
 
     try:
-        import ai_analyst as aa
+        from analytics import ai_analyst as aa
         cfg = aa.resolve_config()
         if not cfg.get("api_key"):
             return {"ok": False, "error": "未配置 AI API Key（前端「AI 设置」页配置）"}
@@ -1003,7 +1003,7 @@ def resolve_code(q: str) -> str:
     if re.fullmatch(r"\d{6}", q):
         return q
     try:
-        import data_manager as dm
+        from analytics import data_manager as dm
         dm._ensure_name_cache()
         for code, name in (dm._load_name_cache() or {}).items():
             if q and q in str(name):
@@ -1029,7 +1029,7 @@ def enqueue_chain_autogen(name: str) -> bool:
     if not name or load_chain(name):
         return False
     try:
-        import ai_analyst as aa
+        from analytics import ai_analyst as aa
         if not aa.resolve_config().get("api_key"):
             return False              # 未配置 AI，静默跳过
     except Exception:

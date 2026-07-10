@@ -95,7 +95,7 @@ def _load_latest_archive(re_) -> dict | None:
 
 def _verified_snapshot_archive(date_str: str) -> dict | None:
     try:
-        import market_stats
+        from market import market_stats
 
         snapshot = market_stats.get_verified_market_snapshot(date_str)
     except Exception:
@@ -159,7 +159,7 @@ def _archive_market_metrics_need_refresh(archive: dict | None) -> bool:
     market = data.get("market") if isinstance(data.get("market"), dict) else {}
     breadth = market.get("breadth") if isinstance(market.get("breadth"), dict) else {}
     try:
-        import market_stats
+        from market import market_stats
 
         breadth = market_stats.normalize_breadth_quality(breadth)
     except Exception:
@@ -178,7 +178,7 @@ def _refresh_archive_market_metrics(archive: dict, date_str: str, re_) -> dict:
     market = data.setdefault("market", {})
     changed = False
     try:
-        import market_stats
+        from market import market_stats
 
         breadth = market_stats.get_market_breadth(date_text=date_str)
         turnover = market_stats.get_market_turnover(date_text=date_str)
@@ -214,7 +214,7 @@ def _refresh_archive_market_metrics(archive: dict, date_str: str, re_) -> dict:
 
 @bp.route("/api/review/daily")
 def api_review_daily():
-    import review_engine as re_
+    from analytics import review_engine as re_
     now = datetime.now()
     raw_date = (request.args.get("date") or "").strip()
     explicit_date = bool(raw_date)
@@ -261,7 +261,7 @@ def api_review_daily():
 @require_auth
 def api_review_generate():
     """异步启动生成（采集+AI约1-2分钟，HTTP立即返回），前端轮询 /api/review/status。"""
-    import review_engine as re_
+    from analytics import review_engine as re_
     d        = request.json or {}
     date_str = (d.get("date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
     with_ai  = bool(d.get("with_ai", True))
@@ -285,13 +285,13 @@ def api_review_generate():
 
 @bp.route("/api/review/status")
 def api_review_status():
-    import review_engine as re_
+    from analytics import review_engine as re_
     return jsonify({"ok": True, **re_.get_gen_status()})
 
 
 @bp.route("/api/review/dates")
 def api_review_dates():
-    import review_engine as re_
+    from analytics import review_engine as re_
     return jsonify({"ok": True, "dates": re_.list_dates()})
 
 

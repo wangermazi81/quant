@@ -2,11 +2,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
 import pandas as pd
 
-import market_data as md
+from market import market_data as md
 
 
 def test_realtime_quotes_use_tushare_when_selected(monkeypatch):

@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
+from tests._module_stubs import stub_project_module
 import sys
 import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
 from flask import Flask
 
 import app_security
-import ai_analyst
-import ai_trader
-import db_migration
-import user_manager as um
+from analytics import ai_analyst
+from analytics import ai_trader
+from core import db_migration
+from core import user_manager as um
 from web.ai_trader import bp as ai_trader_bp
 from web.ai import bp as platform_ai_bp
 
@@ -118,7 +118,7 @@ def test_ai_trader_engine_refuses_to_use_global_key_for_user_without_config(tmp_
 
 
 def test_ai_trader_status_explains_waiting_outside_market_time(monkeypatch):
-    monkeypatch.setitem(sys.modules, "market_data", types.SimpleNamespace(is_trading_time=lambda: False))
+    stub_project_module(monkeypatch, "market_data", types.SimpleNamespace(is_trading_time=lambda: False))
     engine = ai_trader._Engine(101)
     engine.running = True
 

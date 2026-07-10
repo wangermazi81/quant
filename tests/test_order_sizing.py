@@ -13,9 +13,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
-from order_sizing import lot_shares, pick_ratio, clamp_to_max_order, LOT
+from core.order_sizing import lot_shares, pick_ratio, clamp_to_max_order, LOT
 
 
 # ── lot_shares ────────────────────────────────────────────

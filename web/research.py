@@ -86,7 +86,7 @@ def api_reports():
         return jsonify({"ok": False, "error": f"未找到股票「{q}」，请输入6位代码或准确名称"})
     result = rc.get_reports(code)
     try:
-        import data_manager as dm
+        from analytics import data_manager as dm
         result["name"] = dm.get_stock_name(code) or code
     except Exception:
         result["name"] = code

@@ -3,9 +3,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
-import ai_walkforward as wf
+from analytics import ai_walkforward as wf
 
 
 def test_walk_forward_split_never_leaks_future_samples():

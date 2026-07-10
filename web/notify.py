@@ -4,7 +4,7 @@ from datetime import datetime
 
 from flask import Blueprint, request, jsonify, session
 
-import notification_manager as nm
+from core import notification_manager as nm
 from app_state import require_auth, _add_log
 
 bp = Blueprint("notify", __name__)

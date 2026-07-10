@@ -1,4 +1,5 @@
-﻿import sys
+from tests._module_stubs import stub_project_module
+import sys
 import threading
 import time
 import types
@@ -7,10 +8,9 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
-import market_stats
-import tushare_replay
+from market import market_stats
+from market import tushare_replay
 
 
 def test_parse_legu_activity_uses_complete_breadth_counts():
@@ -123,7 +123,7 @@ def test_breadth_falls_back_to_spot_when_legu_and_strategy_snapshot_unavailable(
     )
     monkeypatch.setattr(market_stats, "fetch_eastmoney_three_market_snapshot", lambda date_text=None: (_ for _ in ()).throw(RuntimeError("three-market unavailable")))
     monkeypatch.setitem(sys.modules, "akshare", fake_ak)
-    monkeypatch.setitem(sys.modules, "strategy_manager", types.SimpleNamespace())
+    stub_project_module(monkeypatch, "strategy_manager", types.SimpleNamespace())
 
     breadth = market_stats.get_market_breadth(expected_count=5)
 
@@ -444,7 +444,7 @@ def test_explicit_today_breadth_date_mismatch_does_not_use_previous_day_live_fal
         stock_zh_a_spot_em=lambda: (_ for _ in ()).throw(AssertionError("spot fallback must not be used after date mismatch")),
     )
     monkeypatch.setitem(sys.modules, "akshare", fake_ak)
-    monkeypatch.setitem(sys.modules, "strategy_manager", types.SimpleNamespace(_get_full_market_snapshot=lambda: (_ for _ in ()).throw(AssertionError("quote fallback must not be used after date mismatch"))))
+    stub_project_module(monkeypatch, "strategy_manager", types.SimpleNamespace(_get_full_market_snapshot=lambda: (_ for _ in ()).throw(AssertionError("quote fallback must not be used after date mismatch"))))
 
     breadth = market_stats.get_market_breadth(date_text="2026-07-07")
 
@@ -507,7 +507,7 @@ def test_explicit_today_breadth_empty_official_source_does_not_use_previous_day_
         stock_zh_a_spot_em=lambda: (_ for _ in ()).throw(AssertionError("spot fallback must not be used after explicit today source is empty")),
     )
     monkeypatch.setitem(sys.modules, "akshare", fake_ak)
-    monkeypatch.setitem(sys.modules, "strategy_manager", types.SimpleNamespace(_get_full_market_snapshot=lambda: (_ for _ in ()).throw(AssertionError("quote fallback must not be used after explicit today source is empty"))))
+    stub_project_module(monkeypatch, "strategy_manager", types.SimpleNamespace(_get_full_market_snapshot=lambda: (_ for _ in ()).throw(AssertionError("quote fallback must not be used after explicit today source is empty"))))
 
     breadth = market_stats.get_market_breadth(date_text="2026-07-07")
 
@@ -572,7 +572,7 @@ def test_historical_breadth_does_not_use_live_only_fallbacks_when_snapshot_missi
         stock_zh_a_spot_em=lambda: (_ for _ in ()).throw(AssertionError("live spot must not be used for historical breadth")),
     )
     monkeypatch.setitem(sys.modules, "akshare", fake_ak)
-    monkeypatch.setitem(sys.modules, "strategy_manager", types.SimpleNamespace(_get_full_market_snapshot=lambda: (_ for _ in ()).throw(AssertionError("live quotes must not be used for historical breadth"))))
+    stub_project_module(monkeypatch, "strategy_manager", types.SimpleNamespace(_get_full_market_snapshot=lambda: (_ for _ in ()).throw(AssertionError("live quotes must not be used for historical breadth"))))
 
     breadth = market_stats.get_market_breadth(date_text="2026-07-01")
 
@@ -667,7 +667,7 @@ def test_eastmoney_index_rows_match_two_market_turnover_quote():
 
 
 def _sample_tushare_snapshot():
-    from tushare_replay import snapshot_from_rt_k_rows
+    from market.tushare_replay import snapshot_from_rt_k_rows
 
     return snapshot_from_rt_k_rows(
         [
@@ -697,7 +697,7 @@ def test_tushare_replay_rt_k_snapshot_counts_breadth_and_two_market_turnover():
 
 
 def test_tushare_replay_daily_snapshot_uses_daily_source_and_daily_info_turnover():
-    from tushare_replay import _daily_info_two_market_amount, snapshot_from_daily_rows
+    from market.tushare_replay import _daily_info_two_market_amount, snapshot_from_daily_rows
 
     rows = [
         {"ts_code": "600001.SH", "trade_date": "20260708", "pct_chg": 10.0, "amount": 1_200_000},

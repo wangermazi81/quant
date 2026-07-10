@@ -7,7 +7,6 @@
    必须与 QUANT_LIVE_TRADING=1 同时设置才生效。
 3. QUANT_LIVE_TRADING=1 → 实盘（DRY_RUN=False）。
 """
-import _pathsetup  # noqa: F401
 
 from config import _resolve_trading_flags
 

@@ -4,19 +4,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import _pathsetup  # noqa: F401
 
 os.environ["QUANT_TEST_IMPORT"] = "1"
 os.environ["THS_NO_SCHEDULER"] = "1"
 
 import pytest
 
-import db_migration
+from core import db_migration
 import main
-import paper_broker as pb
-import strategy_manager as sm
-import ths_quote
-import user_manager as um
+from broker import paper_broker as pb
+from strategy_engine import strategy_manager as sm
+from market import ths_quote
+from core import user_manager as um
 from app_state import get_user_state, user_states
 
 

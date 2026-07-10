@@ -12,10 +12,10 @@ import uuid
 from flask import Blueprint, Response, jsonify, request, session
 
 from app_state import require_auth
-import ai_trader as engine
+from analytics import ai_trader as engine
 
 try:
-    import ai_research_store as research_store
+    from analytics import ai_research_store as research_store
 except Exception:
     research_store = None
 

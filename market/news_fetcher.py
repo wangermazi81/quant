@@ -145,7 +145,7 @@ def get_stock_news(code: str, limit: int = 5, name: str = "") -> list:
     """
     # 优先使用 search_manager（Tavily→SerpAPI→直接抓取）
     try:
-        from search_manager import search_stock_news as _sm_news
+        from analytics.search_manager import search_stock_news as _sm_news
         results = _sm_news(code, name=name, limit=limit)
         if results:
             # 统一格式

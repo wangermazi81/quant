@@ -84,7 +84,7 @@ def _save_state(s: dict) -> None:
 
 def _notify(title: str, content: str) -> dict:
     try:
-        import notification_manager as nm
+        from core import notification_manager as nm
         return nm.send_notification(title, content)
     except Exception as e:
         return {"ok": False, "error": str(e)}
