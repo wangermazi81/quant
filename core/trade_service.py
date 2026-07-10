@@ -401,3 +401,20 @@ def _check_paper_risk(uid: int):
             s["positions"].pop(t["code"], None)
     except Exception as e:
         logger.warning(f"[风控检查 uid={uid}] {e}")
+
+
+def _paper_live_prices(broker) -> dict:
+    """为模拟盘持仓拉取 TDX 实时价 {code: price}，用于实时市值/盈亏。失败返回 {}。"""
+    try:
+        positions = broker.get_positions()
+        if not positions:
+            return {}
+        from market import ths_quote as tq
+        client = tq.get_client()
+        if client and client._ok:
+            codes = [p["code"] for p in positions]
+            qs    = client.get_quotes(codes)
+            return {q["code"]: q.get("price", 0) for q in qs if q.get("price", 0) > 0}
+    except Exception:
+        pass
+    return {}

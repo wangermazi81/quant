@@ -43,7 +43,11 @@ def test_factor_prefetch_refreshes_stale_local_cache(monkeypatch):
     cache = fm._prefetch_klines_parallel(["000001"], fallback_get_kline, days=20, n_workers=1)
 
     assert calls == [("000001", 20)]
-    assert pd.to_datetime(cache["000001"]["date"]).max().date() == date.today()
+    # 断言"已刷新到 fresh 数据"（对比 fresh 自身最新日期而非 date.today()：
+    # bdate_range 周末/节假日生成不出当天K线，原断言在非交易日必挂）
+    cached_max = pd.to_datetime(cache["000001"]["date"]).max()
+    assert cached_max == pd.to_datetime(fresh["date"]).max()
+    assert cached_max > pd.to_datetime(stale["date"]).max()
 
 
 def test_merge_kline_cache_preserves_history_when_writing_short_refresh(monkeypatch, tmp_path):

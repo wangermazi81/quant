@@ -128,13 +128,16 @@ def user_save_broker_config():
 
 
 # ── 公告（用户侧）──────────────────────────────────────────────
+# B2 修复（工单4）：此路由原与 main.py 双重定义且 auth 要求分叉——
+# 本副本（先注册、实际生效）无登录校验，任何人可拉公告。现补 require_auth
+# 并删除 main.py 死副本；响应保持线上形态（items 带 read 标记）。
 @bp.route("/api/announcements")
+@require_auth
 def get_announcements():
-    uid  = session.get("user_id")
+    uid  = session["user_id"]
     items = um.get_active_announcements()
-    if uid:
-        for item in items:
-            item["read"] = um.is_announcement_read(uid, item["id"])
+    for item in items:
+        item["read"] = um.is_announcement_read(uid, item["id"])
     return jsonify({"ok": True, "announcements": items})
 
 

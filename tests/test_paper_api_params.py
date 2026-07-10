@@ -10,6 +10,9 @@ os.environ["QUANT_TEST_IMPORT"] = "1"
 os.environ["THS_NO_SCHEDULER"] = "1"
 
 import main
+from broker import paper_broker as pb
+import web.paper as paper_web
+import web.trade as trade_web
 
 
 def _login(client, uid=77):
@@ -47,7 +50,7 @@ class FakeBroker:
 
 def test_paper_list_endpoints_sanitize_numeric_query_params(monkeypatch):
     broker = FakeBroker()
-    monkeypatch.setattr(main.pb, "get_broker", lambda uid: broker)
+    monkeypatch.setattr(pb, "get_broker", lambda uid: broker)
 
     client = main.app.test_client()
     _login(client)
@@ -68,7 +71,7 @@ def test_paper_list_endpoints_sanitize_numeric_query_params(monkeypatch):
 
 def test_paper_reset_rejects_invalid_initial_capital(monkeypatch):
     broker = FakeBroker()
-    monkeypatch.setattr(main.pb, "get_broker", lambda uid: broker)
+    monkeypatch.setattr(pb, "get_broker", lambda uid: broker)
 
     client = main.app.test_client()
     _login(client)
@@ -84,7 +87,7 @@ def test_paper_reset_rejects_invalid_initial_capital(monkeypatch):
 
 def test_paper_reset_defaults_to_one_million(monkeypatch):
     broker = FakeBroker()
-    monkeypatch.setattr(main.pb, "get_broker", lambda uid: broker)
+    monkeypatch.setattr(pb, "get_broker", lambda uid: broker)
 
     client = main.app.test_client()
     _login(client)
@@ -104,8 +107,8 @@ def test_paper_reset_ui_prompt_defaults_to_one_million():
 
 def test_paper_buy_rejects_invalid_price_before_deducting(monkeypatch):
     calls = []
-    monkeypatch.setattr(main, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
-    monkeypatch.setattr(main, "execute_buy", lambda *args, **kwargs: calls.append(("execute", args)) or {"ok": True})
+    monkeypatch.setattr(paper_web, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
+    monkeypatch.setattr(paper_web, "execute_buy", lambda *args, **kwargs: calls.append(("execute", args)) or {"ok": True})
 
     client = main.app.test_client()
     _login(client)
@@ -123,14 +126,14 @@ def test_paper_buy_rejects_invalid_price_before_deducting(monkeypatch):
 
 def test_paper_buy_rejects_missing_live_cash_before_deducting(monkeypatch):
     calls = []
-    monkeypatch.setattr(main, "DRY_RUN", False)
+    monkeypatch.setattr(paper_web, "DRY_RUN", False)
     monkeypatch.setattr(
-        main.um,
+        paper_web.um,
         "get_user_broker_config",
         lambda uid: {"broker_type": "live", "config": {"live_cash": 0}},
     )
-    monkeypatch.setattr(main, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
-    monkeypatch.setattr(main, "execute_buy", lambda *args, **kwargs: calls.append(("execute", args)) or {"ok": True})
+    monkeypatch.setattr(paper_web, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
+    monkeypatch.setattr(paper_web, "execute_buy", lambda *args, **kwargs: calls.append(("execute", args)) or {"ok": True})
 
     client = main.app.test_client()
     _login(client)
@@ -151,7 +154,7 @@ def test_paper_sell_rejects_invalid_fallback_price(monkeypatch):
     calls = []
     fake_quote = types.SimpleNamespace(get_client=lambda: None)
     stub_project_module(monkeypatch, "ths_quote", fake_quote)
-    monkeypatch.setattr(main, "execute_sell", lambda *args, **kwargs: calls.append(("execute", args)) or {"ok": True})
+    monkeypatch.setattr(paper_web, "execute_sell", lambda *args, **kwargs: calls.append(("execute", args)) or {"ok": True})
 
     client = main.app.test_client()
     _login(client)
@@ -178,7 +181,7 @@ def test_queue_add_rejects_invalid_price(monkeypatch):
 
 def test_execute_manual_buy_rejects_invalid_price_before_execution(monkeypatch):
     calls = []
-    monkeypatch.setattr(main, "execute_buy", lambda *args, **kwargs: calls.append(("execute", args)) or {"ok": True})
+    monkeypatch.setattr(trade_web, "execute_buy", lambda *args, **kwargs: calls.append(("execute", args)) or {"ok": True})
 
     client = main.app.test_client()
     _login(client, uid=79)
@@ -197,10 +200,10 @@ def test_positions_sell_falls_back_to_broker_price_when_request_price_invalid(mo
     calls = []
     fake_quote = types.SimpleNamespace(get_client=lambda: None)
     stub_project_module(monkeypatch, "ths_quote", fake_quote)
-    monkeypatch.setattr(main, "DRY_RUN", True)
-    monkeypatch.setattr(main.pb, "get_broker", lambda uid: broker)
+    monkeypatch.setattr(trade_web, "DRY_RUN", True)
+    monkeypatch.setattr(pb, "get_broker", lambda uid: broker)
     monkeypatch.setattr(
-        main,
+        trade_web,
         "execute_sell",
         lambda uid, code, price, sell_reason="": calls.append((uid, code, price, sell_reason)) or {"ok": True},
     )
