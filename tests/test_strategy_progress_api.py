@@ -8,6 +8,9 @@ os.environ["QUANT_TEST_IMPORT"] = "1"
 os.environ["THS_NO_SCHEDULER"] = "1"
 
 import main
+from strategy_engine import strategy_manager as sm
+import web.strategies as strategies_web
+import web.trade as trade_web
 
 
 def _login(client, uid=7):
@@ -19,11 +22,11 @@ def _login(client, uid=7):
 
 def test_async_strategy_progress_uses_strategy_manager_progress(monkeypatch):
     task_id = "task123"
-    with main._strat_tasks_lock:
-        main._strat_tasks.clear()
-        main._strat_tasks[task_id] = {"status": "running", "uid": 7, "fn": "demo"}
+    with strategies_web._strat_tasks_lock:
+        strategies_web._strat_tasks.clear()
+        strategies_web._strat_tasks[task_id] = {"status": "running", "uid": 7, "fn": "demo"}
 
-    monkeypatch.setattr(main.sm, "get_scan_progress", lambda: {
+    monkeypatch.setattr(sm, "get_scan_progress", lambda: {
         "running": True,
         "stage": "strategy",
         "current": 17,
@@ -51,8 +54,8 @@ def test_async_strategy_progress_uses_strategy_manager_progress(monkeypatch):
 
 def test_strategy_run_rejects_missing_filename_before_deducting(monkeypatch):
     calls = []
-    monkeypatch.setattr(main, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
-    monkeypatch.setattr(main.sm, "run", lambda *args, **kwargs: calls.append(("run", args, kwargs)) or {"ok": True})
+    monkeypatch.setattr(strategies_web, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
+    monkeypatch.setattr(sm, "run", lambda *args, **kwargs: calls.append(("run", args, kwargs)) or {"ok": True})
 
     client = main.app.test_client()
     _login(client, uid=8)
@@ -68,10 +71,10 @@ def test_strategy_run_rejects_missing_filename_before_deducting(monkeypatch):
 
 def test_strategy_run_async_rejects_missing_filename_before_deducting(monkeypatch):
     calls = []
-    monkeypatch.setattr(main, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
-    monkeypatch.setattr(main.sm, "run", lambda *args, **kwargs: calls.append(("run", args, kwargs)) or {"ok": True})
-    with main._strat_tasks_lock:
-        main._strat_tasks.clear()
+    monkeypatch.setattr(strategies_web, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
+    monkeypatch.setattr(sm, "run", lambda *args, **kwargs: calls.append(("run", args, kwargs)) or {"ok": True})
+    with strategies_web._strat_tasks_lock:
+        strategies_web._strat_tasks.clear()
 
     client = main.app.test_client()
     _login(client, uid=9)
@@ -83,8 +86,8 @@ def test_strategy_run_async_rejects_missing_filename_before_deducting(monkeypatc
     assert data["ok"] is False
     assert "filename" in data["error"]
     assert calls == []
-    with main._strat_tasks_lock:
-        assert main._strat_tasks == {}
+    with strategies_web._strat_tasks_lock:
+        assert strategies_web._strat_tasks == {}
 
 
 def test_strategy_activate_starts_monitoring_for_selected_strategy(monkeypatch):
@@ -92,10 +95,10 @@ def test_strategy_activate_starts_monitoring_for_selected_strategy(monkeypatch):
     persisted = []
     logs = []
 
-    monkeypatch.setattr(main, "get_user_state", lambda uid: state)
-    monkeypatch.setattr(main, "_persist_state", lambda uid, **fields: persisted.append((uid, fields)))
-    monkeypatch.setattr(main, "_add_log", lambda uid, msg, level="INFO": logs.append((uid, msg, level)))
-    monkeypatch.setattr(main.sm, "list_strategies", lambda: [
+    monkeypatch.setattr(strategies_web, "get_user_state", lambda uid: state)
+    monkeypatch.setattr(strategies_web, "_persist_state", lambda uid, **fields: persisted.append((uid, fields)))
+    monkeypatch.setattr(strategies_web, "_add_log", lambda uid, msg, level="INFO": logs.append((uid, msg, level)))
+    monkeypatch.setattr(sm, "list_strategies", lambda: [
         {"file": "demo_strategy.py", "name": '演示策略'}
     ])
 
@@ -116,7 +119,7 @@ def test_strategy_activate_starts_monitoring_for_selected_strategy(monkeypatch):
 
 def test_status_reports_vibe_activation_as_monitoring(monkeypatch):
     state = {"running": False, "active_strategy": None, "scan_progress": {"running": False}}
-    monkeypatch.setattr(main, "get_user_state", lambda uid: state)
+    monkeypatch.setattr(trade_web, "get_user_state", lambda uid: state)
 
     class FakeActivator:
         @staticmethod

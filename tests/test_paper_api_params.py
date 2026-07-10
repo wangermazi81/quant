@@ -11,6 +11,10 @@ os.environ["THS_NO_SCHEDULER"] = "1"
 
 import main
 from broker import paper_broker as pb
+from strategy_engine import strategy_manager as sm
+from analytics import factor_manager as fm
+from app_state import get_user_state
+import web.misc as misc_web
 import web.paper as paper_web
 import web.trade as trade_web
 
@@ -176,7 +180,7 @@ def test_queue_add_rejects_invalid_price(monkeypatch):
 
     assert response.status_code == 200
     assert data["ok"] is False
-    assert main.get_user_state(78)["queue"] == []
+    assert get_user_state(78)["queue"] == []
 
 
 def test_execute_manual_buy_rejects_invalid_price_before_execution(monkeypatch):
@@ -221,8 +225,8 @@ def test_positions_sell_falls_back_to_broker_price_when_request_price_invalid(mo
 
 def test_backtest_rejects_invalid_numeric_params_before_deducting(monkeypatch):
     calls = []
-    monkeypatch.setattr(main.sm, "get_code", lambda filename: "def handle_bar(ctx):\n    pass\n")
-    monkeypatch.setattr(main, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
+    monkeypatch.setattr(sm, "get_code", lambda filename: "def handle_bar(ctx):\n    pass\n")
+    monkeypatch.setattr(misc_web, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
 
     fake_backtest = types.SimpleNamespace(
         run_backtest=lambda **kwargs: calls.append(("run_backtest", kwargs)) or {"ok": True},
@@ -277,7 +281,7 @@ def test_portfolio_optimize_rejects_invalid_capital_before_optimizer(monkeypatch
 def test_factor_evaluate_rejects_invalid_period_before_evaluator(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        main.fm,
+        fm,
         "evaluate",
         lambda *args, **kwargs: calls.append((args, kwargs)) or {"ok": True},
         raising=False,

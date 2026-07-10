@@ -643,10 +643,13 @@ def test_only_root_admin_can_grant_admin_and_permissions(isolated_app):
 def test_builtin_strategy_and_factor_source_visibility_respects_root_admin(isolated_app, monkeypatch):
     app, um, main = isolated_app
 
-    monkeypatch.setattr(main.sm, "get_meta", lambda filename: {"name": "Secret Strategy", "builtin": True})
-    monkeypatch.setattr(main.sm, "get_code", lambda filename: "SECRET_STRATEGY_CODE")
-    monkeypatch.setattr(main.fm, "get_meta", lambda filename: {"name": "Secret Factor", "builtin": True}, raising=False)
-    monkeypatch.setattr(main.fm, "get_code", lambda filename: "SECRET_FACTOR_CODE")
+    # 工单4 后策略/因子路由在 web/strategies.py、web/factors.py，直接打模块桩
+    from strategy_engine import strategy_manager as sm
+    from analytics import factor_manager as fm
+    monkeypatch.setattr(sm, "get_meta", lambda filename: {"name": "Secret Strategy", "builtin": True})
+    monkeypatch.setattr(sm, "get_code", lambda filename: "SECRET_STRATEGY_CODE")
+    monkeypatch.setattr(fm, "get_meta", lambda filename: {"name": "Secret Factor", "builtin": True}, raising=False)
+    monkeypatch.setattr(fm, "get_code", lambda filename: "SECRET_FACTOR_CODE")
 
     client = app.test_client()
     _login_session(client, 1, "admin")
