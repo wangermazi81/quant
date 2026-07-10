@@ -13,6 +13,9 @@ import pytest
 from core import db_migration
 import main
 from broker import paper_broker as pb
+from core import notification_manager as nm
+from core import trade_service
+from strategy_engine import scan_service
 from strategy_engine import strategy_manager as sm
 from market import ths_quote
 from core import user_manager as um
@@ -44,9 +47,10 @@ def uid(tmp_path, monkeypatch):
 
 @pytest.fixture
 def scan_env(uid, monkeypatch):
-    monkeypatch.setattr(main, "is_trading_time", lambda: True)
+    # 工单4 后 do_scan 在 scan_service，is_trading_time/nm 绑定在该模块
+    monkeypatch.setattr(scan_service, "is_trading_time", lambda: True)
     monkeypatch.setattr(ths_quote, "get_client", lambda *a, **k: None)
-    monkeypatch.setattr(main.nm, "send_notification", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(nm, "send_notification", lambda *a, **k: {"ok": True})
     monkeypatch.setattr(sm, "get_position_config", lambda *a, **k: {
         "max_daily": 5,
         "max_hold": 5,
@@ -103,7 +107,9 @@ def test_signal_position_ratio_drives_auto_paper_buy(scan_env):
 
 def test_auto_live_buy_creates_bridge_signal(scan_env, monkeypatch):
     user_id, _ = scan_env
-    monkeypatch.setattr(main, "DRY_RUN", False)
+    # 工单4 后 DRY_RUN 分别绑定在 trade_service(买卖) 与 scan_service(扫描)
+    monkeypatch.setattr(trade_service, "DRY_RUN", False)
+    monkeypatch.setattr(scan_service, "DRY_RUN", False)
     um.save_user_broker_config(user_id, "live", {"live_cash": 100000})
     _mock_scan(monkeypatch, position_ratio=0.15)
     state = _state(user_id, auto_execute=True)

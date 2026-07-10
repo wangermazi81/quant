@@ -115,10 +115,12 @@ class TestDoScanQueue:
     @pytest.fixture
     def scan(self, uid, monkeypatch):
         from strategy_engine import strategy_manager as sm
+        from strategy_engine import scan_service
         from core import notification_manager as nm
         from market import ths_quote
         # 交易时段=True；无行情客户端(避网络)；通知 no-op(避线程)；策略仓位配置取默认(走面板比例路径)
-        monkeypatch.setattr(main, "is_trading_time", lambda: True)
+        # 工单4 后 do_scan 在 scan_service，is_trading_time 绑定在该模块
+        monkeypatch.setattr(scan_service, "is_trading_time", lambda: True)
         monkeypatch.setattr(ths_quote, "get_client", lambda *a, **k: None)
         monkeypatch.setattr(nm, "send_notification", lambda *a, **k: {"ok": True})
         monkeypatch.setattr(sm, "get_position_config", lambda *a, **k: {})
