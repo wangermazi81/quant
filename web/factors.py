@@ -11,7 +11,7 @@ import uuid as _uuid
 from flask import Blueprint, jsonify, request, session
 
 from app_state import (
-    require_auth, _add_log,
+    require_root_admin, _add_log,
 )
 from core import user_manager as um
 from analytics import factor_manager as fm
@@ -27,17 +27,19 @@ bp = Blueprint("factors", __name__)
 
 
 @bp.route("/api/factors")
+@require_root_admin
 def api_factor_list():
     return jsonify(fm.list_factors())
 
 
 @bp.route("/api/factors/template")
+@require_root_admin
 def api_factor_template():
     return jsonify({"code": fm.new_factor_template()})
 
 
 @bp.route("/api/factors/run", methods=["POST"])
-@require_auth
+@require_root_admin
 def api_factor_run():
     uid = session["user_id"]
     d   = request.json
@@ -58,7 +60,7 @@ def api_factor_run():
 
 
 @bp.route("/api/factors/save", methods=["POST"])
-@require_auth
+@require_root_admin
 def api_factor_save():
     uid  = session["user_id"]
     d    = request.json
@@ -73,7 +75,7 @@ def api_factor_save():
 
 
 @bp.route("/api/factors/delete", methods=["POST"])
-@require_auth
+@require_root_admin
 def api_factor_delete():
     uid = session["user_id"]
     fn  = (request.json or {}).get("filename", "").strip()
@@ -84,7 +86,7 @@ def api_factor_delete():
 
 
 @bp.route("/api/factors/ai_generate", methods=["POST"])
-@require_auth
+@require_root_admin
 def api_factor_ai_generate():
     uid  = session["user_id"]
     desc = (request.json or {}).get("description", "").strip()
@@ -100,7 +102,7 @@ def api_factor_ai_generate():
 
 
 @bp.route("/api/factors/<filename>")
-@require_auth
+@require_root_admin
 def api_factor_get(filename):
     meta = fm.get_meta(filename) if hasattr(fm, "get_meta") else {"name": filename, "builtin": True}
     if meta.get("builtin", True) and not _can_view_protected_source():
@@ -117,7 +119,7 @@ def api_factor_get(filename):
 
 
 @bp.route("/api/factors/evaluate", methods=["POST"])
-@require_auth
+@require_root_admin
 def api_factor_evaluate():
     """
     因子评价：计算 IC / ICIR / RankIC / t-stat。
@@ -166,7 +168,7 @@ def api_factor_evaluate():
 _fz_tasks: dict = {}            # task_id -> {status, progress, total, ...}
 _fz_tasks_lock = threading.Lock()
 @bp.route("/api/factors_zoo/list")
-@require_auth
+@require_root_admin
 def api_factors_zoo_list():
     """列出 Vibe Alpha 因子库的所有可用因子"""
     try:
@@ -204,7 +206,7 @@ def api_factors_zoo_list():
 
 
 @bp.route("/api/factors_zoo/compute", methods=["POST"])
-@require_auth
+@require_root_admin
 def api_factors_zoo_compute():
     """对一组股票算指定 alpha 的分数
 
@@ -462,7 +464,7 @@ def _fz_run_async_compute(task_id: str, uid: int, factor_id: str, codes: list,
 
 
 @bp.route("/api/factors_zoo/compute_async", methods=["POST"])
-@require_auth
+@require_root_admin
 def api_factors_zoo_compute_async():
     """启动异步因子计算（适合全市场扫描）
 
@@ -540,7 +542,7 @@ def api_factors_zoo_compute_async():
 
 
 @bp.route("/api/factors_zoo/progress/<task_id>")
-@require_auth
+@require_root_admin
 def api_factors_zoo_progress(task_id):
     """查询异步任务进度（轻量级，前端可 1s 轮询）"""
     with _fz_tasks_lock:
@@ -573,7 +575,7 @@ def api_factors_zoo_progress(task_id):
 
 
 @bp.route("/api/factors_zoo/backtest", methods=["POST"])
-@require_auth
+@require_root_admin
 def api_factors_zoo_backtest():
     """因子回测（同步，前端等结果；大池子用 codes 限制规模）
 
@@ -651,7 +653,7 @@ def api_factors_zoo_backtest():
 
 
 @bp.route("/api/factors_zoo/result/<task_id>")
-@require_auth
+@require_root_admin
 def api_factors_zoo_result(task_id):
     """取异步任务结果（仅 status=done 时返回完整 ranked）"""
     with _fz_tasks_lock:
