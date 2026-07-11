@@ -1,7 +1,7 @@
 """静态页面 + 截图文件服务蓝图。"""
 from flask import Blueprint, jsonify, send_from_directory
 
-from app_state import BASE_DIR, require_auth
+from app_state import BASE_DIR, require_root_admin
 from core import changelog_manager as clm
 from web._params import _bounded_int_arg
 
@@ -31,7 +31,7 @@ def admin_page():
 
 
 @bp.route("/logs/screenshots/<path:filename>")
-@require_auth
+@require_root_admin
 def serve_screenshot(filename):
     """暴露桥接器截图给前端浏览器（仅登录用户可看）
 

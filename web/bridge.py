@@ -11,7 +11,7 @@ from datetime import datetime
 
 from flask import Blueprint, jsonify, request, session
 
-from app_state import require_auth, get_user_state, _add_log, get_operator
+from app_state import require_auth, require_root_admin, get_user_state, _add_log, get_operator
 from core import user_manager as um
 from core.bridge_state import _live_enabled, set_live_enabled as _set_live_enabled
 from core.daban_state import _DABAN_PEAKS, _LIVE_SELL_PENDING
@@ -50,7 +50,7 @@ def set_live_enabled():
 
 
 @bp.route("/api/bridge/today_orders", methods=["GET"])
-@require_auth
+@require_root_admin
 def bridge_today_orders():
     """读 xiadan 当日委托表，返回每笔精确状态（已成/已报/部成/已撤/废单）
 
@@ -143,6 +143,10 @@ def bridge_signal_status(signal_id):
 @require_auth
 def bridge_report_signal(signal_id):
     uid = session["user_id"]
+    sig = um.get_trade_signal(signal_id)
+    if not sig or sig.get("user_id") != uid:
+        return jsonify({"ok": False, "error": "not found"}), 404
+
     data = request.json or {}
     status = data.get("status")
     msg = data.get("msg", "")
