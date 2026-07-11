@@ -103,6 +103,7 @@ def get_status() -> dict:
     status.setdefault("ok", True)
     status.setdefault("jobs", {})
     status.setdefault("history", [])
+    status = _recover_stale_runtime_state(status)
     status["enabled"] = bool(get_config().get("enabled", True))
     status["next_runs"] = next_runs()
     return status
@@ -119,14 +120,80 @@ def _append_history(status: dict, event: dict) -> None:
     del history[50:]
 
 
+def _lock_pid() -> int | None:
+    try:
+        text = LOCK_PATH.read_text(encoding="utf-8").strip()
+        first = text.split()[0] if text else ""
+        return int(first)
+    except Exception:
+        return None
+
+
+def _pid_exists(pid: int | None) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _lock_is_stale(max_age_seconds: int = 7200) -> bool:
+    if not LOCK_PATH.exists():
+        return False
+    try:
+        if time.time() - LOCK_PATH.stat().st_mtime > max_age_seconds:
+            return True
+    except Exception:
+        return False
+    pid = _lock_pid()
+    return pid is not None and not _pid_exists(pid)
+
+
+def _unlink_stale_lock(max_age_seconds: int = 7200) -> bool:
+    if not _lock_is_stale(max_age_seconds=max_age_seconds):
+        return False
+    try:
+        LOCK_PATH.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
+
+
+def _recover_stale_runtime_state(status: dict) -> dict:
+    stale_lock_removed = _unlink_stale_lock()
+    if not status.get("running"):
+        return status
+    if LOCK_PATH.exists() and not stale_lock_removed:
+        return status
+    job = str(status.get("current_job") or "unknown")
+    status["running"] = False
+    status.pop("current_job", None)
+    status.setdefault("jobs", {})
+    _append_history(
+        status,
+        {
+            "job": job,
+            "ok": False,
+            "error": "stale scheduler lock recovered",
+        },
+    )
+    _save_status(status)
+    return status
+
+
 @contextmanager
 def _file_lock(max_age_seconds: int = 7200):
     ROOT.mkdir(parents=True, exist_ok=True)
     fd = None
     try:
         try:
-            if LOCK_PATH.exists() and time.time() - LOCK_PATH.stat().st_mtime > max_age_seconds:
-                LOCK_PATH.unlink(missing_ok=True)
+            _unlink_stale_lock(max_age_seconds=max_age_seconds)
         except Exception:
             pass
         fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
