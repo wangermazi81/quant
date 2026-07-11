@@ -11,7 +11,7 @@
 import logging
 from datetime import datetime
 
-from app_state import get_user_state, _add_log
+from app_state import get_user_state, _add_log, _persist_state
 from config import DRY_RUN
 from core import user_manager as um
 from core import sell_rules
@@ -31,6 +31,7 @@ def _reset_daily_if_needed(uid: int):
     if s["today_date"] != today:
         s["today_date"]   = today
         s["today_trades"] = 0
+        _persist_state(uid, today_trades=0, today_date=today)   # 阶段二：跨天重置落库
         _add_log(uid, f"📅 新交易日 {today}，今日开仓次数已清零")
         # 隔日未成交的 pending/sent/submitted 信号批量置 expired，
         # 否则会累进资金检查（曾出现"已用仓位9848%"封死开仓）且永久阻塞同名票去重
@@ -60,9 +61,14 @@ def execute_buy(uid: int, code: str, name: str, price: float, shares: int,
         if result.get("ok"):
             s["executed"]    += 1
             s["today_trades"] = s.get("today_trades", 0) + 1
+            # 阶段二：日内计数落库（重启后日内开仓限额护栏依然准确）。
+            # today_date 一并写今天，兜住"未经 do_scan 直接手动买入"时 today_date 为空的情况。
+            _today = datetime.now().strftime("%Y-%m-%d")
+            s["today_date"] = _today
+            _persist_state(uid, today_trades=s["today_trades"], today_date=_today)
             s["positions"][code] = {
                 "name": name, "shares": shares, "cost": result["exec_price"],
-                "date": datetime.now().strftime("%Y-%m-%d"),
+                "date": _today,
                 "strategy": buy_strategy,
             }
             _add_log(uid,

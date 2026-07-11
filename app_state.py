@@ -120,6 +120,12 @@ def get_user_state(uid: int) -> dict:
                 s["single_position_max_ratio"] = float(
                     settings.get("single_position_max_ratio", SINGLE_POSITION_MAX_RATIO) or SINGLE_POSITION_MAX_RATIO)
                 s["active_strategy"]  = settings.get("active_strategy") or None
+                # 阶段二：日内计数恢复。仅当持久化的 today_date 是今天才恢复计数；
+                # 否则保持默认(0/"")，首次 do_scan 的 _reset_daily_if_needed 会按新的一天处理。
+                _today = datetime.now().strftime("%Y-%m-%d")
+                if (settings.get("today_date") or "") == _today:
+                    s["today_date"]   = _today
+                    s["today_trades"] = int(settings.get("today_trades", 0) or 0)
             except Exception as e:
                 logger.warning(f"[uid={uid}] 用户设置加载失败，使用默认值（资金/仓位比等按 config 兜底）: {e}")
             # 首次创建时从模拟盘 DB 恢复持仓（修复重启后持仓清空）

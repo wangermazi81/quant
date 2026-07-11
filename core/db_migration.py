@@ -317,6 +317,11 @@ def migrate_users_db():
         _safe_add_column(c, "users", "register_ip", "TEXT DEFAULT NULL")
         _safe_add_column(c, "users", "flagged", "INTEGER DEFAULT 0")
         c.execute("CREATE INDEX IF NOT EXISTS idx_users_register_ip ON users(register_ip)")
+        # 日内交易计数持久化（阶段二·运行态外置）：重启后恢复当日开仓次数，
+        # 使模拟盘日内开仓限额护栏在重启当天依然准确（此前 today_trades 纯内存，
+        # 重启归零 → 当天可超限开仓）。today_date 用于跨天判断是否重置。
+        _safe_add_column(c, "user_settings", "today_trades", "INTEGER DEFAULT 0")
+        _safe_add_column(c, "user_settings", "today_date", "TEXT DEFAULT ''")
         c.commit()
         logger.info("[users.db] 新表创建/迁移完成 ✓")
     finally:
