@@ -478,20 +478,20 @@ def admin_datasource_test():
 
 
 @bp.route("/api/admin/factor-mining/latest", methods=["GET"])
-@require_admin_perm("strategy_manage")
+@require_root_admin
 def admin_factor_mining_latest():
     return jsonify(_factor_mining_payload(_latest_factor_mining_dir()))
 
 
 @bp.route("/api/admin/factor-mining/rules", methods=["GET"])
-@require_admin_perm("strategy_manage")
+@require_root_admin
 def admin_factor_mining_rules():
     rules = relay_factor_mining.normalize_mining_rules(None)
     return jsonify({"ok": True, "mining_rules": rules, "condition_explain": relay_factor_mining.condition_explain(rules)})
 
 
 @bp.route("/api/admin/factor-mining/run", methods=["POST"])
-@require_admin_perm("strategy_manage")
+@require_root_admin
 def admin_factor_mining_run():
     body = request.json or {}
     n_stocks = _bounded_int_value(body.get("n_stocks"), 800, 5, 2000)
@@ -529,7 +529,7 @@ def admin_factor_mining_run():
 
 
 @bp.route("/api/admin/factor-watchlist", methods=["GET"])
-@require_admin_perm("strategy_manage")
+@require_root_admin
 def admin_factor_watchlist_get():
     data = _load_factor_watchlist()
     items = sorted(
@@ -541,7 +541,7 @@ def admin_factor_watchlist_get():
 
 
 @bp.route("/api/admin/factor-watchlist/import", methods=["POST"])
-@require_admin_perm("strategy_manage")
+@require_root_admin
 def admin_factor_watchlist_import():
     body = request.json or {}
     candidates = body.get("candidates")
@@ -560,7 +560,7 @@ def admin_factor_watchlist_import():
 
 
 @bp.route("/api/admin/factor-watchlist/<item_id>", methods=["PATCH"])
-@require_admin_perm("strategy_manage")
+@require_root_admin
 def admin_factor_watchlist_update(item_id):
     body = request.json or {}
     allowed_status = {"pending", "ready", "bought", "skipped", "watch"}
@@ -586,7 +586,7 @@ def admin_factor_watchlist_update(item_id):
 
 
 @bp.route("/api/admin/factor-watchlist/<item_id>", methods=["DELETE"])
-@require_admin_perm("strategy_manage")
+@require_root_admin
 def admin_factor_watchlist_delete(item_id):
     data = _load_factor_watchlist()
     before = len(data["items"])

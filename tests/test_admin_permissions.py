@@ -185,7 +185,7 @@ def test_security_audit_endpoints_require_security_permission(isolated_app):
     assert allowed.get_json()["ok"] is True
 
 
-def test_factor_mining_latest_requires_strategy_permission_and_returns_report(isolated_app, monkeypatch, tmp_path):
+def test_factor_mining_latest_is_root_only_and_returns_report(isolated_app, monkeypatch, tmp_path):
     app, um, _main = isolated_app
     ops_uid = _create_admin(um, permissions=["dashboard_view"])
 
@@ -219,9 +219,9 @@ def test_factor_mining_latest_requires_strategy_permission_and_returns_report(is
     _login_session(client, ops_uid, "ops")
     denied = client.get("/api/admin/factor-mining/latest")
     assert denied.status_code == 403
-    assert denied.get_json()["missing_permission"] == "strategy_manage"
+    assert denied.get_json()["code"] == "root_admin_required"
 
-    assert um.set_admin_permissions(ops_uid, ["strategy_manage"], granted_by=1)["ok"]
+    _login_session(client, 1, "admin")
     allowed = client.get("/api/admin/factor-mining/latest")
     data = allowed.get_json()
 
@@ -233,7 +233,7 @@ def test_factor_mining_latest_requires_strategy_permission_and_returns_report(is
     assert data["report"]["latest_candidates"][0]["ts_code"] == "000001.SZ"
 
 
-def test_factor_mining_run_requires_strategy_permission_and_invokes_research(isolated_app, monkeypatch, tmp_path):
+def test_factor_mining_run_is_root_only_and_invokes_research(isolated_app, monkeypatch, tmp_path):
     app, um, _main = isolated_app
     ops_uid = _create_admin(um, permissions=["strategy_manage"])
 
@@ -272,6 +272,14 @@ def test_factor_mining_run_requires_strategy_permission_and_invokes_research(iso
     )
     data = resp.get_json()
 
+    assert resp.status_code == 403
+    assert data["code"] == "root_admin_required"
+    assert not calls
+
+    _login_session(client, 1, "admin")
+    resp = client.post("/api/admin/factor-mining/run", json={"n_stocks": 25, "days": 80, "train_days": 30, "test_days": 10, "hold_days": 2, "top_k": 4, "mining_rules": {"filters": {"min_volume_ratio_20": 1.1}}})
+    data = resp.get_json()
+
     assert resp.status_code == 200
     assert data["ok"] is True
     assert data["report"]["status"] == "ok"
@@ -285,7 +293,7 @@ def test_factor_mining_run_requires_strategy_permission_and_invokes_research(iso
     assert listed["items"][0]["ts_code"] == "000002.SZ"
 
 
-def test_factor_watchlist_import_update_delete_requires_strategy_permission(isolated_app, monkeypatch, tmp_path):
+def test_factor_watchlist_import_update_delete_is_root_only(isolated_app, monkeypatch, tmp_path):
     app, um, _main = isolated_app
     ops_uid = _create_admin(um, permissions=["dashboard_view"])
 
@@ -297,9 +305,9 @@ def test_factor_watchlist_import_update_delete_requires_strategy_permission(isol
 
     denied = client.get("/api/admin/factor-watchlist")
     assert denied.status_code == 403
-    assert denied.get_json()["missing_permission"] == "strategy_manage"
+    assert denied.get_json()["code"] == "root_admin_required"
 
-    assert um.set_admin_permissions(ops_uid, ["strategy_manage"], granted_by=1)["ok"]
+    _login_session(client, 1, "admin")
     imported = client.post(
         "/api/admin/factor-watchlist/import",
         json={
@@ -647,8 +655,8 @@ def test_builtin_strategy_and_factor_source_visibility_respects_root_admin(isola
     # 工单4 后策略/因子路由在 web/strategies.py、web/factors.py，直接打模块桩
     from strategy_engine import strategy_manager as sm
     from analytics import factor_manager as fm
-    monkeypatch.setattr(sm, "get_meta", lambda filename: {"name": "Secret Strategy", "builtin": True})
-    monkeypatch.setattr(sm, "get_code", lambda filename: "SECRET_STRATEGY_CODE")
+    monkeypatch.setattr(sm, "get_meta", lambda filename, **_kwargs: {"name": "Secret Strategy", "builtin": True})
+    monkeypatch.setattr(sm, "get_code", lambda filename, **_kwargs: "SECRET_STRATEGY_CODE")
     monkeypatch.setattr(fm, "get_meta", lambda filename: {"name": "Secret Factor", "builtin": True}, raising=False)
     monkeypatch.setattr(fm, "get_code", lambda filename: "SECRET_FACTOR_CODE")
 

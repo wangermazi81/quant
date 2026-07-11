@@ -238,6 +238,126 @@ def rename(old_filename: str, new_filename: str) -> dict:
     old_path.rename(new_path)
     return {"ok": True, "file": safe}
 
+def _safe_strategy_name(filename: str) -> str | None:
+    """Normalize an API strategy identifier without accepting a filesystem path."""
+    if not isinstance(filename, str):
+        return None
+    value = filename.strip()
+    if value.endswith(".py"):
+        value = value[:-3]
+    if not value or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for char in value):
+        return None
+    return value
+
+
+def _user_strategies_dir(user_id: int) -> Path:
+    return STRATEGIES_DIR / "users" / str(int(user_id))
+
+
+def _builtin_strategy_path(safe_name: str) -> Path | None:
+    path = STRATEGIES_DIR / f"{safe_name}.py"
+    if path.exists() and path.is_file() and _read_meta(path).get("builtin") is True:
+        return path
+    return None
+
+
+def resolve_strategy_path(filename: str, user_id: int | None = None) -> tuple[Path | None, dict | None]:
+    """Resolve a strategy visible to one user; legacy root custom files are excluded."""
+    safe_name = _safe_strategy_name(filename)
+    if not safe_name:
+        return None, None
+    if user_id is not None:
+        private_path = _user_strategies_dir(user_id) / f"{safe_name}.py"
+        if private_path.exists() and private_path.is_file():
+            meta = _read_meta(private_path)
+            meta["builtin"] = False
+            return private_path, meta
+    builtin_path = _builtin_strategy_path(safe_name)
+    if builtin_path is None:
+        return None, None
+    return builtin_path, _read_meta(builtin_path)
+
+
+def list_strategies(user_id: int | None = None) -> list[dict]:
+    """List only global built-ins and, when supplied, the authenticated user's files."""
+    items: dict[str, dict] = {}
+    for path in sorted(STRATEGIES_DIR.glob("*.py")):
+        if path.name.startswith("_"):
+            continue
+        meta = _read_meta(path)
+        if meta.get("builtin") is True:
+            items[path.stem] = {"file": path.stem, **meta}
+    if user_id is not None:
+        private_dir = _user_strategies_dir(user_id)
+        if private_dir.exists():
+            for path in sorted(private_dir.glob("*.py")):
+                if path.name.startswith("_"):
+                    continue
+                meta = _read_meta(path)
+                meta["builtin"] = False
+                items[path.stem] = {"file": path.stem, **meta}
+    return [items[name] for name in sorted(items)]
+
+
+def get_meta(filename: str, user_id: int | None = None) -> dict | None:
+    _, meta = resolve_strategy_path(filename, user_id=user_id)
+    return meta
+
+
+def get_code(filename: str, user_id: int | None = None) -> str | None:
+    path, _ = resolve_strategy_path(filename, user_id=user_id)
+    if path is None:
+        return None
+    return path.read_text(encoding="utf-8")
+
+
+def get_position_config(filename: str, user_id: int | None = None) -> dict:
+    cfg = dict(DEFAULT_POSITION_CONFIG)
+    if filename:
+        meta = get_meta(filename, user_id=user_id) or {}
+        position = meta.get("position")
+        if isinstance(position, dict):
+            cfg.update(position)
+    return cfg
+
+
+def save(filename: str, code: str, user_id: int) -> dict:
+    safe_name = _safe_strategy_name(filename)
+    if not safe_name:
+        return {"ok": False, "msg": "invalid filename"}
+    check = ast_check(code)
+    if not check["ok"]:
+        return {"ok": False, "msg": f"code security check failed: {check['msg']}"}
+    path = _user_strategies_dir(user_id) / f"{safe_name}.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(code, encoding="utf-8")
+    return {"ok": True, "file": safe_name}
+
+
+def delete(filename: str, user_id: int) -> dict:
+    safe_name = _safe_strategy_name(filename)
+    path = _user_strategies_dir(user_id) / f"{safe_name}.py" if safe_name else None
+    if path is None or not path.exists() or not path.is_file():
+        return {"ok": False, "error": "not found"}
+    path.unlink()
+    return {"ok": True}
+
+
+def rename(old_filename: str, new_filename: str, user_id: int) -> dict:
+    old_name = _safe_strategy_name(old_filename)
+    new_name = _safe_strategy_name(new_filename)
+    if not old_name or not new_name:
+        return {"ok": False, "error": "not found"}
+    source = _user_strategies_dir(user_id) / f"{old_name}.py"
+    target = _user_strategies_dir(user_id) / f"{new_name}.py"
+    if not source.exists() or not source.is_file():
+        return {"ok": False, "error": "not found"}
+    if target.exists():
+        return {"ok": False, "msg": "strategy name already exists"}
+    source.rename(target)
+    return {"ok": True, "file": new_name}
+
+
 
 # ─── 策略扫描进度（策略 scan 阶段，区别于 ths_quote 的 universe 拉行情阶段）───
 # 用法：sm.get_scan_progress() 返回 {"running","stage","current","total","code"}
@@ -256,7 +376,7 @@ def get_scan_progress() -> dict:
     return dict(_strat_prog)
 
 
-def _build_data_fns(universe: list):
+def _build_data_fns(universe: list, progress: dict | None = None, progress_callback=None):
     """
     构建策略数据访问函数（TDX优先，支持全市场）。
     universe: 已预筛选的股票代码列表
@@ -266,10 +386,25 @@ def _build_data_fns(universe: list):
     """
     import pandas as pd
 
+    if progress is None:
+        progress = {
+            "running": True,
+            "stage": "strategy",
+            "current": 0,
+            "total": len(universe),
+            "code": "",
+        }
+
     def _get_kline(code: str, days: int = 60) -> pd.DataFrame:
         # 进度计数（每只票被处理时 +1）
-        _strat_prog["current"] += 1
-        _strat_prog["code"] = code
+        progress["current"] += 1
+        progress["code"] = code
+        _strat_prog.update(progress)
+        if progress_callback:
+            try:
+                progress_callback(dict(progress))
+            except Exception:
+                logger.warning("strategy progress callback failed", exc_info=True)
         # 1. 本地 CSV
         try:
             from analytics import data_manager as _dm
@@ -710,7 +845,7 @@ def _full_market_universe_with_quotes(max_codes: int = 0,
     return universe, quote_cache
 
 
-def run(filename: str, codes: list, max_codes: int = 0) -> dict:
+def run(filename: str, codes: list, max_codes: int = 0, user_id: int | None = None, progress_callback=None) -> dict:
     """
     执行策略选股。
     - codes 为空 → 全市场扫描（两阶段：行情预筛选 → kline策略过滤）
@@ -719,12 +854,20 @@ def run(filename: str, codes: list, max_codes: int = 0) -> dict:
         0  → 不裁剪（真·全市场约 5000 只，扫描 2-3 分钟）
         N  → 取按成交量排序的前 N 只活跃股（快速扫描）
     """
-    path = STRATEGIES_DIR / f"{filename}.py"
-    if not path.exists():
+    path, meta = resolve_strategy_path(filename, user_id=user_id)
+    progress = {
+        "running": False,
+        "stage": "",
+        "current": 0,
+        "total": 0,
+        "code": "",
+    }
+
+    if path is None:
         return {"ok": False, "msg": f"策略文件不存在: {filename}", "results": []}
     try:
         # AST 安全检查（内置策略豁免）
-        meta = _read_meta(path)
+        meta = meta or {}
         if not meta.get("builtin"):
             chk = ast_check(path.read_text(encoding="utf-8"))
             if not chk["ok"]:
@@ -748,7 +891,7 @@ def run(filename: str, codes: list, max_codes: int = 0) -> dict:
         else:
             universe = codes
 
-        get_kline, get_quotes = _build_data_fns(universe)
+        get_kline, get_quotes = _build_data_fns(universe, progress, progress_callback=progress_callback)
         # ★ Bug fix 2026-05-25: 不再对 da_ban 写死 [] 屏蔽 universe ★
         # 之前 scan_codes=[] 导致 da_ban 在 _from_tdx 失败（盘后 TDX 关 5档盘口数据流）
         # 后降级路径拿不到任何股 → 0 命中。
@@ -765,10 +908,30 @@ def run(filename: str, codes: list, max_codes: int = 0) -> dict:
             "total":   len(scan_codes) if scan_codes else len(universe),
             "code":    "",
         })
+        progress.update({
+            "running": True,
+            "stage": "strategy",
+            "current": 0,
+            "total": len(scan_codes) if scan_codes else len(universe),
+            "code": "",
+        })
+        _strat_prog.update(progress)
+        if progress_callback:
+            try:
+                progress_callback(dict(progress))
+            except Exception:
+                logger.warning("strategy progress callback failed", exc_info=True)
         try:
             results = mod.scan(scan_codes, get_kline, get_quotes)
         finally:
-            _strat_prog["running"] = False
+            progress["running"] = False
+            progress["stage"] = "done"
+            _strat_prog.update(progress)
+            if progress_callback:
+                try:
+                    progress_callback(dict(progress))
+                except Exception:
+                    logger.warning("strategy progress callback failed", exc_info=True)
 
         return {
             "ok":      True,
@@ -779,5 +942,12 @@ def run(filename: str, codes: list, max_codes: int = 0) -> dict:
     except Exception as e:
         tb = traceback.format_exc()
         logger.error(f"策略执行出错: {e}\n{tb}")
-        _strat_prog["running"] = False
+        progress["running"] = False
+        progress["stage"] = "error"
+        _strat_prog.update(progress)
+        if progress_callback:
+            try:
+                progress_callback(dict(progress))
+            except Exception:
+                logger.warning("strategy progress callback failed", exc_info=True)
         return {"ok": False, "msg": str(e), "traceback": tb, "results": []}

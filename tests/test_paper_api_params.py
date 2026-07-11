@@ -227,7 +227,7 @@ def test_positions_sell_falls_back_to_broker_price_when_request_price_invalid(mo
 
 def test_backtest_rejects_invalid_numeric_params_before_deducting(monkeypatch):
     calls = []
-    monkeypatch.setattr(sm, "get_code", lambda filename: "def handle_bar(ctx):\n    pass\n")
+    monkeypatch.setattr(sm, "get_code", lambda filename, **_kwargs: "def handle_bar(ctx):\n    pass\n")
     monkeypatch.setattr(misc_web, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)
 
     fake_backtest = types.SimpleNamespace(
@@ -289,6 +289,7 @@ def test_factor_evaluate_rejects_invalid_period_before_evaluator(monkeypatch):
         raising=False,
     )
 
+    monkeypatch.setattr("app_state.is_root_admin_session", lambda: True)
     client = main.app.test_client()
     _login(client, uid=83)
 

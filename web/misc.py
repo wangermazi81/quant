@@ -10,7 +10,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request, session
 
 from app_state import (
-    require_auth, get_user_state, _add_log, _deduct,
+    require_auth, require_root_admin, get_user_state, _add_log, _deduct,
 )
 from strategy_engine import strategy_manager as sm
 from web._params import (
@@ -32,7 +32,7 @@ def api_health():
 
 
 @bp.route("/api/vibe_activations/me", methods=["GET"])
-@require_auth
+@require_root_admin
 def api_vibe_activation_me():
     uid = session["user_id"]
     try:
@@ -44,7 +44,7 @@ def api_vibe_activation_me():
 
 
 @bp.route("/api/vibe_activations/activate", methods=["POST"])
-@require_auth
+@require_root_admin
 def api_vibe_activation_activate():
     uid = session["user_id"]
     d   = request.json or {}
@@ -75,7 +75,7 @@ def api_vibe_activation_activate():
 
 
 @bp.route("/api/vibe_activations/deactivate", methods=["POST"])
-@require_auth
+@require_root_admin
 def api_vibe_activation_deactivate():
     uid = session["user_id"]
     try:
@@ -98,7 +98,7 @@ def api_backtest():
     uid      = session["user_id"]
     d        = request.get_json(silent=True) or {}
     fn       = d.get("filename", "")
-    code_str = sm.get_code(fn) if fn else ""
+    code_str = sm.get_code(fn, user_id=uid) if fn else ""
     if not code_str:
         return jsonify({"ok": False, "error": "策略代码为空"})
 
