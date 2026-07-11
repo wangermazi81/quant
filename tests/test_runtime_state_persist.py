@@ -94,3 +94,12 @@ def test_multiple_buys_accumulate_and_persist(uid):
     assert get_user_state(uid)["today_trades"] == 3
     _simulate_restart()
     assert get_user_state(uid)["today_trades"] == 3
+
+
+def test_position_guardrails_persist(uid):
+    # 既存 bug 修复回归：仓位护栏(最多持仓/单笔上限)改后重启应保留（此前存不进库）
+    um.save_user_settings(uid, max_positions=3, single_position_max_ratio=0.15)
+    _simulate_restart()
+    s = get_user_state(uid)
+    assert s["max_positions"] == 3, "最多持仓数应持久化"
+    assert abs(s["single_position_max_ratio"] - 0.15) < 1e-9, "单笔上限%应持久化"

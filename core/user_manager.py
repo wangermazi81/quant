@@ -910,6 +910,7 @@ def save_user_settings(user_id: int, **kwargs) -> dict:
         "running", "auto_execute", "capital", "position_ratio",
         "portfolio_mode", "active_strategy", "stock_pool", "broker_type",
         "today_trades", "today_date",   # 阶段二：日内计数持久化（重启恢复日内限额）
+        "max_positions", "single_position_max_ratio",  # 仓位护栏（修复既存漏存 bug）
     }
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:

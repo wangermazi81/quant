@@ -322,6 +322,10 @@ def migrate_users_db():
         # 重启归零 → 当天可超限开仓）。today_date 用于跨天判断是否重置。
         _safe_add_column(c, "user_settings", "today_trades", "INTEGER DEFAULT 0")
         _safe_add_column(c, "user_settings", "today_date", "TEXT DEFAULT ''")
+        # 修复既存 bug：仓位护栏(最多持仓数/单笔上限%)前端可调且 set_account 有持久化，
+        # 但表无此列 + save 白名单漏了 → 一直存不进库，重启回退 config 默认（护栏被放松）。
+        _safe_add_column(c, "user_settings", "max_positions", "INTEGER DEFAULT 5")
+        _safe_add_column(c, "user_settings", "single_position_max_ratio", "REAL DEFAULT 0.20")
         c.commit()
         logger.info("[users.db] 新表创建/迁移完成 ✓")
     finally:
