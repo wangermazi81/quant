@@ -17,23 +17,9 @@ def _nocache(resp):
 
 @bp.route("/")
 def index():
-    # 主前端 index.html 已套用糖果主题（theme-candy.css），从磁盘实时读取 → 改样式免重启。
-    # 模块化 Vite 构建版本在 /v2 并行可选。
-    return _nocache(send_from_directory(str(BASE_DIR), "index.html"))
-
-
-@bp.route("/v2")
-def index_v2():
-    """新版前端（frontend/ 经 Vite 构建到 static/dist/）。登录后逐页验收功能对等。"""
-    dist = BASE_DIR / "static" / "dist"
-    if not (dist / "index.html").exists():
-        return ("新版前端尚未构建：请在 frontend/ 下执行 npm install && npm run build", 503)
-    return _nocache(send_from_directory(str(dist), "index.html"))
-
-
-@bp.route("/legacy")
-def index_legacy():
-    """旧版单文件 UI 兜底入口（切换期保留）。"""
+    # 主前端：index.html 骨架（内联块已拆分到 static/app/，工单7）+ 糖果主题。
+    # HTML 从磁盘实时读取（no-store），静态资源走 ETag 协商 → 改前端刷新即生效。
+    # /v2 Vite 双轨与 /legacy 兜底入口已于工单7c 移除（frontend/ 归档 backups/）。
     return _nocache(send_from_directory(str(BASE_DIR), "index.html"))
 
 

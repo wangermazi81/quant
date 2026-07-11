@@ -352,14 +352,6 @@
   "GET,HEAD,OPTIONS"
  ],
  [
-  "/api/announcements",
-  "GET,HEAD,OPTIONS"
- ],
- [
-  "/api/announcements/<int:ann_id>/read",
-  "OPTIONS,POST"
- ],
- [
   "/api/announcements/<int:ann_id>/read",
   "OPTIONS,POST"
  ],
@@ -880,19 +872,11 @@
   "GET,HEAD,OPTIONS"
  ],
  [
-  "/legacy",
-  "GET,HEAD,OPTIONS"
- ],
- [
   "/logs/screenshots/<path:filename>",
   "GET,HEAD,OPTIONS"
  ],
  [
   "/static/<path:filename>",
-  "GET,HEAD,OPTIONS"
- ],
- [
-  "/v2",
   "GET,HEAD,OPTIONS"
  ]
 ]

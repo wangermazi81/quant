@@ -20,7 +20,7 @@ Flask 后端 + 原生 JS 单页前端。功能：策略中心（编写/回测/�
 | `strategy_engine/` | 策略基类/扫描/回测/策略管理（动态加载 `strategies/` 用户策略） |
 | `analytics/` | AI 分析/AI 交易/因子管理/因子动物园/复盘引擎/组合优化/龙虎榜 |
 | `strategies/` `factors/` | **用户自建**策略/因子文件（gitignore，云端用户各有自己的） |
-| `static/` `index.html` `admin.html` | 前端（单文件 SPA，模块化拆分排期中） |
+| `index.html` `admin.html` `static/app/` | 前端：HTML 骨架 + 分文件 JS/CSS 模块（工单7 已拆分，无构建步骤） |
 | `deploy/` | gunicorn/nginx/fail2ban 配置、服务器更新脚本、健康监控 |
 | `tests/` | pytest 套件（460+ 用例） |
 | `tools/` | 桥接器、窗口探测、DB 工具等独立脚本 |

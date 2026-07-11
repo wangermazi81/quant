@@ -1,7 +1,7 @@
 # API 清单（自动生成，勿手改）
 
 > 由 `tools/gen_api_doc.py` 从 `app.url_map` 导出，CI 校验与代码同步。
-> 共 221 条路由，按蓝图分组。
+> 共 219 条路由，按蓝图分组。
 
 ## admin — 管理后台（49 条）
 
@@ -202,16 +202,14 @@
 | `/api/user/notify_config` | GET | notify.user_get_notify_config |  |
 | `/api/user/notify_config` | POST | notify.user_save_notify_config |  |
 
-## pages — 页面/静态（6 条）
+## pages — 页面/静态（4 条）
 
 | 路径 | 方法 | 端点 | 说明 |
 |---|---|---|---|
 | `/` | GET | pages.index |  |
 | `/admin` | GET | pages.admin_page |  |
 | `/api/changelog` | GET | pages.public_changelog | 获取已发布的更新日志（登录/未登录均可看）。 |
-| `/legacy` | GET | pages.index_legacy | 旧版单文件 UI 兜底入口（切换期保留）。 |
 | `/logs/screenshots/<path:filename>` | GET | pages.serve_screenshot | 暴露桥接器截图给前端浏览器（仅登录用户可看） |
-| `/v2` | GET | pages.index_v2 | 新版前端（frontend/ 经 Vite 构建到 static/dist/）。登录后逐页验收功能对等。 |
 
 ## paper — 模拟盘（12 条）
 

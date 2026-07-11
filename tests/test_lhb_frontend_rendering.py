@@ -5,7 +5,14 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _index_html() -> str:
-    return (ROOT / "index.html").read_text(encoding="utf-8")
+    # 工单7 拆分后：龙虎榜相关 JS 在 app-research.js / app-core.js，
+    # 骨架(modal 容器等)在 index.html —— 拼起来做整页断言
+    parts = [
+        (ROOT / "index.html").read_text(encoding="utf-8"),
+        (ROOT / "static" / "app" / "js" / "app-core.js").read_text(encoding="utf-8"),
+        (ROOT / "static" / "app" / "js" / "app-research.js").read_text(encoding="utf-8"),
+    ]
+    return "\n".join(parts)
 
 
 def test_lhb_frontend_uses_existing_kline_modal_and_sector_badges():

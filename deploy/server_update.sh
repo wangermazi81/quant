@@ -8,7 +8,7 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/quant}"
 SERVICE="${SERVICE:-quant-platform}"
 PORT="${PORT:-5000}"
-FRONTEND_DIST="$APP_DIR/static/dist/index.html"
+# FRONTEND_DIST 已移除（工单7c：/v2 双轨下线，前端无构建步骤）
 
 cd "$APP_DIR"
 
@@ -84,17 +84,12 @@ git pull --ff-only origin "$(git branch --show-current)" || {
 REMOTE=$(git rev-parse HEAD)
 sync_nginx_anti_crawl
 
-if [ "$LOCAL" = "$REMOTE" ] && [ -f "$FRONTEND_DIST" ]; then
+if [ "$LOCAL" = "$REMOTE" ]; then
     secure_runtime_secrets "$RUN_USER"
-    echo "Code is already up to date and frontend dist exists."
+    echo "Code is already up to date."
     exit 0
 fi
-
-if [ "$LOCAL" = "$REMOTE" ]; then
-    echo "Code is up to date, but frontend dist is missing; continue build."
-else
-    echo "Updated: $LOCAL -> $REMOTE"
-fi
+echo "Updated: $LOCAL -> $REMOTE"
 
 if [ "$RUN_USER" != "root" ]; then
     chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
@@ -113,31 +108,10 @@ else
 fi
 
 echo
-echo "[3/6] Build frontend for /v2"
-if [ -f "$APP_DIR/frontend/package.json" ]; then
-    if command -v npm >/dev/null 2>&1; then
-        (
-            cd "$APP_DIR/frontend"
-            if [ -f package-lock.json ]; then
-                npm ci --no-audit --no-fund
-            else
-                npm install --no-audit --no-fund
-            fi
-            npm run build
-        )
-        if [ "$RUN_USER" != "root" ]; then
-            chown -R "$RUN_USER:$RUN_USER" "$APP_DIR/static" "$APP_DIR/frontend/node_modules" 2>/dev/null || true
-        fi
-    elif [ ! -f "$FRONTEND_DIST" ]; then
-        echo "ERROR: npm is not installed and $FRONTEND_DIST is missing."
-        echo "Install nodejs/npm or upload a built static/dist artifact."
-        exit 1
-    else
-        echo "npm is not installed, but frontend dist exists; skip build."
-    fi
-else
-    echo "frontend/package.json not found; skip frontend build."
-fi
+echo "[3/6] Frontend build no longer needed"
+# 工单7c：/v2 Vite 双轨已移除，前端 = index.html 骨架 + static/app/ 分文件
+# （随 git 同步，无构建步骤）。旧 frontend/ 目录若仍在服务器上可安全删除。
+echo "Frontend is served from static/app (no build step since 工单7c)."
 
 echo
 echo "[4/6] Run database migration"

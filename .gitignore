@@ -134,3 +134,7 @@ output/
 
 # 数据调度进程 PID（运行时产物，工单5）
 data/scheduler.pid
+
+# /v2 双轨已移除（工单7c），防止误还原
+frontend/
+static/dist/

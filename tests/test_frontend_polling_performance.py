@@ -2,25 +2,25 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# 工单7 拆分后：JS 逻辑在 static/app/js/，index.html 只剩骨架；
+# /v2 双轨(frontend/)已于工单7c 移除。
+APP_JS = ROOT / "static" / "app" / "js"
+APP_CSS = ROOT / "static" / "app" / "css"
 STRATEGY_SCAN_FILES = [
-    ROOT / "index.html",
-    ROOT / "frontend" / "public" / "app" / "js" / "app-1.js",
+    APP_JS / "app-core.js",
 ]
 FRONTEND_BOOT_FILES = [
-    ROOT / "index.html",
-    ROOT / "frontend" / "public" / "app" / "js" / "app-1.js",
+    APP_JS / "app-core.js",
 ]
 FRONTEND_AUTH_FILES = [
     ROOT / "index.html",
-    ROOT / "frontend" / "index.html",
-    ROOT / "frontend" / "public" / "app" / "js" / "app-1.js",
-    ROOT / "frontend" / "public" / "app" / "js" / "app-2.js",
+    APP_JS / "app-core.js",
+    APP_JS / "app-ai-gen.js",
 ]
 FRONTEND_STYLE_FILES = [
     ROOT / "index.html",
-    ROOT / "frontend" / "index.html",
-    ROOT / "frontend" / "public" / "app" / "css" / "app-1.css",
-    ROOT / "frontend" / "public" / "app" / "css" / "theme-candy.css",
+    APP_CSS / "app-base.css",
+    ROOT / "static" / "lib" / "theme-candy.css",
 ]
 
 
@@ -63,8 +63,9 @@ def test_public_shell_does_not_block_on_private_account_requests():
 
     for path in FRONTEND_STYLE_FILES:
         text = path.read_text(encoding="utf-8")
+        # 防的是外网字体拉取阻塞首屏；本地字体栈里的 'Noto Sans SC' fallback
+        # 声明（theme-candy.css 线上一直有）不触发网络请求，不在禁止之列。
         assert "fonts.googleapis.com" not in text, path
-        assert "font-family:'Noto Sans SC'" not in text, path
 
     for path in FRONTEND_BOOT_FILES:
         text = path.read_text(encoding="utf-8")

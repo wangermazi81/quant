@@ -103,7 +103,9 @@ def test_paper_reset_defaults_to_one_million(monkeypatch):
 
 
 def test_paper_reset_ui_prompt_defaults_to_one_million():
-    html = Path(__file__).resolve().parents[1].joinpath("index.html").read_text(encoding="utf-8")
+    # 工单7 拆分后：模拟盘重置逻辑在 static/app/js/app-core.js
+    html = Path(__file__).resolve().parents[1].joinpath(
+        "static", "app", "js", "app-core.js").read_text(encoding="utf-8")
 
     assert "prompt('重置模拟盘——输入初始资金（元）：','1000000')" in html
     assert "prompt('重置模拟盘——输入初始资金（元）：','500000')" not in html

@@ -1,8 +1,11 @@
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_daily_review_frontend_shows_market_data_quality():
-    html = Path("index.html").read_text(encoding="utf-8")
+    # 工单7 拆分后：复盘页 JS 在 static/app/js/app-research.js
+    html = (ROOT / "static" / "app" / "js" / "app-research.js").read_text(encoding="utf-8")
 
     assert "_rvDataQuality" in html
     assert "_rvDataQuality(b, '涨跌结构')" in html

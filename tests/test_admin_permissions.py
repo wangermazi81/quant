@@ -79,7 +79,8 @@ def test_admin_page_shell_is_public_but_admin_api_still_requires_login(isolated_
 
     assert page.status_code == 200
     assert page.content_type.startswith("text/html")
-    assert b"/auth/me" in page.data
+    # 工单7 拆分后 JS 在 admin-app.js，壳页面须引用它（原断言 b"/auth/me" 随 JS 外迁）
+    assert b"/static/app/js/admin-app.js" in page.data
     assert api.status_code == 401
 
 

@@ -76,20 +76,9 @@ pip install --upgrade pip wheel
 pip install -r requirements.txt
 
 echo
-echo "[4/9] Build frontend for /v2"
-if [ -f frontend/package.json ]; then
-    (
-        cd frontend
-        if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-        else
-            npm install --no-audit --no-fund
-        fi
-        npm run build
-    )
-else
-    echo "frontend/package.json not found; skip frontend build."
-fi
+echo "[4/9] Frontend build no longer needed"
+# 工单7c：/v2 Vite 双轨已移除，前端 = index.html 骨架 + static/app/ 分文件（随 git 同步）
+echo "Frontend is served from static/app (no build step since 工单7c)."
 
 echo
 echo "[5/9] Configure environment"
