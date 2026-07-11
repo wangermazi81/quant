@@ -4006,3 +4006,17 @@ async function resetPaper(){
   if(r?.ok){ alert('模拟盘已重置！'); loadPaperPage() }
   else alert('重置失败')
 }
+
+
+// ══ 布局折叠：执行队列的账户设置条（工单7b）══════════════════════
+// 资金/仓位/护栏属于低频配置，默认收起给队列腾空间；用户选择记忆在 localStorage。
+function toggleAcctBar(force){
+  const bar = document.getElementById('acctBar');
+  const btn = document.getElementById('acctBarBtn');
+  if(!bar) return;
+  const show = (force !== undefined) ? force : bar.style.display === 'none';
+  bar.style.display = show ? 'flex' : 'none';
+  if(btn) btn.classList.toggle('btn-blue', show);
+  try{ localStorage.setItem('jw_acct_bar', show ? '1' : '0'); }catch(e){}
+}
+try{ toggleAcctBar(localStorage.getItem('jw_acct_bar') === '1'); }catch(e){ }

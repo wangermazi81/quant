@@ -282,3 +282,11 @@ tr:hover td{background:#fafbff}
 .switch.on{background:var(--theme-active)}
 .switch::after{content:'';position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:2px;left:2px;transition:.25s;box-shadow:0 1px 4px rgba(0,0,0,.2)}
 .switch.on::after{left:20px}
+
+/* ── 侧栏分组折叠（工单7b）─────────────────────────────── */
+.menu-group-toggle{cursor:pointer;display:flex;align-items:center;user-select:none;transition:color .15s}
+.menu-group-toggle:hover{color:rgba(255,255,255,.7)}
+.mg-caret{margin-left:auto;font-size:9px;opacity:.55;padding-right:16px}
+.menu-item.folded{display:none}
+/* 侧栏收成图标模式时组标题隐藏 → 折叠自动失效，条目全部可见（防不可达） */
+.sidebar.collapsed .menu-item.folded{display:flex}

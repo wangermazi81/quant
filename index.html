@@ -256,10 +256,11 @@
             <span id="autoExecDot" style="position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fff;transition:left .2s"></span>
           </span>
         </div>
+        <button class="btn btn-gray btn-sm" id="acctBarBtn" onclick="toggleAcctBar()" title="资金 / 仓位 / 护栏设置（低频配置，默认收起）">⚙ 设置</button>
         <button class="btn btn-gray btn-sm" onclick="clearQ()">清除</button>
       </div>
-      <!-- 账户设置条 -->
-      <div style="padding:4px 12px;display:flex;gap:7px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--b1);flex-shrink:0">
+      <!-- 账户设置条（低频配置，默认折叠，点 ⚙ 设置展开；选择记忆在 localStorage） -->
+      <div id="acctBar" style="padding:4px 12px;display:flex;gap:7px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--b1);flex-shrink:0">
         <span style="font-size:11px;color:var(--t3)">资金</span>
         <input id="cfgCapital" type="number" step="10000" placeholder="1000000"
           style="width:86px;padding:3px 6px;background:var(--inp);border:1px solid var(--b1);border-radius:4px;color:var(--t1);font-size:12px">

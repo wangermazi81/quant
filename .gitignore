@@ -131,3 +131,6 @@ _tail_bt_result.json
 _curl_body.json
 local_ui.png
 output/
+
+# 数据调度进程 PID（运行时产物，工单5）
+data/scheduler.pid

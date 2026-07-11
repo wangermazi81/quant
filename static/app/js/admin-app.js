@@ -109,6 +109,26 @@ function defaultPage(){
   return first ? first.id : 'user-center';
 }
 
+// ── 侧栏分组折叠（工单7b）：点组名折叠/展开，选择记忆在 localStorage ──
+// 首次访问默认收起低频组；当前页所在组强制展开；侧栏图标模式(collapsed)下
+// 折叠自动失效（CSS 控制），保证条目永远可达。
+const MENU_FOLD_KEY = 'jw_admin_menu_fold';
+const MENU_FOLD_DEFAULT = {'数据分析': true, '内容管理': true, '账户': true};
+
+function _menuFoldState(){
+  try{
+    const raw = localStorage.getItem(MENU_FOLD_KEY);
+    return raw ? JSON.parse(raw) : {...MENU_FOLD_DEFAULT};
+  }catch(e){ return {...MENU_FOLD_DEFAULT}; }
+}
+
+function toggleMenuGroup(g){
+  const st = _menuFoldState();
+  st[g] = !st[g];
+  try{ localStorage.setItem(MENU_FOLD_KEY, JSON.stringify(st)); }catch(e){}
+  renderMenu();
+}
+
 function renderMenu(){
   const menu = document.getElementById('sidebarMenu');
   const groups = {};
@@ -116,11 +136,15 @@ function renderMenu(){
     if(!groups[m.group]) groups[m.group]=[];
     groups[m.group].push(m);
   });
+  const fold = _menuFoldState();
   let html='';
   Object.entries(groups).forEach(([g,items])=>{
-    html+=`<div class="menu-group-title">${g}</div>`;
+    const folded = !!fold[g] && !items.some(m=>m.id===currentPage);
+    html+=`<div class="menu-group-title menu-group-toggle" onclick="toggleMenuGroup('${g}')" title="点击${folded?'展开':'折叠'}分组">
+      <span>${g}</span><i class="fas fa-chevron-${folded?'right':'down'} mg-caret"></i>
+    </div>`;
     items.forEach(m=>{
-      html+=`<div class="menu-item${currentPage===m.id?' active':''}" onclick="navigate('${m.id}')" data-id="${m.id}">
+      html+=`<div class="menu-item${currentPage===m.id?' active':''}${folded?' folded':''}" onclick="navigate('${m.id}')" data-id="${m.id}">
         <i class="${m.icon} mi-icon"></i>
         <span class="mi-label">${m.label}</span>
       </div>`;
