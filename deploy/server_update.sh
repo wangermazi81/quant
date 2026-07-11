@@ -92,7 +92,7 @@ ensure_data_scheduler_service() {
         sed -i "s/^User=.*/User=$RUN_USER/" "$unit_dst"
     fi
     systemctl daemon-reload
-    systemctl enable quant-scheduler >/dev/null 2>&1 || true
+    systemctl enable --now quant-scheduler >/dev/null 2>&1 || true
 }
 
 echo "[1/6] Pull latest code from Gitee"

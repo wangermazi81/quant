@@ -17,5 +17,5 @@ def test_server_update_installs_and_restarts_data_scheduler():
 
     assert "ensure_data_scheduler_service" in script
     assert "deploy/quant-scheduler.service" in script
-    assert "systemctl enable quant-scheduler" in script
+    assert "systemctl enable --now quant-scheduler" in script
     assert "systemctl restart quant-scheduler" in script
