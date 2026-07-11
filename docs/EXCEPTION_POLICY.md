@@ -9,7 +9,7 @@
 |---|---|---|
 | ① 资金/交易关键路径 | core/trade_service、broker/paper_broker、core/user_manager 写路径、web/trade、web/bridge、web/paper、core/daban_state、core/bridge_state | **禁止 `except Exception: pass`**。捕获必须 `logger.warning/error` 带上下文（uid/code/金额/表名），或上抛。凡是「状态没写上/没清掉会引发后续错误决策」的点（持仓峰值、台账、订单流水、用户设置）一律 warning 级 |
 | ② 数据源降级链（**已治理 2026-07-11**） | market/、analytics/data_manager、tushare_provider、lhb_engine、search_manager、datasource_config 等 | 保留 try/except 降级结构（降级是特性），但每处补日志：缓存/配置损坏回退、写缓存失败、复权失败、多源全失败 → `logger.warning([源名] 上下文)`；多源链中"某源失败换下一源"、可选源跳过、宽度修正跳过 → `logger.debug`。纯类型转换助手(`_safe_float/_safe_int/_f`)、清理(disconnect/logout)、错误已在返回值传播的点 → 豁免，保留静默 |
-| ③ GUI 自动化 | broker/ths_operator.py、tools/ths_bridge.py | **不改控制流**（重试/回退路径是实盘按键安全的一部分）。静默 pass 逐步补 logger.debug，绝不上抛新异常 |
+| ③ GUI 自动化（**已治理 2026-07-11**） | broker/ths_operator.py、tools/ths_bridge.py | **不改控制流**（重试/回退路径是实盘按键安全的一部分）。ths_operator.py 36 处单行静默 except 已用 AST 精确改写补 `logger.debug(f"[xiadan] <函数名> 忽略异常: {e}")`（pass→debug、continue→debug+continue，控制流零变化，py_compile+全量测试验证）。今后新增静默点同规格补 debug，绝不上抛新异常 |
 
 ## 允许保留静默 pass 的场景（须加注释说明理由）
 

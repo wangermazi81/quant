@@ -286,14 +286,14 @@ class THSOperator:
                     img = self.main_win.capture_as_image()
                     img.save(str(fn))
                     return str(fn)
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] _save_screenshot 忽略异常: {_eauto}")
             try:
                 import pyautogui
                 pyautogui.screenshot(str(fn))
                 return str(fn)
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] _save_screenshot 忽略异常: {_eauto}")
             return None
         except Exception as exc:
             logger.debug(f"截图失败 [{label}]: {exc}")
@@ -319,8 +319,8 @@ class THSOperator:
                     if p.stat().st_mtime < cutoff:
                         p.unlink()
                         removed += 1
-                except Exception:
-                    pass
+                except Exception as _eauto:
+                    logger.debug(f"[xiadan] _prune_screenshots 忽略异常: {_eauto}")
             # 数量硬上限：留最新的 SCREENSHOT_MAX_FILES 张
             files = sorted(scr_dir.glob("*.png"), key=lambda p: p.stat().st_mtime)
             if len(files) > SCREENSHOT_MAX_FILES:
@@ -328,8 +328,8 @@ class THSOperator:
                     try:
                         p.unlink()
                         removed += 1
-                    except Exception:
-                        pass
+                    except Exception as _eauto:
+                        logger.debug(f"[xiadan] _prune_screenshots 忽略异常: {_eauto}")
             if removed:
                 logger.info(f"已清理过期下单截图 {removed} 张（保留 {SCREENSHOT_RETENTION_DAYS} 天 / 上限 {SCREENSHOT_MAX_FILES} 张）")
         except Exception as exc:
@@ -351,7 +351,8 @@ class THSOperator:
                     if cls and "Edit" in cls and ctl.is_visible():
                         txt = ctl.window_text() if hasattr(ctl, "window_text") else ""
                         edits.append(txt)
-                except Exception:
+                except Exception as _eauto:
+                    logger.debug(f"[xiadan] _read_edit_fields 忽略异常: {_eauto}")
                     continue
             return {i: t for i, t in enumerate(edits[:8])}   # 只看前 8 个
         except Exception as exc:
@@ -616,7 +617,8 @@ class THSOperator:
                     for d in dialogs:
                         try:
                             t = d.window_text() or ""
-                        except Exception:
+                        except Exception as _eauto:
+                            logger.debug(f"[xiadan] _gui_submit 忽略异常: {_eauto}")
                             continue
                         if any(k in t for k in ("确认", "委托", "提示", "买入", "卖出")):
                             dialog_found = d
@@ -629,8 +631,8 @@ class THSOperator:
                                     if tt and tt.strip():
                                         texts.append(tt.strip())
                                 dialog_body = " | ".join(texts)[:200]
-                            except Exception:
-                                pass
+                            except Exception as _eauto:
+                                logger.debug(f"[xiadan] _gui_submit 忽略异常: {_eauto}")
                             break
                 except Exception as _de:
                     logger.warning(f"对话框检测异常: {_de}")
@@ -689,7 +691,8 @@ class THSOperator:
             for d in dialogs:
                 try:
                     texts = " ".join((c.window_text() or "") for c in d.descendants())
-                except Exception:
+                except Exception as _eauto:
+                    logger.debug(f"[xiadan] _confirm_order_dialog 忽略异常: {_eauto}")
                     continue
                 # 委托确认框：内容含 委托/确认/买入/卖出/是否 之一（标题为空也能命中）
                 if not any(k in texts for k in ("委托", "确认", "买入", "卖出", "是否")):
@@ -705,8 +708,8 @@ class THSOperator:
                             ctl.click_input()
                             logger.info(f"✅ 已点委托确认框按钮[{bt}]")
                             return True
-                except Exception:
-                    pass
+                except Exception as _eauto:
+                    logger.debug(f"[xiadan] _confirm_order_dialog 忽略异常: {_eauto}")
             _t.sleep(0.5)
         return False
 
@@ -748,7 +751,8 @@ class THSOperator:
             for d in dialogs:
                 try:
                     title = d.window_text() or ""
-                except Exception:
+                except Exception as _eauto:
+                    logger.debug(f"[xiadan] _check_post_submit_result 忽略异常: {_eauto}")
                     continue
                 matched = any(k in title for k in relevant_titles)
                 if not matched:
@@ -776,8 +780,8 @@ class THSOperator:
                     t = ctl.window_text() if hasattr(ctl, "window_text") else ""
                     if t and t.strip() and t not in ("是(Y)", "否(N)", "确定", "取消"):
                         texts.append(t.strip())
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] _check_post_submit_result 忽略异常: {_eauto}")
             body = " | ".join(texts) if texts else title
             logger.info(f"📋 检测到对话框 [{title}]: {body[:120]}")
 
@@ -787,8 +791,8 @@ class THSOperator:
             try:
                 pyautogui.press('escape')
                 time.sleep(0.3)
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] _check_post_submit_result 忽略异常: {_eauto}")
 
             return {"status": status,
                     "msg": parsed_msg,
@@ -805,20 +809,20 @@ class THSOperator:
             try:
                 from pywinauto import Desktop
                 all_dialogs = Desktop(backend='win32').windows(class_name='#32770', visible_only=True)
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] _check_post_submit_result 忽略异常: {_eauto}")
             dialog_titles = []
             for d in all_dialogs:
                 try:
                     dialog_titles.append(d.window_text() or "")
-                except Exception:
-                    pass
+                except Exception as _eauto:
+                    logger.debug(f"[xiadan] _check_post_submit_result 忽略异常: {_eauto}")
             logger.error(
                 f"❌ 按 Y 后未检测到任何 #32770 对话框 ({action} {code} {amount_str}股 @{price_str}). "
                 f"当前可见 #32770 窗口: {dialog_titles}"
             )
-        except Exception:
-            pass
+        except Exception as _eauto:
+            logger.debug(f"[xiadan] _check_post_submit_result 忽略异常: {_eauto}")
         _perm_hint = ("" if getattr(self, "is_admin", False) else
                       "。⚠ 头号嫌疑：本程序非管理员运行——若同花顺是『以管理员身份运行』，"
                       "按键会被 Windows UIPI 静默拦截。请用管理员身份重启本桥接器（与同花顺同权限）")
@@ -1028,8 +1032,8 @@ class THSOperator:
                     pyautogui.click(cx, cy, duration=0.05)
                     time.sleep(0.2)
                     pyautogui.moveTo(op[0], op[1], duration=0.05)
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] _capture_query_page 忽略异常: {_eauto}")
 
         if win32gui.GetForegroundWindow() != hwnd:
             return {"ok": False, "msg": "xiadan 未能激活到前台"}
@@ -1077,14 +1081,14 @@ class THSOperator:
                     img = self.main_win.capture_as_image()
                     img.save(str(fn))
                     saved = True
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] _capture_query_page 忽略异常: {_eauto}")
             if not saved:
                 try:
                     pyautogui.screenshot(str(fn))
                     saved = True
-                except Exception:
-                    pass
+                except Exception as _eauto:
+                    logger.debug(f"[xiadan] _capture_query_page 忽略异常: {_eauto}")
             if not saved:
                 return {"ok": False, "msg": "截图保存失败"}
 
@@ -1098,8 +1102,8 @@ class THSOperator:
                 time.sleep(0.3)
                 pyautogui.press(THS_BUY_KEY)
                 time.sleep(0.3)
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] _capture_query_page 忽略异常: {_eauto}")
 
     def _nav_to_today_orders(self, pyautogui, hwnd) -> bool:
         """自校准导航到「当日委托」子页（供 _capture_query_page 的 nav 回调）。
@@ -1139,8 +1143,8 @@ class THSOperator:
         finally:
             try:
                 tmp.unlink()
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] _nav_to_today_orders 忽略异常: {_eauto}")
 
         tabs   = self._detect_query_tabs(words)
         target = next((t for t in tabs if t["label"] == "当日委托"), None)
@@ -1392,7 +1396,8 @@ class THSOperator:
                     try:
                         x = float(_g(br, "x")); y = float(_g(br, "y"))
                         ww = float(_g(br, "width") or 0); hh = float(_g(br, "height") or 0)
-                    except Exception:
+                    except Exception as _eauto:
+                        logger.debug(f"[xiadan] _ocr_grid_words 忽略异常: {_eauto}")
                         continue
                     # 坐标除以放大倍数还原回原截图像素（点击/聚类坐标系不变）
                     words.append({"x": x * inv, "y": y * inv,
@@ -1958,8 +1963,8 @@ class THSOperator:
                     pyautogui.click(cx, cy, duration=0.05)
                     time.sleep(0.2)
                     pyautogui.moveTo(op[0], op[1], duration=0.05)
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] query_funds 忽略异常: {_eauto}")
 
         if win32gui.GetForegroundWindow() != hwnd:
             return {"ok": False, "msg": "xiadan 未能激活到前台"}
@@ -1979,7 +1984,8 @@ class THSOperator:
                             t = (ctl.window_text() or "").strip()
                             if t:
                                 texts.append(t)
-                    except Exception:
+                    except Exception as _eauto:
+                        logger.debug(f"[xiadan] query_funds 忽略异常: {_eauto}")
                         continue
             except Exception as _e:
                 logger.debug(f"遍历资金控件失败: {_e}")
@@ -2024,8 +2030,8 @@ class THSOperator:
                 else:
                     pyautogui.screenshot(str(fn))
                 rel_path = str(fn.relative_to(proj_root)).replace("\\", "/")
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] query_funds 忽略异常: {_eauto}")
 
             # 控件没解析到 → OCR 兜底（Windows 自带 OCR，需 pip install winocr）
             source   = "control" if available is not None else ""
@@ -2077,8 +2083,8 @@ class THSOperator:
         if not win32gui.IsWindow(hwnd):
             try:
                 self._connect()
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] _activate_main_win 忽略异常: {_eauto}")
             if self.main_win is None:
                 return False, None, "xiadan 窗口已关闭"
             hwnd = self.main_win.handle
@@ -2108,16 +2114,16 @@ class THSOperator:
                     pyautogui.click(cx, cy, duration=0.05)
                     time.sleep(0.2)
                     pyautogui.moveTo(op[0], op[1], duration=0.05)
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] _activate_main_win 忽略异常: {_eauto}")
         if win32gui.GetForegroundWindow() != hwnd:
             return False, hwnd, "xiadan 未能激活到前台"
         try:
             _l, _t, _r, _b = win32gui.GetWindowRect(hwnd)
             if (_r - _l) < 600 or (_b - _t) < 400:
                 return False, hwnd, f"窗口过小({_r-_l}x{_b-_t})，疑似迷你/最小化，请还原完整窗口"
-        except Exception:
-            pass
+        except Exception as _eauto:
+            logger.debug(f"[xiadan] _activate_main_win 忽略异常: {_eauto}")
         return True, hwnd, "ok"
 
     def _confirm_cancel_dialog(self, pyautogui) -> bool:
@@ -2136,7 +2142,8 @@ class THSOperator:
                     try:
                         t = d.window_text() or ""
                         body = " ".join((c.window_text() or "") for c in d.descendants())
-                    except Exception:
+                    except Exception as _eauto:
+                        logger.debug(f"[xiadan] _confirm_cancel_dialog 忽略异常: {_eauto}")
                         continue
                     if not any(k in (t + body) for k in ("撤单", "撤销", "撤回", "确认", "是否")):
                         continue
@@ -2151,14 +2158,14 @@ class THSOperator:
                                     c.click_input()    # 降级：真实鼠标点击
                                 clicked = True
                                 break
-                    except Exception:
-                        pass
+                    except Exception as _eauto:
+                        logger.debug(f"[xiadan] _confirm_cancel_dialog 忽略异常: {_eauto}")
                     if not clicked:
                         try:
                             d.set_focus()
                             time.sleep(0.15)
-                        except Exception:
-                            pass
+                        except Exception as _eauto:
+                            logger.debug(f"[xiadan] _confirm_cancel_dialog 忽略异常: {_eauto}")
                         pyautogui.press("y")
                         time.sleep(0.2)
                         pyautogui.press("enter")
@@ -2329,8 +2336,8 @@ class THSOperator:
                 time.sleep(1.0)
                 try:
                     pyautogui.moveTo(op[0], op[1], duration=0.05)
-                except Exception:
-                    pass
+                except Exception as _eauto:
+                    logger.debug(f"[xiadan] cancel_order 忽略异常: {_eauto}")
 
             # ── 校验：重截撤单页，确认「只撤了目标这一笔、其余仍在」（防过撤）──
             after = []
@@ -2354,12 +2361,12 @@ class THSOperator:
                     if rc2:
                         cnos2 = [n for n in re.findall(r"\d{5,8}", line2) if n != rc2]
                         after.append({"code": rc2, "contract": (cnos2[-1] if cnos2 else None)})
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] cancel_order 忽略异常: {_eauto}")
             try:
                 self._read_toolbar_funds()                     # 撤后刷新资金缓存
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] cancel_order 忽略异常: {_eauto}")
 
             after_codes = [c["code"] for c in after]
             if tgt_contract:
@@ -2392,8 +2399,8 @@ class THSOperator:
                 time.sleep(0.3)
                 pyautogui.press(THS_BUY_KEY)
                 time.sleep(0.3)
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] cancel_order 忽略异常: {_eauto}")
 
     @_gui_serialized
     def buy(self, code: str, price: float, amount: int) -> dict:
@@ -2474,8 +2481,8 @@ class THSOperator:
         finally:
             try:
                 tmp.unlink()
-            except Exception:
-                pass
+            except Exception as _eauto:
+                logger.debug(f"[xiadan] _read_toolbar_funds 忽略异常: {_eauto}")
         funds = self._parse_funds_from_words(words)
         if funds.get("available") is not None or funds.get("total_asset") is not None:
             self._funds_cache = {"ts": _t.time(), "data": {
@@ -2521,8 +2528,8 @@ class THSOperator:
             if act != "cancelled":
                 try:
                     self._read_toolbar_funds()
-                except Exception:
-                    pass
+                except Exception as _eauto:
+                    logger.debug(f"[xiadan] _order_monitor_worker 忽略异常: {_eauto}")
             if act == "cancelled":
                 logger.info(f"[监控] {code} {action} 超时未成交 → 已自动撤单，资金已刷新")
             elif act == "none":
