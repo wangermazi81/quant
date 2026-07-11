@@ -74,6 +74,27 @@ sync_nginx_anti_crawl() {
     fi
 }
 
+ensure_data_scheduler_service() {
+    if [ "$(id -u)" != "0" ]; then
+        echo "Skip quant-scheduler install: root privileges required."
+        return 0
+    fi
+
+    local unit_src="$APP_DIR/deploy/quant-scheduler.service"
+    local unit_dst="/etc/systemd/system/quant-scheduler.service"
+    if [ ! -f "$unit_src" ]; then
+        echo "Skip quant-scheduler install: $unit_src missing."
+        return 0
+    fi
+
+    cp "$unit_src" "$unit_dst"
+    if [ -n "$RUN_USER" ] && [ "$RUN_USER" != "quant" ]; then
+        sed -i "s/^User=.*/User=$RUN_USER/" "$unit_dst"
+    fi
+    systemctl daemon-reload
+    systemctl enable quant-scheduler >/dev/null 2>&1 || true
+}
+
 echo "[1/6] Pull latest code from Gitee"
 git fetch origin --prune
 LOCAL=$(git rev-parse HEAD)
@@ -121,6 +142,7 @@ secure_runtime_secrets "$RUN_USER"
 
 echo
 echo "[5/6] Restart service"
+ensure_data_scheduler_service
 systemctl restart "$SERVICE"
 # 数据调度独立进程（工单5）：已安装则一并重启（未安装=单进程模式，跳过）
 if systemctl list-unit-files 2>/dev/null | grep -q "^quant-scheduler.service"; then

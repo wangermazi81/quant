@@ -31,7 +31,7 @@ LOCK_PATH = ROOT / "auto_scheduler.lock"
 DEFAULT_CONFIG = {
     "enabled": True,
     "data_refresh_times": ["15:35", "16:10"],
-    "factor_mining_time": "17:05",
+    "factor_mining_time": "17:10",
     "ai_decision_times": ["09:15", "09:25"],
     "window_minutes": 90,
     "max_candidates": 6,
@@ -254,7 +254,7 @@ def next_runs(now: datetime | None = None) -> dict:
     out: dict[str, str | None] = {"data_refresh": None, "factor_mining": None, "ai_decision": None}
     schedule = {
         "data_refresh": cfg.get("data_refresh_times") or [],
-        "factor_mining": [cfg.get("factor_mining_time") or "17:05"],
+        "factor_mining": [cfg.get("factor_mining_time") or DEFAULT_CONFIG["factor_mining_time"]],
         "ai_decision": cfg.get("ai_decision_times") or [],
     }
     for name, times in schedule.items():
@@ -449,7 +449,7 @@ def run_scheduler_loop(interval_seconds: int = 30) -> None:
                     slot = str(slot)
                     if _in_window(now, slot, window) and not _already_ran(status, "data_refresh", slot, date_text):
                         run_job("data_refresh", slot=slot)
-                slot = str(cfg.get("factor_mining_time") or "17:05")
+                slot = str(cfg.get("factor_mining_time") or DEFAULT_CONFIG["factor_mining_time"])
                 if _in_window(now, slot, window) and not _already_ran(status, "factor_mining", slot, date_text):
                     run_job("factor_mining", slot=slot)
                 for slot in cfg.get("ai_decision_times") or []:

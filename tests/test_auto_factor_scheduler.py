@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+from datetime import datetime
 from pathlib import Path
 
 
@@ -73,3 +74,12 @@ def test_run_job_ignores_dead_pid_lock(monkeypatch, tmp_path):
     assert status["running"] is False
     assert status["jobs"]
     assert not scheduler.LOCK_PATH.exists()
+
+
+def test_default_factor_mining_next_run_is_1710(monkeypatch, tmp_path):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    next_runs = scheduler.next_runs(datetime(2026, 7, 10, 16, 59))
+
+    assert scheduler.get_config()["factor_mining_time"] == "17:10"
+    assert next_runs["factor_mining"] == "2026-07-10 17:10"

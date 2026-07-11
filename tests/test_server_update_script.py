@@ -10,3 +10,12 @@ def test_server_update_syncs_nginx_anti_crawl_templates():
     assert "anti_crawl_server_snippet.conf" in script
     assert "/etc/nginx/snippets/jwalpha-anti-crawl-server.conf" in script
     assert "systemctl reload nginx" in script
+
+
+def test_server_update_installs_and_restarts_data_scheduler():
+    script = Path("deploy/server_update.sh").read_text(encoding="utf-8")
+
+    assert "ensure_data_scheduler_service" in script
+    assert "deploy/quant-scheduler.service" in script
+    assert "systemctl enable quant-scheduler" in script
+    assert "systemctl restart quant-scheduler" in script
