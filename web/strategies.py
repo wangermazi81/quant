@@ -25,6 +25,12 @@ bp = Blueprint("strategies", __name__)
 _strat_tasks: dict = {}            # task_id -> {status, result, error, ...}
 _strat_tasks_lock = threading.Lock()
 
+def _get_owned_strat_task(task_id: str, uid: int):
+    with _strat_tasks_lock:
+        task = _strat_tasks.get(task_id)
+        if not task or task.get("uid") != uid:
+            return None
+        return dict(task)
 
 
 @bp.route("/api/strategies")
@@ -214,10 +220,9 @@ def api_run_async():
 @require_auth
 def api_strat_progress(task_id):
     """查询异步选股任务状态（前端可 1-2s 轮询）"""
-    with _strat_tasks_lock:
-        task = _strat_tasks.get(task_id)
+    task = _get_owned_strat_task(task_id, session["user_id"])
     if not task:
-        return jsonify({"ok": False, "error": "任务不存在"})
+        return jsonify({"ok": False, "error": "not found"}), 404
     snap = {"ok": True, "task_id": task_id, "status": task.get("status")}
     progress = task.get("progress")
     if isinstance(progress, dict):
@@ -234,10 +239,9 @@ def api_strat_progress(task_id):
 @require_auth
 def api_strat_result(task_id):
     """获取异步选股结果（任务完成后调用）"""
-    with _strat_tasks_lock:
-        task = _strat_tasks.get(task_id)
+    task = _get_owned_strat_task(task_id, session["user_id"])
     if not task:
-        return jsonify({"ok": False, "error": "任务不存在"})
+        return jsonify({"ok": False, "error": "not found"}), 404
     if task["status"] == "done":
         return jsonify(task.get("result", {"ok": False}))
     if task["status"] == "error":

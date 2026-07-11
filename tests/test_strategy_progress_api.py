@@ -84,6 +84,29 @@ def test_async_strategy_progress_cannot_read_another_users_snapshot():
     assert foreign.get_json() == unknown.get_json() == {"ok": False, "error": "not found"}
 
 
+def test_async_strategy_result_cannot_read_another_users_result():
+    task_id = "owner-result-task"
+    with strategies_web._strat_tasks_lock:
+        strategies_web._strat_tasks.clear()
+        strategies_web._strat_tasks[task_id] = {
+            "status": "done",
+            "uid": 7,
+            "fn": "secret",
+            "result": {"ok": True, "code": "owner-only"},
+        }
+
+    client = main.app.test_client()
+    _login(client, uid=8)
+
+    foreign = client.get(f"/api/strategies/result/{task_id}")
+    unknown = client.get("/api/strategies/result/unknown-result-task")
+
+    assert foreign.status_code == unknown.status_code == 404
+    assert foreign.get_json() == unknown.get_json() == {
+        "ok": False,
+        "error": "not found",
+    }
+
 def test_async_strategy_worker_stores_progress_from_its_own_callback(monkeypatch):
     class ImmediateThread:
         def __init__(self, target=None, daemon=None):
