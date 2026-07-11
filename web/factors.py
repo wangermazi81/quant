@@ -517,7 +517,7 @@ def api_factors_zoo_compute_async():
             if not codes:
                 return jsonify({"ok": False, "error": "manual 模式 codes 必填"})
 
-        task_id = _uuid.uuid4().hex[:12]
+        task_id = _uuid.uuid4().hex
         scope_label = f"活跃{max_codes or '全市场'}只" if mode == "market_top" else f"{len(codes)}只"
         with _fz_tasks_lock:
             _fz_tasks[task_id] = {

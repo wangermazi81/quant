@@ -116,11 +116,8 @@ def bridge_signal_status(signal_id):
     """前端轮询单条信号当前状态（pending/sent/executed/failed/cancelled）"""
     uid = session["user_id"]
     sig = um.get_trade_signal(signal_id)
-    if not sig:
-        return jsonify({"ok": False, "error": "信号不存在"})
-    # 仅允许查自己的信号
-    if sig.get("user_id") != uid:
-        return jsonify({"ok": False, "error": "无权查看此信号"}), 403
+    if not sig or sig.get("user_id") != uid:
+        return jsonify({"ok": False, "error": "not found"}), 404
     return jsonify({
         "ok": True,
         "signal": {

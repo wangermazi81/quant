@@ -34,8 +34,9 @@ def _get_owned_strat_task(task_id: str, uid: int):
 
 
 @bp.route("/api/strategies")
+@require_auth
 def api_list():
-    items = sm.list_strategies()
+    items = sm.list_strategies(user_id=session["user_id"])
     # ★ 策略隐私：非 admin 看不到内置(自研)策略的简介(desc)，只保留名称供选择/激活
     if not session.get("is_admin"):
         for it in items:
@@ -47,7 +48,7 @@ def api_list():
 @bp.route("/api/strategies/<filename>")
 @require_auth
 def api_get(filename):
-    meta = sm.get_meta(filename)
+    meta = sm.get_meta(filename, user_id=session["user_id"]) or {}
     # ★ 策略隐私：内置策略（自研）的源码仅 admin 或被授权管理员可见；其他云端用户拿到"受保护"占位，
     #   防止被查看/复制复用。策略仍可正常激活运行（运行/回测走 sm 内部真实代码，不经此路由）。
     if meta.get("builtin") and not _can_view_protected_source():
@@ -62,7 +63,7 @@ def api_get(filename):
             '"""\n'
         ) % (nm, nm)
         return jsonify({"code": placeholder, "builtin": True, "locked": True})
-    return jsonify({"code": sm.get_code(filename),
+    return jsonify({"code": sm.get_code(filename, user_id=session["user_id"]),
                     "builtin": bool(meta.get("builtin")), "locked": False})
 
 
@@ -101,11 +102,11 @@ def api_save():
     fn  = d.get("filename", "")
     is_admin = bool(session.get("is_admin"))
     # ★ 内置(admin)策略受保护：非 admin 不可保存/覆盖
-    if sm.get_meta(fn).get("builtin") and not is_admin:
+    if (sm.get_meta(fn, user_id=uid) or {}).get("builtin") and not is_admin:
         return jsonify({"ok": False, "msg": "内置策略受保护，不可修改或覆盖。请点『+ 新建』编写你自己的策略"})
     # ★ 自动打标记：admin 创建/保存的策略一律受保护(builtin:true)，普通用户自建的可见(false)
     code = _inject_builtin_flag(d.get("code", ""), is_admin)
-    r   = sm.save(fn, code)
+    r   = sm.save(fn, code, user_id=uid)
     if r["ok"]:
         _add_log(uid, f"策略已保存: {r['file']}")
     return jsonify(r)
@@ -117,7 +118,7 @@ def api_delete():
     uid = session["user_id"]
     s   = get_user_state(uid)
     fn  = request.json.get("filename", "")
-    r   = sm.delete(fn)
+    r   = sm.delete(fn, user_id=uid)
     if r["ok"]:
         _add_log(uid, f"策略已删除: {fn}", "WARN")
         if s.get("active_strategy") == fn:
@@ -149,7 +150,7 @@ def api_run():
     if not cs and mc > 0:
         scope_label = f"活跃前{mc}只"
     _add_log(uid, f"执行选股: [{fn}] {scope_label}...")
-    r       = sm.run(fn, cs, max_codes=mc)
+    r       = sm.run(fn, cs, max_codes=mc, user_id=uid)
     scanned = r.get("scanned", r.get("count", 0))
     _add_log(uid, f"选股完成，扫描 {scanned} 只，命中 {r.get('count',0)} 只")
     return jsonify(r)
@@ -174,16 +175,35 @@ def api_run_async():
         return jsonify(err), 402
     task_id = _uuid.uuid4().hex
     with _strat_tasks_lock:
-        _strat_tasks[task_id] = {"status": "pending", "uid": uid, "fn": fn}
+        _strat_tasks[task_id] = {
+            "status": "pending",
+            "uid": uid,
+            "fn": fn,
+            "progress": {
+                "running": False,
+                "stage": "pending",
+                "current": 0,
+                "total": 0,
+                "code": "",
+            },
+        }
     scope_label = "全市场" if not cs else f"{len(cs)}只"
     if not cs and mc > 0:
         scope_label = f"活跃前{mc}只"
     _add_log(uid, f"执行选股(异步): [{fn}] {scope_label}... task={task_id}")
+
+    def _store_progress(progress):
+        if not isinstance(progress, dict):
+            return
+        with _strat_tasks_lock:
+            task = _strat_tasks.get(task_id)
+            if task and task.get("uid") == uid:
+                task["progress"] = dict(progress)
     def _worker():
         try:
             with _strat_tasks_lock:
                 _strat_tasks[task_id]["status"] = "running"
-            r = sm.run(fn, cs, max_codes=mc)
+            r = sm.run(fn, cs, max_codes=mc, user_id=uid, progress_callback=_store_progress)
             with _strat_tasks_lock:
                 _strat_tasks[task_id].update({"status": "done", "result": r})
             scanned = r.get("scanned", r.get("count", 0))
@@ -191,7 +211,7 @@ def api_run_async():
         except Exception as e:
             logger.exception(f"[uid={uid}] async scan 失败 task={task_id}")
             with _strat_tasks_lock:
-                _strat_tasks[task_id].update({"status": "error", "error": str(e)})
+                _strat_tasks[task_id].update({"status": "error", "error": str(e), "progress": {"running": False, "stage": "error", "current": 0, "total": 0, "code": ""}})
     threading.Thread(target=_worker, daemon=True).start()
     return jsonify({"ok": True, "task_id": task_id})
 
@@ -204,19 +224,12 @@ def api_strat_progress(task_id):
     if task is None:
         return jsonify({"ok": False, "error": "not found"}), 404
     snap = {"ok": True, "task_id": task_id, "status": task.get("status")}
-    # 借用 strategy_manager 的全局扫描进度
-    try:
-        from market import ths_quote as tq
-        tdx_prog = tq.get_scan_progress()
-        strat_prog = sm.get_scan_progress()
-        prog = tdx_prog if tdx_prog.get("running") else strat_prog
-        if isinstance(prog, dict) and prog.get("running"):
-            snap["scan_current"] = int(prog.get("current") or 0)
-            snap["scan_total"]   = int(prog.get("total") or 0)
-            snap["scan_code"]    = prog.get("code") or ""
-            snap["scan_stage"]   = prog.get("stage") or ("行情扫描" if prog is tdx_prog else "策略扫描")
-    except Exception:
-        pass
+    progress = task.get("progress")
+    if isinstance(progress, dict):
+        snap["scan_current"] = int(progress.get("current") or 0)
+        snap["scan_total"] = int(progress.get("total") or 0)
+        snap["scan_code"] = progress.get("code") or ""
+        snap["scan_stage"] = progress.get("stage") or ""
     if task.get("status") == "error":
         snap["error"] = task.get("error", "未知错误")
     return jsonify(snap)
@@ -242,6 +255,8 @@ def api_activate():
     uid       = session["user_id"]
     s         = get_user_state(uid)
     fn        = request.json.get("filename")
+    if fn and sm.get_meta(fn, user_id=uid) is None:
+        return jsonify({"ok": False, "error": "not found"}), 404
     was_running = bool(s.get("running"))
     s["active_strategy"] = fn
     if fn:
@@ -249,7 +264,7 @@ def api_activate():
         _persist_state(uid, active_strategy=fn, running=1)
     else:
         _persist_state(uid, active_strategy="")
-    meta_list = sm.list_strategies()
+    meta_list = sm.list_strategies(user_id=uid)
     meta      = next((m for m in meta_list if m["file"] == fn), {})
     label     = meta.get('name', fn) if fn else '默认'
     if fn and not was_running:
@@ -266,7 +281,7 @@ def api_rename():
     d      = request.json
     old_fn = d.get("old", "")
     new_fn = d.get("new", "")
-    r      = sm.rename(old_fn, new_fn)
+    r      = sm.rename(old_fn, new_fn, user_id=uid)
     if r["ok"]:
         _add_log(uid, f"策略重命名: {old_fn} → {r['file']}")
         if s.get("active_strategy") == old_fn:

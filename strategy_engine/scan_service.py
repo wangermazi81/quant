@@ -51,7 +51,7 @@ def do_scan(uid: int):
     else:
         _base_cash = s["capital"]
 
-    _pos_cfg = sm.get_position_config(s.get("active_strategy") or "")
+    _pos_cfg = sm.get_position_config(s.get("active_strategy") or "", user_id=uid)
     _max_daily = int(_pos_cfg.get("max_daily") or 0)
     if _max_daily > 0:
         if _broker_type == "live" and not DRY_RUN:
@@ -86,7 +86,18 @@ def do_scan(uid: int):
 
     if active:
         # max_codes=0 触发真·全市场扫描（不再裁剪 600 只）
-        ret     = sm.run(active, [], max_codes=0)
+        def _on_strategy_progress(progress):
+            if not isinstance(progress, dict):
+                return
+            s["scan_progress"] = {
+                "running": bool(progress.get("running")),
+                "stage": progress.get("stage") or "",
+                "current": int(progress.get("current") or 0),
+                "total": int(progress.get("total") or 0),
+                "code": progress.get("code") or "",
+            }
+
+        ret = sm.run(active, [], max_codes=0, user_id=uid, progress_callback=_on_strategy_progress)
         results = [{
             "code":        r.get("code", ""),
             "name":        r.get("name", ""),
@@ -142,7 +153,7 @@ def do_scan(uid: int):
         from config import MAX_POSITIONS as _CFG_POS, SINGLE_POSITION_MAX_RATIO as _CFG_RATIO
     except Exception:
         _CFG_POS, _CFG_RATIO = 5, 0.20
-    _q_pos_cfg = sm.get_position_config(s.get("active_strategy") or "")
+    _q_pos_cfg = sm.get_position_config(s.get("active_strategy") or "", user_id=uid)
     _q_max_daily = int(_q_pos_cfg.get("max_daily") or 0)
     _MAX_POS  = int(_q_pos_cfg.get("max_hold") or 0) or int(s.get("max_positions") or _CFG_POS)
     _SP_RATIO = float(s.get("single_position_max_ratio") or _CFG_RATIO)
