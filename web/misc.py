@@ -141,7 +141,7 @@ def api_backtest():
 
     if full_market:
         from strategy_engine.backtest import start_backtest_async
-        task_id = start_backtest_async(**bt_kwargs)
+        task_id = start_backtest_async(**bt_kwargs, uid=uid)
         _add_log(uid, f"全市场回测已启动 [{fn}] {d.get('start_date')}~{d.get('end_date')} task={task_id}")
         return jsonify({"ok": True, "async": True, "task_id": task_id})
     else:
@@ -158,17 +158,24 @@ def api_backtest():
 
 
 @bp.route("/api/backtest/task/<task_id>")
+@require_auth
 def api_backtest_task(task_id):
-    from strategy_engine.backtest import get_backtest_task
-    return jsonify(get_backtest_task(task_id))
+    from strategy_engine import backtest
+    task = backtest._bt_tasks.get(task_id)
+    if not task or task.get("uid") != session["user_id"]:
+        return jsonify({"ok": False, "error": "not found"}), 404
+    return jsonify(backtest.get_backtest_task(task_id))
 
 
 @bp.route("/api/backtest/cancel/<task_id>", methods=["POST"])
 @require_auth
 def api_backtest_cancel(task_id):
     uid = session["user_id"]
-    from strategy_engine.backtest import cancel_backtest_task
-    result = cancel_backtest_task(task_id)
+    from strategy_engine import backtest
+    task = backtest._bt_tasks.get(task_id)
+    if not task or task.get("uid") != uid:
+        return jsonify({"ok": False, "error": "not found"}), 404
+    result = backtest.cancel_backtest_task(task_id)
     if result.get("ok"):
         _add_log(uid, f"⏹ 回测已终止: task={task_id}", "WARN")
     return jsonify(result)

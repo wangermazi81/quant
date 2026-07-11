@@ -667,12 +667,12 @@ def test_builtin_strategy_and_factor_source_visibility_respects_root_admin(isola
     _login_session(client, ops_uid, "limited_ops")
 
     strategy = client.get("/api/strategies/core_alpha").get_json()
-    factor = client.get("/api/factors/core_factor").get_json()
+    factor_response = client.get("/api/factors/core_factor")
 
     assert strategy["locked"] is True
     assert "SECRET_STRATEGY_CODE" not in strategy["code"]
-    assert factor["locked"] is True
-    assert "SECRET_FACTOR_CODE" not in factor["code"]
+    assert factor_response.status_code == 403
+    assert factor_response.get_json()["code"] == "root_admin_required"
 
     assert um.set_admin_permissions(
         ops_uid,
@@ -681,12 +681,12 @@ def test_builtin_strategy_and_factor_source_visibility_respects_root_admin(isola
     )["ok"]
 
     strategy = client.get("/api/strategies/core_alpha").get_json()
-    factor = client.get("/api/factors/core_factor").get_json()
+    factor_response = client.get("/api/factors/core_factor")
 
     assert strategy["locked"] is False
     assert strategy["code"] == "SECRET_STRATEGY_CODE"
-    assert factor["locked"] is False
-    assert factor["code"] == "SECRET_FACTOR_CODE"
+    assert factor_response.status_code == 403
+    assert factor_response.get_json()["code"] == "root_admin_required"
 
 
 def test_root_admin_login_has_stricter_lockout(isolated_app):

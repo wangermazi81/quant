@@ -990,11 +990,13 @@ def start_backtest_async(strategy_code: str, codes: list,
                           initial_capital: float = 100_000,
                           max_positions: int = 5,
                           stop_loss: float = -0.05,
-                          take_profit: float = 0.10) -> str:
+                          take_profit: float = 0.10,
+                          uid: int | None = None) -> str:
     """在后台线程运行回测，立即返回 task_id（前端轮询 /api/backtest/task/<task_id>）"""
-    task_id = str(_bt_uuid.uuid4())[:8]
+    task_id = _bt_uuid.uuid4().hex
     _bt_tasks[task_id] = {
         "status":   "running",
+        "uid":      uid,
         "progress": {"current": 0, "total": 100, "stage": "初始化..."},
         "result":   None,
         "created":  _bt_time.time(),

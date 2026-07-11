@@ -15,6 +15,14 @@ logger = logging.getLogger(__name__)
 
 bp = Blueprint("ai", __name__)
 
+
+def _get_owned_ai_task(task_id: str, uid: int):
+    with _ai_tasks_lock:
+        task = _ai_tasks.get(task_id)
+        if not task or task.get("uid") != uid:
+            return None
+        return dict(task)
+
 # AI 分析异步任务表（进程内，重启丢失）
 import threading as _threading
 _ai_tasks: dict = {}
@@ -330,7 +338,7 @@ def ai_analyze_async():
     err = _deduct("ai_analysis", f"AI分析 {code}")
     if err:
         return jsonify(err), 402
-    task_id = _uuid.uuid4().hex[:12]
+    task_id = _uuid.uuid4().hex
     with _ai_tasks_lock:
         _ai_tasks[task_id] = {"status": "pending", "uid": uid, "code": code}
     _add_log(uid, f"AI分析(异步): {code}... task={task_id}")
@@ -407,10 +415,9 @@ def ai_analyze_async():
 @require_auth
 def ai_analyze_progress(task_id):
     """查询异步 AI 分析状态（前端可 1-2s 轮询）"""
-    with _ai_tasks_lock:
-        task = _ai_tasks.get(task_id)
-    if not task:
-        return jsonify({"ok": False, "error": "任务不存在"})
+    task = _get_owned_ai_task(task_id, session["user_id"])
+    if task is None:
+        return jsonify({"ok": False, "error": "not found"}), 404
     snap = {"ok": True, "task_id": task_id, "status": task.get("status")}
     if task.get("status") == "error":
         snap["error"] = task.get("error", "未知错误")
@@ -421,10 +428,9 @@ def ai_analyze_progress(task_id):
 @require_auth
 def ai_analyze_result(task_id):
     """获取异步 AI 分析结果"""
-    with _ai_tasks_lock:
-        task = _ai_tasks.get(task_id)
-    if not task:
-        return jsonify({"ok": False, "error": "任务不存在"})
+    task = _get_owned_ai_task(task_id, session["user_id"])
+    if task is None:
+        return jsonify({"ok": False, "error": "not found"}), 404
     if task["status"] == "done":
         return jsonify(task.get("result", {"ok": False}))
     if task["status"] == "error":
