@@ -172,8 +172,8 @@ def get_market_regime(force_refresh: bool = False) -> dict:
                 _ups = sum(1 for q in _qs if float(q.get("change_pct") or 0) > 0)
                 _ratio = _ups / max(len(_qs), 1)
                 strength = int(strength + max(-8.0, min(8.0, (_ratio - 0.5) * 32)))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[market] 市场宽度修正跳过（用基础强度）: {e}")
         strength = max(0, min(100, strength))
 
         # ── 市场判断 ────────────────────────────────

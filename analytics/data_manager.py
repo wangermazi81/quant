@@ -335,8 +335,8 @@ def merge_kline_cache(code: str, df: pd.DataFrame) -> pd.DataFrame:
         })
         meta[code] = item
         _save_meta(meta)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[data] K线元数据写入失败（不影响本次返回）{code}: {e}")
 
     return merged
 
@@ -345,8 +345,8 @@ def _load_meta() -> dict:
     if META_FILE.exists():
         try:
             return json.loads(META_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[data] K线元数据文件损坏，回退空（将触发重新下载）: {e}")
     return {}
 
 def _save_meta(meta: dict):
@@ -360,8 +360,8 @@ def _load_name_cache() -> dict:
     if NAME_CACHE_FILE.exists():
         try:
             return json.loads(NAME_CACHE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[data] 股票名称缓存损坏，回退空（名称将显示为代码）: {e}")
     return {}
 
 def refresh_name_cache() -> dict:
@@ -556,8 +556,8 @@ def _uqer_token() -> str:
         p = DATA_DIR.parent / "datasource_config.json"
         if p.exists():
             return (_json.loads(p.read_text(encoding="utf-8")) or {}).get("uqer_token", "")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[data] 优矿 token 读取失败，优矿数据源跳过: {e}")
     return ""
 
 

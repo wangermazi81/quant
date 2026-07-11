@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
 
 CONFIG_FILE = Path(__file__).parent.parent / "data" / "datasource_config.json"
 VALID_PROVIDERS = {"current", "tushare"}
@@ -63,7 +65,9 @@ def _read_raw() -> dict:
         return _normalize(data)
     except ValueError:
         raise
-    except Exception:
+    except Exception as e:
+        # 配置损坏 → 静默回退默认会丢失用户的数据源选择（如已配 tushare），必须留痕
+        logger.warning(f"[datasource] 配置读取失败，回退默认数据源: {e}")
         return DEFAULT_CONFIG.copy()
 
 

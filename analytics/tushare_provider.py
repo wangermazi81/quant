@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from datetime import datetime, timedelta
 from typing import Any
 
 import pandas as pd
 import requests
+
+logger = logging.getLogger(__name__)
 
 try:
     from analytics import datasource_config
@@ -296,8 +299,9 @@ def _fetch_replay_kline_qfq(code: str, start: str, end: str, token: str) -> pd.D
             },
         )
         daily = _apply_qfq(daily, pd.DataFrame(factor_rows))
-    except Exception:
-        pass
+    except Exception as e:
+        # 复权因子获取/应用失败 → 返回未复权价（回测价格会失真，必须留痕）
+        logger.warning(f"[tushare] 复权处理失败，返回未复权日线: {e}")
     return _normalize_daily_frame(daily)
 
 

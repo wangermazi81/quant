@@ -175,8 +175,8 @@ def _disk_get(yyyymmdd: str):
         p = _disk_path(yyyymmdd)
         if p.exists():
             return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[lhb] 磁盘缓存读取失败 {yyyymmdd}（将重新抓取）: {e}")
     return None
 
 
@@ -184,8 +184,8 @@ def _disk_put(yyyymmdd: str, data: dict):
     try:
         _disk_path(yyyymmdd).write_text(
             json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[lhb] 磁盘缓存写入失败 {yyyymmdd}（下次仍会重抓）: {e}")
 
 
 def _seat_detail_count(data: dict) -> int:
@@ -540,8 +540,8 @@ def _fetch_seat_detail(code: str, date_str: str) -> list:
                 ent["sell"] = max(ent["sell"], sell)
                 ent["net"]  = ent["buy"] - ent["sell"]
                 ent["dir"]  = "B" if ent["buy"] >= ent["sell"] else "S"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[lhb] 方法1 席位明细解析失败 {code}（尝试方法2）: {e}")
     if seats:
         return sorted(seats.values(), key=lambda x: x["net"], reverse=True)
 
@@ -553,7 +553,8 @@ def _fetch_seat_detail(code: str, date_str: str) -> list:
             for flag in ("买入", "卖出"):
                 try:
                     df = ak.stock_lhb_stock_detail_em(symbol=code, date=ymd, flag=flag)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"[lhb] 方法2 akshare {flag}榜抓取失败 {code}: {e}")
                     continue
                 if df is None or df.empty:
                     continue
@@ -571,8 +572,8 @@ def _fetch_seat_detail(code: str, date_str: str) -> list:
                     ent["dir"]  = "B" if ent["buy"] >= ent["sell"] else "S"
         if seats:
             return sorted(seats.values(), key=lambda x: x["net"], reverse=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[lhb] 席位明细全部数据源失败 {code} {date_str}（返回空席位）: {e}")
 
     return []
 
@@ -700,8 +701,8 @@ def get_lhb_dates(limit: int = 30) -> list:
                     dates.append(_fmt(d))
             if len(dates) >= limit:
                 break
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[lhb] 可用日期枚举失败（仅返回今日）: {e}")
     today = _fmt(_today())
     if today not in dates:
         dates.insert(0, today)

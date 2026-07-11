@@ -165,8 +165,8 @@ class AccountRotator:
         try:
             cfg = _load_config()
             save_config(cfg)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[search] 搜索配置持久化失败（本次改动重启后丢失）: {e}")
 
     def stats(self) -> dict:
         keys = self._keys()

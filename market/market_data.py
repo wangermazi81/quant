@@ -58,7 +58,8 @@ def _tushare_cfg() -> dict | None:
         return None
     try:
         cfg = datasource_config.get_internal_config()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"[market] 数据源配置读取失败，用默认源(akshare): {e}")
         return None
     if cfg.get("provider") == "tushare" and cfg.get("tushare_enabled"):
         return cfg
