@@ -1119,6 +1119,8 @@ async function _annFetch(method, path, body, timeoutMs){
 // ================================================================
 let FM_LAST_FACTOR_REPORT = null;
 let FM_LAST_FACTOR_RUN_ID = '';
+let FM_ACTIVE_TASK_ID = '';
+let FM_POLL_GENERATION = 0;
 
 function fmSetText(id, text){
   const el = document.getElementById(id);
@@ -1293,6 +1295,10 @@ async function loadFactorMining(){
   const r = await _annFetch('GET', '/admin/factor-mining/latest');
   renderFactorMining(r);
   fmLoadWatchlist();
+  const task = await _annFetch('GET', '/admin/factor-mining/status');
+  if(task && task.ok && task.found && (task.status === 'queued' || task.status === 'running')){
+    fmPollFactorMining(task.task_id);
+  }
 }
 
 function renderFactorMining(r){
@@ -1483,8 +1489,61 @@ function fmCopyCode(code){
   else showToast('请手动复制：'+code, 'info');
 }
 
-async function runFactorMining(){
+function fmSetRunBusy(busy){
   const btn = document.getElementById('fm-run-btn');
+  if(btn) btn.disabled = !!busy;
+}
+
+function fmTaskStatusText(task){
+  if(task.status === 'queued') return '任务已排队，等待开始…';
+  const started = task.started_at ? '（开始于 '+task.started_at+'）' : '';
+  return '后台挖掘中'+started+'，页面可保持打开或稍后返回查看…';
+}
+
+function fmSleep(ms){
+  return new Promise(resolve=>setTimeout(resolve, ms));
+}
+
+async function fmPollFactorMining(taskId){
+  if(!taskId) return;
+  FM_ACTIVE_TASK_ID = taskId;
+  const generation = ++FM_POLL_GENERATION;
+  const msg = document.getElementById('fm-msg');
+  fmSetRunBusy(true);
+
+  while(FM_ACTIVE_TASK_ID === taskId && generation === FM_POLL_GENERATION){
+    const task = await _annFetch('GET', '/admin/factor-mining/status?task_id='+encodeURIComponent(taskId), null, 30000);
+    if(FM_ACTIVE_TASK_ID !== taskId || generation !== FM_POLL_GENERATION) return;
+    if(!task || !task.ok || !task.found){
+      const error = (task && task.error) || '无法读取挖掘任务状态';
+      if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
+      showToast(error, 'error');
+      FM_ACTIVE_TASK_ID = '';
+      fmSetRunBusy(false);
+      return;
+    }
+    if(task.status === 'queued' || task.status === 'running'){
+      if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = fmTaskStatusText(task); }
+      await fmSleep(2000);
+      continue;
+    }
+    FM_ACTIVE_TASK_ID = '';
+    fmSetRunBusy(false);
+    if(task.status === 'done'){
+      if(msg){ msg.style.color = 'var(--green)'; msg.textContent = '挖掘完成：'+(task.finished_at || ''); }
+      showToast('AI因子挖掘完成', 'success');
+      renderFactorMining({ok:true, found:true, run_id:task.run_id, report:task.report});
+      fmLoadWatchlist();
+      return;
+    }
+    const error = task.error || '挖掘任务失败';
+    if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
+    showToast(error, 'error');
+    return;
+  }
+}
+
+async function runFactorMining(){
   const msg = document.getElementById('fm-msg');
   const body = {
     n_stocks: fmReadInt('fm-n-stocks', 800),
@@ -1496,15 +1555,15 @@ async function runFactorMining(){
     candidate_pool_size: fmReadInt('fm-candidate-pool', 100),
     mining_rules: fmReadMiningRules(),
   };
-  if(btn) btn.disabled = true;
-  if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '正在挖掘，可能需要几分钟…'; }
-  const r = await _annFetch('POST', '/admin/factor-mining/run', body, 300000);
-  if(btn) btn.disabled = false;
-  if(r && r.ok){
-    showToast('AI因子挖掘完成','success');
-    renderFactorMining({ok:true, found:true, run_id:r.run_id, report:r.report});
+  fmSetRunBusy(true);
+  if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '正在创建后台挖掘任务…'; }
+  const r = await _annFetch('POST', '/admin/factor-mining/run', body, 60000);
+  if(r && r.ok && r.task_id){
+    if(r.reused) showToast('已有挖掘任务运行中，已恢复进度', 'info');
+    fmPollFactorMining(r.task_id);
   }else{
-    const error = (r && r.error) || '挖掘失败';
+    fmSetRunBusy(false);
+    const error = (r && r.error) || '挖掘任务创建失败';
     if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
     showToast(error,'error');
   }

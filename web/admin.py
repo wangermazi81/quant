@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import re
 import json
+import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +22,12 @@ from app_state import BASE_DIR, require_admin, require_admin_perm, require_root_
 from web._params import _bounded_int_arg, _int_value
 
 bp = Blueprint("admin", __name__)
+
+
+_factor_mining_jobs: dict[str, dict] = {}
+_factor_mining_jobs_lock = threading.RLock()
+_factor_mining_active_task_id: str | None = None
+_factor_mining_last_task_id: str | None = None
 
 
 def _bounded_int_value(raw, default: int, min_value: int, max_value: int) -> int:
@@ -144,6 +152,75 @@ def _factor_mining_payload(run_dir: Path | None) -> dict:
         "updated_at": _safe_mtime(report_path),
         "report": report,
     }
+
+
+def _factor_mining_job_snapshot(task: dict) -> dict:
+    payload = {
+        "task_id": task.get("task_id"),
+        "run_id": task.get("run_id"),
+        "status": task.get("status", "queued"),
+        "created_at": task.get("created_at"),
+        "started_at": task.get("started_at"),
+        "finished_at": task.get("finished_at"),
+        "error": task.get("error"),
+    }
+    if task.get("status") == "done":
+        payload["report"] = task.get("report")
+        payload["watchlist"] = task.get("watchlist")
+    return payload
+
+
+def _set_factor_mining_job(task_id: str, **changes) -> None:
+    with _factor_mining_jobs_lock:
+        task = _factor_mining_jobs.get(task_id)
+        if task is not None:
+            task.update(changes)
+
+
+def _run_factor_mining_job(task_id: str, params: dict) -> None:
+    global _factor_mining_active_task_id
+
+    _set_factor_mining_job(task_id, status="running", started_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    try:
+        with auto_factor_scheduler._file_lock() as acquired:
+            if not acquired:
+                raise RuntimeError("已有自动或手动因子任务正在运行，请稍后重试")
+            out_dir = _factor_mining_root() / params["run_id"]
+            report = relay_factor_mining.run_relay_research(
+                out_dir=out_dir,
+                n_stocks=params["n_stocks"],
+                days=params["days"],
+                train_days=params["train_days"],
+                test_days=params["test_days"],
+                hold_days=params["hold_days"],
+                top_k=params["top_k"],
+                candidate_pool_size=params["candidate_pool_size"],
+                include_market_signals=True,
+                mining_rules=params["mining_rules"],
+            )
+            watchlist = _import_factor_candidates_to_watchlist(
+                report.get("latest_candidates", []) if isinstance(report, dict) else [],
+                run_id=params["run_id"],
+                strategy_name="AI因子挖掘候选",
+            )
+        _set_factor_mining_job(
+            task_id,
+            status="done",
+            report=report,
+            watchlist=watchlist,
+            finished_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+    except Exception as exc:
+        _set_factor_mining_job(
+            task_id,
+            status="error",
+            error=str(exc),
+            finished_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+    finally:
+        with _factor_mining_jobs_lock:
+            if _factor_mining_active_task_id == task_id:
+                _factor_mining_active_task_id = None
 
 
 def _factor_watchlist_path() -> Path:
@@ -490,9 +567,24 @@ def admin_factor_mining_rules():
     return jsonify({"ok": True, "mining_rules": rules, "condition_explain": relay_factor_mining.condition_explain(rules)})
 
 
+@bp.route("/api/admin/factor-mining/status", methods=["GET"])
+@require_root_admin
+def admin_factor_mining_status():
+    task_id = str(request.args.get("task_id") or "").strip()
+    with _factor_mining_jobs_lock:
+        if not task_id:
+            task_id = _factor_mining_active_task_id or _factor_mining_last_task_id or ""
+        task = dict(_factor_mining_jobs.get(task_id) or {})
+    if not task:
+        return jsonify({"ok": True, "found": False, "status": "idle", "task_id": task_id or None})
+    return jsonify({"ok": True, "found": True, **_factor_mining_job_snapshot(task)})
+
+
 @bp.route("/api/admin/factor-mining/run", methods=["POST"])
 @require_root_admin
 def admin_factor_mining_run():
+    global _factor_mining_active_task_id, _factor_mining_last_task_id
+
     body = request.json or {}
     n_stocks = _bounded_int_value(body.get("n_stocks"), 800, 5, 2000)
     days = _bounded_int_value(body.get("days"), 180, 60, 320)
@@ -503,29 +595,46 @@ def admin_factor_mining_run():
     candidate_pool_size = _bounded_int_value(body.get("candidate_pool_size"), 100, top_k, 300)
     mining_rules = body.get("mining_rules") if isinstance(body.get("mining_rules"), dict) else None
 
-    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_dir = _factor_mining_root() / run_id
-    try:
-        report = relay_factor_mining.run_relay_research(
-            out_dir=out_dir,
-            n_stocks=n_stocks,
-            days=days,
-            train_days=train_days,
-            test_days=test_days,
-            hold_days=hold_days,
-            top_k=top_k,
-            candidate_pool_size=candidate_pool_size,
-            include_market_signals=True,
-            mining_rules=mining_rules,
-        )
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc), "run_id": run_id}), 500
-    watchlist = _import_factor_candidates_to_watchlist(
-        report.get("latest_candidates", []) if isinstance(report, dict) else [],
-        run_id=run_id,
-        strategy_name="AI因子挖掘候选",
-    )
-    return jsonify({"ok": True, "run_id": run_id, "report": report, "watchlist": watchlist})
+    with _factor_mining_jobs_lock:
+        active = _factor_mining_jobs.get(_factor_mining_active_task_id or "")
+        if active and active.get("status") in {"queued", "running"}:
+            return jsonify({"ok": True, "found": True, "reused": True, **_factor_mining_job_snapshot(active)}), 202
+
+        task_id = uuid.uuid4().hex
+        run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{task_id[:6]}"
+        params = {
+            "run_id": run_id,
+            "n_stocks": n_stocks,
+            "days": days,
+            "train_days": train_days,
+            "test_days": test_days,
+            "hold_days": hold_days,
+            "top_k": top_k,
+            "candidate_pool_size": candidate_pool_size,
+            "mining_rules": mining_rules,
+        }
+        task = {
+            "task_id": task_id,
+            "run_id": run_id,
+            "status": "queued",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        _factor_mining_jobs[task_id] = task
+        _factor_mining_active_task_id = task_id
+        _factor_mining_last_task_id = task_id
+        while len(_factor_mining_jobs) > 20:
+            oldest = next(iter(_factor_mining_jobs))
+            if oldest == task_id:
+                break
+            _factor_mining_jobs.pop(oldest, None)
+
+    threading.Thread(
+        target=_run_factor_mining_job,
+        args=(task_id, params),
+        daemon=True,
+        name=f"factor-mining-{task_id[:8]}",
+    ).start()
+    return jsonify({"ok": True, "found": True, "reused": False, **_factor_mining_job_snapshot(task)}), 202
 
 
 @bp.route("/api/admin/factor-watchlist", methods=["GET"])

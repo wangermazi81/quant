@@ -1,6 +1,8 @@
 import os
 import sys
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -240,9 +242,13 @@ def test_factor_mining_run_is_root_only_and_invokes_research(isolated_app, monke
     import web.admin as admin_api
 
     calls = []
+    started = threading.Event()
+    release = threading.Event()
 
     def fake_run_relay_research(**kwargs):
         calls.append(kwargs)
+        started.set()
+        assert release.wait(timeout=2)
         return {
             "status": "ok",
             "reason": "ok",
@@ -253,8 +259,20 @@ def test_factor_mining_run_is_root_only_and_invokes_research(isolated_app, monke
             ],
         }
 
+    class AcquiredLock:
+        def __enter__(self):
+            return True
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
     monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
     monkeypatch.setattr(admin_api.relay_factor_mining, "run_relay_research", fake_run_relay_research, raising=False)
+    monkeypatch.setattr(admin_api.auto_factor_scheduler, "_file_lock", lambda: AcquiredLock())
+    with admin_api._factor_mining_jobs_lock:
+        admin_api._factor_mining_jobs.clear()
+        admin_api._factor_mining_active_task_id = None
+        admin_api._factor_mining_last_task_id = None
 
     client = app.test_client()
     _login_session(client, ops_uid, "ops")
@@ -277,20 +295,55 @@ def test_factor_mining_run_is_root_only_and_invokes_research(isolated_app, monke
     assert not calls
 
     _login_session(client, 1, "admin")
-    resp = client.post("/api/admin/factor-mining/run", json={"n_stocks": 25, "days": 80, "train_days": 30, "test_days": 10, "hold_days": 2, "top_k": 4, "mining_rules": {"filters": {"min_volume_ratio_20": 1.1}}})
-    data = resp.get_json()
+    try:
+        before = time.monotonic()
+        resp = client.post(
+            "/api/admin/factor-mining/run",
+            json={
+                "n_stocks": 25,
+                "days": 80,
+                "train_days": 30,
+                "test_days": 10,
+                "hold_days": 2,
+                "top_k": 4,
+                "mining_rules": {"filters": {"min_volume_ratio_20": 1.1}},
+            },
+        )
+        elapsed = time.monotonic() - before
+        data = resp.get_json()
 
-    assert resp.status_code == 200
-    assert data["ok"] is True
-    assert data["report"]["status"] == "ok"
-    assert data["watchlist"]["imported"] == 1
-    assert calls
-    assert calls[0]["n_stocks"] == 25
-    assert calls[0]["include_market_signals"] is True
-    assert calls[0]["mining_rules"]["filters"]["min_volume_ratio_20"] == 1.1
-    assert str(calls[0]["out_dir"]).startswith(str(tmp_path / "data" / "research" / "relay_factor"))
-    listed = client.get("/api/admin/factor-watchlist").get_json()
-    assert listed["items"][0]["ts_code"] == "000002.SZ"
+        assert resp.status_code == 202
+        assert data["ok"] is True
+        assert data["task_id"]
+        assert data["status"] in {"queued", "running"}
+        assert elapsed < 0.5
+        assert started.wait(timeout=1)
+
+        duplicate = client.post("/api/admin/factor-mining/run", json={"n_stocks": 30}).get_json()
+        assert duplicate["task_id"] == data["task_id"]
+        assert duplicate["reused"] is True
+
+        release.set()
+        status = None
+        for _ in range(40):
+            status = client.get(f"/api/admin/factor-mining/status?task_id={data['task_id']}").get_json()
+            if status.get("status") == "done":
+                break
+            time.sleep(0.02)
+
+        assert status["ok"] is True
+        assert status["status"] == "done"
+        assert status["report"]["status"] == "ok"
+        assert status["watchlist"]["imported"] == 1
+        assert calls
+        assert calls[0]["n_stocks"] == 25
+        assert calls[0]["include_market_signals"] is True
+        assert calls[0]["mining_rules"]["filters"]["min_volume_ratio_20"] == 1.1
+        assert str(calls[0]["out_dir"]).startswith(str(tmp_path / "data" / "research" / "relay_factor"))
+        listed = client.get("/api/admin/factor-watchlist").get_json()
+        assert listed["items"][0]["ts_code"] == "000002.SZ"
+    finally:
+        release.set()
 
 
 def test_factor_watchlist_import_update_delete_is_root_only(isolated_app, monkeypatch, tmp_path):
