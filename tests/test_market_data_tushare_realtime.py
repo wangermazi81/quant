@@ -1,4 +1,5 @@
 import sys
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -110,6 +111,50 @@ def test_second_ticks_reuse_short_memory_cache(monkeypatch):
 
     assert first == second
     assert first["price"] == [10.5]
+    assert len(calls) == 1
+
+
+def test_second_ticks_do_not_stampede_when_fetch_already_inflight(monkeypatch):
+    monkeypatch.setattr(md.datasource_config, "get_internal_config", lambda: {
+        "provider": "tushare",
+        "tushare_enabled": True,
+        "tushare_mode": "replay",
+        "tushare_token": "tok",
+    })
+    if hasattr(md, "clear_intraday_kline_cache"):
+        md.clear_intraday_kline_cache()
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+    frame = pd.DataFrame({
+        "datetime": pd.to_datetime(["2026-07-10 09:30:01"]),
+        "price": [10.5],
+        "volume": [800.0],
+        "amount": [8400.0],
+        "prev_price": [10.49],
+        "kind": ["U"],
+    })
+
+    def slow_fetch(code, trade_date=None, limit=None, token=None, mode=None):
+        calls.append((code, trade_date, limit, token, mode))
+        started.set()
+        release.wait(timeout=2)
+        return frame
+
+    monkeypatch.setattr(md.tushare_provider, "fetch_tick_series", slow_fetch)
+    monkeypatch.setattr(md.tushare_provider, "fetch_order_book", lambda *args, **kwargs: {})
+
+    first_result = {}
+    worker = threading.Thread(target=lambda: first_result.update(md.get_second_ticks("000001", "20260710")))
+    worker.start()
+    assert started.wait(timeout=1)
+
+    second = md.get_second_ticks("000001", "20260710")
+
+    release.set()
+    worker.join(timeout=2)
+    assert first_result["price"] == [10.5]
+    assert second == {"datetime": [], "price": [], "volume": [], "amount": [], "prev_price": [], "kind": []}
     assert len(calls) == 1
 
 

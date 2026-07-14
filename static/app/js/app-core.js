@@ -3293,7 +3293,7 @@ function _fetchKLineMode(mode, code){
 }
 function _prefetchKLineBundle(code){
   const plain = _plainKLineCode(code)
-  ;['daily','second','minute'].forEach(mode=>_fetchKLineMode(mode, plain).catch(()=>null))
+  _fetchKLineMode('daily', plain).catch(()=>null)
 }
 function _withTimeout(promise, ms){
   if(!ms) return promise
@@ -3377,9 +3377,9 @@ async function showKLine(code, name){
   KL_STATE.orderBook = null
   _setKLineTabs('second')
   ov.classList.add('show')
+  await _renderKLineMode('second', true)
   _prefetchKLineBundle(plain)
   _renderOrderBook(plain)
-  await _renderKLineMode('second', true)
 }
 function _normDate(d){
   // 统一把各种日期格式转成 "YYYY-MM-DD" 字符串

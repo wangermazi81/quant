@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 import akshare as ak
 import pandas as pd
@@ -20,6 +21,8 @@ MINUTE_CACHE_DIR = os.path.join(BASE_DIR, "data", "minute")
 INTRADAY_CACHE_TTL_SECONDS = int(os.getenv("KLINE_INTRADAY_CACHE_TTL", "45"))
 ORDER_BOOK_CACHE_TTL_SECONDS = int(os.getenv("KLINE_ORDER_BOOK_CACHE_TTL", "5"))
 _INTRADAY_CACHE: dict[tuple, tuple[float, dict]] = {}
+_INTRADAY_INFLIGHT: set[tuple] = set()
+_INTRADAY_INFLIGHT_LOCK = threading.Lock()
 
 
 def _plain_stock_code(code: str) -> str:
@@ -51,6 +54,25 @@ def _cache_set(key: tuple, value: dict) -> dict:
 
 def clear_intraday_kline_cache() -> None:
     _INTRADAY_CACHE.clear()
+    with _INTRADAY_INFLIGHT_LOCK:
+        _INTRADAY_INFLIGHT.clear()
+
+
+def _try_begin_fetch(key: tuple) -> bool:
+    with _INTRADAY_INFLIGHT_LOCK:
+        if key in _INTRADAY_INFLIGHT:
+            return False
+        _INTRADAY_INFLIGHT.add(key)
+        return True
+
+
+def _end_fetch(key: tuple) -> None:
+    with _INTRADAY_INFLIGHT_LOCK:
+        _INTRADAY_INFLIGHT.discard(key)
+
+
+def _empty_second_ticks() -> dict:
+    return {"datetime": [], "price": [], "volume": [], "amount": [], "prev_price": [], "kind": []}
 
 
 def _tushare_cfg() -> dict | None:
@@ -170,67 +192,74 @@ def get_minute_kline(code: str, date: str) -> dict:
     if cached is not None:
         return cached
 
-    cfg = _tushare_cfg()
-    if cfg:
-        try:
-            df = tushare_provider.fetch_minute_kline(
-                code,
-                freq="1MIN",
-                limit=240,
-                token=cfg.get("tushare_token"),
-                mode=cfg.get("tushare_mode"),
-            )
-            if df is not None and not df.empty:
-                out = df.copy()
-                out["datetime"] = out["datetime"].apply(lambda v: v.strftime("%Y-%m-%d %H:%M:%S") if hasattr(v, "strftime") else str(v))
-                result = {}
-                for col in ("datetime", "open", "high", "low", "close", "volume", "amount", "is_complete"):
-                    result[col] = out[col].tolist() if col in out.columns else []
-                return _cache_set(cache_key, result)
-        except Exception as exc:
-            logger.warning(f"Tushare minute kline failed {code} {date}: {exc}")
+    if not _try_begin_fetch(cache_key):
+        snap = _minute_snapshot(code, cache_key)
+        return snap if snap is not None else {"datetime": [], "open": [], "high": [], "low": [], "close": [], "volume": []}
 
-    os.makedirs(MINUTE_CACHE_DIR, exist_ok=True)
-    cache_path = os.path.join(MINUTE_CACHE_DIR, f"{code}_{date}.csv")
+    try:
+        cfg = _tushare_cfg()
+        if cfg:
+            try:
+                df = tushare_provider.fetch_minute_kline(
+                    code,
+                    freq="1MIN",
+                    limit=240,
+                    token=cfg.get("tushare_token"),
+                    mode=cfg.get("tushare_mode"),
+                )
+                if df is not None and not df.empty:
+                    out = df.copy()
+                    out["datetime"] = out["datetime"].apply(lambda v: v.strftime("%Y-%m-%d %H:%M:%S") if hasattr(v, "strftime") else str(v))
+                    result = {}
+                    for col in ("datetime", "open", "high", "low", "close", "volume", "amount", "is_complete"):
+                        result[col] = out[col].tolist() if col in out.columns else []
+                    return _cache_set(cache_key, result)
+            except Exception as exc:
+                logger.warning(f"Tushare minute kline failed {code} {date}: {exc}")
 
-    if os.path.exists(cache_path):
-        try:
-            df = pd.read_csv(cache_path)
-        except Exception:
+        os.makedirs(MINUTE_CACHE_DIR, exist_ok=True)
+        cache_path = os.path.join(MINUTE_CACHE_DIR, f"{code}_{date}.csv")
+
+        if os.path.exists(cache_path):
+            try:
+                df = pd.read_csv(cache_path)
+            except Exception:
+                df = pd.DataFrame()
+        else:
             df = pd.DataFrame()
-    else:
-        df = pd.DataFrame()
-        try:
-            raw = ak.stock_zh_a_hist_min_em(
-                symbol=code,
-                start_date=date,
-                end_date=date,
-                period="1",
-                adjust="qfq",
-            )
-            col_map = {
-                "\u65f6\u95f4": "datetime",
-                "\u5f00\u76d8": "open",
-                "\u6700\u9ad8": "high",
-                "\u6700\u4f4e": "low",
-                "\u6536\u76d8": "close",
-                "\u6210\u4ea4\u91cf": "volume",
-            }
-            raw = raw.rename(columns={k: v for k, v in col_map.items() if k in raw.columns})
-            raw.to_csv(cache_path, index=False)
-            df = raw
-        except Exception as e:
-            logger.warning(f"minute kline failed {code} {date}: {e}")
+            try:
+                raw = ak.stock_zh_a_hist_min_em(
+                    symbol=code,
+                    start_date=date,
+                    end_date=date,
+                    period="1",
+                    adjust="qfq",
+                )
+                col_map = {
+                    "\u65f6\u95f4": "datetime",
+                    "\u5f00\u76d8": "open",
+                    "\u6700\u9ad8": "high",
+                    "\u6700\u4f4e": "low",
+                    "\u6536\u76d8": "close",
+                    "\u6210\u4ea4\u91cf": "volume",
+                }
+                raw = raw.rename(columns={k: v for k, v in col_map.items() if k in raw.columns})
+                raw.to_csv(cache_path, index=False)
+                df = raw
+            except Exception as e:
+                logger.warning(f"minute kline failed {code} {date}: {e}")
 
-    result = {}
-    for col in ("datetime", "open", "high", "low", "close", "volume"):
-        result[col] = df[col].tolist() if col in df.columns else []
-    if result.get("datetime"):
-        return _cache_set(cache_key, result)
-    snap = _minute_snapshot(code, cache_key)
-    if snap is not None:
-        return snap
-    return result
+        result = {}
+        for col in ("datetime", "open", "high", "low", "close", "volume"):
+            result[col] = df[col].tolist() if col in df.columns else []
+        if result.get("datetime"):
+            return _cache_set(cache_key, result)
+        snap = _minute_snapshot(code, cache_key)
+        if snap is not None:
+            return snap
+        return result
+    finally:
+        _end_fetch(cache_key)
 
 
 def _minute_snapshot(code: str, cache_key: tuple) -> dict | None:
@@ -261,29 +290,36 @@ def get_second_ticks(code: str, date: str | None = None) -> dict:
     if cached is not None:
         return cached
 
-    cfg = _tushare_cfg()
-    if cfg:
-        try:
-            df = tushare_provider.fetch_tick_series(
-                code,
-                trade_date=date,
-                limit=240,
-                token=cfg.get("tushare_token"),
-                mode=cfg.get("tushare_mode"),
-            )
-            if df is not None and not df.empty:
-                out = df.copy()
-                out["datetime"] = out["datetime"].apply(lambda v: v.strftime("%Y-%m-%d %H:%M:%S") if hasattr(v, "strftime") else str(v))
-                result = {}
-                for col in ("datetime", "price", "volume", "amount", "prev_price", "kind"):
-                    result[col] = out[col].tolist() if col in out.columns else []
-                return _cache_set(cache_key, result)
-        except Exception as exc:
-            logger.warning(f"Tushare second ticks failed {code} {date}: {exc}")
+    if not _try_begin_fetch(cache_key):
         snap = _second_tick_snapshot(code, cache_key)
-        if snap is not None:
-            return snap
-    return _cache_set(cache_key, {"datetime": [], "price": [], "volume": [], "amount": [], "prev_price": [], "kind": []})
+        return snap if snap is not None else _empty_second_ticks()
+
+    try:
+        cfg = _tushare_cfg()
+        if cfg:
+            try:
+                df = tushare_provider.fetch_tick_series(
+                    code,
+                    trade_date=date,
+                    limit=240,
+                    token=cfg.get("tushare_token"),
+                    mode=cfg.get("tushare_mode"),
+                )
+                if df is not None and not df.empty:
+                    out = df.copy()
+                    out["datetime"] = out["datetime"].apply(lambda v: v.strftime("%Y-%m-%d %H:%M:%S") if hasattr(v, "strftime") else str(v))
+                    result = {}
+                    for col in ("datetime", "price", "volume", "amount", "prev_price", "kind"):
+                        result[col] = out[col].tolist() if col in out.columns else []
+                    return _cache_set(cache_key, result)
+            except Exception as exc:
+                logger.warning(f"Tushare second ticks failed {code} {date}: {exc}")
+            snap = _second_tick_snapshot(code, cache_key)
+            if snap is not None:
+                return snap
+        return _cache_set(cache_key, _empty_second_ticks())
+    finally:
+        _end_fetch(cache_key)
 
 
 def _second_tick_snapshot(code: str, cache_key: tuple) -> dict | None:
@@ -311,19 +347,25 @@ def get_order_book(code: str) -> dict:
     if cached is not None:
         return cached
 
-    cfg = _tushare_cfg()
-    if cfg:
-        try:
-            book = tushare_provider.fetch_order_book(
-                code,
-                token=cfg.get("tushare_token"),
-                mode=cfg.get("tushare_mode"),
-            )
-            if book:
-                return _cache_set(cache_key, book)
-        except Exception as exc:
-            logger.warning(f"Tushare order book failed {code}: {exc}")
-    return _cache_set(cache_key, {})
+    if not _try_begin_fetch(cache_key):
+        return {}
+
+    try:
+        cfg = _tushare_cfg()
+        if cfg:
+            try:
+                book = tushare_provider.fetch_order_book(
+                    code,
+                    token=cfg.get("tushare_token"),
+                    mode=cfg.get("tushare_mode"),
+                )
+                if book:
+                    return _cache_set(cache_key, book)
+            except Exception as exc:
+                logger.warning(f"Tushare order book failed {code}: {exc}")
+        return _cache_set(cache_key, {})
+    finally:
+        _end_fetch(cache_key)
 
 
 def is_trading_time() -> bool:
