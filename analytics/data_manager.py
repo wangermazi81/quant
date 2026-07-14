@@ -294,7 +294,7 @@ def _standardize_kline_for_cache(df: pd.DataFrame) -> pd.DataFrame:
     return _clean_kline(out[required])
 
 
-def merge_kline_cache(code: str, df: pd.DataFrame) -> pd.DataFrame:
+def merge_kline_cache(code: str, df: pd.DataFrame, update_metadata: bool = True) -> pd.DataFrame:
     """Merge a refreshed kline slice into data/daily/<code>.csv.
 
     Short refreshes from TDX must not overwrite long historical CSV files.
@@ -323,22 +323,112 @@ def merge_kline_cache(code: str, df: pd.DataFrame) -> pd.DataFrame:
     required = ["date", "open", "close", "high", "low", "volume"]
     merged[required].to_csv(csv_path, index=False, encoding="utf-8")
 
-    try:
-        meta = _load_meta()
-        item = dict(meta.get(code, {}))
-        item.update({
-            "name": item.get("name") or code,
-            "start": str(merged["date"].iloc[0].date()),
-            "end": str(merged["date"].iloc[-1].date()),
-            "rows": len(merged),
-            "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        })
-        meta[code] = item
-        _save_meta(meta)
-    except Exception as e:
-        logger.debug(f"[data] K线元数据写入失败（不影响本次返回）{code}: {e}")
+    if update_metadata:
+        try:
+            meta = _load_meta()
+            item = dict(meta.get(code, {}))
+            item.update({
+                "name": item.get("name") or code,
+                "start": str(merged["date"].iloc[0].date()),
+                "end": str(merged["date"].iloc[-1].date()),
+                "rows": len(merged),
+                "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            })
+            meta[code] = item
+            _save_meta(meta)
+        except Exception as e:
+            logger.debug(f"[data] K线元数据写入失败（不影响本次返回）{code}: {e}")
 
     return merged
+
+
+def refresh_factor_daily_cache(days: int = 180, min_required: int = 800) -> dict:
+    """Incrementally refresh the factor-mining daily cache from TDX."""
+    from market import ths_quote
+
+    client = ths_quote.get_client()
+    if client is None or not getattr(client, "_ok", True):
+        return {"ok": False, "error": "TDX daily source unavailable", "latest_count": 0, "min_required": min_required}
+
+    index_bars = client.get_index_kline("000001", 1, 5) or []
+    source_dates = pd.to_datetime([row.get("date") for row in index_bars], errors="coerce")
+    source_dates = source_dates[~pd.isna(source_dates)]
+    if len(source_dates) == 0:
+        return {"ok": False, "error": "TDX index daily date unavailable", "latest_count": 0, "min_required": min_required}
+
+    source_date = pd.Timestamp(source_dates.max()).normalize()
+    csv_paths = sorted(DATA_DIR.glob("*.csv"))
+    if not csv_paths:
+        return {"ok": False, "error": "daily cache is empty", "latest_count": 0, "min_required": min_required}
+
+    min_history = min(max(1, int(days)), 60)
+    metadata = _load_meta()
+    refreshed = 0
+    already_current = 0
+    failed = 0
+    errors = []
+
+    for idx, csv_path in enumerate(csv_paths, start=1):
+        code = csv_path.stem
+        try:
+            old_dates = pd.read_csv(csv_path, usecols=["date"])
+            parsed = pd.to_datetime(old_dates["date"], errors="coerce").dropna()
+            if len(parsed) >= min_history and parsed.max().normalize() == source_date:
+                already_current += 1
+                continue
+
+            bars = client.get_kline(code, max(int(days), min_history)) or []
+            if not bars:
+                failed += 1
+                continue
+            merged = merge_kline_cache(code, pd.DataFrame(bars), update_metadata=False)
+            if merged.empty or len(merged) < min_history or pd.to_datetime(merged["date"]).max().normalize() != source_date:
+                failed += 1
+                continue
+
+            refreshed += 1
+            item = dict(metadata.get(code, {}))
+            item.update({
+                "name": item.get("name") or code,
+                "start": str(pd.to_datetime(merged["date"]).iloc[0].date()),
+                "end": str(source_date.date()),
+                "rows": len(merged),
+                "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            })
+            metadata[code] = item
+        except Exception as exc:
+            failed += 1
+            if len(errors) < 20:
+                errors.append(f"{code}: {str(exc)[:120]}")
+        if idx % 250 == 0:
+            logger.info(
+                "[factor_cache] progress %s/%s current=%s refreshed=%s failed=%s",
+                idx,
+                len(csv_paths),
+                already_current,
+                refreshed,
+                failed,
+            )
+
+    if refreshed:
+        _save_meta(metadata)
+    latest_count = already_current + refreshed
+    result = {
+        "ok": latest_count >= max(1, int(min_required)),
+        "source": "tdx_daily",
+        "source_trade_date": str(source_date.date()),
+        "total": len(csv_paths),
+        "latest_count": latest_count,
+        "min_required": max(1, int(min_required)),
+        "already_current": already_current,
+        "refreshed": refreshed,
+        "failed": failed,
+    }
+    if errors:
+        result["errors"] = errors
+    if not result["ok"]:
+        result["error"] = f"latest daily coverage {latest_count} is below required {result['min_required']}"
+    return result
 
 
 def _load_meta() -> dict:

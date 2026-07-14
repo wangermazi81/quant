@@ -34,6 +34,7 @@ DEFAULT_CONFIG = {
     "factor_mining_time": "17:10",
     "ai_decision_times": ["09:15", "09:25"],
     "window_minutes": 90,
+    "retry_cooldown_minutes": 10,
     "max_candidates": 6,
     "execute_paper": False,
     "mining": {
@@ -273,13 +274,21 @@ def next_runs(now: datetime | None = None) -> dict:
 
 def _run_data_refresh(date_text: str) -> dict:
     details: dict[str, Any] = {"date": date_text}
+    factor_cache_ok = False
     try:
         from analytics import data_manager as dm
 
         names = dm.refresh_name_cache()
         details["name_cache_count"] = len(names or {})
+        mining_cfg = get_config().get("mining", {})
+        details["factor_cache"] = dm.refresh_factor_daily_cache(
+            days=int(mining_cfg.get("days", 180)),
+            min_required=int(mining_cfg.get("n_stocks", 800)),
+        )
+        factor_cache_ok = bool(details["factor_cache"].get("ok"))
     except Exception as exc:
         details["name_cache_error"] = str(exc)[:180]
+        details["factor_cache"] = {"ok": False, "error": str(exc)[:180]}
 
     try:
         from market import market_stats
@@ -301,7 +310,7 @@ def _run_data_refresh(date_text: str) -> dict:
         }
     except Exception as exc:
         details["lhb_error"] = str(exc)[:180]
-    return {"ok": True, "details": details}
+    return {"ok": factor_cache_ok, "details": details}
 
 
 def _run_factor_mining(date_text: str) -> dict:
@@ -435,6 +444,28 @@ def _already_ran(status: dict, job: str, slot: str, date_text: str) -> bool:
     return bool(rec and rec.get("ok"))
 
 
+def _attempt_blocked(
+    status: dict,
+    job: str,
+    slot: str,
+    date_text: str,
+    now: datetime | None = None,
+    retry_cooldown_minutes: int = 10,
+) -> bool:
+    rec = status.get("jobs", {}).get(_job_key(job, slot, date_text))
+    if not rec:
+        return False
+    if rec.get("ok"):
+        return True
+    finished = rec.get("finished_at")
+    try:
+        finished_at = datetime.strptime(str(finished), "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return False
+    retry_at = finished_at + timedelta(minutes=max(1, int(retry_cooldown_minutes)))
+    return (now or datetime.now()) < retry_at
+
+
 def run_scheduler_loop(interval_seconds: int = 30) -> None:
     logger.info("[auto_factor_scheduler] started")
     while True:
@@ -445,17 +476,27 @@ def run_scheduler_loop(interval_seconds: int = 30) -> None:
                 status = get_status()
                 date_text = now.strftime("%Y-%m-%d")
                 window = int(cfg.get("window_minutes", 90) or 90)
+                retry_cooldown = int(cfg.get("retry_cooldown_minutes", 10) or 10)
                 for slot in cfg.get("data_refresh_times") or []:
                     slot = str(slot)
-                    if _in_window(now, slot, window) and not _already_ran(status, "data_refresh", slot, date_text):
+                    if _in_window(now, slot, window) and not _attempt_blocked(
+                        status, "data_refresh", slot, date_text, now=now, retry_cooldown_minutes=retry_cooldown
+                    ):
                         run_job("data_refresh", slot=slot)
+                        status = get_status()
                 slot = str(cfg.get("factor_mining_time") or DEFAULT_CONFIG["factor_mining_time"])
-                if _in_window(now, slot, window) and not _already_ran(status, "factor_mining", slot, date_text):
+                if _in_window(now, slot, window) and not _attempt_blocked(
+                    status, "factor_mining", slot, date_text, now=now, retry_cooldown_minutes=retry_cooldown
+                ):
                     run_job("factor_mining", slot=slot)
+                    status = get_status()
                 for slot in cfg.get("ai_decision_times") or []:
                     slot = str(slot)
-                    if _in_window(now, slot, 20) and not _already_ran(status, "ai_decision", slot, date_text):
+                    if _in_window(now, slot, 20) and not _attempt_blocked(
+                        status, "ai_decision", slot, date_text, now=now, retry_cooldown_minutes=retry_cooldown
+                    ):
                         run_job("ai_decision", slot=slot)
+                        status = get_status()
         except Exception as exc:
             logger.warning(f"[auto_factor_scheduler] loop error: {exc}")
         time.sleep(max(5, int(interval_seconds)))

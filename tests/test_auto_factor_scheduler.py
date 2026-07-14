@@ -83,3 +83,56 @@ def test_default_factor_mining_next_run_is_1710(monkeypatch, tmp_path):
 
     assert scheduler.get_config()["factor_mining_time"] == "17:10"
     assert next_runs["factor_mining"] == "2026-07-10 17:10"
+
+
+def test_data_refresh_reports_failure_when_factor_cache_is_incomplete(monkeypatch, tmp_path):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    from analytics import data_manager as dm
+    from analytics import lhb_engine
+    from market import market_stats
+
+    monkeypatch.setattr(dm, "refresh_name_cache", lambda: {"000001": "平安银行"})
+    monkeypatch.setattr(
+        dm,
+        "refresh_factor_daily_cache",
+        lambda **kwargs: {"ok": False, "latest_count": 2, "min_required": 800},
+        raising=False,
+    )
+    monkeypatch.setattr(market_stats, "get_market_breadth", lambda date_text=None: {"ok": True})
+    monkeypatch.setattr(market_stats, "get_market_turnover", lambda date_text=None: {"ok": True})
+    monkeypatch.setattr(lhb_engine, "get_lhb_data", lambda date_text, force_refresh=False: {"ok": True, "total": 0})
+
+    result = scheduler._run_data_refresh("2026-07-13")
+
+    assert result["ok"] is False
+    assert result["details"]["factor_cache"]["latest_count"] == 2
+
+
+def test_failed_job_is_cooled_down_before_retry(monkeypatch, tmp_path):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    key = scheduler._job_key("factor_mining", "17:10", "2026-07-13")
+    status = {
+        "jobs": {
+            key: {
+                "ok": False,
+                "finished_at": "2026-07-13 17:11:00",
+            }
+        }
+    }
+
+    assert scheduler._attempt_blocked(
+        status,
+        "factor_mining",
+        "17:10",
+        "2026-07-13",
+        now=datetime(2026, 7, 13, 17, 15),
+        retry_cooldown_minutes=10,
+    ) is True
+    assert scheduler._attempt_blocked(
+        status,
+        "factor_mining",
+        "17:10",
+        "2026-07-13",
+        now=datetime(2026, 7, 13, 17, 22),
+        retry_cooldown_minutes=10,
+    ) is False

@@ -77,3 +77,40 @@ def test_merge_kline_cache_preserves_history_when_writing_short_refresh(monkeypa
     assert saved["date"].max() == pd.Timestamp("2026-07-07")
     assert saved.loc[saved["date"] == pd.Timestamp("2026-06-11"), "close"].iloc[0] == 31.2
     assert len(merged) == len(saved)
+
+
+def test_refresh_factor_daily_cache_updates_latest_coverage(monkeypatch, tmp_path):
+    import analytics.data_manager as dm
+    import market.ths_quote as ths_quote
+
+    data_dir = tmp_path / "daily"
+    data_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", data_dir)
+    monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+
+    stale = _kline_frame("2026-07-09", periods=80)
+    stale.to_csv(data_dir / "000001.csv", index=False, encoding="utf-8")
+    stale.to_csv(data_dir / "000002.csv", index=False, encoding="utf-8")
+
+    fresh = _kline_frame("2026-07-13", periods=80, start_price=20.0)
+
+    class FakeClient:
+        def get_index_kline(self, code, market, days):
+            return [{"date": "2026-07-13"}]
+
+        def get_kline(self, code, days):
+            if code == "000002":
+                return []
+            return fresh.to_dict("records")
+
+    monkeypatch.setattr(ths_quote, "get_client", lambda: FakeClient())
+
+    result = dm.refresh_factor_daily_cache(days=180, min_required=2)
+
+    assert result["ok"] is False
+    assert result["source_trade_date"] == "2026-07-13"
+    assert result["latest_count"] == 1
+    assert result["refreshed"] == 1
+    assert result["failed"] == 1
+    saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
+    assert saved["date"].max() == pd.Timestamp("2026-07-13")
