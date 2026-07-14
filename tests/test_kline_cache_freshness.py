@@ -148,3 +148,247 @@ def test_refresh_factor_daily_cache_ignores_unfinished_intraday_bar(monkeypatch,
     assert result["source_trade_date"] == "2026-07-13"
     saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
     assert saved["date"].max() == pd.Timestamp("2026-07-13")
+
+
+def _enable_tushare_factor_source(monkeypatch, dm):
+    monkeypatch.setattr(
+        dm.datasource_config,
+        "get_internal_config",
+        lambda: {
+            "provider": "tushare",
+            "tushare_enabled": True,
+            "tushare_mode": "replay",
+            "tushare_token": "api-key",
+            "fallback_enabled": True,
+        },
+    )
+
+
+def _market_daily_frame(trade_date, codes=("000001", "000002")):
+    return pd.DataFrame(
+        {
+            "code": list(codes),
+            "date": pd.to_datetime([trade_date] * len(codes)),
+            "open": [10.42 + i for i in range(len(codes))],
+            "high": [10.55 + i for i in range(len(codes))],
+            "low": [10.38 + i for i in range(len(codes))],
+            "close": [10.54 + i for i in range(len(codes))],
+            "volume": [924746.24 + i for i in range(len(codes))],
+        }
+    )
+
+
+def _market_factor_frame(trade_date, codes=("000001", "000002"), factors=(100.0, 100.0)):
+    return pd.DataFrame(
+        {
+            "code": list(codes),
+            "date": pd.to_datetime([trade_date] * len(codes)),
+            "adj_factor": list(factors)[: len(codes)],
+        }
+    )
+
+
+def test_refresh_factor_daily_cache_prefers_tushare_batch(monkeypatch, tmp_path):
+    import analytics.data_manager as dm
+    import market.ths_quote as ths_quote
+
+    data_dir = tmp_path / "daily"
+    data_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", data_dir)
+    monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+    _enable_tushare_factor_source(monkeypatch, dm)
+
+    stale = _kline_frame("2026-07-10", periods=80)
+    stale.to_csv(data_dir / "000001.csv", index=False, encoding="utf-8")
+    stale.to_csv(data_dir / "000002.csv", index=False, encoding="utf-8")
+    daily_calls = []
+
+    def fake_market_daily(trade_date, **kwargs):
+        daily_calls.append(str(trade_date))
+        return _market_daily_frame("2026-07-13") if str(trade_date).replace("-", "") == "20260713" else pd.DataFrame()
+
+    monkeypatch.setattr(dm.tushare_provider, "fetch_full_market_daily", fake_market_daily, raising=False)
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_full_market_adj_factors",
+        lambda trade_date, **kwargs: _market_factor_frame(str(trade_date), factors=(100.0, 100.0)),
+        raising=False,
+    )
+    monkeypatch.setattr(ths_quote, "get_client", lambda: (_ for _ in ()).throw(AssertionError("TDX must not be used")))
+
+    result = dm.refresh_factor_daily_cache(days=180, min_required=2, now=datetime(2026, 7, 14, 10, 30))
+
+    assert daily_calls[0].replace("-", "") == "20260713"
+    assert result["ok"] is True
+    assert result["source"] == "tushare_replay_daily"
+    assert result["primary_source"] == "tushare_replay_daily"
+    assert result["source_trade_date"] == "2026-07-13"
+    assert result["tushare_count"] == 2
+    assert result["tdx_fallback_count"] == 0
+    saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
+    latest = saved.loc[saved["date"] == pd.Timestamp("2026-07-13")].iloc[0]
+    assert latest["close"] == 10.54
+    assert latest["volume"] == 924746.24
+
+
+def test_refresh_factor_daily_cache_uses_tushare_qfq_for_adjustment_change(monkeypatch, tmp_path):
+    import analytics.data_manager as dm
+    import market.ths_quote as ths_quote
+
+    data_dir = tmp_path / "daily"
+    data_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", data_dir)
+    monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+    _enable_tushare_factor_source(monkeypatch, dm)
+
+    stale = _kline_frame("2026-07-10", periods=80)
+    stale.to_csv(data_dir / "000001.csv", index=False, encoding="utf-8")
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_full_market_daily",
+        lambda trade_date, **kwargs: _market_daily_frame("2026-07-13", codes=("000001",)),
+        raising=False,
+    )
+
+    def fake_factors(trade_date, **kwargs):
+        compact = str(trade_date).replace("-", "")
+        factor = 200.0 if compact == "20260713" else 100.0
+        return _market_factor_frame(str(trade_date), codes=("000001",), factors=(factor,))
+
+    qfq_calls = []
+    qfq = _kline_frame("2026-07-13", periods=80, start_price=30.0)
+    monkeypatch.setattr(dm.tushare_provider, "fetch_full_market_adj_factors", fake_factors, raising=False)
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_kline_qfq",
+        lambda code, start, end, **kwargs: qfq_calls.append((code, start, end)) or qfq,
+    )
+    monkeypatch.setattr(ths_quote, "get_client", lambda: (_ for _ in ()).throw(AssertionError("TDX must not be used")))
+
+    result = dm.refresh_factor_daily_cache(days=180, min_required=1, now=datetime(2026, 7, 14, 10, 30))
+
+    assert result["ok"] is True
+    assert result["tushare_qfq_count"] == 1
+    assert qfq_calls and qfq_calls[0][0] == "000001"
+    saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
+    assert saved["date"].max() == pd.Timestamp("2026-07-13")
+    assert saved.loc[saved["date"] == pd.Timestamp("2026-07-13"), "close"].iloc[0] == qfq.iloc[-1]["close"]
+
+
+def test_refresh_factor_daily_cache_uses_tdx_only_for_tushare_missing_symbol(monkeypatch, tmp_path):
+    import analytics.data_manager as dm
+    import market.ths_quote as ths_quote
+
+    data_dir = tmp_path / "daily"
+    data_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", data_dir)
+    monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+    _enable_tushare_factor_source(monkeypatch, dm)
+
+    stale = _kline_frame("2026-07-10", periods=80)
+    stale.to_csv(data_dir / "000001.csv", index=False, encoding="utf-8")
+    stale.to_csv(data_dir / "000002.csv", index=False, encoding="utf-8")
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_full_market_daily",
+        lambda trade_date, **kwargs: _market_daily_frame("2026-07-13", codes=("000001",)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_full_market_adj_factors",
+        lambda trade_date, **kwargs: _market_factor_frame(str(trade_date), codes=("000001",), factors=(100.0,)),
+        raising=False,
+    )
+    monkeypatch.setattr(dm.tushare_provider, "fetch_kline_qfq", lambda *args, **kwargs: None)
+    tdx_calls = []
+    fresh = _kline_frame("2026-07-13", periods=80, start_price=20.0)
+
+    class FakeClient:
+        _ok = True
+
+        def get_kline(self, code, days):
+            tdx_calls.append(code)
+            return fresh.to_dict("records")
+
+    monkeypatch.setattr(ths_quote, "get_client", lambda: FakeClient())
+
+    result = dm.refresh_factor_daily_cache(days=180, min_required=1, now=datetime(2026, 7, 14, 10, 30))
+
+    assert result["ok"] is True, result
+    assert result["tushare_count"] == 1
+    assert result["tdx_fallback_count"] == 1
+    assert tdx_calls == ["000002"]
+
+
+def test_refresh_factor_daily_cache_falls_back_when_tushare_batch_fails(monkeypatch, tmp_path):
+    import analytics.data_manager as dm
+    import market.ths_quote as ths_quote
+
+    data_dir = tmp_path / "daily"
+    data_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", data_dir)
+    monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+    _enable_tushare_factor_source(monkeypatch, dm)
+    stale = _kline_frame("2026-07-10", periods=80)
+    stale.to_csv(data_dir / "000001.csv", index=False, encoding="utf-8")
+
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_full_market_daily",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("replay unavailable")),
+        raising=False,
+    )
+    fresh = _kline_frame("2026-07-13", periods=80, start_price=20.0)
+
+    class FakeClient:
+        _ok = True
+
+        def get_index_kline(self, code, market, days):
+            return [{"date": "2026-07-13"}]
+
+        def get_kline(self, code, days):
+            return fresh.to_dict("records")
+
+    monkeypatch.setattr(ths_quote, "get_client", lambda: FakeClient())
+
+    result = dm.refresh_factor_daily_cache(days=180, min_required=1, now=datetime(2026, 7, 14, 10, 30))
+
+    assert result["ok"] is True
+    assert result["source"] == "tdx_daily"
+    assert result["primary_source"] == "tdx_daily"
+    assert result["tdx_fallback_count"] == 1
+    assert "tushare_errors" in result
+
+
+def test_refresh_factor_daily_cache_uses_rt_k_after_close_when_daily_is_empty(monkeypatch, tmp_path):
+    import analytics.data_manager as dm
+    import market.ths_quote as ths_quote
+
+    data_dir = tmp_path / "daily"
+    data_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", data_dir)
+    monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+    _enable_tushare_factor_source(monkeypatch, dm)
+    stale = _kline_frame("2026-07-13", periods=80)
+    stale.to_csv(data_dir / "000001.csv", index=False, encoding="utf-8")
+    monkeypatch.setattr(dm.tushare_provider, "fetch_full_market_daily", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_full_market_realtime_daily",
+        lambda **kwargs: _market_daily_frame("2026-07-14", codes=("000001",)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_full_market_adj_factors",
+        lambda trade_date, **kwargs: _market_factor_frame(str(trade_date), codes=("000001",), factors=(100.0,)),
+    )
+    monkeypatch.setattr(ths_quote, "get_client", lambda: (_ for _ in ()).throw(AssertionError("TDX must not be used")))
+
+    result = dm.refresh_factor_daily_cache(days=180, min_required=1, now=datetime(2026, 7, 14, 17, 10))
+
+    assert result["ok"] is True
+    assert result["source"] == "tushare_replay_rt_k"
+    assert result["source_trade_date"] == "2026-07-14"
+    assert result["tdx_fallback_count"] == 0

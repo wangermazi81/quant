@@ -425,3 +425,106 @@ def test_fetch_minute_kline_prefers_fast_rt_min_with_large_limit(monkeypatch):
     assert calls[0]["url"] == "https://ai-tool.indevs.in/tushare/pro/rt_min"
     assert calls[0]["params"] == {"ts_code": "000001.SZ", "freq": "1MIN"}
     assert df["close"].tolist() == [10.45]
+
+
+def test_fetch_full_market_daily_uses_one_replay_request(monkeypatch):
+    calls = []
+
+    def fake_replay_get(api_name, token, params, timeout=25, max_attempts=None):
+        calls.append((api_name, token, params, timeout, max_attempts))
+        return [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20260713",
+                "open": 10.42,
+                "high": 10.55,
+                "low": 10.38,
+                "close": 10.54,
+                "vol": 924746.24,
+            },
+            {
+                "ts_code": "600000.SH",
+                "trade_date": "20260713",
+                "open": 9.0,
+                "high": 9.2,
+                "low": 8.9,
+                "close": 9.1,
+                "vol": 361767.0,
+            },
+        ]
+
+    monkeypatch.setattr(tp, "_replay_get", fake_replay_get)
+
+    df = tp.fetch_full_market_daily("2026-07-13", token="api-key", mode="replay")
+
+    assert calls == [
+        (
+            "daily",
+            "api-key",
+            {
+                "trade_date": "20260713",
+                "limit": 7000,
+                "fields": "ts_code,trade_date,open,high,low,close,vol,amount",
+            },
+            60,
+            1,
+        )
+    ]
+    assert df["code"].tolist() == ["000001", "600000"]
+    assert df["date"].dt.strftime("%Y-%m-%d").tolist() == ["2026-07-13", "2026-07-13"]
+    assert df["close"].tolist() == [10.54, 9.1]
+    assert df["volume"].tolist() == [924746.24, 361767.0]
+
+
+def test_fetch_full_market_adj_factors_uses_trade_date(monkeypatch):
+    calls = []
+
+    def fake_replay_get(api_name, token, params, timeout=25, max_attempts=None):
+        calls.append((api_name, token, params, timeout, max_attempts))
+        return [
+            {"ts_code": "000001.SZ", "trade_date": "20260713", "adj_factor": 139.008},
+            {"ts_code": "600000.SH", "trade_date": "20260713", "adj_factor": 10.5},
+        ]
+
+    monkeypatch.setattr(tp, "_replay_get", fake_replay_get)
+
+    df = tp.fetch_full_market_adj_factors("20260713", token="api-key", mode="replay")
+
+    assert calls[0][0] == "adj_factor"
+    assert calls[0][2]["trade_date"] == "20260713"
+    assert calls[0][2]["limit"] == 7000
+    assert df.to_dict("records") == [
+        {"code": "000001", "date": pd.Timestamp("2026-07-13"), "adj_factor": 139.008},
+        {"code": "600000", "date": pd.Timestamp("2026-07-13"), "adj_factor": 10.5},
+    ]
+
+
+def test_fetch_full_market_realtime_daily_uses_rt_k_without_trade_date(monkeypatch):
+    calls = []
+
+    def fake_replay_request(api_name, token, params, timeout=25, max_attempts=None):
+        calls.append((api_name, token, params, timeout, max_attempts))
+        return {
+            "code": 0,
+            "params": {"source_trade_date": "20260714"},
+            "data": [
+                {
+                    "ts_code": "000001.SZ",
+                    "open": 10.53,
+                    "high": 10.64,
+                    "low": 10.48,
+                    "close": 10.63,
+                    "vol": 51001161.0,
+                    "amount": 539712087.96,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(tp, "_replay_request", fake_replay_request, raising=False)
+
+    df = tp.fetch_full_market_realtime_daily(token="api-key", mode="replay")
+
+    assert calls == [("rt_k", "api-key", {}, 60, 1)]
+    assert df["code"].tolist() == ["000001"]
+    assert df["date"].dt.strftime("%Y-%m-%d").tolist() == ["2026-07-14"]
+    assert df["close"].tolist() == [10.63]

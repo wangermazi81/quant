@@ -7,7 +7,7 @@
 
 import json, logging, threading, os, time, re
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import akshare as ak
@@ -342,8 +342,8 @@ def merge_kline_cache(code: str, df: pd.DataFrame, update_metadata: bool = True)
     return merged
 
 
-def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: datetime | None = None) -> dict:
-    """Incrementally refresh the factor-mining daily cache from TDX."""
+def _refresh_factor_daily_cache_tdx(days: int = 180, min_required: int = 800, now: datetime | None = None) -> dict:
+    """Incrementally refresh the factor-mining daily cache from the TDX fallback."""
     from market import ths_quote
 
     client = ths_quote.get_client()
@@ -441,6 +441,396 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
         "refreshed": refreshed,
         "failed": failed,
     }
+    if errors:
+        result["errors"] = errors
+    if not result["ok"]:
+        result["error"] = f"latest daily coverage {latest_count} is below required {result['min_required']}"
+    return result
+
+
+def _factor_tushare_enabled(config: dict) -> bool:
+    return bool(
+        config.get("provider") == "tushare"
+        and config.get("tushare_enabled")
+        and config.get("tushare_token")
+    )
+
+
+def _completed_date_candidates(current: datetime, lookback_days: int = 12) -> list[str]:
+    market_close_guard = current.replace(hour=15, minute=30, second=0, microsecond=0)
+    start = current.date() if current >= market_close_guard else current.date() - timedelta(days=1)
+    return [(start - timedelta(days=offset)).strftime("%Y%m%d") for offset in range(max(1, lookback_days))]
+
+
+def _same_daily_row(old_frame: pd.DataFrame, new_frame: pd.DataFrame, source_date: pd.Timestamp) -> bool:
+    if old_frame is None or old_frame.empty or new_frame is None or new_frame.empty:
+        return False
+    old_rows = old_frame[pd.to_datetime(old_frame["date"], errors="coerce").dt.normalize() == source_date]
+    if old_rows.empty:
+        return False
+    old_row = old_rows.iloc[-1]
+    new_row = new_frame.iloc[-1]
+    for column in ("open", "high", "low", "close", "volume"):
+        try:
+            left = float(old_row[column])
+            right = float(new_row[column])
+        except Exception:
+            return False
+        tolerance = max(1e-6, abs(right) * 1e-8)
+        if abs(left - right) > tolerance:
+            return False
+    return True
+
+
+def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: datetime | None = None) -> dict:
+    """Refresh factor daily bars with Tushare primary and TDX fallback."""
+    current = now or datetime.now()
+    config = datasource_config.get_internal_config()
+    if not _factor_tushare_enabled(config):
+        result = _refresh_factor_daily_cache_tdx(days=days, min_required=min_required, now=current)
+        result.setdefault("primary_source", "tdx_daily")
+        result.setdefault("tushare_count", 0)
+        result.setdefault("tushare_qfq_count", 0)
+        result.setdefault("tdx_fallback_count", int(result.get("refreshed") or 0))
+        return result
+
+    token = config.get("tushare_token")
+    mode = config.get("tushare_mode")
+    fallback_enabled = bool(config.get("fallback_enabled", True))
+    configured_source = "tushare_replay_daily" if str(mode).lower() == "replay" else "tushare_sdk_daily"
+    source_name = configured_source
+    source_frame = pd.DataFrame()
+    source_date = None
+    tushare_errors: list[str] = []
+    csv_paths = sorted(DATA_DIR.glob("*.csv"))
+    if not csv_paths:
+        return {
+            "ok": False,
+            "error": "daily cache is empty",
+            "source": configured_source,
+            "primary_source": configured_source,
+            "latest_count": 0,
+            "min_required": max(1, int(min_required)),
+        }
+    minimum_market_rows = min(
+        len(csv_paths),
+        max(max(1, int(min_required)), (len(csv_paths) + 1) // 2),
+    )
+    market_close_guard = current.replace(hour=15, minute=30, second=0, microsecond=0)
+    today_compact = current.strftime("%Y%m%d")
+
+    for compact_date in _completed_date_candidates(current):
+        candidate = pd.DataFrame()
+        try:
+            candidate = tushare_provider.fetch_full_market_daily(
+                compact_date,
+                token=token,
+                mode=mode,
+            )
+        except Exception as exc:
+            tushare_errors.append(f"daily {compact_date}: {str(exc)[:200]}")
+
+        if candidate is not None and not candidate.empty and "date" in candidate.columns:
+            dates = pd.to_datetime(candidate["date"], errors="coerce").dropna()
+            if not dates.empty:
+                candidate_source_date = pd.Timestamp(dates.max()).normalize()
+                candidate = candidate[
+                    pd.to_datetime(candidate["date"], errors="coerce").dt.normalize() == candidate_source_date
+                ]
+                if len(candidate) >= minimum_market_rows:
+                    source_frame = candidate.copy()
+                    source_date = candidate_source_date
+                    source_name = configured_source
+                    break
+                tushare_errors.append(
+                    f"daily {compact_date}: market rows {len(candidate)} below required {minimum_market_rows}"
+                )
+
+        should_try_realtime = (
+            str(mode).lower() == "replay"
+            and current >= market_close_guard
+            and compact_date == today_compact
+        )
+        if should_try_realtime:
+            try:
+                realtime = tushare_provider.fetch_full_market_realtime_daily(token=token, mode=mode)
+            except Exception as exc:
+                tushare_errors.append(f"rt_k: {str(exc)[:200]}")
+                realtime = pd.DataFrame()
+            if realtime is not None and not realtime.empty and "date" in realtime.columns:
+                realtime_dates = pd.to_datetime(realtime["date"], errors="coerce").dropna()
+                if not realtime_dates.empty:
+                    realtime_source_date = pd.Timestamp(realtime_dates.max()).normalize()
+                    realtime = realtime[
+                        pd.to_datetime(realtime["date"], errors="coerce").dt.normalize() == realtime_source_date
+                    ]
+                    if len(realtime) >= minimum_market_rows:
+                        source_frame = realtime.copy()
+                        source_date = realtime_source_date
+                        source_name = "tushare_replay_rt_k"
+                        break
+                    tushare_errors.append(
+                        f"rt_k: market rows {len(realtime)} below required {minimum_market_rows}"
+                    )
+
+    if source_date is None or source_frame.empty:
+        if not fallback_enabled:
+            return {
+                "ok": False,
+                "error": "Tushare full-market daily source unavailable and fallback is disabled",
+                "source": configured_source,
+                "primary_source": configured_source,
+                "latest_count": 0,
+                "min_required": max(1, int(min_required)),
+                "tushare_count": 0,
+                "tushare_qfq_count": 0,
+                "tdx_fallback_count": 0,
+                "tushare_errors": tushare_errors,
+            }
+        result = _refresh_factor_daily_cache_tdx(days=days, min_required=min_required, now=current)
+        result["primary_source"] = "tdx_daily"
+        result["tushare_count"] = 0
+        result["tushare_qfq_count"] = 0
+        result["tdx_fallback_count"] = int(result.get("refreshed") or 0)
+        if tushare_errors:
+            result["tushare_errors"] = tushare_errors
+        return result
+
+    source_frame = source_frame.copy()
+    if "code" not in source_frame.columns:
+        return {
+            "ok": False,
+            "error": "Tushare full-market daily payload has no stock code",
+            "source": source_name,
+            "primary_source": source_name,
+            "source_trade_date": str(source_date.date()),
+            "latest_count": 0,
+            "min_required": max(1, int(min_required)),
+        }
+    source_frame["code"] = source_frame["code"].astype(str).str.extract(r"(\d{6})", expand=False)
+    source_frame = source_frame.dropna(subset=["code"])
+    source_by_code = {
+        code: _standardize_kline_for_cache(group)
+        for code, group in source_frame.groupby("code")
+    }
+
+    current_factors: dict[str, float] = {}
+    previous_factors: dict[str, float] = {}
+    previous_trade_date = None
+    try:
+        factor_frame = tushare_provider.fetch_full_market_adj_factors(
+            source_date.strftime("%Y%m%d"), token=token, mode=mode
+        )
+        if factor_frame is not None and not factor_frame.empty:
+            current_factors = {
+                str(row.code): float(row.adj_factor)
+                for row in factor_frame.itertuples()
+                if pd.notna(row.adj_factor)
+            }
+            for compact_date in _completed_date_candidates(
+                datetime.combine((source_date - timedelta(days=1)).date(), datetime.min.time()).replace(hour=23),
+                lookback_days=10,
+            ):
+                previous = tushare_provider.fetch_full_market_adj_factors(
+                    compact_date, token=token, mode=mode
+                )
+                if previous is None or previous.empty:
+                    continue
+                previous_dates = pd.to_datetime(previous.get("date"), errors="coerce").dropna()
+                if previous_dates.empty:
+                    continue
+                previous_trade_date = pd.Timestamp(previous_dates.max()).normalize()
+                previous_factors = {
+                    str(row.code): float(row.adj_factor)
+                    for row in previous.itertuples()
+                    if pd.notna(row.adj_factor)
+                }
+                break
+    except Exception as exc:
+        tushare_errors.append(f"adj_factor: {str(exc)[:200]}")
+
+    min_history = min(max(1, int(days)), 60)
+    metadata = _load_meta()
+    refreshed = 0
+    already_current = 0
+    failed = 0
+    tushare_count = 0
+    tushare_qfq_count = 0
+    tdx_fallback_count = 0
+    adjustment_fallback_count = 0
+    errors: list[str] = []
+    tdx_client = None
+
+    for idx, csv_path in enumerate(csv_paths, start=1):
+        code = csv_path.stem
+        merged = pd.DataFrame()
+        old_frame = pd.DataFrame()
+        final_source = ""
+        updated = False
+        current_without_write = False
+        factor_changed = False
+        try:
+            try:
+                old_frame = _standardize_kline_for_cache(pd.read_csv(csv_path, parse_dates=["date"]))
+            except Exception:
+                old_frame = pd.DataFrame()
+            old_dates = (
+                pd.to_datetime(old_frame["date"], errors="coerce").dropna()
+                if not old_frame.empty and "date" in old_frame.columns
+                else pd.Series(dtype="datetime64[ns]")
+            )
+            old_latest = pd.Timestamp(old_dates.max()).normalize() if not old_dates.empty else None
+            basis_dates = old_dates[old_dates.dt.normalize() < source_date]
+            basis_date = pd.Timestamp(basis_dates.max()).normalize() if not basis_dates.empty else old_latest
+            current_factor = current_factors.get(code)
+            previous_factor = previous_factors.get(code)
+            factor_changed = bool(
+                current_factor
+                and previous_factor
+                and abs(current_factor - previous_factor) > max(1e-8, abs(previous_factor) * 1e-10)
+            )
+            has_gap = bool(previous_trade_date is not None and basis_date is not None and basis_date < previous_trade_date)
+            primary_slice = source_by_code.get(code, pd.DataFrame())
+
+            if factor_changed or has_gap or primary_slice.empty:
+                start_date = (
+                    pd.Timestamp(old_dates.min()).strftime("%Y%m%d")
+                    if factor_changed and not old_dates.empty
+                    else (
+                        (old_latest + timedelta(days=1)).strftime("%Y%m%d")
+                        if old_latest is not None
+                        else (source_date - timedelta(days=max(365, int(days) * 2))).strftime("%Y%m%d")
+                    )
+                )
+                try:
+                    qfq_frame = tushare_provider.fetch_kline_qfq(
+                        code,
+                        start_date,
+                        source_date.strftime("%Y%m%d"),
+                        token=token,
+                        mode=mode,
+                    )
+                except Exception as exc:
+                    qfq_frame = None
+                    if len(errors) < 20:
+                        errors.append(f"{code} tushare qfq: {str(exc)[:120]}")
+                qfq_frame = _standardize_kline_for_cache(qfq_frame)
+                if qfq_frame is not None and not qfq_frame.empty:
+                    qfq_frame = qfq_frame[qfq_frame["date"] <= source_date]
+                    if not qfq_frame.empty and pd.to_datetime(qfq_frame["date"]).max().normalize() == source_date:
+                        merged = merge_kline_cache(code, qfq_frame, update_metadata=False)
+                        final_source = "tushare_replay_qfq" if str(mode).lower() == "replay" else "tushare_sdk_qfq"
+                        updated = not merged.empty
+
+            if merged.empty and not primary_slice.empty:
+                if _same_daily_row(old_frame, primary_slice, source_date) and len(old_frame) >= min_history:
+                    merged = old_frame
+                    final_source = source_name
+                    current_without_write = True
+                else:
+                    merged = merge_kline_cache(code, primary_slice, update_metadata=False)
+                    if not merged.empty:
+                        final_source = source_name
+                        updated = True
+                        if factor_changed:
+                            adjustment_fallback_count += 1
+
+            latest = (
+                pd.to_datetime(merged["date"], errors="coerce").dropna()
+                if not merged.empty and "date" in merged.columns
+                else pd.Series(dtype="datetime64[ns]")
+            )
+            valid = bool(
+                not merged.empty
+                and len(merged) >= min_history
+                and not latest.empty
+                and pd.Timestamp(latest.max()).normalize() == source_date
+            )
+            if not valid and fallback_enabled:
+                if tdx_client is None:
+                    from market import ths_quote
+                    tdx_client = ths_quote.get_client()
+                bars = tdx_client.get_kline(code, max(int(days), min_history)) if tdx_client is not None else []
+                fallback_frame = _standardize_kline_for_cache(pd.DataFrame(bars or []))
+                if not fallback_frame.empty:
+                    fallback_frame = fallback_frame[fallback_frame["date"] <= source_date]
+                    merged = merge_kline_cache(code, fallback_frame, update_metadata=False)
+                    latest = (
+                        pd.to_datetime(merged["date"], errors="coerce").dropna()
+                        if not merged.empty and "date" in merged.columns
+                        else pd.Series(dtype="datetime64[ns]")
+                    )
+                    valid = bool(
+                        not merged.empty
+                        and len(merged) >= min_history
+                        and not latest.empty
+                        and pd.Timestamp(latest.max()).normalize() == source_date
+                    )
+                    if valid:
+                        final_source = "tdx_daily_fallback"
+                        updated = True
+                        current_without_write = False
+
+            if not valid:
+                failed += 1
+                continue
+
+            if final_source == "tdx_daily_fallback":
+                tdx_fallback_count += 1
+            else:
+                tushare_count += 1
+                if final_source.endswith("_qfq"):
+                    tushare_qfq_count += 1
+            if current_without_write:
+                already_current += 1
+            elif updated:
+                refreshed += 1
+                item = dict(metadata.get(code, {}))
+                item.update({
+                    "name": item.get("name") or code,
+                    "start": str(pd.to_datetime(merged["date"]).iloc[0].date()),
+                    "end": str(source_date.date()),
+                    "rows": len(merged),
+                    "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "daily_source": final_source,
+                })
+                metadata[code] = item
+        except Exception as exc:
+            failed += 1
+            if len(errors) < 20:
+                errors.append(f"{code}: {str(exc)[:120]}")
+        if idx % 250 == 0:
+            logger.info(
+                "[factor_cache] progress %s/%s tushare=%s tdx_fallback=%s failed=%s",
+                idx,
+                len(csv_paths),
+                tushare_count,
+                tdx_fallback_count,
+                failed,
+            )
+
+    if refreshed:
+        _save_meta(metadata)
+    latest_count = len(csv_paths) - failed
+    result = {
+        "ok": latest_count >= max(1, int(min_required)),
+        "source": source_name,
+        "primary_source": source_name,
+        "source_trade_date": str(source_date.date()),
+        "total": len(csv_paths),
+        "latest_count": latest_count,
+        "min_required": max(1, int(min_required)),
+        "already_current": already_current,
+        "refreshed": refreshed,
+        "failed": failed,
+        "tushare_count": tushare_count,
+        "tushare_qfq_count": tushare_qfq_count,
+        "tdx_fallback_count": tdx_fallback_count,
+        "adjustment_fallback_count": adjustment_fallback_count,
+        "tushare_market_rows": len(source_frame),
+    }
+    if tushare_errors:
+        result["tushare_errors"] = tushare_errors
     if errors:
         result["errors"] = errors
     if not result["ok"]:

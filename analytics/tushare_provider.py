@@ -112,13 +112,13 @@ def _plain_code(ts_code: str) -> str:
     digits = "".join(ch for ch in raw if ch.isdigit())
     return digits[-6:] if digits else raw[-6:]
 
-def _replay_get(
+def _replay_request(
     api_name: str,
     token: str,
     params: dict | None = None,
     timeout: int = 25,
     max_attempts: int | None = None,
-) -> list[dict]:
+) -> Any:
     headers = {"X-API-Key": token, "Accept": "application/json"}
     errors = []
     base_urls = _replay_base_urls()
@@ -132,10 +132,27 @@ def _replay_get(
             payload = resp.json()
             if isinstance(payload, dict) and int(payload.get("code") or 0) not in (0, 200):
                 raise RuntimeError(str(payload.get("msg") or payload.get("message") or payload.get("error") or payload))
-            return _extract_rows(payload)
+            return payload
         except Exception as exc:
             errors.append(f"{url}: {exc}")
     raise RuntimeError("; ".join(errors))
+
+
+def _replay_get(
+    api_name: str,
+    token: str,
+    params: dict | None = None,
+    timeout: int = 25,
+    max_attempts: int | None = None,
+) -> list[dict]:
+    payload = _replay_request(
+        api_name,
+        token,
+        params=params,
+        timeout=timeout,
+        max_attempts=max_attempts,
+    )
+    return _extract_rows(payload)
 
 
 def _normalize_daily_frame(df: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -331,6 +348,124 @@ def fetch_kline_qfq(
         asset="E",
     )
     return _normalize_daily_frame(df)
+
+
+def _normalize_full_market_daily_frame(df: pd.DataFrame | None) -> pd.DataFrame:
+    columns = ["code", "date", "open", "high", "low", "close", "volume"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+    data = df.copy()
+    if "trade_date" in data.columns and "date" not in data.columns:
+        data = data.rename(columns={"trade_date": "date"})
+    if "vol" in data.columns and "volume" not in data.columns:
+        data = data.rename(columns={"vol": "volume"})
+    if "code" not in data.columns:
+        if "ts_code" not in data.columns:
+            return pd.DataFrame(columns=columns)
+        data["code"] = data["ts_code"].map(_plain_code)
+    required = ["code", "date", "open", "high", "low", "close", "volume"]
+    if any(column not in data.columns for column in required):
+        return pd.DataFrame(columns=columns)
+    data["code"] = data["code"].astype(str).map(_plain_code)
+    data["date"] = pd.to_datetime(data["date"], errors="coerce")
+    for column in ("open", "high", "low", "close", "volume"):
+        data[column] = pd.to_numeric(data[column], errors="coerce")
+    data = data.dropna(subset=["date", "open", "high", "low", "close", "volume"])
+    data = data[(data["code"].str.len() == 6) & (data["open"] > 0) & (data["close"] > 0)]
+    return data[columns].drop_duplicates(subset=["code", "date"], keep="last").reset_index(drop=True)
+
+
+def fetch_full_market_daily(
+    trade_date: str,
+    token: str | None = None,
+    mode: str | None = None,
+) -> pd.DataFrame:
+    """Fetch one completed A-share trading day in a single Tushare request."""
+    resolved_mode = _mode(mode)
+    token = token or datasource_config.resolve_tushare_token(mode=resolved_mode)
+    if not token:
+        return _normalize_full_market_daily_frame(None)
+    compact_date = _date_text(trade_date)
+    fields = "ts_code,trade_date,open,high,low,close,vol,amount"
+    if resolved_mode == "replay":
+        rows = _replay_get(
+            "daily",
+            token,
+            {"trade_date": compact_date, "limit": 7000, "fields": fields},
+            timeout=60,
+            max_attempts=1,
+        )
+        return _normalize_full_market_daily_frame(pd.DataFrame(rows))
+
+    ts = _load_tushare()
+    api = ts.pro_api(token)
+    frame = api.daily(trade_date=compact_date, fields=fields)
+    return _normalize_full_market_daily_frame(frame)
+
+
+def fetch_full_market_realtime_daily(
+    token: str | None = None,
+    mode: str | None = None,
+) -> pd.DataFrame:
+    """Fetch the latest full-market realtime daily bar after market close."""
+    resolved_mode = _mode(mode)
+    token = token or datasource_config.resolve_tushare_token(mode=resolved_mode)
+    if not token or resolved_mode != "replay":
+        return _normalize_full_market_daily_frame(None)
+    payload = _replay_request(
+        "rt_k",
+        token,
+        {},
+        timeout=60,
+        max_attempts=1,
+    )
+    rows = _extract_rows(payload)
+    params = payload.get("params") if isinstance(payload, dict) else {}
+    source_trade_date = str((params or {}).get("source_trade_date") or "").strip()
+    if len(_date_text(source_trade_date)) != 8:
+        raise RuntimeError("Tushare rt_k payload has no source_trade_date")
+    data = pd.DataFrame(rows)
+    if data.empty:
+        return _normalize_full_market_daily_frame(None)
+    data["trade_date"] = _date_text(source_trade_date)
+    return _normalize_full_market_daily_frame(data)
+
+
+def fetch_full_market_adj_factors(
+    trade_date: str,
+    token: str | None = None,
+    mode: str | None = None,
+) -> pd.DataFrame:
+    """Fetch one trading day's adjustment factors for the full A-share market."""
+    columns = ["code", "date", "adj_factor"]
+    resolved_mode = _mode(mode)
+    token = token or datasource_config.resolve_tushare_token(mode=resolved_mode)
+    if not token:
+        return pd.DataFrame(columns=columns)
+    compact_date = _date_text(trade_date)
+    fields = "ts_code,trade_date,adj_factor"
+    if resolved_mode == "replay":
+        rows = _replay_get(
+            "adj_factor",
+            token,
+            {"trade_date": compact_date, "limit": 7000, "fields": fields},
+            timeout=60,
+            max_attempts=1,
+        )
+        data = pd.DataFrame(rows)
+    else:
+        ts = _load_tushare()
+        api = ts.pro_api(token)
+        data = api.adj_factor(trade_date=compact_date, fields=fields)
+    if data is None or data.empty or "ts_code" not in data.columns or "adj_factor" not in data.columns:
+        return pd.DataFrame(columns=columns)
+    data = data.copy()
+    data["code"] = data["ts_code"].map(_plain_code)
+    data["date"] = pd.to_datetime(data.get("trade_date", compact_date), errors="coerce")
+    data["adj_factor"] = pd.to_numeric(data["adj_factor"], errors="coerce")
+    data = data.dropna(subset=["date", "adj_factor"])
+    data = data[(data["code"].str.len() == 6) & (data["adj_factor"] > 0)]
+    return data[columns].drop_duplicates(subset=["code", "date"], keep="last").reset_index(drop=True)
 
 
 def fetch_realtime_quotes(
