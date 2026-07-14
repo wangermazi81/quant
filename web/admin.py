@@ -143,6 +143,8 @@ def _factor_mining_payload(run_dir: Path | None) -> dict:
     report = _read_json_file(report_path, {})
     candidates_path = run_dir / "latest_candidates.json"
     candidates = _read_json_file(candidates_path, report.get("latest_candidates", []))
+    if isinstance(candidates, list):
+        candidates = [_enrich_watchlist_identity(item) for item in candidates if isinstance(item, dict)]
     if isinstance(report, dict):
         report["latest_candidates"] = candidates if isinstance(candidates, list) else []
     return {
@@ -234,7 +236,7 @@ def _load_factor_watchlist() -> dict:
     items = data.get("items") if isinstance(data.get("items"), list) else []
     return {
         "updated_at": data.get("updated_at"),
-        "items": [item for item in items if isinstance(item, dict)],
+        "items": [_enrich_watchlist_identity(item) for item in items if isinstance(item, dict)],
     }
 
 
@@ -249,6 +251,30 @@ def _clean_watchlist_text(value, limit: int = 200) -> str:
     text = "" if value is None else str(value)
     text = re.sub(r"[\r\n\t]+", " ", text).strip()
     return text[:limit]
+
+
+def _resolve_watchlist_name(ts_code: str, raw_name=None) -> str:
+    code = str(ts_code or "").split(".")[0]
+    cleaned = _clean_watchlist_text(raw_name, 40)
+    if cleaned and cleaned not in {ts_code, code}:
+        return cleaned
+    try:
+        from analytics import data_manager as dm
+
+        resolved = _clean_watchlist_text(dm.get_stock_name(code), 40)
+    except Exception:
+        resolved = ""
+    return resolved if resolved and resolved not in {ts_code, code} else (cleaned or code)
+
+
+def _enrich_watchlist_identity(raw: dict) -> dict:
+    item = dict(raw)
+    ts_code = _clean_watchlist_text(item.get("ts_code") or item.get("code"), 32).upper()
+    code = ts_code.split(".")[0]
+    item["ts_code"] = ts_code
+    item["code"] = code
+    item["name"] = _resolve_watchlist_name(ts_code, item.get("name"))
+    return item
 
 
 def _clean_watchlist_json(value, limit: int = 12000):
@@ -279,7 +305,7 @@ def _sanitize_watchlist_item(raw: dict, run_id: str | None = None, strategy_name
     item = {
         "ts_code": ts_code,
         "code": code,
-        "name": _clean_watchlist_text(raw.get("name"), 40),
+        "name": _resolve_watchlist_name(ts_code, raw.get("name")),
         "trade_date": _clean_watchlist_text(raw.get("trade_date"), 20),
         "source_run_id": _clean_watchlist_text(run_id or raw.get("source_run_id") or raw.get("run_id"), 40),
         "strategy_name": _clean_watchlist_text(strategy_name or raw.get("strategy_name") or "AI因子挖掘候选", 60),

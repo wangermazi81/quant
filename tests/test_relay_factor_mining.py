@@ -171,6 +171,31 @@ def test_latest_candidates_keep_research_pool_larger_than_trade_top_k():
     assert candidates[-1]["latest_universe_size"] == 10
 
 
+def test_latest_candidates_resolve_stock_name(monkeypatch):
+    from analytics import data_manager as dm
+
+    monkeypatch.setattr(dm, "get_stock_name", lambda code: "平安银行")
+    features = pd.DataFrame(
+        [
+            {
+                "trade_date": "2026-07-13",
+                "ts_code": "000001.SZ",
+                "relay_score": 91,
+                "ret_5": 0.06,
+                "volume_ratio_20": 1.9,
+                "near_high_20": 0.98,
+                "limit_count_20": 2,
+                "risk_flags": "",
+                "available_at": "2026-07-13 15:00:00",
+            }
+        ]
+    )
+
+    candidate = relay.build_latest_candidates(features, top_k=1, candidate_pool_size=1)[0]
+
+    assert candidate["name"] == "平安银行"
+
+
 def test_latest_candidates_include_human_readable_factor_explanation():
     features = pd.DataFrame(
         [

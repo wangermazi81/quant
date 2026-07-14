@@ -520,6 +520,18 @@ def _candidate_factor_explain(
     }
 
 
+def _resolve_stock_name(ts_code: Any) -> str:
+    raw_code = str(ts_code or "").strip()
+    code = raw_code.split(".")[0]
+    try:
+        from analytics import data_manager as dm
+
+        name = str(dm.get_stock_name(code) or "").strip()
+    except Exception:
+        name = ""
+    return name if name and name not in {raw_code, code} else (code or raw_code)
+
+
 def build_latest_candidates(
     features: pd.DataFrame,
     top_k: int = 10,
@@ -580,7 +592,8 @@ def build_latest_candidates(
         candidates.append(
             {
                 "ts_code": str(row["ts_code"]),
-                "name": str(row["ts_code"]),
+                "code": str(row["ts_code"]).split(".")[0],
+                "name": _resolve_stock_name(row["ts_code"]),
                 "trade_date": str(row["trade_date"]),
                 "strategy_key": "relay_factor_mining_v1",
                 "candidate_rank": rank,

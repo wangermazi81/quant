@@ -1367,7 +1367,7 @@ function renderFactorMining(r){
         <tr>
           <td>${esc(c.trade_date || '')}</td>
           <td>${fmNumText(c.candidate_rank)}</td>
-          <td><b>${esc(c.ts_code || c.name || '')}</b></td>
+          <td><b>${esc(fmStockLabel(c))}</b></td>
           <td>${esc(fmTierText(c.candidate_tier))}<br><span style="font-size:11px;color:var(--text3)">分位 ${fmRateText(c.score_percentile)}</span></td>
           <td>${fmNumText(c.relay_score)}</td>
           <td>${fmRateText(c.confidence)}</td>
@@ -1399,6 +1399,13 @@ function renderFactorMining(r){
       windowBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text3)">暂无可用窗口，通常是可信样本不足</td></tr>';
     }
   }
+}
+
+function fmStockLabel(item){
+  const rawCode = String((item && (item.code || item.ts_code)) || '').trim();
+  const code = rawCode.split('.')[0];
+  const name = String((item && item.name) || '').trim();
+  return name && name !== rawCode && name !== code ? `${name}（${code}）` : code;
 }
 
 function fmWatchStatusText(status){
@@ -1433,7 +1440,7 @@ async function fmLoadWatchlist(){
     <tr>
       <td>${esc(item.trade_date || '')}</td>
       <td>${fmNumText(item.candidate_rank)}</td>
-      <td><b>${esc(item.ts_code || item.code || '')}</b><br><span style="font-size:11px;color:var(--text3)">${esc(item.name || '')}</span></td>
+      <td><b>${esc(fmStockLabel(item))}</b></td>
       <td>${esc(item.strategy_name || '')}<br><span style="font-size:11px;color:var(--text3)">${esc(fmTierText(item.candidate_tier))} / ${fmNumText(item.relay_score)}</span></td>
       <td>${fmRateText(item.confidence)}<br><span style="font-size:11px;color:var(--text3)">分位 ${fmRateText(item.score_percentile)}</span></td>
       <td>${esc(fmWatchPlanText(item))}</td>
@@ -1631,7 +1638,7 @@ function renderAiTradeDecision(data){
     }else{
       rBody.innerHTML = results.map(item=>`
         <tr>
-          <td><b>${esc(item.code || '')}</b><br><span style="font-size:11px;color:var(--text3)">${esc(item.name || '')}</span></td>
+          <td><b>${esc(fmStockLabel(item))}</b></td>
           <td>${atdActionTag(item.action)}</td>
           <td>${fmRateText(item.confidence)}</td>
           <td>${fmNumText(item.price || item.entry)}</td>

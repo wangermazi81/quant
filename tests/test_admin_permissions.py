@@ -192,8 +192,10 @@ def test_factor_mining_latest_is_root_only_and_returns_report(isolated_app, monk
     ops_uid = _create_admin(um, permissions=["dashboard_view"])
 
     import web.admin as admin_api
+    from analytics import data_manager as dm
 
     monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(dm, "get_stock_name", lambda code: "平安银行")
     run_dir = tmp_path / "data" / "research" / "relay_factor" / "20260709-101500"
     run_dir.mkdir(parents=True)
     report = {
@@ -233,6 +235,8 @@ def test_factor_mining_latest_is_root_only_and_returns_report(isolated_app, monk
     assert data["run_id"] == "20260709-101500"
     assert data["report"]["summary"]["trusted_feature_rows"] == 96
     assert data["report"]["latest_candidates"][0]["ts_code"] == "000001.SZ"
+    assert data["report"]["latest_candidates"][0]["code"] == "000001"
+    assert data["report"]["latest_candidates"][0]["name"] == "平安银行"
 
 
 def test_factor_mining_run_is_root_only_and_invokes_research(isolated_app, monkeypatch, tmp_path):
@@ -351,8 +355,10 @@ def test_factor_watchlist_import_update_delete_is_root_only(isolated_app, monkey
     ops_uid = _create_admin(um, permissions=["dashboard_view"])
 
     import web.admin as admin_api
+    from analytics import data_manager as dm
 
     monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(dm, "get_stock_name", lambda code: "平安银行")
     client = app.test_client()
     _login_session(client, ops_uid, "ops")
 
@@ -396,6 +402,7 @@ def test_factor_watchlist_import_update_delete_is_root_only(isolated_app, monkey
     listed = client.get("/api/admin/factor-watchlist").get_json()
     item = listed["items"][0]
     assert item["id"] == "2026-07-09-000001.SZ"
+    assert item["name"] == "平安银行"
     assert item["strategy_name"] == "AI因子挖掘候选"
     assert item["factor_explain"]["factor_version"] == "relay_factor_mining_v1"
     assert item["factor_explain"]["matched_factors"][0]["label"] == "20日量比"
