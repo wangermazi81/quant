@@ -74,6 +74,10 @@ sync_nginx_anti_crawl() {
     fi
 }
 
+data_scheduler_service_exists() {
+    systemctl cat quant-scheduler.service >/dev/null 2>&1
+}
+
 ensure_data_scheduler_service() {
     if [ "$(id -u)" != "0" ]; then
         echo "Skip quant-scheduler install: root privileges required."
@@ -108,7 +112,7 @@ sync_nginx_anti_crawl
 if [ "$LOCAL" = "$REMOTE" ]; then
     secure_runtime_secrets "$RUN_USER"
     ensure_data_scheduler_service
-    if systemctl list-unit-files 2>/dev/null | grep -q "^quant-scheduler.service"; then
+    if data_scheduler_service_exists; then
         systemctl restart quant-scheduler
         echo "Restarted quant-scheduler (data schedulers)."
     fi
@@ -149,7 +153,7 @@ echo
 echo "[5/6] Restart service"
 ensure_data_scheduler_service
 systemctl restart "$SERVICE"
-if systemctl list-unit-files 2>/dev/null | grep -q "^quant-scheduler.service"; then
+if data_scheduler_service_exists; then
     systemctl restart quant-scheduler
     echo "Restarted quant-scheduler (data schedulers)."
 fi
