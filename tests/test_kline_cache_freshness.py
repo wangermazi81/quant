@@ -2,7 +2,7 @@
 from tests._module_stubs import stub_project_module
 import sys
 import types
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -112,5 +112,39 @@ def test_refresh_factor_daily_cache_updates_latest_coverage(monkeypatch, tmp_pat
     assert result["latest_count"] == 1
     assert result["refreshed"] == 1
     assert result["failed"] == 1
+    saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
+    assert saved["date"].max() == pd.Timestamp("2026-07-13")
+
+
+def test_refresh_factor_daily_cache_ignores_unfinished_intraday_bar(monkeypatch, tmp_path):
+    import analytics.data_manager as dm
+    import market.ths_quote as ths_quote
+
+    data_dir = tmp_path / "daily"
+    data_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", data_dir)
+    monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+
+    stale = _kline_frame("2026-07-09", periods=80)
+    stale.to_csv(data_dir / "000001.csv", index=False, encoding="utf-8")
+    bars_with_partial_today = _kline_frame("2026-07-14", periods=85, start_price=20.0)
+
+    class FakeClient:
+        def get_index_kline(self, code, market, days):
+            return [{"date": "2026-07-14"}, {"date": "2026-07-13"}]
+
+        def get_kline(self, code, days):
+            return bars_with_partial_today.to_dict("records")
+
+    monkeypatch.setattr(ths_quote, "get_client", lambda: FakeClient())
+
+    result = dm.refresh_factor_daily_cache(
+        days=180,
+        min_required=1,
+        now=datetime(2026, 7, 14, 10, 30),
+    )
+
+    assert result["ok"] is True
+    assert result["source_trade_date"] == "2026-07-13"
     saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
     assert saved["date"].max() == pd.Timestamp("2026-07-13")

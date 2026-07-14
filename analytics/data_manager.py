@@ -342,7 +342,7 @@ def merge_kline_cache(code: str, df: pd.DataFrame, update_metadata: bool = True)
     return merged
 
 
-def refresh_factor_daily_cache(days: int = 180, min_required: int = 800) -> dict:
+def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: datetime | None = None) -> dict:
     """Incrementally refresh the factor-mining daily cache from TDX."""
     from market import ths_quote
 
@@ -356,7 +356,19 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800) -> dict
     if len(source_dates) == 0:
         return {"ok": False, "error": "TDX index daily date unavailable", "latest_count": 0, "min_required": min_required}
 
+    current = now or datetime.now()
     source_date = pd.Timestamp(source_dates.max()).normalize()
+    market_close_guard = current.replace(hour=15, minute=30, second=0, microsecond=0)
+    if source_date.date() == current.date() and current < market_close_guard:
+        completed_dates = source_dates[pd.DatetimeIndex(source_dates).normalize() < source_date]
+        if len(completed_dates) == 0:
+            return {
+                "ok": False,
+                "error": "TDX completed trade date unavailable before market close",
+                "latest_count": 0,
+                "min_required": min_required,
+            }
+        source_date = pd.Timestamp(completed_dates.max()).normalize()
     csv_paths = sorted(DATA_DIR.glob("*.csv"))
     if not csv_paths:
         return {"ok": False, "error": "daily cache is empty", "latest_count": 0, "min_required": min_required}
@@ -381,7 +393,12 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800) -> dict
             if not bars:
                 failed += 1
                 continue
-            merged = merge_kline_cache(code, pd.DataFrame(bars), update_metadata=False)
+            refresh_frame = _standardize_kline_for_cache(pd.DataFrame(bars))
+            refresh_frame = refresh_frame[refresh_frame["date"] <= source_date]
+            if refresh_frame.empty:
+                failed += 1
+                continue
+            merged = merge_kline_cache(code, refresh_frame, update_metadata=False)
             if merged.empty or len(merged) < min_history or pd.to_datetime(merged["date"]).max().normalize() != source_date:
                 failed += 1
                 continue
