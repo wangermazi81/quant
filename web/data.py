@@ -116,6 +116,28 @@ def api_stock_sector(code):
 def api_kline(code):
     """K 线数据：统一数据源，第一源 Tushare，第二源按后台配置降级。"""
     try:
+        local = dm.get_local(code)
+        if local is not None and not local.empty and len(local) >= 10:
+            cols = [c for c in ["date", "open", "close", "high", "low", "volume"] if c in local.columns]
+            sub = local[cols].tail(120).copy()
+            sub["date"] = sub["date"].apply(
+                lambda d: d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+            )
+            records = sub.to_dict("records")
+            last = records[-1]["date"] if records else ""
+            name = dm.get_stock_name(code) or code
+            return jsonify({
+                "ok": True,
+                "code": code,
+                "name": name,
+                "source": "local_daily_cache",
+                "primary_provider": "cache",
+                "fallback_used": False,
+                "latest_date": last,
+                "stale": last < _most_recent_trading_day(),
+                "data": records,
+            })
+
         from analytics import data_gateway as dg
         picked = dg.get_daily_kline_result(code, days=120, min_rows=10)
         df = picked.get("df") if isinstance(picked, dict) else None
