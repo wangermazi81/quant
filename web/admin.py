@@ -16,6 +16,7 @@ import app_security as sec
 from analytics import datasource_config
 from analytics import tushare_provider
 from analytics import relay_factor_mining
+from analytics import live_factor_feedback
 from analytics import ai_trader as ai_trader_engine
 from analytics import auto_factor_scheduler
 from app_state import BASE_DIR, require_admin, require_admin_perm, require_root_admin
@@ -420,9 +421,17 @@ def _with_ai_trade_quote_snapshots(decision: dict) -> dict:
 
 
 def _save_ai_trade_decision(data: dict) -> None:
+    payload = _with_ai_trade_quote_snapshots(data)
+    try:
+        feedback_result = live_factor_feedback.record_ai_decision(payload)
+        if isinstance(payload, dict):
+            payload = {**payload, "live_feedback_record": feedback_result}
+    except Exception as exc:
+        if isinstance(payload, dict):
+            payload = {**payload, "live_feedback_record": {"ok": False, "error": str(exc)[:160]}}
     path = _ai_trade_decision_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _factor_watchlist_candidates(max_candidates: int = 6, latest_only: bool = True) -> list[dict]:

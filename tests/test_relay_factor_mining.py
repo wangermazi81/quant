@@ -286,6 +286,52 @@ def test_latest_candidates_downgrade_overheated_live_unreliable_names():
     assert candidate["factor_explain"]["live_reliability"]["status"] == "avoid"
 
 
+def test_latest_candidates_downgrade_from_live_feedback():
+    features = pd.DataFrame(
+        [
+            {
+                "trade_date": "2026-07-09",
+                "ts_code": "AAA.SZ",
+                "relay_score": 95,
+                "ret_3": 0.04,
+                "ret_5": 0.06,
+                "volume_ratio_20": 2.0,
+                "near_high_20": 0.97,
+                "limit_count_20": 1,
+                "volatility_10": 0.03,
+                "risk_flags": "",
+                "market_emotion_score": 72,
+                "available_at": "2026-07-09 15:00:00",
+            }
+        ]
+    )
+
+    candidate = relay.build_latest_candidates(
+        features,
+        top_k=1,
+        candidate_pool_size=1,
+        live_feedback={
+            "AAA": {
+                "blocked_rate": 0.75,
+                "execution_rate": 0.20,
+                "near_limit_rate": 0.50,
+                "buy_vote_count": 5,
+                "paper_trade_count": 4,
+                "paper_avg_pnl_pct": -2.4,
+                "paper_win_rate": 0.25,
+                "sample_count": 9,
+                "last_feedback_at": "2026-07-09 09:35:00",
+            }
+        },
+    )[0]
+
+    assert candidate["candidate_tier"] == "observe"
+    assert candidate["position_pct"] == 0.0
+    assert candidate["live_readiness_status"] == "avoid"
+    assert "feedback_frequent_blocked" in candidate["live_warning_keys"]
+    assert candidate["factor_explain"]["live_reliability"]["feedback"]["blocked_rate"] == 0.75
+
+
 def test_latest_candidates_apply_visible_filters_and_custom_tiers():
     features = pd.DataFrame(
         [

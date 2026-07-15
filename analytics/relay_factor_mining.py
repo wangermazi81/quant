@@ -134,6 +134,11 @@ _LIVE_WARNING_TEXT: dict[str, str] = {
     "proxy_weak_volume": "量能确认不足，需要竞价成交额二次验证。",
     "proxy_limit_queue": "接近强势高位，若竞价直接顶板容易不可成交。",
     "proxy_market_weak": "市场情绪不强，候选应降级观察。",
+    "feedback_frequent_blocked": "实盘反馈显示多次被风控或执行条件阻断，先降级观察。",
+    "feedback_low_execution": "实盘买入建议转成交比例偏低，可能存在排队或流动性问题。",
+    "feedback_near_limit_queue": "盘口反馈多次接近涨停队列，容易出现信号好但买不到。",
+    "feedback_paper_loss": "模拟盘闭环收益为负，历史因子需要等待新样本修复。",
+    "feedback_low_win_rate": "模拟盘胜率偏低，暂不按强候选处理。",
 }
 
 
@@ -569,7 +574,25 @@ def _score_inputs(row: pd.Series, rules: dict[str, Any]) -> list[dict[str, Any]]
     return inputs
 
 
-def _candidate_live_readiness(row: pd.Series, risk_flags: Sequence[str]) -> dict[str, Any]:
+def _feedback_for_code(live_feedback: dict[str, dict[str, Any]] | None, ts_code: Any) -> dict[str, Any]:
+    if not isinstance(live_feedback, dict) or not live_feedback:
+        return {}
+    code = str(ts_code or "").strip().upper()
+    candidates = [code, code.split(".")[0]]
+    if "." not in code and len(code) == 6:
+        candidates.extend([f"{code}.SZ", f"{code}.SH"])
+    for key in candidates:
+        item = live_feedback.get(key)
+        if isinstance(item, dict):
+            return dict(item)
+    return {}
+
+
+def _candidate_live_readiness(
+    row: pd.Series,
+    risk_flags: Sequence[str],
+    live_feedback: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     warnings: list[str] = []
     penalty = min(len(risk_flags), 4) * 0.06
     ret_3 = float(row.get("ret_3", 0.0) or 0.0)
@@ -594,6 +617,32 @@ def _candidate_live_readiness(row: pd.Series, risk_flags: Sequence[str]) -> dict
     if emotion is not None and emotion < 50:
         penalty += 0.10
         warnings.append("proxy_market_weak")
+
+    feedback = _feedback_for_code(live_feedback, row.get("ts_code"))
+    sample_count = int(feedback.get("sample_count") or 0) if feedback else 0
+    buy_vote_count = int(feedback.get("buy_vote_count") or 0) if feedback else 0
+    paper_trade_count = int(feedback.get("paper_trade_count") or 0) if feedback else 0
+    blocked_rate = _maybe_float(feedback.get("blocked_rate")) if feedback else None
+    execution_rate = _maybe_float(feedback.get("execution_rate")) if feedback else None
+    near_limit_rate = _maybe_float(feedback.get("near_limit_rate")) if feedback else None
+    paper_avg_pnl_pct = _maybe_float(feedback.get("paper_avg_pnl_pct")) if feedback else None
+    paper_win_rate = _maybe_float(feedback.get("paper_win_rate")) if feedback else None
+
+    if sample_count >= 3 and blocked_rate is not None and blocked_rate > 0.5:
+        penalty += 0.18
+        warnings.append("feedback_frequent_blocked")
+    if buy_vote_count >= 3 and execution_rate is not None and execution_rate < 0.3:
+        penalty += 0.16
+        warnings.append("feedback_low_execution")
+    if sample_count >= 3 and near_limit_rate is not None and near_limit_rate > 0.4:
+        penalty += 0.10
+        warnings.append("feedback_near_limit_queue")
+    if paper_trade_count >= 3 and paper_avg_pnl_pct is not None and paper_avg_pnl_pct < 0:
+        penalty += 0.18
+        warnings.append("feedback_paper_loss")
+    if paper_trade_count >= 5 and paper_win_rate is not None and paper_win_rate < 0.4:
+        penalty += 0.10
+        warnings.append("feedback_low_win_rate")
 
     for flag in risk_flags:
         if flag == "weak_volume" and "proxy_weak_volume" not in warnings:
@@ -621,6 +670,7 @@ def _candidate_live_readiness(row: pd.Series, risk_flags: Sequence[str]) -> dict
         "warning_keys": list(dict.fromkeys(warnings)),
         "warnings": warning_texts,
         "summary": "；".join(warning_texts) if warning_texts else "收盘因子未发现明显实盘执行降级项，仍需次日竞价确认。",
+        "feedback": feedback,
     }
 
 
@@ -702,6 +752,7 @@ def build_latest_candidates(
     hold_days: int = 2,
     candidate_pool_size: int | None = None,
     mining_rules: dict[str, Any] | None = None,
+    live_feedback: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if features.empty:
         return []
@@ -722,7 +773,10 @@ def build_latest_candidates(
     if active_filters["exclude_high_risk"] and "risk_flags" in latest.columns:
         latest = latest[latest["risk_flags"].fillna("").astype(str).str.len() == 0]
     latest["_risk_flags_list"] = latest["risk_flags"].fillna("").astype(str).map(lambda text: [flag for flag in text.split(",") if flag]) if "risk_flags" in latest.columns else [[] for _ in range(len(latest))]
-    latest["_live_readiness"] = latest.apply(lambda row: _candidate_live_readiness(row, row.get("_risk_flags_list") or []), axis=1)
+    latest["_live_readiness"] = latest.apply(
+        lambda row: _candidate_live_readiness(row, row.get("_risk_flags_list") or [], live_feedback=live_feedback),
+        axis=1,
+    )
     latest["_live_ready_score"] = latest.apply(
         lambda row: float(row.get("relay_score", 0.0) or 0.0) * (0.65 + 0.35 * float((row.get("_live_readiness") or {}).get("score", 1.0))),
         axis=1,
@@ -737,7 +791,7 @@ def build_latest_candidates(
     for idx, row in latest.iterrows():
         score = float(row["relay_score"])
         risk_flags = list(row.get("_risk_flags_list") or [flag for flag in str(row.get("risk_flags", "")).split(",") if flag])
-        live_readiness = dict(row.get("_live_readiness") or _candidate_live_readiness(row, risk_flags))
+        live_readiness = dict(row.get("_live_readiness") or _candidate_live_readiness(row, risk_flags, live_feedback=live_feedback))
         rank = int(idx) + 1
         score_percentile = 1.0 - ((rank - 1) / max(latest_count - 1, 1))
         confidence = max(0.0, min(1.0, score / 100.0 * 0.45 + score_percentile * 0.55 - min(len(risk_flags), 3) * 0.03))
@@ -906,12 +960,24 @@ def run_relay_research(
     features = apply_market_signals(features_raw, market_signal_frame)
     training_features = features[features["market_data_trusted"]] if "market_data_trusted" in features.columns else features
     wf = walk_forward_relay(training_features, labels, train_days=train_days, test_days=test_days, step_days=step_days, top_k=top_k)
+    live_feedback: dict[str, dict[str, Any]] = {}
+    live_feedback_health: dict[str, Any] = {"ok": False, "reason": "not_loaded"}
+    try:
+        from analytics import live_factor_feedback
+
+        sync_result = live_factor_feedback.sync_paper_trades(days=max(days, 180))
+        live_feedback = live_factor_feedback.build_code_feedback(days=90)
+        live_feedback_health = live_factor_feedback.feedback_health()
+        live_feedback_health["sync"] = sync_result
+    except Exception as exc:
+        live_feedback_health = {"ok": False, "error": str(exc)[:160]}
     candidates = build_latest_candidates(
         features,
         top_k=top_k,
         hold_days=hold_days,
         candidate_pool_size=candidate_pool_size,
         mining_rules=rules,
+        live_feedback=live_feedback,
     )
     tier_counts: dict[str, int] = {}
     for candidate in candidates:
@@ -931,6 +997,10 @@ def run_relay_research(
         "latest_trade_date": features["trade_date"].max() if not features.empty else None,
         "latest_candidate_count": int(len(candidates)),
         "latest_candidate_tier_counts": tier_counts,
+        "live_feedback_code_count": int(len(live_feedback)),
+        "live_feedback_updated_at": live_feedback_health.get("updated_at"),
+        "live_feedback_status": "ok" if live_feedback_health.get("ok") else "degraded",
+        "live_feedback_error": live_feedback_health.get("error") or live_feedback_health.get("reason") or "",
     }
     min_dates = train_days + test_days
     unique_dates = int(training_features["trade_date"].nunique()) if not training_features.empty else 0

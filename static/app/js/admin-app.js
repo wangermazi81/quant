@@ -1179,7 +1179,11 @@ function fmLiveReliabilityHtml(item){
   const warnings = Array.isArray(item?.live_warnings) ? item.live_warnings : [];
   const color = item?.live_readiness_status === 'avoid' ? 'var(--red)' : item?.live_readiness_status === 'watch' ? 'var(--orange)' : 'var(--green)';
   const warningText = warnings.length ? warnings.slice(0,2).join('；') : '次日竞价最终确认';
-  return `<span style="color:${color};font-size:11px">${esc(label)} ${fmRateText(score)}</span><br><span style="font-size:11px;color:var(--text3)">${esc(warningText)}</span>`;
+  const feedback = item?.factor_explain?.live_reliability?.feedback;
+  const fbText = feedback && Number(feedback.sample_count || 0) > 0
+    ? `反馈 阻断${fmRateText(feedback.blocked_rate)} / 执行${fmRateText(feedback.execution_rate)} / 模拟${fmPctText(feedback.paper_avg_pnl_pct)}`
+    : '';
+  return `<span style="color:${color};font-size:11px">${esc(label)} ${fmRateText(score)}</span><br><span style="font-size:11px;color:var(--text3)">${esc(warningText)}</span>${fbText ? `<br><span style="font-size:11px;color:var(--text3)">${esc(fbText)}</span>` : ''}`;
 }
 
 function fmMetricText(key, value){
@@ -1207,6 +1211,8 @@ function fmFactorExplainHtml(item, compact=false){
     label: item?.live_readiness_label,
     warnings: item?.live_warnings
   };
+  const fb = live?.feedback && Number(live.feedback.sample_count || 0) > 0 ? live.feedback : null;
+  const fbLine = fb ? `实盘反馈：阻断 ${fmRateText(fb.blocked_rate)} / 执行 ${fmRateText(fb.execution_rate)} / 模拟均盈亏 ${fmPctText(fb.paper_avg_pnl_pct)}` : '';
   const featureLine = [
     ['ret_5','5日'], ['volume_ratio_20','量比'], ['amount_ratio_20','额比'], ['near_high_20','近高'], ['limit_count_20','涨停'], ['market_emotion_score','情绪']
   ].filter(([k])=>snapshot[k]!==undefined && snapshot[k]!==null).map(([k,label])=>`${label} ${fmMetricText(k, snapshot[k])}`).join(' / ');
@@ -1227,6 +1233,7 @@ function fmFactorExplainHtml(item, compact=false){
       ${featureLine ? `<div style="color:var(--text3);margin-top:3px"><b>数值：</b>${esc(featureLine)}</div>` : ''}
       <div style="margin-top:3px"><b>风险：</b>${riskHtml}</div>
       <div style="margin-top:3px"><b>实盘：</b><span style="color:var(--text2)">${esc(live.label || '需竞价确认')} ${fmRateText(live.score)}</span>${Array.isArray(live.warnings)&&live.warnings.length ? `<div style="color:var(--text3);margin-top:2px">${esc(live.warnings.slice(0, compact ? 1 : 3).join('；'))}</div>` : ''}</div>
+      ${fbLine ? `<div style="color:var(--text3);margin-top:2px">${esc(fbLine)}</div>` : ''}
       ${compact ? '' : `<details style="margin-top:4px"><summary style="cursor:pointer;color:var(--text3)">更新节奏/交易约束</summary><div style="margin-top:4px;color:var(--text3)">${esc(policy)}；${esc(review)}</div></details>`}
     </div>`;
 }
@@ -1381,7 +1388,8 @@ function renderFactorMining(r){
   if(msg){
     msg.style.color = report.status === 'ok' ? 'var(--green)' : 'var(--orange)';
     const liveMsg = blockRate!==null && blockRate!==undefined ? `；执行过滤 ${fmRateText(blockRate)}` : '';
-    msg.textContent = `${report.reason || marketReason || `参数：${config.n_stocks || '—'}股 / ${config.days || '—'}天`}${liveMsg}`;
+    const feedbackMsg = summary.live_feedback_code_count ? `；闭环反馈 ${summary.live_feedback_code_count} 只股票` : '';
+    msg.textContent = `${report.reason || marketReason || `参数：${config.n_stocks || '—'}股 / ${config.days || '—'}天`}${liveMsg}${feedbackMsg}`;
   }
 
   if(candidateBody){

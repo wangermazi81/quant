@@ -1407,10 +1407,14 @@ class _Engine:
 
             decision["source"] = {
                 "watchlist_id": item.get("id"),
+                "ts_code": item.get("ts_code") or item.get("code"),
+                "trade_date": item.get("trade_date"),
                 "source_run_id": item.get("source_run_id"),
                 "strategy_name": item.get("strategy_name"),
                 "candidate_rank": item.get("candidate_rank"),
                 "candidate_tier": item.get("candidate_tier"),
+                "live_readiness_status": item.get("live_readiness_status"),
+                "live_readiness_score": item.get("live_readiness_score"),
             }
             hard_ok, hard_reason = self._hard_buy_filter(decision)
             risk_ok, risk_reason = (False, hard_reason)
