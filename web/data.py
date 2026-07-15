@@ -42,25 +42,18 @@ def _request_trade_date(code: str) -> str:
     if cached and time.monotonic() - cached[0] < _TRADE_DATE_CACHE_TTL:
         return cached[1]
     try:
-        daily = md.get_kline(code, period=5)
-        if daily is not None and not daily.empty and "date" in daily.columns:
-            latest = daily["date"].iloc[-1]
-            date_text = latest.strftime("%Y%m%d") if hasattr(latest, "strftime") else str(latest).replace("-", "")[:8]
-            if len(date_text) == 8:
-                _TRADE_DATE_CACHE[key] = (time.monotonic(), date_text)
-                return date_text
-    except Exception as exc:
-        logger.debug(f"latest daily date lookup failed {code}: {exc}")
-    try:
-        book = md.get_order_book(code)
-        trade_time = str(book.get("trade_time") or "")
+        plain_code = md._plain_stock_code(code) if hasattr(md, "_plain_stock_code") else key[-6:]
+        book = md._cache_get(("order_book", plain_code), md.INTRADAY_CACHE_TTL_SECONDS) if hasattr(md, "_cache_get") else None
+        trade_time = str(book.get("trade_time") or "") if isinstance(book, dict) else ""
         if len(trade_time) >= 10:
             date_text = trade_time[:10].replace("-", "")
             _TRADE_DATE_CACHE[key] = (time.monotonic(), date_text)
             return date_text
     except Exception as exc:
-        logger.debug(f"latest trade date lookup failed {code}: {exc}")
-    return datetime.now().strftime("%Y%m%d")
+        logger.debug(f"cached trade date lookup failed {code}: {exc}")
+    date_text = datetime.now().strftime("%Y%m%d")
+    _TRADE_DATE_CACHE[key] = (time.monotonic(), date_text)
+    return date_text
 
 
 @bp.route("/api/data/stocks")

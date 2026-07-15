@@ -75,6 +75,10 @@ def _empty_second_ticks() -> dict:
     return {"datetime": [], "price": [], "volume": [], "amount": [], "prev_price": [], "kind": []}
 
 
+def _empty_minute_kline() -> dict:
+    return {"datetime": [], "open": [], "high": [], "low": [], "close": [], "volume": [], "amount": [], "is_complete": []}
+
+
 def _tushare_cfg() -> dict | None:
     if not datasource_config or not tushare_provider:
         return None
@@ -181,14 +185,18 @@ def get_minute_kline(code: str, date: str) -> dict:
     if cached is not None:
         return cached
 
+    quick_snap = _minute_snapshot(code, cache_key, fetch_order_book=False)
+    if quick_snap is not None:
+        return quick_snap
+
     if not _try_begin_fetch(cache_key):
         snap = _minute_snapshot(code, cache_key)
-        return snap if snap is not None else {"datetime": [], "open": [], "high": [], "low": [], "close": [], "volume": []}
+        return snap if snap is not None else _empty_minute_kline()
 
     try:
         from analytics import data_gateway as dg
         df = dg.get_minute_kline(code, freq="1MIN", limit=240)
-        result = {}
+        result = _empty_minute_kline()
         if df is not None and not df.empty and "datetime" in df.columns:
             df = df.copy()
             df["datetime"] = df["datetime"].apply(lambda v: v.strftime("%Y-%m-%d %H:%M:%S") if hasattr(v, "strftime") else str(v))
@@ -246,8 +254,10 @@ def get_minute_kline_current(code: str, date: str | None = None) -> dict:
     return result
 
 
-def _minute_snapshot(code: str, cache_key: tuple) -> dict | None:
-    book = _cache_get(("order_book", code), INTRADAY_CACHE_TTL_SECONDS) or get_order_book(code)
+def _minute_snapshot(code: str, cache_key: tuple, fetch_order_book: bool = True) -> dict | None:
+    book = _cache_get(("order_book", code), INTRADAY_CACHE_TTL_SECONDS)
+    if book is None and fetch_order_book:
+        book = get_order_book(code)
     price = book.get("price") if isinstance(book, dict) else None
     trade_time = str(book.get("trade_time") or "") if isinstance(book, dict) else ""
     if not price or not trade_time:

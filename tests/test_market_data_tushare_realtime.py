@@ -222,6 +222,29 @@ def test_minute_kline_reuse_short_memory_cache(monkeypatch, tmp_path):
     assert len(calls) == 1
 
 
+def test_minute_kline_returns_cached_order_book_snapshot_without_waiting_for_slow_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(md, "MINUTE_CACHE_DIR", str(tmp_path))
+    if hasattr(md, "clear_intraday_kline_cache"):
+        md.clear_intraday_kline_cache()
+    md._cache_set(("order_book", "000001"), {
+        "trade_time": "2026-07-15 10:01:02",
+        "price": 11.23,
+        "amount": 2230000.0,
+        "volume": 198000.0,
+    })
+
+    from analytics import data_gateway as dg
+
+    monkeypatch.setattr(dg, "get_minute_kline", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("slow minute source should not run")))
+
+    out = md.get_minute_kline("000001.SZ", "20260715")
+
+    assert out["datetime"] == ["2026-07-15 10:01:02"]
+    assert out["open"] == [11.23]
+    assert out["close"] == [11.23]
+    assert out["is_complete"] == [False]
+
+
 def test_minute_kline_fallback_to_realtime_order_book(monkeypatch, tmp_path):
     monkeypatch.setattr(md, "MINUTE_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(md.datasource_config, "get_internal_config", lambda: {
