@@ -1110,6 +1110,7 @@ class _Engine:
             "take_profit": _to_float(dec.get("take_profit")),
             "reason": str(dec.get("reason", ""))[:80],
             "price": _to_float(quote.get("price")) or _to_float(dec.get("entry")),
+            "auction_snapshot": _quote_snapshot(quote),
             "holding": holding,
             "consensus": consensus,
             "token_usage": self._token_usage_delta(token_before),
@@ -1316,6 +1317,9 @@ class _Engine:
         if d.get("action") != "BUY":
             return True, ""
         quote = self._quote(d.get("code", "")) or {}
+        snap = _quote_snapshot(quote)
+        if snap:
+            d["auction_snapshot"] = snap
         price = _to_float(d.get("price")) or _to_float(quote.get("price"))
         change_pct = _to_float(quote.get("change_pct"))
         open_price = _to_float(quote.get("open"))
@@ -1438,6 +1442,7 @@ class _Engine:
                 "entry": decision.get("entry"),
                 "stop_loss": decision.get("stop_loss"),
                 "take_profit": decision.get("take_profit"),
+                "auction_snapshot": decision.get("auction_snapshot"),
                 "reason": decision.get("reason"),
                 "risk_ok": bool(risk_ok),
                 "blocked": decision.get("blocked") or "",
@@ -1585,6 +1590,47 @@ def _to_float(v):
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _quote_snapshot(quote: dict) -> dict:
+    if not isinstance(quote, dict) or not quote:
+        return {}
+
+    def _levels(raw):
+        rows = []
+        for level in raw if isinstance(raw, list) else []:
+            if not isinstance(level, dict):
+                continue
+            rows.append({
+                "price": _to_float(level.get("price")) or 0,
+                "vol": _to_float(level.get("vol")) or 0,
+            })
+            if len(rows) >= 5:
+                break
+        return rows
+
+    bids = _levels(quote.get("bids"))
+    asks = _levels(quote.get("asks"))
+    bid1 = bids[0] if bids else {}
+    ask1 = asks[0] if asks else {}
+    return {
+        "price": _to_float(quote.get("price")),
+        "open": _to_float(quote.get("open")),
+        "last_close": _to_float(quote.get("last_close")),
+        "change_pct": _to_float(quote.get("change_pct")),
+        "volume": _to_float(quote.get("vol") or quote.get("volume")),
+        "amount": _to_float(quote.get("amount")),
+        "limit_up": _to_float(quote.get("limit_up")),
+        "limit_down": _to_float(quote.get("limit_down")),
+        "bid1_price": bid1.get("price"),
+        "bid1_vol": bid1.get("vol"),
+        "ask1_price": ask1.get("price"),
+        "ask1_vol": ask1.get("vol"),
+        "bids": bids,
+        "asks": asks,
+        "server_time": quote.get("server_time") or quote.get("servertime") or "",
+        "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
 
 def _to_int(v, default=0):

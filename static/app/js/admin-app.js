@@ -14,6 +14,8 @@ let permissionTargetId = null;
 let permissionTargetName = '';
 let permissionTargetMode = 'save';
 let cfCallback = null;
+let aiTradeDecisionRefreshTimer = null;
+let aiTradeDecisionLoading = false;
 let notices = [
   {title:'新用户注册', desc:'用户 testuser 刚刚注册', time:'刚刚'},
   {title:'积分消耗预警', desc:'今日消耗积分超过 500 分', time:'1分钟前'},
@@ -202,6 +204,7 @@ function navigate(id, addTabFlag=true){
   if(!pg){navigate('404'); return;}
   pg.classList.add('active');
   currentPage = id;
+  setAiTradeDecisionPolling(id === 'ai-trade-decision');
   if(addTabFlag){
     if(!tabs.find(t=>t.id==='dashboard')) tabs.unshift({id:'dashboard',closable:false});
     addTab(id);
@@ -1598,6 +1601,71 @@ function atdTokenText(v){
   return '—';
 }
 
+function atdMoneyText(v){
+  const n = Number(v);
+  if(!Number.isFinite(n) || n <= 0) return '—';
+  if(n >= 100000000) return `${(n / 100000000).toFixed(2)}亿`;
+  if(n >= 10000) return `${(n / 10000).toFixed(1)}万`;
+  return n.toLocaleString('zh-CN');
+}
+
+function atdLevelText(price, vol){
+  const p = Number(price);
+  const v = Number(vol);
+  if(!Number.isFinite(p) || p <= 0) return '—';
+  return `${p.toFixed(2)} / ${Number.isFinite(v) && v > 0 ? v.toLocaleString('zh-CN') : '0'}`;
+}
+
+function atdDepthTitle(snap){
+  const lines = [];
+  const bids = Array.isArray(snap?.bids) ? snap.bids : [];
+  const asks = Array.isArray(snap?.asks) ? snap.asks : [];
+  for(let i=0;i<5;i++){
+    const b = bids[i] || {};
+    const a = asks[i] || {};
+    lines.push(`买${i+1}: ${atdLevelText(b.price, b.vol)}    卖${i+1}: ${atdLevelText(a.price, a.vol)}`);
+  }
+  return lines.join('\n');
+}
+
+function atdAuctionHtml(item){
+  const snap = item?.auction_snapshot || item?.quote_snapshot || {};
+  if(!snap || typeof snap !== 'object' || !Object.keys(snap).length) return '<span style="color:var(--text3)">—</span>';
+  const change = Number(snap.change_pct);
+  const changeText = Number.isFinite(change) ? `${change >= 0 ? '+' : ''}${change.toFixed(2)}%` : '—';
+  const changeColor = Number.isFinite(change) ? (change >= 0 ? 'var(--red)' : 'var(--green)') : 'var(--text3)';
+  const price = Number(snap.price);
+  const open = Number(snap.open);
+  const bidPrice = snap.bid1_price ?? snap.bids?.[0]?.price;
+  const bidVol = snap.bid1_vol ?? snap.bids?.[0]?.vol;
+  const askPrice = snap.ask1_price ?? snap.asks?.[0]?.price;
+  const askVol = snap.ask1_vol ?? snap.asks?.[0]?.vol;
+  const time = snap.server_time || snap.captured_at || '';
+  const title = atdDepthTitle(snap);
+  return `
+    <div title="${esc(title)}" style="min-width:138px;font-size:12px;line-height:1.55;color:var(--text2)">
+      <div><b>额</b> ${esc(atdMoneyText(snap.amount))} <span style="color:${changeColor};font-weight:700">${esc(changeText)}</span></div>
+      <div>现 ${Number.isFinite(price) && price > 0 ? price.toFixed(2) : '—'} / 开 ${Number.isFinite(open) && open > 0 ? open.toFixed(2) : '—'}</div>
+      <div>买一 ${esc(atdLevelText(bidPrice, bidVol))}</div>
+      <div>卖一 ${esc(atdLevelText(askPrice, askVol))}</div>
+      ${time ? `<div style="color:var(--text3)">${esc(time)}</div>` : ''}
+    </div>`;
+}
+
+function setAiTradeDecisionPolling(active){
+  if(!active){
+    if(aiTradeDecisionRefreshTimer){
+      clearInterval(aiTradeDecisionRefreshTimer);
+      aiTradeDecisionRefreshTimer = null;
+    }
+    return;
+  }
+  if(aiTradeDecisionRefreshTimer) return;
+  aiTradeDecisionRefreshTimer = setInterval(()=>{
+    if(currentPage === 'ai-trade-decision') loadAiTradeDecision({silent:true});
+  }, 25000);
+}
+
 function renderAiTradeDecision(data){
   const msg = document.getElementById('atd-msg');
   const cBody = document.getElementById('atd-candidates');
@@ -1634,7 +1702,7 @@ function renderAiTradeDecision(data){
   }
   if(rBody){
     if(!results.length){
-      rBody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:36px;color:var(--text3)">暂无决策结果</td></tr>';
+      rBody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:36px;color:var(--text3)">暂无决策结果</td></tr>';
     }else{
       rBody.innerHTML = results.map(item=>`
         <tr>
@@ -1642,6 +1710,7 @@ function renderAiTradeDecision(data){
           <td>${atdActionTag(item.action)}</td>
           <td>${fmRateText(item.confidence)}</td>
           <td>${fmNumText(item.price || item.entry)}</td>
+          <td>${atdAuctionHtml(item)}</td>
           <td>${item.risk_ok ? '<span style="color:var(--green);font-weight:700">通过</span>' : `<span style="color:var(--red)">${esc(item.blocked || '未通过')}</span>`}</td>
           <td>${item.executed ? '<span style="color:var(--green);font-weight:700">已写入</span>' : '<span style="color:var(--text3)">未执行</span>'}</td>
           <td style="min-width:220px">${esc(item.reason || item.blocked || '')}</td>
@@ -1669,10 +1738,10 @@ function renderAiTradeAutoStatus(data){
     <div style="margin-top:8px">${rows}</div>`;
 }
 
-async function loadAiTradeAutoStatus(){
+async function loadAiTradeAutoStatus(opts={}){
   if(!isRootAdmin()) return;
   const box = document.getElementById('atd-auto-status');
-  if(box) box.textContent = '加载中...';
+  if(box && !opts.silent) box.textContent = '加载中...';
   const r = await _annFetch('GET', '/admin/ai-trade-decision/auto/status');
   if(r && r.ok) renderAiTradeAutoStatus(r);
   else if(box) box.innerHTML = `<span style="color:var(--red)">${esc((r && r.error) || '自动任务状态加载失败')}</span>`;
@@ -1699,22 +1768,29 @@ async function runAiTradeAutoJob(job){
   }
 }
 
-async function loadAiTradeDecision(){
+async function loadAiTradeDecision(opts={}){
   if(!isRootAdmin()){
     navigate('403');
     return;
   }
+  if(aiTradeDecisionLoading) return;
+  aiTradeDecisionLoading = true;
+  const silent = !!opts.silent;
   const maxCandidates = fmReadInt('atd-max', 6);
-  loadAiTradeAutoStatus();
+  loadAiTradeAutoStatus({silent});
   const cBody = document.getElementById('atd-candidates');
-  if(cBody) cBody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:28px;color:var(--text3)">加载中...</td></tr>';
-  const r = await _annFetch('GET', `/admin/ai-trade-decision/latest?max_candidates=${encodeURIComponent(maxCandidates)}`);
-  if(r && r.ok){
-    renderAiTradeDecision(r);
-  }else{
-    const error = (r && (r.error || r.message)) || '加载失败';
-    if(cBody) cBody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:28px;color:var(--red)">${esc(error)}</td></tr>`;
-    showToast(error, 'error');
+  if(cBody && !silent) cBody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:28px;color:var(--text3)">加载中...</td></tr>';
+  try{
+    const r = await _annFetch('GET', `/admin/ai-trade-decision/latest?max_candidates=${encodeURIComponent(maxCandidates)}`);
+    if(r && r.ok){
+      renderAiTradeDecision(r);
+    }else{
+      const error = (r && (r.error || r.message)) || '加载失败';
+      if(cBody && !silent) cBody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:28px;color:var(--red)">${esc(error)}</td></tr>`;
+      if(!silent) showToast(error, 'error');
+    }
+  }finally{
+    aiTradeDecisionLoading = false;
   }
 }
 
@@ -2361,4 +2437,3 @@ async function updateAnnouncement(){
     showToast((r&&r.error)||'更新失败','error');
   }
 }
-

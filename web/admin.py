@@ -370,6 +370,48 @@ def _load_ai_trade_decision() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _with_ai_trade_quote_snapshots(decision: dict) -> dict:
+    if not isinstance(decision, dict):
+        return {}
+    results = decision.get("results")
+    if not isinstance(results, list) or not results:
+        return decision
+    missing = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        if item.get("auction_snapshot") or item.get("quote_snapshot"):
+            continue
+        code = str(item.get("code") or "").strip()
+        if code:
+            missing.append(code)
+    if not missing:
+        return decision
+    try:
+        from market import ths_quote as tq
+        client = tq.get_client()
+        quotes = (client.get_quotes(sorted(set(missing))) if client and getattr(client, "_ok", False) else []) or []
+    except Exception:
+        quotes = []
+    qmap = {str(q.get("code") or ""): q for q in quotes if isinstance(q, dict)}
+    if not qmap:
+        return decision
+    payload = dict(decision)
+    patched_results = []
+    for item in results:
+        if not isinstance(item, dict):
+            patched_results.append(item)
+            continue
+        row = dict(item)
+        if not row.get("auction_snapshot") and not row.get("quote_snapshot"):
+            snap = ai_trader_engine._quote_snapshot(qmap.get(str(row.get("code") or "")))
+            if snap:
+                row["auction_snapshot"] = snap
+        patched_results.append(row)
+    payload["results"] = patched_results
+    return payload
+
+
 def _save_ai_trade_decision(data: dict) -> None:
     path = _ai_trade_decision_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -740,7 +782,7 @@ def admin_ai_trade_decision_latest():
     return jsonify({
         "ok": True,
         "candidates": candidates,
-        "decision": _load_ai_trade_decision(),
+        "decision": _with_ai_trade_quote_snapshots(_load_ai_trade_decision()),
     })
 
 
