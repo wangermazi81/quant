@@ -185,7 +185,7 @@ def get_minute_kline(code: str, date: str) -> dict:
     if cached is not None:
         return cached
 
-    quick_snap = _minute_snapshot(code, cache_key, fetch_order_book=False)
+    quick_snap = _minute_snapshot(code, cache_key)
     if quick_snap is not None:
         return quick_snap
 
