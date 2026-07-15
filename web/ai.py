@@ -5,6 +5,7 @@ import logging
 from flask import Blueprint, request, jsonify, session
 
 from analytics import ai_analyst as ai
+from analytics import data_gateway as dg
 from analytics import data_manager as dm
 from analytics import stock_scorer as scorer
 from core import user_manager as um
@@ -14,6 +15,18 @@ from app_security import rate_limit, user_key
 logger = logging.getLogger(__name__)
 
 bp = Blueprint("ai", __name__)
+
+
+def _load_configured_kline(code: str, days: int = 120, min_rows: int = 30):
+    picked = dg.get_daily_kline_result(code, days=days, min_rows=min_rows)
+    df = picked.get("df") if isinstance(picked, dict) else None
+    data_quality = {
+        "kline_source": picked.get("source") if isinstance(picked, dict) else "",
+        "primary_provider": picked.get("primary_provider") if isinstance(picked, dict) else "",
+        "fallback_used": bool(picked.get("fallback_used")) if isinstance(picked, dict) else False,
+        "latest_date": picked.get("latest_date") if isinstance(picked, dict) else "",
+    }
+    return df, data_quality
 
 
 def _get_owned_ai_task(task_id: str, uid: int):
@@ -211,31 +224,13 @@ def api_stock_score():
     code = d.get("code", "").strip()
     if not code:
         return jsonify({"ok": False, "error": "请输入股票代码"})
-    df = dm.get_local(code)
-    # 不存在 / 为空 / 过期 → 从 pytdx 拉最新并回写缓存（与 ai_analyze 口径一致）
-    if df is None or df.empty or _kline_is_stale(df):
-        try:
-            from market import ths_quote as tq
-            import pandas as pd
-            client = tq.get_client()
-            if client and client._ok:
-                bars = client.get_kline(code, 120)
-                if bars:
-                    df = pd.DataFrame(bars)
-                    df["date"] = pd.to_datetime(df["date"])
-                    try:
-                        merged = dm.merge_kline_cache(code, df)
-                        if merged is not None and not merged.empty:
-                            df = merged
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+    df, data_quality = _load_configured_kline(code, days=120, min_rows=30)
     if df is None or df.empty:
         return jsonify({"ok": False, "error": "无数据，请先下载历史数据"})
     result         = scorer.score_stock(df)
     result["code"] = code
     result["name"] = dm.get_stock_name(code) or code
+    result["data_quality"] = data_quality
     return jsonify(result)
 
 
@@ -252,47 +247,19 @@ def ai_analyze():
     if err:
         return jsonify(err), 402
     name = dm.get_stock_name(code) or code
-    df   = dm.get_local(code)
-    # 修复：本地 CSV 不存在 / 为空 / 行数 < 30（"半残"）/ 过期（停留多日前）都触发 pytdx 补抓
-    # 原逻辑只在 None 或 empty 时补抓，半残 CSV 会绕过 pytdx 让 ai_analyst 直接报"数据不足"
-    # ★ 新增 _kline_is_stale：旧 CSV 会让指标失真、且与用实时数据的环境结论不一致
-    if df is None or df.empty or len(df) < 30 or _kline_is_stale(df):
-        try:
-            from market import ths_quote as tq
-            import pandas as pd
-            client = tq.get_client()
-            if client and client._ok:
-                bars = client.get_kline(code, 120)
-                if bars:
-                    df = pd.DataFrame(bars)
-                    df["date"] = pd.to_datetime(df["date"])
-                    # 拉到数据后保存到本地 CSV 作为缓存
-                    # 下次同一只票分析时秒读，不必每次都打 TDX 服务器
-                    try:
-                        merged = dm.merge_kline_cache(code, df)
-                        if merged is not None and not merged.empty:
-                            df = merged
-                        logger.info(f"[ai_analyze] 已合并缓存 {code} K 线到 data/daily/{code}.csv ({len(df)} 行)")
-                    except Exception as _e:
-                        logger.debug(f"[ai_analyze] 缓存 {code} CSV 失败（不致命）: {_e}")
-        except Exception:
-            pass
+    df, data_quality = _load_configured_kline(code, days=120, min_rows=30)
 
     realtime_price = realtime_change = None
     try:
-        from market import ths_quote as tq
-        client = tq.get_client()
-        if client and client._ok:
-            qs = client.get_quotes([code])
-            if qs:
-                q  = qs[0]
-                rp = float(q.get("price") or q.get("now") or 0)
-                if rp > 0:
-                    realtime_price  = round(rp, 2)
-                    realtime_change = round(float(q.get("change_pct", 0)), 2)
-                    qname = q.get("name", "")
-                    if qname and name == code:
-                        name = qname
+        q = dg.get_realtime_quote(code)
+        if q:
+            rp = float(q.get("price") or q.get("now") or 0)
+            if rp > 0:
+                realtime_price  = round(rp, 2)
+                realtime_change = round(float(q.get("change_pct", 0)), 2)
+                qname = q.get("name", "")
+                if qname and name == code:
+                    name = qname
     except Exception:
         pass
 
@@ -303,6 +270,8 @@ def ai_analyze():
     cfg = ai.resolve_config(um.get_user_ai_config(uid) or {})
 
     result = ai.run_analysis(code, name, df, config_override=cfg)
+    if isinstance(result, dict):
+        result["data_quality"] = data_quality
 
     if realtime_price and result.get("ok"):
         result["realtime_price"]  = realtime_price
@@ -348,44 +317,24 @@ def ai_analyze_async():
             with _ai_tasks_lock:
                 _ai_tasks[task_id]["status"] = "running"
             name = dm.get_stock_name(code) or code
-            df   = dm.get_local(code)
-            if df is None or df.empty or len(df) < 30 or _kline_is_stale(df):
-                try:
-                    from market import ths_quote as tq
-                    import pandas as pd
-                    client = tq.get_client()
-                    if client and client._ok:
-                        bars = client.get_kline(code, 120)
-                        if bars:
-                            df = pd.DataFrame(bars)
-                            df["date"] = pd.to_datetime(df["date"])
-                            try:
-                                merged = dm.merge_kline_cache(code, df)
-                                if merged is not None and not merged.empty:
-                                    df = merged
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
+            df, data_quality = _load_configured_kline(code, days=120, min_rows=30)
             realtime_price = realtime_change = None
             try:
-                from market import ths_quote as tq
-                client = tq.get_client()
-                if client and client._ok:
-                    qs = client.get_quotes([code])
-                    if qs:
-                        q  = qs[0]
-                        rp = float(q.get("price") or q.get("now") or 0)
-                        if rp > 0:
-                            realtime_price  = round(rp, 2)
-                            realtime_change = round(float(q.get("change_pct", 0)), 2)
-                            qname = q.get("name", "")
-                            if qname and name == code:
-                                name = qname
+                q = dg.get_realtime_quote(code)
+                if q:
+                    rp = float(q.get("price") or q.get("now") or 0)
+                    if rp > 0:
+                        realtime_price  = round(rp, 2)
+                        realtime_change = round(float(q.get("change_pct", 0)), 2)
+                        qname = q.get("name", "")
+                        if qname and name == code:
+                            name = qname
             except Exception:
                 pass
             cfg = ai.resolve_config(um.get_user_ai_config(uid) or {})
             result = ai.run_analysis(code, name, df, config_override=cfg)
+            if isinstance(result, dict):
+                result["data_quality"] = data_quality
             if realtime_price and result.get("ok"):
                 result["realtime_price"]  = realtime_price
                 result["realtime_change"] = realtime_change

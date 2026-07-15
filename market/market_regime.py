@@ -9,6 +9,8 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+from analytics import data_gateway as dg
+
 logger = logging.getLogger(__name__)
 
 # 指数代码 (上证 000001, 深成 399001, 创业 399006)
@@ -21,14 +23,13 @@ _CACHE_TTL   = 5 * 60   # 5 分钟缓存
 def _get_index_data(code: str, n: int = 60) -> pd.DataFrame:
     """优先 TDX 拉取指数日线，失败则返回空 DataFrame。"""
     try:
-        from market import ths_quote as tq
-        client = tq.get_client()
-        if client and client._ok:
-            bars = client.get_kline(code, n)
-            if bars:
-                df = pd.DataFrame(bars)
+        market = 1 if str(code).zfill(6) == "000001" else 0
+        df = dg.get_index_kline(code, days=n, market=market)
+        if df is not None and not df.empty:
+            if "date" in df.columns:
                 df["date"] = pd.to_datetime(df["date"])
                 return df.sort_values("date").reset_index(drop=True)
+            return df.reset_index(drop=True)
     except Exception as e:
         logger.debug(f"[regime] TDX 失败 {code}: {e}")
     # 本地 CSV 回退

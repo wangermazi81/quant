@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import date
 
+from analytics import data_gateway as dg
 from core import legacy_aliases
 
 logger = logging.getLogger(__name__)
@@ -284,7 +285,7 @@ def _prefetch_klines_parallel(universe: list, fallback_get_kline,
     """
     并行预取全量 K 线（核心加速）：
 
-    优先路径（快）：本地 CSV → data_manager.get_local()，多线程真正并行
+    优先路径：按后台配置读取第一数据源（默认 Tushare），可自动降级
     次级路径（中）：TDX 连接池（每线程独占一个连接，无锁）
     兜底路径（慢）：单一 TDX 客户端（串行，有锁）
 
@@ -297,28 +298,29 @@ def _prefetch_klines_parallel(universe: list, fallback_get_kline,
 
     cache: dict = {}
 
-    # ── 第一步：从本地 CSV 快速读取（真正并行，无网络延迟）────────────
+    # ── 第一步：按后台配置读取第一数据源（默认 Tushare）────────────
     try:
         from analytics import data_manager as _dm
         local_miss = []
-        def _read_local(code):
+        def _read_configured(code):
             try:
-                df = _dm.get_local(code)
-                if df is not None and not df.empty and len(df) >= 10 and not _kline_is_stale(df):
+                picked = _dm.get_kline_by_config(code, days=days, min_rows=10)
+                df = picked.get("df") if isinstance(picked, dict) else None
+                if df is not None and not df.empty and len(df) >= 10:
                     return code, df.tail(days).reset_index(drop=True)
             except Exception:
                 pass
             return code, None
 
         with ThreadPoolExecutor(max_workers=min(16, len(universe))) as ex:
-            for code, df in ex.map(_read_local, universe):
+            for code, df in ex.map(_read_configured, universe):
                 if df is not None:
                     cache[code] = df
                 else:
                     local_miss.append(code)
 
         if cache:
-            logger.info(f"[FM] 本地CSV命中: {len(cache)}/{len(universe)} 只")
+            logger.info(f"[FM] 配置数据源K线命中: {len(cache)}/{len(universe)} 只")
     except Exception:
         local_miss = list(universe)
 
@@ -453,11 +455,8 @@ def run(filename: str, codes: list, max_codes: int = 0) -> dict:
             universe = codes
             _quote_cache = {}
             try:
-                from market import ths_quote as _tq
-                client = _tq.get_client()
-                if client and client._ok:
-                    qs = client.get_quotes(universe)
-                    _quote_cache = {q["code"]: q for q in (qs or [])}
+                qs = dg.get_realtime_quotes(universe)
+                _quote_cache = {q["code"]: q for q in (qs or [])}
             except Exception as e:
                 logger.warning(f"[FM] 指定股票池行情获取失败: {e}")
 

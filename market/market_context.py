@@ -19,6 +19,8 @@ import logging
 import time
 import pandas as pd
 
+from analytics import data_gateway as dg
+
 logger = logging.getLogger(__name__)
 
 # 大盘指数代码
@@ -45,14 +47,10 @@ _CACHE_TTL = 300  # 5 分钟
 def _get_index_bars(code: str, days: int = 60):
     """通过 TDX 获取指数日K线（用 get_index_kline 指定正确市场编号）"""
     try:
-        from market import ths_quote as tq
-        client = tq.get_client()
-        if not client or not client._ok:
-            return None
         market = _INDEX_MARKET.get(code, 0)
-        bars = client.get_index_kline(code, market, days)
-        if bars:
-            return pd.DataFrame(bars)
+        df = dg.get_index_kline(code, days=days, market=market)
+        if df is not None and not df.empty:
+            return df
     except Exception as e:
         logger.debug(f"指数K线 {code} 失败: {e}")
     return None
@@ -112,14 +110,8 @@ def get_market_regime(force_refresh: bool = False) -> dict:
     }
 
     try:
-        from market import ths_quote as tq
-        client = tq.get_client()
-        if not client or not client._ok:
-            _cache.update({"data": result, "ts": now})
-            return result
-
         # ── 实时行情（三大指数，用正确市场编号）─────────
-        qs = client.get_index_quotes(_INDEX_MARKET_PAIRS)
+        qs = dg.get_index_quotes(_INDEX_MARKET_PAIRS)
         indices = {}
         if qs:
             for q in qs:

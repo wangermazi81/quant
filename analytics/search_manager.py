@@ -691,59 +691,29 @@ def search_web(query: str, topic: str = "general", limit: int = 10,
 
 
 # ══════════════════════════════════════════════════════
-# 三级降级 — 股票K线（TwelveData → TDX → 本地）
+# 统一数据源 — 股票K线（后台配置控制第一/第二数据源）
 # ══════════════════════════════════════════════════════
 def get_kline_with_fallback(code: str, days: int = 60) -> "pd.DataFrame":
     """
-    获取A股K线（三级降级）：
-    Level 1: TwelveData（有限A股支持）
-    Level 2: TDX 本地行情服务
-    Level 3: 本地 CSV
+    获取A股K线：统一走 data_gateway，由后台数据源配置控制优先级。
     """
     import pandas as pd
 
-    cfg = _load_config()
     cache_key = f"kline_{code}_{days}"
     cached = _cache_get(cache_key, max_age=3600)  # 1小时缓存
     if cached is not None:
         return pd.DataFrame(cached)
 
-    # ── Level 1: TwelveData ──────────────────────────
-    if cfg.get("twelvedata", {}).get("enabled"):
-        try:
-            bars = td_get_kline(code, days=days)
-            if bars and len(bars) >= 10:
-                df = pd.DataFrame(bars)
-                df["date"] = pd.to_datetime(df["date"])
-                _cache_set(cache_key, bars, ttl=3600)
-                logger.info(f"[SM] K线-TwelveData: {code} {len(bars)}条")
-                return df
-        except Exception as e:
-            logger.warning(f"[SM] TwelveData K线失败: {e}")
-
-    # ── Level 2: TDX ─────────────────────────────────
     try:
-        from market import ths_quote as tq
-        client = tq.get_client()
-        if client and client._ok:
-            raw = client.get_kline(code, days)
-            if raw:
-                df = pd.DataFrame(raw)
-                df["date"] = pd.to_datetime(df["date"])
-                logger.info(f"[SM] K线-TDX: {code} {len(df)}条")
-                return df
-    except Exception as e:
-        logger.warning(f"[SM] TDX K线失败: {e}")
-
-    # ── Level 3: 本地 CSV ────────────────────────────
-    try:
-        from analytics import data_manager as dm
-        df = dm.get_local(code)
+        from analytics import data_gateway as dg
+        df = dg.get_daily_kline(code, days=days, min_rows=10)
         if df is not None and not df.empty:
-            logger.info(f"[SM] K线-本地CSV: {code} {len(df)}条")
-            return df.tail(days).reset_index(drop=True)
+            out = df.tail(days).reset_index(drop=True)
+            _cache_set(cache_key, out.to_dict("records"), ttl=3600)
+            logger.info(f"[SM] K线-统一数据源: {code} {len(out)}条")
+            return out
     except Exception as e:
-        logger.warning(f"[SM] 本地CSV K线失败: {e}")
+        logger.warning(f"[SM] 统一数据源K线失败: {e}")
 
     return pd.DataFrame()
 

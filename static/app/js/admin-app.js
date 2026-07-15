@@ -1850,7 +1850,7 @@ async function runAiTradeDecision(){
 }
 
 // ================================================================
-// 行情数据源配置（当前源 / Tushare Pro）
+// 行情数据源配置（第一数据源 / 第二数据源）
 // ================================================================
 async function loadDatasourceConfig(){
   const msg = document.getElementById('dsc-msg');
@@ -1867,7 +1867,10 @@ async function loadDatasourceConfig(){
   document.getElementById('dsc-fallback-enabled').checked = r.fallback_enabled !== false;
   document.getElementById('dsc-current').textContent = '当前 Token/API Key: ' + (r.tushare_token_masked || '未配置');
   dscProviderChanged();
-  if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = `当前优先数据源：${r.provider === 'tushare' ? 'Tushare Pro' : '当前数据源'}`; }
+  if(msg){
+    msg.style.color = 'var(--text2)';
+    msg.textContent = `当前第一数据源：${r.provider === 'tushare' ? 'Tushare Pro' : '当前数据源'}；第二数据源：${r.fallback_enabled !== false ? '自动降级启用' : '禁用'}`;
+  }
 }
 
 function dscProviderChanged(){

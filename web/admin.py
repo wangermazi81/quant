@@ -14,6 +14,7 @@ from flask import Blueprint, request, jsonify, session
 from core import user_manager as um
 import app_security as sec
 from analytics import datasource_config
+from analytics import data_gateway as dg
 from analytics import tushare_provider
 from analytics import relay_factor_mining
 from analytics import live_factor_feedback
@@ -396,9 +397,7 @@ def _with_ai_trade_quote_snapshots(decision: dict) -> dict:
     if not missing:
         return decision
     try:
-        from market import ths_quote as tq
-        client = tq.get_client()
-        quotes = (client.get_quotes(sorted(set(missing))) if client and getattr(client, "_ok", False) else []) or []
+        quotes = dg.get_realtime_quotes(sorted(set(missing))) or []
     except Exception:
         quotes = []
     qmap = {str(q.get("code") or ""): q for q in quotes if isinstance(q, dict)}

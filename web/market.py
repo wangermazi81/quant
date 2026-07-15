@@ -6,6 +6,7 @@ from copy import deepcopy
 from datetime import datetime
 from time import time
 
+from analytics import data_gateway as dg
 from market import market_context as mctx
 from app_state import require_auth
 
@@ -199,20 +200,17 @@ def api_market_context():
         force = request.args.get("refresh", "0") == "1"
         ctx   = mctx.get_market_regime(force_refresh=force)
         try:
-            from market import ths_quote as tq
-            client = tq.get_client()
-            if client and client._ok:
-                index_pairs = [(1, "000001"), (0, "399001"), (0, "399006")]
-                name_map    = {"000001": "上证指数", "399001": "深证成指", "399006": "创业板指"}
-                qs = client.get_index_quotes(index_pairs)
-                for q in qs:
-                    nm = name_map.get(q.get("code", ""), "")
-                    if nm:
-                        ctx.setdefault("indices", {}).setdefault(nm, {}).update({
-                            "price":  round(float(q.get("price") or 0), 2),
-                            "change": round(float(q.get("change_pct") or 0), 2),
-                            "code":   q.get("code", ""),
-                        })
+            index_pairs = [(1, "000001"), (0, "399001"), (0, "399006")]
+            name_map    = {"000001": "上证指数", "399001": "深证成指", "399006": "创业板指"}
+            qs = dg.get_index_quotes(index_pairs)
+            for q in qs:
+                nm = name_map.get(q.get("code", ""), "")
+                if nm:
+                    ctx.setdefault("indices", {}).setdefault(nm, {}).update({
+                        "price":  round(float(q.get("price") or 0), 2),
+                        "change": round(float(q.get("change_pct") or 0), 2),
+                        "code":   q.get("code", ""),
+                    })
         except Exception:
             pass
         return jsonify({"ok": True, **ctx})
@@ -295,40 +293,19 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
     # 1. 指数实时价格 —— 优先 TDX，降级 akshare
     index_meta = [(1, "000001", "上证指数"), (0, "399001", "深证成指"), (0, "399006", "创业板指")]
     try:
-        from market import ths_quote as tq
-        client = tq.get_client()
-        if client and client._ok:
-            pairs    = [(mkt, code) for mkt, code, _ in index_meta]
-            qs       = client.get_index_quotes(pairs)
-            name_map = {code: name for _, code, name in index_meta}
-            for q in qs:
-                nm = name_map.get(q.get("code", ""), "")
-                if nm:
-                    review["indices"][nm] = {
-                        "code":   q.get("code", ""),
-                        "price":  round(float(q.get("price") or 0), 2),
-                        "change": round(float(q.get("change_pct") or 0), 2),
-                    }
+        pairs    = [(mkt, code) for mkt, code, _ in index_meta]
+        qs       = dg.get_index_quotes(pairs)
+        name_map = {code: name for _, code, name in index_meta}
+        for q in qs:
+            nm = name_map.get(q.get("code", ""), "")
+            if nm:
+                review["indices"][nm] = {
+                    "code":   q.get("code", ""),
+                    "price":  round(float(q.get("price") or 0), 2),
+                    "change": round(float(q.get("change_pct") or 0), 2),
+                }
     except Exception:
         pass
-
-    if not review["indices"]:
-        try:
-            import akshare as ak
-            code_map = {"000001": "上证指数", "399001": "深证成指", "399006": "创业板指"}
-            df_all = ak.stock_zh_index_spot_em()
-            if df_all is not None and not df_all.empty:
-                for _, row in df_all.iterrows():
-                    code = str(row.get("代码", ""))
-                    nm   = code_map.get(code, "")
-                    if nm:
-                        review["indices"][nm] = {
-                            "code":   code,
-                            "price":  round(float(row.get("最新价", 0) or 0), 2),
-                            "change": round(float(row.get("涨跌幅", 0) or 0), 2),
-                        }
-        except Exception:
-            pass
 
     # 2. Market breadth. Use dedicated market stats sources; strategy quote
     # batches can be incomplete under TDX fallback and must not define breadth.

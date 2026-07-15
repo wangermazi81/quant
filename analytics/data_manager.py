@@ -342,6 +342,154 @@ def merge_kline_cache(code: str, df: pd.DataFrame, update_metadata: bool = True)
     return merged
 
 
+def _latest_date_text(df: pd.DataFrame) -> str:
+    try:
+        if df is None or df.empty or "date" not in df.columns:
+            return ""
+        latest = pd.to_datetime(df["date"], errors="coerce").max()
+        if pd.isna(latest):
+            return ""
+        return latest.strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def _kline_is_stale_for_live_use(df: pd.DataFrame, max_lag_days: int = 3) -> bool:
+    try:
+        if df is None or df.empty or "date" not in df.columns:
+            return True
+        latest = pd.to_datetime(df["date"], errors="coerce").max()
+        if pd.isna(latest):
+            return True
+        return (datetime.now().date() - latest.date()).days > max_lag_days
+    except Exception:
+        return False
+
+
+def _empty_kline_result(code: str, days: int, primary: str, error: str = "") -> dict:
+    return {
+        "ok": False,
+        "code": str(code or "").zfill(6),
+        "days": int(days or 0),
+        "df": pd.DataFrame(),
+        "source": "",
+        "primary_provider": primary,
+        "fallback_used": False,
+        "latest_date": "",
+        "error": error,
+    }
+
+
+def _normalize_code(code: str) -> str:
+    raw = str(code or "").strip().upper()
+    if "." in raw:
+        raw = raw.split(".", 1)[0]
+    if raw[:2] in {"SZ", "SH", "BJ"}:
+        raw = raw[2:]
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return (digits[-6:] if digits else raw[-6:]).zfill(6)
+
+
+def _fetch_tushare_kline_by_config(code: str, days: int, cfg: dict) -> pd.DataFrame:
+    token = cfg.get("tushare_token") or datasource_config.resolve_tushare_token(cfg, mode=cfg.get("tushare_mode"))
+    if not (cfg.get("tushare_enabled") and token):
+        return pd.DataFrame()
+    end = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=max(int(days or 60) * 3, int(days or 60) + 90))).strftime("%Y%m%d")
+    df = tushare_provider.fetch_kline_qfq(
+        code,
+        start,
+        end,
+        token=token,
+        mode=cfg.get("tushare_mode"),
+    )
+    return _standardize_kline_for_cache(df)
+
+
+def _fetch_current_kline(code: str, days: int, min_rows: int, prefer_local: bool = True) -> pd.DataFrame:
+    if prefer_local:
+        local = get_local(code)
+        if local is not None and not local.empty and len(local) >= min_rows and not _kline_is_stale_for_live_use(local):
+            return local.tail(days).reset_index(drop=True)
+
+    try:
+        from market import ths_quote as _tq
+        client = _tq.get_client()
+        if client and getattr(client, "_ok", False):
+            bars = client.get_kline(code, max(int(days or 60), int(min_rows or 10)))
+            if bars:
+                return _standardize_kline_for_cache(pd.DataFrame(bars))
+    except Exception as exc:
+        logger.debug(f"[data] current kline source failed for {code}: {exc}")
+
+    local = get_local(code)
+    if local is not None and not local.empty and len(local) >= min_rows:
+        return local.tail(days).reset_index(drop=True)
+    return pd.DataFrame()
+
+
+def get_kline_by_config(code: str, days: int = 60, min_rows: int = 10, update_cache: bool = True) -> dict:
+    """Fetch daily K-line data using the admin-selected primary/secondary source order."""
+    clean_code = _normalize_code(code)
+    days = max(1, int(days or 60))
+    min_rows = max(1, int(min_rows or 10))
+    try:
+        cfg = datasource_config.get_internal_config()
+    except Exception as exc:
+        logger.warning(f"[data] datasource config unavailable, falling back to current source: {exc}")
+        cfg = datasource_config.DEFAULT_CONFIG.copy()
+        cfg["provider"] = "current"
+    primary = str(cfg.get("provider") or "current").strip().lower()
+    fallback_enabled = bool(cfg.get("fallback_enabled", True))
+    result = _empty_kline_result(clean_code, days, primary)
+
+    attempts = [primary]
+    secondary = "current" if primary == "tushare" else "tushare"
+    if fallback_enabled and secondary not in attempts:
+        attempts.append(secondary)
+
+    errors: list[str] = []
+    for idx, source in enumerate(attempts):
+        df = pd.DataFrame()
+        try:
+            if source == "tushare":
+                df = _fetch_tushare_kline_by_config(clean_code, days, cfg)
+            elif source == "current":
+                df = _fetch_current_kline(clean_code, days, min_rows, prefer_local=True)
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+            logger.info(f"[data] {source} kline failed for {clean_code}: {exc}")
+            df = pd.DataFrame()
+
+        if df is None or df.empty or len(df) < min_rows:
+            errors.append(f"{source}: no data")
+            continue
+
+        if update_cache:
+            try:
+                merged = merge_kline_cache(clean_code, df)
+                if merged is not None and not merged.empty and len(merged) >= min_rows:
+                    df = merged
+            except Exception as exc:
+                logger.debug(f"[data] merge kline cache failed for {clean_code}: {exc}")
+
+        out = df.tail(days).reset_index(drop=True)
+        return {
+            "ok": True,
+            "code": clean_code,
+            "days": days,
+            "df": out,
+            "source": source,
+            "primary_provider": primary,
+            "fallback_used": idx > 0,
+            "latest_date": _latest_date_text(out),
+            "error": "",
+        }
+
+    result["error"] = "; ".join(errors[-4:]) if errors else "no data"
+    return result
+
+
 def _refresh_factor_daily_cache_tdx(days: int = 180, min_required: int = 800, now: datetime | None = None) -> dict:
     """Incrementally refresh the factor-mining daily cache from the TDX fallback."""
     from market import ths_quote

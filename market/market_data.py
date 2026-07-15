@@ -106,42 +106,31 @@ def _tushare_quotes_frame(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(mapped)
 
 def get_realtime_quotes(codes: list) -> pd.DataFrame:
-    """Fetch realtime A-share quotes, preferring selected Tushare replay when enabled."""
-    cfg = _tushare_cfg()
-    if cfg and codes:
-        try:
-            rows = tushare_provider.fetch_realtime_quotes(
-                codes,
-                token=cfg.get("tushare_token"),
-                mode=cfg.get("tushare_mode"),
-            )
-            if rows:
-                return _tushare_quotes_frame(rows).reset_index(drop=True)
-        except Exception as exc:
-            logger.warning(f"Tushare realtime quotes failed: {exc}")
+    """Fetch realtime A-share quotes through the unified datasource gateway."""
     try:
-        df = ak.stock_zh_a_spot_em()
-        code_col = "\u4ee3\u7801"
-        if codes and code_col in df.columns:
-            df = df[df[code_col].isin(codes)].copy()
-        keep = [
-            "\u4ee3\u7801", "\u540d\u79f0", "\u6700\u65b0\u4ef7",
-            "\u6da8\u8dcc\u5e45", "\u6da8\u8dcc\u989d", "\u6628\u6536", "\u4eca\u5f00",
-            "\u6700\u9ad8", "\u6700\u4f4e", "\u6210\u4ea4\u91cf", "\u6362\u624b\u7387", "\u91cf\u6bd4",
-        ]
-        keep = [c for c in keep if c in df.columns]
-        return df[keep].reset_index(drop=True) if keep else df.reset_index(drop=True)
+        from analytics import data_gateway as dg
+        rows = dg.get_realtime_quotes(codes)
+        if rows:
+            return _tushare_quotes_frame(rows).reset_index(drop=True)
     except Exception as e:
-        logger.error(f"realtime quotes failed: {e}")
-        return pd.DataFrame()
+        logger.error(f"gateway realtime quotes failed: {e}")
+    return pd.DataFrame()
 
 
 def get_kline(code: str, period: int = 60) -> pd.DataFrame:
     """
     获取日K线数据。
-    优先读取本地缓存 data/daily/<code>.csv，若无则从 akshare 拉取。
+    优先按后台数据源配置读取（默认 Tushare），失败后保留本地/akshare 兜底。
     返回 DataFrame，列: date/open/close/high/low/volume
     """
+    try:
+        from analytics import data_gateway as dg
+        df = dg.get_daily_kline(code, days=period, min_rows=10)
+        if df is not None and not df.empty and len(df) >= 10:
+            return df.tail(period).reset_index(drop=True)
+    except Exception as e:
+        logger.debug(f"配置数据源K线读取失败 {code}: {e}")
+
     # 1. 本地 CSV 缓存
     cache_path = os.path.join(DAILY_CACHE_DIR, f"{code}.csv")
     if os.path.exists(cache_path):
@@ -185,7 +174,7 @@ def _fetch_kline_remote(code: str, period: int = 60) -> pd.DataFrame:
 
 
 def get_minute_kline(code: str, date: str) -> dict:
-    """Fetch 1-minute bars, preferring selected Tushare replay when enabled."""
+    """Fetch 1-minute bars through the unified datasource gateway."""
     code = _plain_stock_code(code)
     cache_key = ("minute", code, str(date or ""))
     cached = _cache_get(cache_key, INTRADAY_CACHE_TTL_SECONDS)
@@ -197,60 +186,13 @@ def get_minute_kline(code: str, date: str) -> dict:
         return snap if snap is not None else {"datetime": [], "open": [], "high": [], "low": [], "close": [], "volume": []}
 
     try:
-        cfg = _tushare_cfg()
-        if cfg:
-            try:
-                df = tushare_provider.fetch_minute_kline(
-                    code,
-                    freq="1MIN",
-                    limit=240,
-                    token=cfg.get("tushare_token"),
-                    mode=cfg.get("tushare_mode"),
-                )
-                if df is not None and not df.empty:
-                    out = df.copy()
-                    out["datetime"] = out["datetime"].apply(lambda v: v.strftime("%Y-%m-%d %H:%M:%S") if hasattr(v, "strftime") else str(v))
-                    result = {}
-                    for col in ("datetime", "open", "high", "low", "close", "volume", "amount", "is_complete"):
-                        result[col] = out[col].tolist() if col in out.columns else []
-                    return _cache_set(cache_key, result)
-            except Exception as exc:
-                logger.warning(f"Tushare minute kline failed {code} {date}: {exc}")
-
-        os.makedirs(MINUTE_CACHE_DIR, exist_ok=True)
-        cache_path = os.path.join(MINUTE_CACHE_DIR, f"{code}_{date}.csv")
-
-        if os.path.exists(cache_path):
-            try:
-                df = pd.read_csv(cache_path)
-            except Exception:
-                df = pd.DataFrame()
-        else:
-            df = pd.DataFrame()
-            try:
-                raw = ak.stock_zh_a_hist_min_em(
-                    symbol=code,
-                    start_date=date,
-                    end_date=date,
-                    period="1",
-                    adjust="qfq",
-                )
-                col_map = {
-                    "\u65f6\u95f4": "datetime",
-                    "\u5f00\u76d8": "open",
-                    "\u6700\u9ad8": "high",
-                    "\u6700\u4f4e": "low",
-                    "\u6536\u76d8": "close",
-                    "\u6210\u4ea4\u91cf": "volume",
-                }
-                raw = raw.rename(columns={k: v for k, v in col_map.items() if k in raw.columns})
-                raw.to_csv(cache_path, index=False)
-                df = raw
-            except Exception as e:
-                logger.warning(f"minute kline failed {code} {date}: {e}")
-
+        from analytics import data_gateway as dg
+        df = dg.get_minute_kline(code, freq="1MIN", limit=240)
         result = {}
-        for col in ("datetime", "open", "high", "low", "close", "volume"):
+        if df is not None and not df.empty and "datetime" in df.columns:
+            df = df.copy()
+            df["datetime"] = df["datetime"].apply(lambda v: v.strftime("%Y-%m-%d %H:%M:%S") if hasattr(v, "strftime") else str(v))
+        for col in ("datetime", "open", "high", "low", "close", "volume", "amount", "is_complete"):
             result[col] = df[col].tolist() if col in df.columns else []
         if result.get("datetime"):
             return _cache_set(cache_key, result)
@@ -260,6 +202,48 @@ def get_minute_kline(code: str, date: str) -> dict:
         return result
     finally:
         _end_fetch(cache_key)
+
+
+def get_minute_kline_current(code: str, date: str | None = None) -> dict:
+    """Fetch 1-minute bars from the legacy/current datasource only."""
+    code = _plain_stock_code(code)
+    date = str(date or datetime.now().strftime("%Y%m%d"))
+    os.makedirs(MINUTE_CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(MINUTE_CACHE_DIR, f"{code}_{date}.csv")
+
+    if os.path.exists(cache_path):
+        try:
+            df = pd.read_csv(cache_path)
+        except Exception:
+            df = pd.DataFrame()
+    else:
+        df = pd.DataFrame()
+        try:
+            raw = ak.stock_zh_a_hist_min_em(
+                symbol=code,
+                start_date=date,
+                end_date=date,
+                period="1",
+                adjust="qfq",
+            )
+            col_map = {
+                "\u65f6\u95f4": "datetime",
+                "\u5f00\u76d8": "open",
+                "\u6700\u9ad8": "high",
+                "\u6700\u4f4e": "low",
+                "\u6536\u76d8": "close",
+                "\u6210\u4ea4\u91cf": "volume",
+            }
+            raw = raw.rename(columns={k: v for k, v in col_map.items() if k in raw.columns})
+            raw.to_csv(cache_path, index=False)
+            df = raw
+        except Exception as e:
+            logger.warning(f"current minute kline failed {code} {date}: {e}")
+
+    result = {}
+    for col in ("datetime", "open", "high", "low", "close", "volume"):
+        result[col] = df[col].tolist() if col in df.columns else []
+    return result
 
 
 def _minute_snapshot(code: str, cache_key: tuple) -> dict | None:
@@ -283,7 +267,7 @@ def _minute_snapshot(code: str, cache_key: tuple) -> dict | None:
 
 
 def get_second_ticks(code: str, date: str | None = None) -> dict:
-    """Fetch second-level tick series from selected Tushare replay datasource."""
+    """Fetch second-level tick series through the unified datasource gateway."""
     code = _plain_stock_code(code)
     cache_key = ("second", code, str(date or ""))
     cached = _cache_get(cache_key, INTRADAY_CACHE_TTL_SECONDS)
@@ -295,28 +279,19 @@ def get_second_ticks(code: str, date: str | None = None) -> dict:
         return snap if snap is not None else _empty_second_ticks()
 
     try:
-        cfg = _tushare_cfg()
-        if cfg:
-            try:
-                df = tushare_provider.fetch_tick_series(
-                    code,
-                    trade_date=date,
-                    limit=240,
-                    token=cfg.get("tushare_token"),
-                    mode=cfg.get("tushare_mode"),
-                )
-                if df is not None and not df.empty:
-                    out = df.copy()
-                    out["datetime"] = out["datetime"].apply(lambda v: v.strftime("%Y-%m-%d %H:%M:%S") if hasattr(v, "strftime") else str(v))
-                    result = {}
-                    for col in ("datetime", "price", "volume", "amount", "prev_price", "kind"):
-                        result[col] = out[col].tolist() if col in out.columns else []
-                    return _cache_set(cache_key, result)
-            except Exception as exc:
-                logger.warning(f"Tushare second ticks failed {code} {date}: {exc}")
-            snap = _second_tick_snapshot(code, cache_key)
-            if snap is not None:
-                return snap
+        from analytics import data_gateway as dg
+        rows = dg.get_tick_series(code, limit=240)
+        if rows:
+            df = pd.DataFrame(rows)
+            if "datetime" in df.columns:
+                df["datetime"] = df["datetime"].apply(lambda v: v.strftime("%Y-%m-%d %H:%M:%S") if hasattr(v, "strftime") else str(v))
+            result = {}
+            for col in ("datetime", "price", "volume", "amount", "prev_price", "kind"):
+                result[col] = df[col].tolist() if col in df.columns else []
+            return _cache_set(cache_key, result)
+        snap = _second_tick_snapshot(code, cache_key)
+        if snap is not None:
+            return snap
         return _cache_set(cache_key, _empty_second_ticks())
     finally:
         _end_fetch(cache_key)
@@ -340,7 +315,7 @@ def _second_tick_snapshot(code: str, cache_key: tuple) -> dict | None:
 
 
 def get_order_book(code: str) -> dict:
-    """Fetch current five-level bid/ask book from selected Tushare realtime snapshot."""
+    """Fetch current five-level bid/ask book through the unified datasource gateway."""
     code = _plain_stock_code(code)
     cache_key = ("order_book", code)
     cached = _cache_get(cache_key, ORDER_BOOK_CACHE_TTL_SECONDS)
@@ -351,19 +326,9 @@ def get_order_book(code: str) -> dict:
         return {}
 
     try:
-        cfg = _tushare_cfg()
-        if cfg:
-            try:
-                book = tushare_provider.fetch_order_book(
-                    code,
-                    token=cfg.get("tushare_token"),
-                    mode=cfg.get("tushare_mode"),
-                )
-                if book:
-                    return _cache_set(cache_key, book)
-            except Exception as exc:
-                logger.warning(f"Tushare order book failed {code}: {exc}")
-        return _cache_set(cache_key, {})
+        from analytics import data_gateway as dg
+        book = dg.get_order_book(code)
+        return _cache_set(cache_key, book or {})
     finally:
         _end_fetch(cache_key)
 

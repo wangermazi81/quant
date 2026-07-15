@@ -121,53 +121,35 @@ def api_stock_sector(code):
 
 @bp.route("/api/kline/<code>")
 def api_kline(code):
-    """K 线数据：本地已是最新交易日才走本地快路径，否则优先 TDX 实时日K，
-    TDX 不可用再退回本地并标记 stale（避免一直显示陈旧 K 线）。"""
-    # 1) 读本地缓存（仅作为「已最新」快路径或最终兜底）
-    local_records = None
-    local_last    = ""
+    """K 线数据：统一数据源，第一源 Tushare，第二源按后台配置降级。"""
     try:
-        df = dm.get_local(code)
+        from analytics import data_gateway as dg
+        picked = dg.get_daily_kline_result(code, days=120, min_rows=10)
+        df = picked.get("df") if isinstance(picked, dict) else None
         if df is not None and not df.empty and len(df) >= 10:
             cols = [c for c in ["date", "open", "close", "high", "low", "volume"] if c in df.columns]
             sub  = df[cols].tail(120).copy()
             sub["date"] = sub["date"].apply(
                 lambda d: d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
             )
-            local_records = sub.to_dict("records")
-            local_last    = local_records[-1]["date"] if local_records else ""
-    except Exception:
-        pass
-
-    # 2) 本地已覆盖最近交易日 → 直接用（快、且不算陈旧）
-    if local_records and local_last >= _most_recent_trading_day():
-        name = dm.get_stock_name(code) or code
-        return jsonify({"ok": True, "code": code, "name": name,
-                        "source": "local", "stale": False, "data": local_records})
-
-    # 3) 本地缺失或过期 → 优先 TDX 实时日K（含当日）
-    try:
-        from market import ths_quote as tq
-        client = tq.get_client()
-        if client and client._ok:
-            bars = client.get_kline(code, 120)
-            if bars and len(bars) >= 10:
-                name = tq.get_stock_name(code) or dm.get_stock_name(code) or code
-                return jsonify({"ok": True, "code": code, "name": name,
-                                "source": "tdx", "stale": False, "data": bars})
+            records = sub.to_dict("records")
+            last = records[-1]["date"] if records else ""
+            name = dm.get_stock_name(code) or code
+            return jsonify({
+                "ok": True,
+                "code": code,
+                "name": name,
+                "source": picked.get("source"),
+                "primary_provider": picked.get("primary_provider"),
+                "fallback_used": picked.get("fallback_used"),
+                "latest_date": picked.get("latest_date") or last,
+                "stale": last < _most_recent_trading_day(),
+                "data": records,
+            })
     except Exception as e:
-        logger.warning(f"K 线 TDX 失败: {e}")
+        logger.warning(f"K 线统一数据源失败: {e}")
 
-    # 4) TDX 不可用 → 退回本地（可能过期，标记 stale 让前端提示）
-    if local_records:
-        name = dm.get_stock_name(code) or code
-        return jsonify({"ok": True, "code": code, "name": name,
-                        "source": "local", "stale": True,
-                        "msg": f"实时源暂不可用，显示本地缓存（最新至 {local_last}），"
-                               f"可在「数据管理」重新下载更新",
-                        "data": local_records})
-
-    return jsonify({"ok": False, "data": [], "msg": "暂无数据，请先在「数据管理」下载"})
+    return jsonify({"ok": False, "data": [], "msg": "暂无数据，请检查后台数据源配置"})
 
 
 @bp.route("/api/kline/<code>/seconds")

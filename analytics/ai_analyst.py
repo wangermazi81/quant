@@ -40,6 +40,8 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
+from analytics import data_gateway as dg
+
 
 def _json_safe(obj):
     """递归把 dict / list 中的 NaN / Inf 替换为 None。
@@ -767,9 +769,7 @@ def _get_fundamentals(code: str) -> dict:
                 _os.environ[_k] = _v
     # ③ pytdx：每股净资产/股东/上市日
     try:
-        from market import ths_quote as _tq
-        _c = _tq.get_client()
-        fi = _c.get_finance_info(code) if _c else {}
+        fi = dg.get_finance_info(code)
         if fi:
             data.setdefault("bps", round(float(fi.get("meigujingzichan") or 0), 2) or None)
             data.setdefault("holders", int(float(fi.get("gudongrenshu") or 0)) or None)

@@ -21,6 +21,7 @@ from core import user_manager as um
 from core.trade_service import execute_buy, execute_sell, _auto_buy, _paper_live_prices
 from broker import paper_broker as pb
 from analytics import data_manager as dm
+from analytics import data_gateway as dg
 from strategy_engine import strategy_manager as sm
 from web._params import _positive_float_value, _int_value
 
@@ -234,11 +235,8 @@ def get_positions_api():
         return jsonify([])
     live = {}
     try:
-        from market import ths_quote as tq
-        client = tq.get_client()
-        if client and client._ok:
-            qs   = client.get_quotes(list(positions.keys()))
-            live = {q["code"]: q["price"] for q in qs if q.get("price", 0) > 0}
+        qs = dg.get_realtime_quotes(list(positions.keys()))
+        live = {q["code"]: q["price"] for q in qs if q.get("price", 0) > 0}
     except Exception:
         pass
     result = []
@@ -276,12 +274,9 @@ def sell_position():
         # 卖出价≈买入价、盈亏只剩费用的假象）
         price = 0.0
         try:
-            from market import ths_quote as tq
-            client = tq.get_client()
-            if client and client._ok:
-                qs = client.get_quotes([code])
-                if qs:
-                    price = _positive_float_value(qs[0].get("price"), 0.0)
+            q = dg.get_realtime_quote(code)
+            if q:
+                price = _positive_float_value(q.get("price") or q.get("now"), 0.0)
         except Exception:
             pass
         if not price:

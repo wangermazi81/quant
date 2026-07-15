@@ -207,16 +207,14 @@ def paper_manual_sell():
     uid   = session["user_id"]
     d     = request.json
     code  = d.get("code", "")
-    # 优先拉 ths_quote 实时价（前端传的 price 可能是 cur_price fallback 到 cost_price
+    # 优先拉统一数据源实时价（前端传的 price 可能是 cur_price fallback 到 cost_price
     # 的脏值，会导致卖出价≈买入价、盈亏只剩费用 -0.22% 的假象）
     price = 0.0
     try:
-        from market import ths_quote as tq
-        client = tq.get_client()
-        if client and client._ok:
-            qs = client.get_quotes([code])
-            if qs:
-                price = float(qs[0].get("price", 0))
+        from analytics import data_gateway as dg
+        q = dg.get_realtime_quote(code)
+        if q:
+            price = float(q.get("price") or q.get("now") or 0)
     except Exception:
         pass
     # 实时价拉不到时，再用前端传的 price 作 fallback

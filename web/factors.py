@@ -14,6 +14,7 @@ from app_state import (
     require_root_admin, _add_log,
 )
 from core import user_manager as um
+from analytics import data_gateway as dg
 from analytics import factor_manager as fm
 from analytics import ai_analyst as ai
 from strategy_engine import strategy_manager as sm
@@ -323,12 +324,9 @@ def api_factors_zoo_compute():
                     quote_map[q["code"]] = q
         else:
             try:
-                import market.ths_quote as _tq
-                _client = _tq.get_client()
-                if _client and _client._ok:
-                    for q in (_client.get_quotes(codes) or []):
-                        if q and q.get("code"):
-                            quote_map[q["code"]] = q
+                for q in (dg.get_realtime_quotes(codes) or []):
+                    if q and q.get("code"):
+                        quote_map[q["code"]] = q
             except Exception as e:
                 logger.debug(f"[factors_zoo] manual 模式 quote 拉取失败: {e}")
 

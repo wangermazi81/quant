@@ -16,8 +16,9 @@ VALID_PROVIDERS = {"current", "tushare"}
 VALID_TUSHARE_MODES = {"replay", "sdk"}
 
 DEFAULT_CONFIG = {
-    "provider": "current",
-    "tushare_enabled": False,
+    "schema_version": 2,
+    "provider": "tushare",
+    "tushare_enabled": True,
     "tushare_mode": "replay",
     "tushare_token": "",
     "fallback_enabled": True,
@@ -45,6 +46,10 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 
 def _normalize(raw: dict | None) -> dict:
     cfg = {**DEFAULT_CONFIG, **(raw or {})}
+    if raw and not raw.get("schema_version") and str(raw.get("provider") or "").strip().lower() == "current":
+        cfg["provider"] = "tushare"
+        cfg["tushare_enabled"] = True
+    cfg["schema_version"] = int(cfg.get("schema_version") or DEFAULT_CONFIG["schema_version"])
     provider = str(cfg.get("provider") or "current").strip().lower()
     if provider not in VALID_PROVIDERS:
         raise ValueError("provider must be current or tushare")

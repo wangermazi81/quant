@@ -43,6 +43,7 @@ logger = logging.getLogger("ai_trader")
 
 # 复用 ai_analyst 的 LLM / 指标 / 配置基建
 from analytics import ai_analyst as _ai
+from analytics import data_gateway as _dg
 
 try:
     from analytics import ai_candidate_ranker
@@ -591,13 +592,10 @@ class _Engine:
         cur = {}
         if codes:
             try:
-                from market import ths_quote as tq
-                cli = tq.get_client()
-                if cli and getattr(cli, "_ok", False):
-                    for q in (cli.get_quotes(codes) or []):
-                        c = q.get("code")
-                        if c:
-                            cur[c] = _to_float(q.get("price"))
+                for q in (_dg.get_realtime_quotes(codes) or []):
+                    c = q.get("code")
+                    if c:
+                        cur[c] = _to_float(q.get("price") or q.get("now"))
             except Exception:
                 pass
         return {"account": br.get_account(cur), "positions": br.get_positions(cur),
@@ -975,8 +973,11 @@ class _Engine:
 
     def _stock_context(self, code, name):
         """拉K线 + 指标 + 评分 + 实时行情，组装个股上下文。返回 (ctx_text, quote, ok)。"""
-        from market.market_data import get_kline
-        df = get_kline(code, period=80)
+        from analytics import data_manager as dm
+        picked = dm.get_kline_by_config(code, days=80, min_rows=30)
+        df = picked.get("df") if isinstance(picked, dict) else None
+        source = picked.get("source") if isinstance(picked, dict) else ""
+        fallback_used = bool(picked.get("fallback_used")) if isinstance(picked, dict) else False
         if df is None or df.empty or len(df) < 30:
             return (f"{code} {name}：历史数据不足（需≥30日），无法技术分析。", {}, False)
         ind = _ai._calc_indicators(df)
@@ -997,18 +998,14 @@ class _Engine:
             f"六维评分：{score.get('total','—')}/100 信号:{score.get('signal','—')} "
             f"建议入场:{score.get('entry_price','—')} 止损:{score.get('stop_loss','—')} "
             f"目标:{score.get('target1','—')}\n"
+            f"K线数据源：{source or 'unknown'}{'（已降级）' if fallback_used else ''}\n"
             f"近12日价格：{hist}"
         )
         return (ctx, quote, True)
 
     def _quote(self, code) -> dict:
         try:
-            from market import ths_quote as tq
-            client = tq.get_client()
-            if client and getattr(client, "_ok", False):
-                qs = client.get_quotes([code]) or []
-                if qs:
-                    return qs[0]
+            return _dg.get_realtime_quote(code) or {}
         except Exception:
             pass
         return {}
@@ -1498,9 +1495,7 @@ class _Engine:
             return
         codes = list(positions.keys())
         try:
-            from market import ths_quote as tq
-            client = tq.get_client()
-            quotes = (client.get_quotes(codes) if client and getattr(client, "_ok", False) else []) or []
+            quotes = _dg.get_realtime_quotes(codes) or []
         except Exception:
             quotes = []
         qmap = {q.get("code"): q for q in quotes}

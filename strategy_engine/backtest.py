@@ -682,7 +682,7 @@ def _load_full_market_data(start_date: str, end_date: str, logs: list,
       Phase 2: TDX 实时行情预筛选 → 按成交量取前 800 只补充 K 线
     progress_fn(current, total, stage) 每步回调，供前端显示进度条。
     """
-    from analytics.data_manager import get_local
+    from analytics import data_gateway as dg
     lookback_ts = pd.Timestamp(start_date) - pd.Timedelta(days=120)
     all_data: dict = {}
 
@@ -697,7 +697,7 @@ def _load_full_market_data(start_date: str, end_date: str, logs: list,
         if progress_fn and i % 10 == 0:
             progress_fn(i + 1, total_local + 800, f"本地CSV {i+1}/{total_local}")
         try:
-            df = get_local(code)
+            df = dg.get_daily_kline(code, days=800, min_rows=10)
             if df is not None and not df.empty and len(df) >= 10:
                 df = df[df["date"] >= lookback_ts].reset_index(drop=True)
                 if not df.empty:
@@ -708,32 +708,17 @@ def _load_full_market_data(start_date: str, end_date: str, logs: list,
     logs.append({"level": "INFO",
                  "msg": f"[全市场] 本地加载完成: {len(all_data)} 只"})
 
-    # ── Phase 2: TDX 活跃标的补充 ─────────────────────────────
-    _tdx_client = None
     try:
-        from market import ths_quote as tq
-        c = tq.get_client()
-        if c and c._ok:
-            _tdx_client = c
-    except Exception:
-        pass
-
-    if not _tdx_client:
-        logs.append({"level": "WARNING",
-                     "msg": "[全市场] TDX未连接，仅使用本地数据"})
-        return all_data
-
-    try:
-        all_codes = _tdx_client.get_all_stock_codes()
+        all_codes = dg.get_stock_universe()
         if not all_codes:
             return all_data
 
         logs.append({"level": "INFO",
-                     "msg": f"[全市场] TDX行情预筛选: {len(all_codes)} 只..."})
+                     "msg": f"[全市场] 统一数据源行情预筛选: {len(all_codes)} 只..."})
         if progress_fn:
-            progress_fn(total_local, total_local + 800, "TDX行情预筛选中...")
+            progress_fn(total_local, total_local + 800, "统一数据源行情预筛选中...")
 
-        quotes = _tdx_client.get_quotes(all_codes)
+        quotes = dg.get_realtime_quotes(all_codes)
         if not quotes:
             return all_data
 
@@ -753,11 +738,10 @@ def _load_full_market_data(start_date: str, end_date: str, logs: list,
             if progress_fn and i % 10 == 0:
                 progress_fn(total_local + i + 1,
                             total_local + len(top_codes),
-                            f"TDX K线 {i+1}/{len(top_codes)}")
+                            f"统一数据源K线 {i+1}/{len(top_codes)}")
             try:
-                bars = _tdx_client.get_kline(code, 800)
-                if bars:
-                    df = pd.DataFrame(bars)
+                df = dg.get_daily_kline(code, days=800, min_rows=10)
+                if df is not None and not df.empty:
                     df["date"] = pd.to_datetime(df["date"])
                     df = df[df["date"] >= lookback_ts].sort_values("date").reset_index(drop=True)
                     if not df.empty:
@@ -766,10 +750,10 @@ def _load_full_market_data(start_date: str, end_date: str, logs: list,
                 pass
 
         logs.append({"level": "INFO",
-                     "msg": f"[全市场] TDX补充完成，总计 {len(all_data)} 只数据"})
+                     "msg": f"[全市场] 统一数据源补充完成，总计 {len(all_data)} 只数据"})
 
     except Exception as e:
-        logs.append({"level": "WARNING", "msg": f"[全市场] TDX补充失败: {e}"})
+        logs.append({"level": "WARNING", "msg": f"[全市场] 统一数据源补充失败: {e}"})
 
     return all_data
 
@@ -779,58 +763,26 @@ def _load_full_market_data(start_date: str, end_date: str, logs: list,
 # ══════════════════════════════════════════════════
 def _load_data(codes: list, start_date: str, end_date: str, logs: list) -> dict:
     """
-    数据加载：本地 CSV 优先，TDX 次选。
-    完全移除 akshare 降级（akshare 受代理/网络影响会长时间挂起）。
+    数据加载：统一数据源优先，按后台配置自动降级。
     """
-    from analytics.data_manager import get_local
+    from analytics import data_gateway as dg
     lookback_ts = pd.Timestamp(start_date) - pd.Timedelta(days=120)
     all_data    = {}
 
-    # 获取 TDX 客户端（复用单例，不重复连接）
-    _tdx_client = None
-    try:
-        import sys as _sys, os as _os
-        _app_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-        _sys.path.insert(0, _os.path.join(_app_root, "market"))
-        from market import ths_quote as tq
-        c = tq.get_client()
-        if c and c._ok:
-            _tdx_client = c
-    except Exception:
-        pass
-
     for code in codes:
-        # ── 优先：本地 CSV ────────────────────────────────────
+        # ── 统一数据源：第一源 Tushare，第二源按后台配置降级 ─────
         try:
-            df = get_local(code)
+            df = dg.get_daily_kline(code, days=800, min_rows=10)
             if df is not None and not df.empty and len(df) >= 10:
                 df = df[df["date"] >= lookback_ts].reset_index(drop=True)
                 if not df.empty:
                     all_data[code] = df
-                    logs.append({"level": "INFO", "msg": f"[本地] {code}: {len(df)} 行"})
+                    logs.append({"level": "INFO", "msg": f"[统一数据源] {code}: {len(df)} 行"})
                     continue
-        except Exception:
-            pass
+        except Exception as e:
+            logs.append({"level": "WARNING", "msg": f"{code}: 统一数据源获取失败 — {e}"})
 
-        # ── 次选：TDX 日K（TCP直连，无代理风险）──────────────
-        if _tdx_client:
-            try:
-                bars = _tdx_client.get_kline(code, 800)
-                if bars:
-                    df = pd.DataFrame(bars)
-                    df["date"] = pd.to_datetime(df["date"])
-                    df = df[df["date"] >= lookback_ts].sort_values("date").reset_index(drop=True)
-                    if not df.empty:
-                        all_data[code] = df
-                        logs.append({"level": "INFO", "msg": f"[TDX] {code}: {len(df)} 行"})
-                        continue
-                logs.append({"level": "WARNING",
-                              "msg": f"{code}: TDX无历史数据，请在「数据管理」下载"})
-            except Exception as e:
-                logs.append({"level": "WARNING", "msg": f"{code}: TDX获取失败 — {e}"})
-        else:
-            logs.append({"level": "WARNING",
-                          "msg": f"{code}: TDX未连接，请在「数据管理」下载本地数据"})
+        logs.append({"level": "WARNING", "msg": f"{code}: 统一数据源无历史数据"})
 
     if not all_data:
         logs.append({"level": "ERROR",

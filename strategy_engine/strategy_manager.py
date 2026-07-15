@@ -17,11 +17,9 @@ logger = logging.getLogger(__name__)
 legacy_aliases.install()
 
 try:
-    from analytics import datasource_config
-    from analytics import tushare_provider
+    from analytics import data_gateway
 except Exception:  # pragma: no cover - optional datasource layer
-    datasource_config = None  # type: ignore
-    tushare_provider = None  # type: ignore
+    data_gateway = None  # type: ignore
 
 STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"
 STRATEGIES_DIR.mkdir(exist_ok=True)
@@ -405,26 +403,12 @@ def _build_data_fns(universe: list, progress: dict | None = None, progress_callb
                 progress_callback(dict(progress))
             except Exception:
                 logger.warning("strategy progress callback failed", exc_info=True)
-        # 1. 本地 CSV
         try:
-            from analytics import data_manager as _dm
-            df = _dm.get_local(code)
+            df = data_gateway.get_daily_kline(code, days=days, min_rows=10) if data_gateway else pd.DataFrame()
             if df is not None and not df.empty and len(df) >= 10:
                 return df.tail(days).reset_index(drop=True)
-        except Exception:
-            pass
-        # 2. TDX
-        try:
-            from market import ths_quote as _tq
-            client = _tq.get_client()
-            if client and client._ok:
-                bars = client.get_kline(code, days)
-                if bars:
-                    df = pd.DataFrame(bars)
-                    df["date"] = pd.to_datetime(df["date"])
-                    return df.sort_values("date").reset_index(drop=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"[SM] unified kline source failed for {code}: {exc}")
         return pd.DataFrame()
 
     def _rows_from_quote_records(records: list, requested: list) -> list:
@@ -461,29 +445,12 @@ def _build_data_fns(universe: list, progress: dict | None = None, progress_callb
         requested = [str(code).split(".")[-1][-6:] for code in codes_list]
         live_rows = []
         try:
-            if datasource_config and tushare_provider:
-                cfg = datasource_config.get_internal_config()
-                if cfg.get("provider") == "tushare" and cfg.get("tushare_enabled"):
-                    qs = tushare_provider.fetch_realtime_quotes(
-                        codes_list,
-                        token=cfg.get("tushare_token"),
-                        mode=cfg.get("tushare_mode"),
-                    )
-                    live_rows = _rows_from_quote_records(qs, codes_list)
-                    if len(live_rows) >= len(set(requested)):
-                        return pd.DataFrame(live_rows)
+            qs = data_gateway.get_realtime_quotes(codes_list) if data_gateway else []
+            live_rows = _rows_from_quote_records(qs, codes_list)
+            if len(live_rows) >= len(set(requested)):
+                return pd.DataFrame(live_rows)
         except Exception as exc:
-            logger.debug(f"[SM] Tushare rt_tick quote fallback: {exc}")
-        try:
-            from market import ths_quote as _tq
-            client = _tq.get_client()
-            if client and client._ok:
-                qs = client.get_quotes(codes_list)
-                live_rows = _rows_from_quote_records(qs, codes_list)
-                if len(live_rows) >= len(set(requested)):
-                    return pd.DataFrame(live_rows)
-        except Exception:
-            pass
+            logger.debug(f"[SM] unified realtime quote failed: {exc}")
         cache_rows = _rows_from_quote_records(_mkt_cache.get("sorted_quotes", []), codes_list)
         if live_rows or cache_rows:
             merged = {row["\u4ee3\u7801"]: row for row in cache_rows}
@@ -507,164 +474,22 @@ _MKT_CACHE_TTL = 300  # 5 分钟
 
 
 def _refresh_market_cache() -> list:
-    """
-    刷新全市场行情缓存：
-      1. 优先尝试 TDX 批量行情（~5000 只）
-      2. TDX 不可用时，自动降级到 akshare（ak.stock_zh_a_spot_em）
-      3. 过滤停牌/超低价，按成交量降序存入共享缓存
-    返回：排序后的行情列表 [{code, price, vol, ...}, ...]
-    """
-    # ── 路径 1：TDX ────────────────────────────────────────────────
+    """Refresh strategy quote cache through the unified data gateway only."""
     try:
-        from market import ths_quote as _tq
-        client = _tq.get_client()
-        if client and client._ok:
-            all_codes = client.get_all_stock_codes()
-            if all_codes:
-                logger.info(f"[SM] 全市场宇宙：共 {len(all_codes)} 只，开始批量行情筛选...")
-                quotes = client.get_quotes(all_codes)
-                if quotes:
-                    active = [q for q in quotes
-                              if q.get("price", 0) > 3
-                              and q.get("vol", 0) > 100
-                              and q.get("last_close", 0) > 0]
-                    active.sort(key=lambda q: q.get("vol", 0), reverse=True)
-                    _mkt_cache["sorted_quotes"] = active
-                    _mkt_cache["ts"] = _time.time()
-                    logger.info(f"[SM] 全市场行情缓存刷新（TDX）：{len(active)} 只有效标的")
-                    return active
-    except Exception as e:
-        logger.warning(f"[SM] TDX 全市场行情获取失败: {e}")
-
-    # ── 路径 2：akshare 兜底 ────────────────────────────────────────
-    try:
-        import os as _os, akshare as ak
-        # 清除代理，避免代理服务器拦截
-        _proxy_bak = {k: _os.environ.pop(k, None)
-                      for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
-                                "all_proxy", "ALL_PROXY")}
-        logger.info("[SM] TDX 不可用，切换到 akshare 获取全市场行情（可能较慢）...")
-        try:
-            df = ak.stock_zh_a_spot_em()
-        finally:
-            # 还原代理设置
-            for k, v in _proxy_bak.items():
-                if v is not None:
-                    _os.environ[k] = v
-        if df is None or df.empty:
-            raise ValueError("akshare 返回空数据")
-
-        # akshare 列名映射 → 内部行情字典格式
-        col_map = {
-            "代码": "code",
-            "名称": "name",
-            "最新价": "price",
-            "涨跌幅": "change_pct",
-            "昨收": "last_close",
-            "成交量": "vol",
-            "量比": "volume_ratio",
-        }
-        keep = [c for c in col_map if c in df.columns]
-        df2 = df[keep].rename(columns=col_map).copy()
-        for col in ("price", "change_pct", "last_close", "vol", "volume_ratio"):
-            if col in df2.columns:
-                df2[col] = df2[col].apply(
-                    lambda x: float(x) if x is not None and str(x).strip() not in ("", "-", "None") else 0.0
-                )
-        records = df2.to_dict("records")
-
-        active = [q for q in records
+        quotes = data_gateway.get_realtime_quotes() if data_gateway else []
+        active = [q for q in quotes
                   if q.get("price", 0) > 3
                   and q.get("vol", 0) > 100
                   and q.get("last_close", 0) > 0]
         active.sort(key=lambda q: q.get("vol", 0), reverse=True)
-
-        _mkt_cache["sorted_quotes"] = active
-        _mkt_cache["ts"] = _time.time()
-        logger.info(f"[SM] 全市场行情缓存刷新（akshare）：{len(active)} 只有效标的")
-        return active
-
+        if active:
+            _mkt_cache["sorted_quotes"] = active
+            _mkt_cache["ts"] = _time.time()
+            logger.info(f"[SM] full-market quote cache refreshed by unified gateway: {len(active)} active stocks")
+            return active
     except Exception as e:
-        logger.warning(f"[SM] akshare 全市场行情获取失败: {e}")
+        logger.warning(f"[SM] unified gateway full-market quotes failed: {e}")
 
-    # ── 路径 3：baostock 兜底 ──────────────────────────────────────
-    try:
-        import baostock as bs
-        import pandas as pd
-        logger.info("[SM] 切换到 baostock 获取全市场行情...")
-        lg = bs.login()
-        if lg.error_code != '0':
-            raise RuntimeError(f"baostock 登录失败: {lg.error_msg}")
-        try:
-            rs = bs.query_all_stock()
-            if rs.error_code != '0':
-                raise RuntimeError(f"baostock query 失败: {rs.error_msg}")
-            rows = []
-            while rs.next():
-                row = rs.get_row_data()
-                rows.append(row)
-        finally:
-            bs.logout()
-        if not rows:
-            raise ValueError("baostock 返回空数据")
-        # baostock 返回的是代码列表，无实时行情，只能返回代码（无成交量排序）
-        codes = []
-        for row in rows:
-            code_raw = row[0] if row else ""
-            if code_raw.startswith("sz.") or code_raw.startswith("sh."):
-                code = code_raw[3:]
-                # 过滤指数、基金等
-                if len(code) == 6 and code[0] in ("0", "3", "6"):
-                    codes.append(code)
-        if not codes:
-            raise ValueError("baostock 未返回有效股票代码")
-        # 构造轻量行情（无实时价，成交量为0，仍可用于代码宇宙）
-        logger.warning(
-            f"[SM] baostock returned code-only universe ({len(codes)}); skip quote cache and try later live sources"
-        )
-    except ImportError:
-        logger.debug("[SM] baostock 未安装，跳过")
-    except Exception as e:
-        logger.warning(f"[SM] baostock 全市场行情获取失败: {e}")
-
-    # ── 路径 4：efinance 兜底 ──────────────────────────────────────
-    try:
-        import efinance as ef
-        import pandas as pd
-        logger.info("[SM] 切换到 efinance 获取全市场行情...")
-        df = ef.stock.get_realtime_quotes()
-        if df is None or df.empty:
-            raise ValueError("efinance 返回空数据")
-        col_map = {
-            "股票代码": "code",
-            "股票名称": "name",
-            "最新价": "price",
-            "涨跌幅": "change_pct",
-            "昨日收盘": "last_close",
-            "成交量": "vol",
-        }
-        keep = [c for c in col_map if c in df.columns]
-        df2 = df[keep].rename(columns=col_map).copy()
-        for col in ("price", "change_pct", "last_close", "vol"):
-            if col in df2.columns:
-                df2[col] = pd.to_numeric(df2[col], errors="coerce").fillna(0.0)
-        records = df2.to_dict("records")
-        active = [q for q in records
-                  if q.get("price", 0) > 3
-                  and q.get("vol", 0) > 100
-                  and q.get("last_close", 0) > 0]
-        active.sort(key=lambda q: q.get("vol", 0), reverse=True)
-        _mkt_cache["sorted_quotes"] = active
-        _mkt_cache["ts"] = _time.time()
-        logger.info(f"[SM] 全市场行情缓存刷新（efinance）：{len(active)} 只有效标的")
-        return active
-    except ImportError:
-        logger.debug("[SM] efinance 未安装，跳过")
-    except Exception as e:
-        logger.warning(f"[SM] efinance 全市场行情获取失败: {e}")
-
-    # ── 路径 5：磁盘持久化兜底（盘后/全部源挂时仍可跑策略）──────────
-    # 行情源全挂时（如夜间 TDX/akshare 等都不响应），读上一次成功保存的票池
     try:
         from pathlib import Path
         cache_file = Path(__file__).parent.parent / "data" / "market_universe.json"
@@ -673,8 +498,7 @@ def _refresh_market_cache() -> list:
             try:
                 data = _json.loads(cache_file.read_text(encoding="utf-8"))
             except ValueError:
-                # 损坏的兜底文件（历史非原子写残留，报 "Extra data"）→ 删除待原子重建
-                logger.warning("[SM] 磁盘兜底 universe 损坏，已删除待下次刷新重建")
+                logger.warning("[SM] disk universe cache is corrupted; removing it for rebuild")
                 try:
                     cache_file.unlink()
                 except OSError:
@@ -684,16 +508,15 @@ def _refresh_market_cache() -> list:
             saved_ts = data.get("ts", 0)
             age_h = (_time.time() - saved_ts) / 3600
             if active:
-                logger.warning(f"[SM] 实时源全挂，启用磁盘兜底 universe（{age_h:.1f}h 前保存，{len(active)} 只）")
+                logger.warning(f"[SM] unified gateway unavailable; using disk universe fallback ({age_h:.1f}h old, {len(active)} stocks)")
                 _mkt_cache["sorted_quotes"] = active
                 _mkt_cache["ts"] = _time.time()
                 return active
     except Exception as e:
-        logger.warning(f"[SM] 磁盘兜底 universe 读取失败: {e}")
+        logger.warning(f"[SM] disk universe fallback read failed: {e}")
 
-    logger.error("[SM] 全部数据源均不可用，无法获取全市场行情")
+    logger.error("[SM] unified gateway returned no full-market quotes")
     return []
-
 
 def _persist_universe_to_disk(quotes: list) -> None:
     """
@@ -749,57 +572,26 @@ _full_mkt_cache = {"quotes": [], "ts": 0}
 
 
 def _get_full_market_snapshot(force_refresh: bool = False) -> list:
-    """全市场未过滤行情快照（含低价股，尽量含北交所），带 5 分钟缓存。
-    每项含 code/price/change_pct/amount 等。供 web/market 涨跌家数、review 成交额求和。"""
+    """Return the unfiltered market snapshot through the unified data gateway."""
     now = _time.time()
     if not force_refresh and _full_mkt_cache["quotes"] and (now - _full_mkt_cache["ts"]) < _MKT_CACHE_TTL:
         return _full_mkt_cache["quotes"]
 
     quotes = []
-    # 路径 1：akshare 全量（东财 stock_zh_a_spot_em = 沪深京A股，与东财页面显示口径一致，
-    #         含北交所/全价格，最完整）。优先它，才能与东财的成交总额/涨跌家数对得上。
-    # ★务必用 research_center.no_proxy()：本机 v2ray 系统代理写在 Windows 注册表里，
-    #   只 pop 环境变量没用（requests 仍从注册表捡代理掐掉东财 → 长期回退 TDX 致少算北交所）。
     try:
-        import research_center as _rc, akshare as ak
-        import pandas as pd
-        with _rc.no_proxy():
-            df = ak.stock_zh_a_spot_em()
-        if df is not None and not df.empty:
-            cm = {"代码": "code", "名称": "name", "最新价": "price", "涨跌幅": "change_pct",
-                  "昨收": "last_close", "成交额": "amount", "成交量": "vol"}
-            keep = [c for c in cm if c in df.columns]
-            d2 = df[keep].rename(columns=cm)
-            for c in ("price", "change_pct", "last_close", "amount", "vol"):
-                if c in d2.columns:
-                    d2[c] = pd.to_numeric(d2[c], errors="coerce").fillna(0.0)
-            quotes = d2.to_dict("records")
-            logger.info(f"[SM] 全市场快照（akshare 东财全量）：{len(quotes)} 只")
+        quotes = data_gateway.get_realtime_quotes() if data_gateway else []
+        if quotes:
+            logger.info(f"[SM] full-market snapshot loaded by unified gateway: {len(quotes)} stocks")
     except Exception as e:
-        logger.warning(f"[SM] 全市场快照 akshare 失败: {e}")
+        logger.warning(f"[SM] unified gateway full-market snapshot failed: {e}")
 
-    # 路径 2：TDX 全量兜底（akshare 被东财风控/云端不可用时，不依赖东财仍能出数）
     if not quotes:
-        try:
-            from market import ths_quote as _tq
-            client = _tq.get_client()
-            if client and client._ok:
-                all_codes = client.get_all_stock_codes()
-                if all_codes:
-                    quotes = client.get_quotes(all_codes) or []
-                    logger.info(f"[SM] 全市场快照（TDX 兜底）：{len(quotes)} 只")
-        except Exception as e:
-            logger.warning(f"[SM] 全市场快照 TDX 失败: {e}")
-
-    # 路径 3：退而求其次，用策略过滤池（至少不为空，仅作最后兜底）
-    if not quotes:
-        quotes = _get_market_quotes_cached()
+        quotes = _get_market_quotes_cached(force_refresh=force_refresh)
 
     if quotes:
         _full_mkt_cache["quotes"] = quotes
         _full_mkt_cache["ts"] = now
     return quotes
-
 
 def _full_market_universe(max_codes: int = 0, force_refresh: bool = False) -> list:
     """

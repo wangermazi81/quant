@@ -19,6 +19,8 @@ from typing import Iterable
 
 import pandas as pd
 
+from analytics import data_gateway as dg
+
 logger = logging.getLogger(__name__)
 
 MIN_QUOTE_COVERAGE = 0.98
@@ -688,12 +690,9 @@ def _turnover_from_official_exchange(date_text: str | None = None) -> dict:
 
 
 def _turnover_from_tdx_index() -> dict:
-    from market import ths_quote as tq
-
-    client = tq.get_client()
-    if not (client and client._ok):
-        raise RuntimeError("TDX unavailable")
-    quotes = client.get_index_quotes([(1, "000001"), (0, "399001")])
+    quotes = dg.get_index_quotes([(1, "000001"), (0, "399001")])
+    if not quotes:
+        raise RuntimeError("index quotes unavailable")
     return turnover_from_index_quotes(quotes)
 
 
