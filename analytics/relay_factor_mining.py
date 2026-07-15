@@ -115,6 +115,27 @@ _RISK_FACTOR_TEXT: dict[str, str] = {
     "deep_drawdown": "距离20日高点回撤偏深，趋势强度不足。",
 }
 
+LIVE_EXECUTION_RULES: dict[str, float] = {
+    "round_trip_cost_pct": 0.16,
+    "slippage_pct": 0.20,
+    "high_open_block_pct": 7.5,
+    "weak_open_block_pct": -4.0,
+    "near_limit_gap_pct": 9.2,
+    "low_amount_ratio": 0.55,
+}
+
+_LIVE_WARNING_TEXT: dict[str, str] = {
+    "entry_near_limit_up": "次日开盘接近涨停，实盘可能排队买不到。",
+    "entry_high_open": "次日高开过多，训练收益容易高估追入后的盈亏。",
+    "entry_weak_open": "次日弱开，接力资金承接不足。",
+    "entry_low_liquidity": "次日成交额相对均值偏低，滑点和冲击成本更高。",
+    "proxy_overextended": "短线涨幅偏热，早盘追高失败概率上升。",
+    "proxy_high_volatility": "波动偏高，实盘止损触发概率更高。",
+    "proxy_weak_volume": "量能确认不足，需要竞价成交额二次验证。",
+    "proxy_limit_queue": "接近强势高位，若竞价直接顶板容易不可成交。",
+    "proxy_market_weak": "市场情绪不强，候选应降级观察。",
+}
+
 
 def _to_float_frame(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -316,8 +337,12 @@ def build_label_frame(panel: dict[str, pd.DataFrame], hold_days: int = 2) -> pd.
     p = _aligned_panel(panel)
     close = p["close"]
     entry_source = p.get("open", close)
+    amount = p.get("amount", close * p["volume"])
     entry = entry_source.shift(-1)
     exit_price = close.shift(-(hold_days + 1))
+    prev_close = close
+    entry_gap = (_safe_div(entry, prev_close) - 1.0) * 100.0
+    entry_amount_ratio = _safe_div(amount, amount.rolling(20, min_periods=5).mean()).shift(-1)
     forward = (_safe_div(exit_price, entry) - 1.0) * 100.0
 
     rows: list[dict[str, Any]] = []
@@ -329,6 +354,11 @@ def build_label_frame(panel: dict[str, pd.DataFrame], hold_days: int = 2) -> pd.
             continue
         values = forward.iloc[i].dropna()
         for code, ret in values.items():
+            gap = _maybe_float(entry_gap.iloc[i].get(code))
+            amount_ratio = _maybe_float(entry_amount_ratio.iloc[i].get(code))
+            execution_flags = _entry_execution_flags(gap, amount_ratio)
+            blocked = bool(execution_flags)
+            live_ret = float(ret) - LIVE_EXECUTION_RULES["round_trip_cost_pct"] - LIVE_EXECUTION_RULES["slippage_pct"]
             rows.append(
                 {
                     "trade_date": trade_date.strftime("%Y-%m-%d"),
@@ -337,10 +367,29 @@ def build_label_frame(panel: dict[str, pd.DataFrame], hold_days: int = 2) -> pd.
                     "exit_date": dates[exit_i].strftime("%Y-%m-%d"),
                     "hold_days": int(hold_days),
                     "forward_return_pct": round(float(ret), 4),
+                    "live_adjusted_return_pct": round(float(live_ret), 4),
+                    "entry_gap_pct": gap,
+                    "entry_amount_ratio_20": amount_ratio,
+                    "execution_blocked": blocked,
+                    "execution_flags": execution_flags,
                     "label_source": "t_plus_1_entry_to_hold_exit",
                 }
             )
     return pd.DataFrame(rows)
+
+
+def _entry_execution_flags(entry_gap_pct: float | None, entry_amount_ratio_20: float | None) -> list[str]:
+    flags: list[str] = []
+    if entry_gap_pct is not None:
+        if entry_gap_pct >= LIVE_EXECUTION_RULES["near_limit_gap_pct"]:
+            flags.append("entry_near_limit_up")
+        elif entry_gap_pct > LIVE_EXECUTION_RULES["high_open_block_pct"]:
+            flags.append("entry_high_open")
+        elif entry_gap_pct < LIVE_EXECUTION_RULES["weak_open_block_pct"]:
+            flags.append("entry_weak_open")
+    if entry_amount_ratio_20 is not None and entry_amount_ratio_20 < LIVE_EXECUTION_RULES["low_amount_ratio"]:
+        flags.append("entry_low_liquidity")
+    return flags
 
 
 def _trade_summary(returns: Sequence[float]) -> dict[str, Any]:
@@ -359,6 +408,38 @@ def _trade_summary(returns: Sequence[float]) -> dict[str, Any]:
     }
 
 
+def _live_summary_fields(
+    raw_returns: Sequence[float],
+    live_returns: Sequence[float],
+    blocked_counts: Sequence[int],
+    top_k: int = 1,
+) -> dict[str, Any]:
+    raw = _trade_summary(raw_returns)
+    live = _trade_summary(live_returns)
+    attempted_slots = max(0, int(len(raw_returns) * max(1, top_k)))
+    blocked_slots = int(sum(int(x) for x in blocked_counts))
+    return {
+        "raw_hit_rate": raw["hit_rate"],
+        "raw_avg_return_pct": raw["avg_return_pct"],
+        "raw_total_return_pct": raw["total_return_pct"],
+        "raw_max_drawdown_pct": raw["max_drawdown_pct"],
+        "live_trade_count": live["trade_count"],
+        "live_hit_rate": live["hit_rate"],
+        "live_avg_return_pct": live["avg_return_pct"],
+        "live_total_return_pct": live["total_return_pct"],
+        "live_max_drawdown_pct": live["max_drawdown_pct"],
+        "live_execution_block_rate": round(blocked_slots / attempted_slots, 4) if attempted_slots else 0.0,
+        "live_cost_model": {
+            "round_trip_cost_pct": LIVE_EXECUTION_RULES["round_trip_cost_pct"],
+            "slippage_pct": LIVE_EXECUTION_RULES["slippage_pct"],
+            "high_open_block_pct": LIVE_EXECUTION_RULES["high_open_block_pct"],
+            "weak_open_block_pct": LIVE_EXECUTION_RULES["weak_open_block_pct"],
+            "near_limit_gap_pct": LIVE_EXECUTION_RULES["near_limit_gap_pct"],
+            "low_amount_ratio": LIVE_EXECUTION_RULES["low_amount_ratio"],
+        },
+    }
+
+
 def walk_forward_relay(
     features: pd.DataFrame,
     labels: pd.DataFrame,
@@ -371,7 +452,7 @@ def walk_forward_relay(
         raise ValueError("train_days, test_days and top_k must be positive")
     data = features.merge(labels, on=["trade_date", "ts_code"], how="inner")
     if data.empty:
-        return {"windows": [], "trades": [], "summary": {**_trade_summary([]), "window_count": 0, "positive_window_rate": 0.0}}
+        return {"windows": [], "trades": [], "summary": {**_trade_summary([]), **_live_summary_fields([], [], []), "window_count": 0, "positive_window_rate": 0.0}}
     dates = sorted(data["trade_date"].unique().tolist())
     step = int(step_days or test_days)
     windows: list[dict[str, Any]] = []
@@ -384,6 +465,8 @@ def walk_forward_relay(
         corr = train[["relay_score", "forward_return_pct"]].corr().iloc[0, 1]
         direction = 1 if pd.isna(corr) or corr >= 0 else -1
         window_returns: list[float] = []
+        window_live_returns: list[float] = []
+        window_blocked_counts: list[int] = []
         for trade_date in test_dates:
             day = data[data["trade_date"] == trade_date].copy()
             if day.empty:
@@ -393,10 +476,29 @@ def walk_forward_relay(
             if picks.empty:
                 continue
             ret = round(float(picks["forward_return_pct"].mean()), 4)
+            if "execution_blocked" in picks.columns:
+                executable = picks[~picks["execution_blocked"].map(lambda value: bool(value))]
+            else:
+                executable = picks
+            blocked_count = int(len(picks) - len(executable))
+            live_field = "live_adjusted_return_pct" if "live_adjusted_return_pct" in executable.columns else "forward_return_pct"
+            live_ret = round(float(executable[live_field].mean()), 4) if not executable.empty else 0.0
             codes = picks["ts_code"].astype(str).tolist()
-            trades.append({"trade_date": trade_date, "direction": direction, "codes": codes, "return_pct": ret})
+            trades.append({
+                "trade_date": trade_date,
+                "direction": direction,
+                "codes": codes,
+                "return_pct": ret,
+                "raw_return_pct": ret,
+                "live_adjusted_return_pct": live_ret,
+                "executable_count": int(len(executable)),
+                "blocked_count": blocked_count,
+            })
             window_returns.append(ret)
+            window_live_returns.append(live_ret)
+            window_blocked_counts.append(blocked_count)
         ws = _trade_summary(window_returns)
+        live_ws = _live_summary_fields(window_returns, window_live_returns, window_blocked_counts, top_k=top_k)
         windows.append(
             {
                 "train_start": train_dates[0],
@@ -406,10 +508,15 @@ def walk_forward_relay(
                 "direction": direction,
                 "train_corr": None if pd.isna(corr) else round(float(corr), 6),
                 **ws,
+                **live_ws,
             }
         )
         start += step
-    summary = _trade_summary([float(t["return_pct"]) for t in trades])
+    raw_returns = [float(t["return_pct"]) for t in trades]
+    live_returns = [float(t.get("live_adjusted_return_pct", t["return_pct"])) for t in trades]
+    blocked_counts = [int(t.get("blocked_count", 0)) for t in trades]
+    summary = _trade_summary(raw_returns)
+    summary.update(_live_summary_fields(raw_returns, live_returns, blocked_counts, top_k=top_k))
     summary["window_count"] = len(windows)
     summary["positive_window_rate"] = round(sum(1 for w in windows if w["total_return_pct"] > 0) / len(windows), 4) if windows else 0.0
     return {"windows": windows, "trades": trades, "summary": summary}
@@ -462,6 +569,61 @@ def _score_inputs(row: pd.Series, rules: dict[str, Any]) -> list[dict[str, Any]]
     return inputs
 
 
+def _candidate_live_readiness(row: pd.Series, risk_flags: Sequence[str]) -> dict[str, Any]:
+    warnings: list[str] = []
+    penalty = min(len(risk_flags), 4) * 0.06
+    ret_3 = float(row.get("ret_3", 0.0) or 0.0)
+    ret_5 = float(row.get("ret_5", 0.0) or 0.0)
+    volatility = float(row.get("volatility_10", 0.0) or 0.0)
+    volume_ratio = float(row.get("volume_ratio_20", 1.0) or 1.0)
+    near_high = float(row.get("near_high_20", 0.0) or 0.0)
+    emotion = _maybe_float(row.get("market_emotion_score"))
+
+    if ret_3 > 0.18:
+        penalty += 0.18
+        warnings.append("proxy_overextended")
+    if volatility > 0.06:
+        penalty += 0.14
+        warnings.append("proxy_high_volatility")
+    if volume_ratio < 1.0:
+        penalty += 0.12
+        warnings.append("proxy_weak_volume")
+    if near_high >= 0.995 and ret_5 > 0.12:
+        penalty += 0.12
+        warnings.append("proxy_limit_queue")
+    if emotion is not None and emotion < 50:
+        penalty += 0.10
+        warnings.append("proxy_market_weak")
+
+    for flag in risk_flags:
+        if flag == "weak_volume" and "proxy_weak_volume" not in warnings:
+            warnings.append("proxy_weak_volume")
+        elif flag == "high_volatility" and "proxy_high_volatility" not in warnings:
+            warnings.append("proxy_high_volatility")
+        elif flag == "overextended_3d" and "proxy_overextended" not in warnings:
+            warnings.append("proxy_overextended")
+
+    score = max(0.0, min(1.0, 1.0 - penalty))
+    if score >= 0.78:
+        status = "ready"
+        label = "实盘可跟踪"
+    elif score >= 0.58:
+        status = "watch"
+        label = "需竞价确认"
+    else:
+        status = "avoid"
+        label = "仅观察"
+    warning_texts = [_LIVE_WARNING_TEXT.get(key, key) for key in dict.fromkeys(warnings)]
+    return {
+        "score": round(score, 4),
+        "status": status,
+        "label": label,
+        "warning_keys": list(dict.fromkeys(warnings)),
+        "warnings": warning_texts,
+        "summary": "；".join(warning_texts) if warning_texts else "收盘因子未发现明显实盘执行降级项，仍需次日竞价确认。",
+    }
+
+
 def _candidate_factor_explain(
     row: pd.Series,
     rules: dict[str, Any],
@@ -472,6 +634,7 @@ def _candidate_factor_explain(
     confidence: float,
     position_pct: float,
     hold_days: int,
+    live_readiness: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     matched = []
     for key in positive_factors:
@@ -490,6 +653,7 @@ def _candidate_factor_explain(
         "matched_factors": matched,
         "risk_factors": risks,
         "risk_summary": risk_summary,
+        "live_reliability": live_readiness or {},
         "score_inputs": _score_inputs(row, rules),
         "feature_snapshot": _feature_snapshot(row),
         "market_context": {
@@ -557,7 +721,13 @@ def build_latest_candidates(
         latest = latest[latest["near_high_20"] >= active_filters["min_near_high_20"]]
     if active_filters["exclude_high_risk"] and "risk_flags" in latest.columns:
         latest = latest[latest["risk_flags"].fillna("").astype(str).str.len() == 0]
-    latest = latest.sort_values("relay_score", ascending=False).reset_index(drop=True)
+    latest["_risk_flags_list"] = latest["risk_flags"].fillna("").astype(str).map(lambda text: [flag for flag in text.split(",") if flag]) if "risk_flags" in latest.columns else [[] for _ in range(len(latest))]
+    latest["_live_readiness"] = latest.apply(lambda row: _candidate_live_readiness(row, row.get("_risk_flags_list") or []), axis=1)
+    latest["_live_ready_score"] = latest.apply(
+        lambda row: float(row.get("relay_score", 0.0) or 0.0) * (0.65 + 0.35 * float((row.get("_live_readiness") or {}).get("score", 1.0))),
+        axis=1,
+    )
+    latest = latest.sort_values(["_live_ready_score", "relay_score"], ascending=False).reset_index(drop=True)
     latest_count = len(latest)
     if latest_count == 0:
         return []
@@ -566,16 +736,26 @@ def build_latest_candidates(
     candidates: list[dict[str, Any]] = []
     for idx, row in latest.iterrows():
         score = float(row["relay_score"])
-        risk_flags = [flag for flag in str(row.get("risk_flags", "")).split(",") if flag]
+        risk_flags = list(row.get("_risk_flags_list") or [flag for flag in str(row.get("risk_flags", "")).split(",") if flag])
+        live_readiness = dict(row.get("_live_readiness") or _candidate_live_readiness(row, risk_flags))
         rank = int(idx) + 1
         score_percentile = 1.0 - ((rank - 1) / max(latest_count - 1, 1))
         confidence = max(0.0, min(1.0, score / 100.0 * 0.45 + score_percentile * 0.55 - min(len(risk_flags), 3) * 0.03))
+        live_confidence = max(0.0, min(1.0, confidence * (0.55 + 0.45 * float(live_readiness.get("score", 1.0)))))
         tier = _candidate_tier(score_percentile, risk_flags, rules)
+        if live_readiness.get("status") == "avoid":
+            tier = "observe"
+        elif live_readiness.get("status") == "watch" and tier == "strong":
+            tier = "watch"
         if tier == "strong":
             position_pct = 0.12 if not risk_flags else 0.08
         elif tier == "watch":
             position_pct = 0.08 if not risk_flags else 0.05
         else:
+            position_pct = 0.0
+        if live_readiness.get("status") == "watch":
+            position_pct = min(position_pct, 0.05)
+        elif live_readiness.get("status") == "avoid":
             position_pct = 0.0
         positive_factors = _positive_factors(row, rules)
         factor_explain = _candidate_factor_explain(
@@ -588,6 +768,7 @@ def build_latest_candidates(
             confidence=confidence,
             position_pct=position_pct,
             hold_days=hold_days,
+            live_readiness=live_readiness,
         )
         candidates.append(
             {
@@ -603,6 +784,13 @@ def build_latest_candidates(
                 "score_percentile": round(score_percentile, 4),
                 "relay_score": round(score, 4),
                 "confidence": round(confidence, 4),
+                "live_confidence": round(live_confidence, 4),
+                "live_readiness_score": live_readiness.get("score"),
+                "live_readiness_status": live_readiness.get("status"),
+                "live_readiness_label": live_readiness.get("label"),
+                "live_warnings": live_readiness.get("warnings", []),
+                "live_warning_keys": live_readiness.get("warning_keys", []),
+                "live_ready_score": round(float(row.get("_live_ready_score", score)), 4),
                 "market_regime": _market_regime(row),
                 "market_emotion_score": _maybe_float(row.get("market_emotion_score")),
                 "market_data_status": str(row.get("market_data_status", "not_checked")),

@@ -117,6 +117,29 @@ def test_label_frame_uses_next_day_entry_and_future_exit_only_as_label():
     assert first["forward_return_pct"] == -50.0
 
 
+def test_label_frame_marks_live_execution_risks_and_cost_adjusted_return():
+    dates = pd.bdate_range("2026-01-02", periods=8)
+    close = pd.DataFrame({"AAA": [10.0, 10.0, 10.5, 10.8, 11.0, 11.2, 11.3, 11.4]}, index=dates)
+    open_ = close.copy()
+    open_.iloc[1, 0] = 11.0
+    panel = {
+        "close": close,
+        "open": open_,
+        "high": close * 1.02,
+        "low": close * 0.98,
+        "volume": pd.DataFrame({"AAA": [1000.0] * len(dates)}, index=dates),
+        "amount": close * 100000.0,
+    }
+
+    labels = relay.build_label_frame(panel, hold_days=1)
+    first = labels[labels["trade_date"] == "2026-01-02"].iloc[0]
+
+    assert first["entry_gap_pct"] == 10.0
+    assert first["execution_blocked"] is True
+    assert "entry_near_limit_up" in first["execution_flags"]
+    assert first["live_adjusted_return_pct"] < first["forward_return_pct"]
+
+
 def test_run_research_writes_report_and_latest_candidates(tmp_path):
     result = relay.run_relay_research(
         panel=_panel(days=55),
@@ -131,6 +154,9 @@ def test_run_research_writes_report_and_latest_candidates(tmp_path):
     assert result["summary"]["feature_rows"] > 0
     assert result["summary"]["label_rows"] > 0
     assert result["summary"]["lookahead_policy"] == "features_current_or_past_labels_t_plus_1"
+    assert "live_hit_rate" in result["summary"]
+    assert "live_total_return_pct" in result["summary"]
+    assert "live_execution_block_rate" in result["summary"]
     assert (tmp_path / "features.csv").exists()
     assert (tmp_path / "labels.csv").exists()
     assert (tmp_path / "walkforward_report.json").exists()
@@ -229,6 +255,35 @@ def test_latest_candidates_include_human_readable_factor_explanation():
     assert explanation["trading_plan"]["hold_days"] == 2
     assert explanation["update_policy"]["signal_refresh"] == "每个交易日收盘后刷新候选池"
     assert explanation["feature_snapshot"]["volume_ratio_20"] == 1.9
+
+
+def test_latest_candidates_downgrade_overheated_live_unreliable_names():
+    features = pd.DataFrame(
+        [
+            {
+                "trade_date": "2026-07-09",
+                "ts_code": "AAA",
+                "relay_score": 96,
+                "ret_3": 0.22,
+                "ret_5": 0.18,
+                "volume_ratio_20": 0.7,
+                "near_high_20": 0.999,
+                "limit_count_20": 3,
+                "volatility_10": 0.09,
+                "risk_flags": "overextended_3d,high_volatility,weak_volume",
+                "market_emotion_score": 45,
+                "available_at": "2026-07-09 15:00:00",
+            }
+        ]
+    )
+
+    candidate = relay.build_latest_candidates(features, top_k=1, candidate_pool_size=1)[0]
+
+    assert candidate["candidate_tier"] == "observe"
+    assert candidate["position_pct"] == 0.0
+    assert candidate["live_readiness_status"] == "avoid"
+    assert candidate["live_warnings"]
+    assert candidate["factor_explain"]["live_reliability"]["status"] == "avoid"
 
 
 def test_latest_candidates_apply_visible_filters_and_custom_tiers():
