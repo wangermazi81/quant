@@ -701,6 +701,24 @@ def _get_fundamentals(code: str) -> dict:
     返回 {'text': 文本块, ...数值}；全失败 {'text': ''}。"""
     import os as _os
     data: dict = {}
+    try:
+        fi = dg.get_finance_info(code)
+        if fi:
+            data.update({k: v for k, v in {
+                "mktcap": fi.get("mktcap"),
+                "float_cap": fi.get("float_cap"),
+                "pe_ttm": fi.get("pe_ttm"),
+                "pe_dyn": fi.get("pe_dyn"),
+                "pb": fi.get("pb"),
+                "roe": fi.get("roe"),
+                "gross_margin": fi.get("gross_margin"),
+                "net_margin": fi.get("net_margin"),
+                "bps": fi.get("bps") or fi.get("meigujingzichan"),
+                "holders": fi.get("holders") or fi.get("gudongrenshu"),
+                "ipo_date": fi.get("ipo_date"),
+            }.items() if v not in (None, "")})
+    except Exception:
+        pass
     _bak = {k: _os.environ.pop(k, None) for k in
             ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY")}
     try:
@@ -793,7 +811,7 @@ def _get_fundamentals(code: str) -> dict:
                                or (npf is not None and npf < 0)
                                or (data.get("pe_dyn") is not None and data["pe_dyn"] < 0)) else ""
     ind     = data.get("industry")
-    lines = [f"【基本面 / 估值】{('· 行业:' + str(ind)) if ind else ''}（来源:百度估值+东财efinance+TDX）",
+    lines = [f"【基本面 / 估值】{('· 行业:' + str(ind)) if ind else ''}（来源:Tushare+百度估值+东财efinance+TDX）",
              f"总市值≈{_f(mc,'亿')}  流通市值≈{_f(data.get('float_cap'),'亿')}  "
              f"市净率PB={_f(data.get('pb'))}  每股净资产{_f(data.get('bps'),'元')}",
              f"市盈率PE={_f(pe_show)}  PE(静)={_f(pe_st)}{warn}  ROE={_f(data.get('roe'),'%')}  "

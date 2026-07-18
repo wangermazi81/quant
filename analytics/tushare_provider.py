@@ -564,6 +564,293 @@ def fetch_minute_kline(
     return _normalize_minute_frame(df)
 
 
+def query_replay_api(
+    api_name: str,
+    params: dict | None = None,
+    token: str | None = None,
+    mode: str | None = None,
+    timeout: int = 10,
+    max_attempts: int = 2,
+) -> list[dict]:
+    """Best-effort access to a Tushare Pro API through the configured source."""
+    resolved_mode = _mode(mode)
+    token = token or datasource_config.resolve_tushare_token(mode=resolved_mode)
+    if not token or not api_name:
+        return []
+    if resolved_mode == "replay":
+        return _replay_get(api_name, token, params or {}, timeout=timeout, max_attempts=max_attempts)
+    ts = _load_tushare()
+    api = ts.pro_api(token)
+    try:
+        fn = getattr(api, api_name)
+        df = fn(**(params or {}))
+    except AttributeError:
+        df = api.query(api_name, **(params or {}))
+    if df is None or getattr(df, "empty", True):
+        return []
+    return df.to_dict("records")
+
+
+def fetch_stock_basic(
+    token: str | None = None,
+    mode: str | None = None,
+) -> list[dict]:
+    fields = "ts_code,symbol,name,area,industry,market,list_date,list_status"
+    rows = query_replay_api(
+        "stock_basic",
+        {"list_status": "L", "fields": fields},
+        token=token,
+        mode=mode,
+        timeout=15,
+    )
+    out: list[dict] = []
+    for row in rows:
+        code = _plain_code(str(row.get("ts_code") or row.get("symbol") or row.get("code") or ""))
+        if not code or len(code) != 6:
+            continue
+        out.append({
+            "code": code,
+            "ts_code": row.get("ts_code") or _ts_code(code),
+            "name": str(row.get("name") or "").strip(),
+            "industry": str(row.get("industry") or "").strip(),
+            "area": str(row.get("area") or "").strip(),
+            "market": str(row.get("market") or "").strip(),
+            "list_date": str(row.get("list_date") or "").strip(),
+            "source": "tushare_stock_basic",
+        })
+    return out
+
+
+def fetch_stock_sectors_bulk(
+    codes: list[str],
+    token: str | None = None,
+    mode: str | None = None,
+    max_concepts_per_code: int = 5,
+) -> dict[str, dict]:
+    clean = []
+    for code in codes or []:
+        c = _plain_code(str(code or ""))
+        if c and c not in clean:
+            clean.append(c)
+    if not clean:
+        return {}
+    wanted = set(clean)
+    result: dict[str, dict] = {}
+    for row in fetch_stock_basic(token=token, mode=mode):
+        code = row.get("code")
+        if code in wanted and row.get("industry"):
+            result[code] = {"industry": row.get("industry", ""), "concepts": [], "source": row.get("source")}
+
+    # Concepts are optional and can be permission/rate limited, so fetch them per-code only after industry fill.
+    for code in clean:
+        concepts: list[str] = []
+        ts_code = _ts_code(code)
+        for api_name in ("ths_member", "concept_detail"):
+            try:
+                rows = query_replay_api(
+                    api_name,
+                    {"ts_code": ts_code, "fields": "ts_code,con_code,concept_code,concept_name,name"},
+                    token=token,
+                    mode=mode,
+                    timeout=8,
+                    max_attempts=1,
+                )
+            except Exception as exc:
+                logger.debug(f"[tushare] concept {api_name} failed for {code}: {exc}")
+                rows = []
+            for row in rows:
+                name = str(row.get("concept_name") or row.get("name") or "").strip()
+                if name and name not in concepts:
+                    concepts.append(name)
+                if len(concepts) >= max_concepts_per_code:
+                    break
+            if concepts:
+                break
+        if concepts or code in result:
+            item = result.setdefault(code, {"industry": "", "concepts": [], "source": "tushare_stock_basic"})
+            item["concepts"] = concepts[:max_concepts_per_code]
+            item["source"] = "tushare_sector"
+    return result
+
+
+def fetch_lhb_stocks(
+    trade_date: str,
+    token: str | None = None,
+    mode: str | None = None,
+) -> list[dict]:
+    compact = _date_text(trade_date)
+    fields = "ts_code,name,trade_date,close,pct_change,turnover_rate,amount,l_sell,l_buy,l_amount,net_amount,reason"
+    rows = query_replay_api("top_list", {"trade_date": compact, "fields": fields}, token=token, mode=mode, timeout=15)
+    out: list[dict] = []
+    for row in rows:
+        code = _plain_code(str(row.get("ts_code") or row.get("code") or ""))
+        name = str(row.get("name") or row.get("stock_name") or "").strip()
+        if not code or not name:
+            continue
+        net = _num(row.get("net_amount", row.get("net_amt")))
+        buy = _num(row.get("l_buy", row.get("buy", row.get("buy_amount"))))
+        sell = _num(row.get("l_sell", row.get("sell", row.get("sell_amount"))))
+        amount = _num(row.get("l_amount", row.get("amount")))
+        out.append({
+            "code": code,
+            "name": name,
+            "chg": _num(row.get("pct_change", row.get("change_rate"))),
+            "net_amt": round(net / 10000, 2) if net and abs(net) > 1_000_000 else round(net, 2) if net else None,
+            "buy_amt": round(buy / 10000, 2) if buy and abs(buy) > 1_000_000 else round(buy, 2) if buy else None,
+            "sell_amt": round(sell / 10000, 2) if sell and abs(sell) > 1_000_000 else round(sell, 2) if sell else None,
+            "close": _num(row.get("close")),
+            "turnover": _num(row.get("turnover_rate")),
+            "reason": str(row.get("reason") or "").strip()[:60],
+            "vol": round(amount / 100000000, 2) if amount and abs(amount) > 100000000 else round(amount / 10000, 2) if amount else None,
+            "youzai": [],
+            "branches": [],
+            "source": "tushare_top_list",
+        })
+    return out
+
+
+def fetch_lhb_seats(
+    code: str,
+    trade_date: str,
+    token: str | None = None,
+    mode: str | None = None,
+) -> list[dict]:
+    compact = _date_text(trade_date)
+    fields = "ts_code,trade_date,exalter,buy,sell,net_buy"
+    rows = query_replay_api("top_inst", {"ts_code": _ts_code(code), "trade_date": compact, "fields": fields}, token=token, mode=mode, timeout=12)
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        name = str(row.get("exalter") or row.get("name") or row.get("seat") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        buy = _num(row.get("buy"))
+        sell = _num(row.get("sell"))
+        net = _num(row.get("net_buy", row.get("net")))
+        if net == 0 and (buy or sell):
+            net = buy - sell
+        out.append({
+            "name": name,
+            "buy": round(buy / 10000, 2) if abs(buy) > 1_000_000 else round(buy, 2),
+            "sell": round(sell / 10000, 2) if abs(sell) > 1_000_000 else round(sell, 2),
+            "net": round(net / 10000, 2) if abs(net) > 1_000_000 else round(net, 2),
+            "dir": "B" if net >= 0 else "S",
+            "source": "tushare_top_inst",
+        })
+    return sorted(out, key=lambda x: x.get("net", 0), reverse=True)
+
+
+def _index_ts_code(code: str, market: int | None = None) -> str:
+    clean = _plain_code(str(code or ""))
+    if "." in str(code or ""):
+        return str(code).strip().upper()
+    if market == 1 or clean.startswith(("0", "3")) and not clean.startswith("399"):
+        return f"{clean}.SH"
+    if market == 0 or clean.startswith("399"):
+        return f"{clean}.SZ"
+    return f"{clean}.SH" if clean.startswith("0") else f"{clean}.SZ"
+
+
+def fetch_index_kline(
+    code: str,
+    days: int = 60,
+    market: int | None = None,
+    token: str | None = None,
+    mode: str | None = None,
+) -> pd.DataFrame:
+    end = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=max(int(days or 60) * 2, 120))).strftime("%Y%m%d")
+    rows = query_replay_api(
+        "index_daily",
+        {"ts_code": _index_ts_code(code, market), "start_date": start, "end_date": end, "fields": "ts_code,trade_date,open,high,low,close,vol,amount"},
+        token=token,
+        mode=mode,
+        timeout=12,
+    )
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return pd.DataFrame()
+    df = df.rename(columns={"trade_date": "date", "vol": "volume"})
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    for column in ("open", "high", "low", "close", "volume", "amount"):
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+    return df.dropna(subset=["date", "close"]).sort_values("date").tail(int(days or 60)).reset_index(drop=True)
+
+
+def fetch_index_quotes(
+    pairs: list[tuple[int, str]],
+    token: str | None = None,
+    mode: str | None = None,
+) -> list[dict]:
+    rows: list[dict] = []
+    for market, code in pairs or []:
+        df = fetch_index_kline(code, days=2, market=market, token=token, mode=mode)
+        if df is None or df.empty:
+            continue
+        last = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) > 1 else last
+        price = _num(last.get("close"))
+        prev_close = _num(prev.get("close"))
+        pct = (price / prev_close - 1) * 100 if prev_close else 0.0
+        rows.append({"code": _plain_code(str(code)), "price": price, "change_pct": round(pct, 2), "source": "tushare_index_daily"})
+    return rows
+
+
+def fetch_finance_info(
+    code: str,
+    token: str | None = None,
+    mode: str | None = None,
+) -> dict:
+    ts_code = _ts_code(code)
+    info: dict[str, Any] = {"code": _plain_code(code), "ts_code": ts_code, "source": "tushare"}
+    try:
+        basic_rows = query_replay_api(
+            "daily_basic",
+            {"ts_code": ts_code, "fields": "ts_code,trade_date,total_mv,circ_mv,pe,pe_ttm,pb,turnover_rate,volume_ratio"},
+            token=token,
+            mode=mode,
+            timeout=12,
+        )
+        if basic_rows:
+            row = sorted(basic_rows, key=lambda r: str(r.get("trade_date") or ""))[-1]
+            info.update({
+                "mktcap": round(_num(row.get("total_mv")) / 10000, 2) if row.get("total_mv") is not None else None,
+                "float_cap": round(_num(row.get("circ_mv")) / 10000, 2) if row.get("circ_mv") is not None else None,
+                "pe_dyn": _num(row.get("pe")),
+                "pe_ttm": _num(row.get("pe_ttm")),
+                "pb": _num(row.get("pb")),
+                "turnover": _num(row.get("turnover_rate")),
+                "volume_ratio": _num(row.get("volume_ratio")),
+                "trade_date": str(row.get("trade_date") or ""),
+            })
+    except Exception as exc:
+        logger.debug(f"[tushare] daily_basic finance failed for {code}: {exc}")
+    try:
+        fina_rows = query_replay_api(
+            "fina_indicator",
+            {"ts_code": ts_code, "fields": "ts_code,end_date,roe,roe_dt,grossprofit_margin,netprofit_margin,bps,dt_eps"},
+            token=token,
+            mode=mode,
+            timeout=12,
+        )
+        if fina_rows:
+            row = sorted(fina_rows, key=lambda r: str(r.get("end_date") or ""))[-1]
+            info.update({
+                "roe": _num(row.get("roe_dt", row.get("roe"))),
+                "gross_margin": _num(row.get("grossprofit_margin")),
+                "net_margin": _num(row.get("netprofit_margin")),
+                "bps": _num(row.get("bps")),
+                "eps": _num(row.get("dt_eps")),
+                "report_date": str(row.get("end_date") or ""),
+            })
+    except Exception as exc:
+        logger.debug(f"[tushare] fina_indicator failed for {code}: {exc}")
+    return {k: v for k, v in info.items() if v not in (None, "")}
+
+
 def test_connection(token: str | None = None, mode: str | None = None) -> dict:
     resolved_mode = _mode(mode)
     token = token or datasource_config.resolve_tushare_token(mode=resolved_mode)

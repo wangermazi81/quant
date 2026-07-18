@@ -343,6 +343,97 @@ def get_minute_kline(code: str, freq: str = "1MIN", limit: int = 240) -> pd.Data
     return get_minute_kline_result(code, freq=freq, limit=limit).get("df", pd.DataFrame())
 
 
+def get_stock_sectors_bulk(codes: list[str]) -> dict[str, dict]:
+    cfg = _config()
+    clean_codes = []
+    for code in codes or []:
+        c = normalize_code(code)
+        if c and c not in clean_codes:
+            clean_codes.append(c)
+    if not clean_codes:
+        return {}
+    errors: list[str] = []
+    for source in _source_order(cfg):
+        try:
+            if source == "tushare" and _has_tushare(cfg):
+                rows = tushare_provider.fetch_stock_sectors_bulk(
+                    clean_codes,
+                    token=cfg.get("tushare_token"),
+                    mode=cfg.get("tushare_mode"),
+                )
+            elif source == "current":
+                from analytics import data_manager as dm
+                rows = dm.get_stock_sectors_bulk_current(clean_codes)
+            else:
+                rows = {}
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+            rows = {}
+        if rows:
+            if errors:
+                logger.debug(f"[gateway] sector fallback after: {'; '.join(errors[-2:])}")
+            return rows
+        errors.append(f"{source}: no data")
+    return {}
+
+
+def get_lhb_stocks_result(trade_date: str) -> dict:
+    cfg = _config()
+    result = _empty_result("lhb_stocks", cfg)
+    errors: list[str] = []
+    for idx, source in enumerate(_source_order(cfg)):
+        rows: list[dict] = []
+        try:
+            if source == "tushare" and _has_tushare(cfg):
+                rows = tushare_provider.fetch_lhb_stocks(trade_date, token=cfg.get("tushare_token"), mode=cfg.get("tushare_mode"))
+            elif source == "current":
+                from analytics import lhb_engine
+                rows = lhb_engine.fetch_lhb_stocks_current(trade_date)
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+        if rows:
+            result.update({"ok": True, "source": source, "fallback_used": idx > 0, "stocks": rows, "count": len(rows), "error": ""})
+            return result
+        errors.append(f"{source}: no data")
+    result["stocks"] = []
+    result["count"] = 0
+    result["error"] = "; ".join(errors[-4:])
+    return result
+
+
+def get_lhb_stocks(trade_date: str) -> list[dict]:
+    return get_lhb_stocks_result(trade_date).get("stocks", [])
+
+
+def get_lhb_seats_result(code: str, trade_date: str) -> dict:
+    cfg = _config()
+    result = _empty_result("lhb_seats", cfg)
+    errors: list[str] = []
+    clean = normalize_code(code)
+    for idx, source in enumerate(_source_order(cfg)):
+        rows: list[dict] = []
+        try:
+            if source == "tushare" and _has_tushare(cfg):
+                rows = tushare_provider.fetch_lhb_seats(clean, trade_date, token=cfg.get("tushare_token"), mode=cfg.get("tushare_mode"))
+            elif source == "current":
+                from analytics import lhb_engine
+                rows = lhb_engine.fetch_lhb_seats_current(clean, trade_date)
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+        if rows:
+            result.update({"ok": True, "source": source, "fallback_used": idx > 0, "seats": rows, "count": len(rows), "error": ""})
+            return result
+        errors.append(f"{source}: no data")
+    result["seats"] = []
+    result["count"] = 0
+    result["error"] = "; ".join(errors[-4:])
+    return result
+
+
+def get_lhb_seats(code: str, trade_date: str) -> list[dict]:
+    return get_lhb_seats_result(code, trade_date).get("seats", [])
+
+
 def _current_index_kline(code: str, days: int = 60, market: int | None = None) -> pd.DataFrame:
     try:
         from market import ths_quote as tq
@@ -375,7 +466,14 @@ def get_index_kline_result(code: str, days: int = 60, market: int | None = None)
             if source == "current":
                 df = _current_index_kline(code, days=days, market=market)
             elif source == "tushare":
-                errors.append("tushare: index kline adapter not configured")
+                if _has_tushare(cfg):
+                    df = tushare_provider.fetch_index_kline(
+                        code,
+                        days=days,
+                        market=market,
+                        token=cfg.get("tushare_token"),
+                        mode=cfg.get("tushare_mode"),
+                    )
         except Exception as exc:
             errors.append(f"{source}: {exc}")
         if df is not None and not df.empty:
@@ -441,7 +539,12 @@ def get_index_quotes_result(pairs: Iterable[tuple[int, str]]) -> dict:
             if source == "current":
                 rows = _current_index_quotes(pair_list)
             elif source == "tushare":
-                errors.append("tushare: index quote adapter not configured")
+                if _has_tushare(cfg):
+                    rows = tushare_provider.fetch_index_quotes(
+                        pair_list,
+                        token=cfg.get("tushare_token"),
+                        mode=cfg.get("tushare_mode"),
+                    )
         except Exception as exc:
             errors.append(f"{source}: {exc}")
         if rows:
@@ -471,7 +574,12 @@ def get_finance_info_result(code: str) -> dict:
                 client = tq.get_client()
                 info = client.get_finance_info(clean) if client else {}
             elif source == "tushare":
-                errors.append("tushare: finance info adapter not configured")
+                if _has_tushare(cfg):
+                    info = tushare_provider.fetch_finance_info(
+                        clean,
+                        token=cfg.get("tushare_token"),
+                        mode=cfg.get("tushare_mode"),
+                    )
         except Exception as exc:
             errors.append(f"{source}: {exc}")
         if info:

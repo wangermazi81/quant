@@ -73,6 +73,16 @@ def _infer_stock_sector_by_code(code: str) -> dict:
 
 
 def get_stock_sectors_bulk(codes: list[str]) -> dict[str, dict]:
+    """Fetch industry/concept labels through the global data-source gateway."""
+    try:
+        from analytics import data_gateway as dg
+        return dg.get_stock_sectors_bulk(codes)
+    except Exception as e:
+        logger.debug(f"data_gateway sector route failed, using current source: {e}")
+        return get_stock_sectors_bulk_current(codes)
+
+
+def get_stock_sectors_bulk_current(codes: list[str]) -> dict[str, dict]:
     """Fetch industry/concept labels for many stocks from Eastmoney quote list API."""
     clean_codes = []
     for code in codes or []:

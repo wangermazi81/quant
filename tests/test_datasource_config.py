@@ -3,14 +3,14 @@ import json
 import analytics.datasource_config as cfg
 
 
-def test_default_config_uses_current_provider(monkeypatch, tmp_path):
+def test_default_config_uses_tushare_provider(monkeypatch, tmp_path):
     monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "datasource_config.json")
 
     data = cfg.get_config()
 
-    assert data["provider"] == "current"
+    assert data["provider"] == "tushare"
     assert data["fallback_enabled"] is True
-    assert data["tushare_enabled"] is False
+    assert data["tushare_enabled"] is True
     assert data["tushare_mode"] == "replay"
     assert data["tushare_token_masked"] == ""
     assert "tushare_token" not in data

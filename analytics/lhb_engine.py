@@ -419,7 +419,7 @@ def _fetch_lhb_stocks_eastmoney(yyyymmdd: str) -> list:
         return []
 
 
-def _fetch_lhb_stocks(yyyymmdd: str) -> list:
+def fetch_lhb_stocks_current(yyyymmdd: str) -> list:
     """akshare 获取当日龙虎榜股票列表（带基本数据）。"""
     try:
         with no_proxy():
@@ -495,7 +495,7 @@ def _fetch_lhb_stocks(yyyymmdd: str) -> list:
         return _fetch_lhb_stocks_eastmoney(yyyymmdd)
 
 
-def _fetch_seat_detail(code: str, date_str: str) -> list:
+def fetch_lhb_seats_current(code: str, date_str: str) -> list:
     """东财席位明细 API：一只股票当日所有营业部买卖数据。
 
     主源：datacenter-web RPT_BILLBOARD_DAILYDETAILSBUY/SELL（买卖榜分开拉再合并）
@@ -582,6 +582,10 @@ def _fetch_seat_detail(code: str, date_str: str) -> list:
 # 主入口
 # ══════════════════════════════════════════════════════════════
 
+_fetch_lhb_stocks = fetch_lhb_stocks_current
+_fetch_seat_detail = fetch_lhb_seats_current
+
+
 def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
     """获取龙虎榜全量数据（股票 + 席位 + 游资图谱标注）。
 
@@ -620,7 +624,15 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
                     return cached
 
     # ── 1. 股票列表 ─────────────────────────────────────────
-    stocks = _fetch_lhb_stocks(yyyymmdd)
+    source = "current"
+    try:
+        from analytics import data_gateway as dg
+        picked = dg.get_lhb_stocks_result(yyyymmdd)
+        stocks = picked.get("stocks") or []
+        source = picked.get("source") or source
+    except Exception as e:
+        logger.debug(f"[lhb] unified datasource failed, using current source: {e}")
+        stocks = fetch_lhb_stocks_current(yyyymmdd)
     if not stocks:
         if not force_refresh:
             disk = _disk_get(yyyymmdd)
@@ -638,7 +650,12 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
     for i, s in enumerate(stocks[:top_n]):
         try:
             with no_proxy():
-                branches = _fetch_seat_detail(s["code"], date_str)
+                try:
+                    from analytics import data_gateway as dg
+                    branches = dg.get_lhb_seats(s["code"], date_str)
+                except Exception as e:
+                    logger.debug(f"[lhb] unified seat datasource failed, using current source: {e}")
+                    branches = fetch_lhb_seats_current(s["code"], date_str)
             for b in branches:
                 b["tag"] = _tag_branch(b["name"])
             s["branches"] = branches
@@ -671,7 +688,7 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
         "seat_detail_count": _seat_detail_count({"stocks": stocks}),
         "seat_detail_target": top_n,
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "source":       "eastmoney_akshare",
+        "source":       source,
     }
     out["seat_detail_coverage"] = round(
         out["seat_detail_count"] / out["seat_detail_target"], 3
