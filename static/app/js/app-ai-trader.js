@@ -1,6 +1,25 @@
 /* ══════════════ 🤖 AI 交易模块（本地）前端驱动 ══════════════ */
 const aitS = { roles:[], agents:{}, decisions:[], execs:[], pending:{}, providers:{}, strategyCatalog:[], settings:null, tokenUsage:null, candidateTrace:null, es:null, inited:false, curStock:'' };
 
+function _aiActionAttrs(action, value){
+  return `data-ai-action="${action}" data-ai-value="${encodeURIComponent(String(value ?? ''))}"`;
+}
+
+document.addEventListener('click', e=>{
+  const target=e.target.closest('[data-ai-action]');
+  if(!target) return;
+  e.stopPropagation();
+  const value=decodeURIComponent(target.dataset.aiValue||'');
+  const actions={
+    'show-decision': ()=>aitShowDec(value),
+    'confirm': ()=>aitConfirm(value,true),
+    'reject': ()=>aitConfirm(value,false),
+    'remove-watch': ()=>aitRemoveWatch(value),
+  };
+  const action=actions[target.dataset.aiAction];
+  if(action) action();
+});
+
 async function initAiTrader(){
   if(aitS.inited) return;
   aitS.inited = true;
@@ -103,7 +122,7 @@ function aitRenderDecisions(){
   let html='';
   aitS.decisions.slice().reverse().forEach(d=>{
     const hasAg=d.agents&&d.agents.length;
-    html+='<div class="ait-dec '+(d.blocked?'blocked':'')+'"'+(hasAg?' onclick="aitShowDec(\''+d.id+'\')" style="cursor:pointer" title="点击查看团队对该票的详细分析"':'')+'>'
+    html+='<div class="ait-dec '+(d.blocked?'blocked':'')+'"'+(hasAg?' '+_aiActionAttrs('show-decision',d.id)+' style="cursor:pointer" title="点击查看团队对该票的详细分析"':'')+'>'
       +'<div class="ait-dec-hd">'
       +'<span class="ait-act '+esc(d.action)+'">'+esc(d.action)+'</span>'
       +'<span class="ait-dec-code">'+esc(d.code)+'</span><span class="ait-dec-name">'+esc(d.name||'')+'</span>'
@@ -156,8 +175,8 @@ function aitRenderPending(){
   box.innerHTML=arr.map(p=>'<div class="ait-pend"><div style="font-weight:700">⏳ 实盘待确认 · '
     +'<span class="ait-act '+esc(p.action)+'">'+esc(p.action)+'</span> '+esc(p.code)+' '+esc(p.name||'')+'</div>'
     +'<div style="font-size:12px;color:var(--t2);margin-top:4px">价 '+(p.price||'-')+' · 信心 '+(p.confidence||0)+' · '+esc(p.reason||'')+'</div>'
-    +'<div class="ait-pend-row"><button class="btn btn-green btn-sm" onclick="aitConfirm(\''+p.id+'\',true)">✓ 确认下单</button>'
-    +'<button class="btn btn-gray btn-sm" onclick="aitConfirm(\''+p.id+'\',false)">✕ 拒绝</button></div></div>').join('');
+    +'<div class="ait-pend-row"><button class="btn btn-green btn-sm" '+_aiActionAttrs('confirm',p.id)+'>✓ 确认下单</button>'
+    +'<button class="btn btn-gray btn-sm" '+_aiActionAttrs('reject',p.id)+'>✕ 拒绝</button></div></div>').join('');
 }
 
 async function aitStart(){ const r=await api('/ai_trader/start','POST'); fbToast((r&&r.msg)||'已请求', r&&!r.ok); }
@@ -332,7 +351,7 @@ function aitFillSettings(){
 }
 function aitRenderWatch(){
   const box=document.getElementById('aitWlTags'); if(!box||!aitS.settings) return;
-  box.innerHTML=(aitS.settings.watchlist||[]).map(c=>'<div class="ait-wl-tag">'+esc(c)+'<span onclick="aitRemoveWatch(\''+esc(c)+'\')">×</span></div>').join('')||'<span style="font-size:11px;color:var(--t4)">暂无自选，AI将只评估持仓</span>';
+  box.innerHTML=(aitS.settings.watchlist||[]).map(c=>'<div class="ait-wl-tag">'+esc(c)+'<span '+_aiActionAttrs('remove-watch',c)+'>×</span></div>').join('')||'<span style="font-size:11px;color:var(--t4)">暂无自选，AI将只评估持仓</span>';
 }
 async function aitAddWatch(){
   const inp=document.getElementById('aitWlInput'), code=inp.value.trim(); if(!code) return;

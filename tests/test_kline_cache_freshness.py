@@ -87,6 +87,7 @@ def test_refresh_factor_daily_cache_updates_latest_coverage(monkeypatch, tmp_pat
     data_dir.mkdir()
     monkeypatch.setattr(dm, "DATA_DIR", data_dir)
     monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+    _disable_tushare_factor_source(monkeypatch, dm)
 
     stale = _kline_frame("2026-07-09", periods=80)
     stale.to_csv(data_dir / "000001.csv", index=False, encoding="utf-8")
@@ -124,6 +125,7 @@ def test_refresh_factor_daily_cache_ignores_unfinished_intraday_bar(monkeypatch,
     data_dir.mkdir()
     monkeypatch.setattr(dm, "DATA_DIR", data_dir)
     monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+    _disable_tushare_factor_source(monkeypatch, dm)
 
     stale = _kline_frame("2026-07-09", periods=80)
     stale.to_csv(data_dir / "000001.csv", index=False, encoding="utf-8")
@@ -148,6 +150,14 @@ def test_refresh_factor_daily_cache_ignores_unfinished_intraday_bar(monkeypatch,
     assert result["source_trade_date"] == "2026-07-13"
     saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
     assert saved["date"].max() == pd.Timestamp("2026-07-13")
+
+
+def _disable_tushare_factor_source(monkeypatch, dm):
+    monkeypatch.setattr(
+        dm.datasource_config,
+        "get_internal_config",
+        lambda: {"provider": "tdx", "tushare_enabled": False},
+    )
 
 
 def _enable_tushare_factor_source(monkeypatch, dm):
@@ -214,6 +224,7 @@ def test_refresh_factor_daily_cache_prefers_tushare_batch(monkeypatch, tmp_path)
         lambda trade_date, **kwargs: _market_factor_frame(str(trade_date), factors=(100.0, 100.0)),
         raising=False,
     )
+    monkeypatch.setattr(dm.tushare_provider, "fetch_kline_qfq", lambda *args, **kwargs: None)
     monkeypatch.setattr(ths_quote, "get_client", lambda: (_ for _ in ()).throw(AssertionError("TDX must not be used")))
 
     result = dm.refresh_factor_daily_cache(days=180, min_required=2, now=datetime(2026, 7, 14, 10, 30))

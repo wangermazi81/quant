@@ -3,7 +3,14 @@ import json
 import time
 import sys
 
+import pytest
+
 import analytics.data_manager as dm
+
+
+@pytest.fixture(autouse=True)
+def _use_current_sector_source(monkeypatch):
+    monkeypatch.setattr(dm, "get_stock_sectors_bulk", dm.get_stock_sectors_bulk_current)
 
 
 def test_get_stock_sector_falls_back_to_eastmoney_quote(monkeypatch, tmp_path):

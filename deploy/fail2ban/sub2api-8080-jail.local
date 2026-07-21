@@ -1,0 +1,8 @@
+[sub2api-8080]
+enabled = true
+filter = sub2api-8080
+logpath = /var/log/nginx/sub2api-8080.access.log
+maxretry = 12
+findtime = 300
+bantime = 1800
+action = iptables-multiport[name=sub2api-8080, port="8080"]

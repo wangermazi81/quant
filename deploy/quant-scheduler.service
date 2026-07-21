@@ -26,6 +26,19 @@ WorkingDirectory=/opt/quant
 ExecStart=/opt/quant/venv/bin/python scheduler_main.py
 Restart=always
 RestartSec=10
+MemoryHigh=520M
+TasksMax=192
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
 # 数据调度出问题不应拖垮机器：限内存（1.6G 小机器上留足 Web 空间）
 MemoryMax=600M
 

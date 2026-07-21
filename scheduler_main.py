@@ -19,7 +19,6 @@
 import logging
 import os
 import signal
-import sys
 import threading
 
 # 与 main.py 一致：清系统代理，防止 akshare 等国内源被本机代理掐断
@@ -74,4 +73,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    exit_code = main()
+    logging.shutdown()
+    # concurrent.futures 会在 atexit 阶段等待仍在拉取数据的线程，服务重启会因此卡满 90 秒。
+    os._exit(exit_code)

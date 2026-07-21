@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import request, jsonify, session  # noqa: F401  (session 供调用方便利导入)
+from werkzeug.exceptions import BadRequest
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -335,20 +336,42 @@ def init_security(app):
         MAX_CONTENT_LENGTH=10 * 1024 * 1024,          # 请求体上限 10MB（与 nginx 一致，双保险）
     )
 
-    # CSP：精确放行前端实际用到的三个外部源（Google Fonts / cdnjs FontAwesome /
-    # jsdelivr echarts），其余外部脚本/样式一律拦截。因前端是大量内联的单文件，
-    # 保留 'unsafe-inline'/'unsafe-eval'；即便如此仍能挡掉 <script src=evil> 注入。
+    # 脚本/样式元素与遗留属性分开控制；元素禁止内联执行，旧页面属性逐步迁移。
+    # 前端未使用 eval/new Function，因此不放行 unsafe-eval。
+    # 外部资源只允许 Google Fonts、cdnjs FontAwesome 和 jsdelivr echarts。
     csp = (
         "default-src 'self'; "
         "img-src 'self' data: blob:; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
+        "style-src 'self' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
+        "style-src-elem 'self' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
+        "style-src-attr 'unsafe-inline'; "
         "font-src 'self' data: https://fonts.gstatic.com https://cdnjs.cloudflare.com; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; "
+        "script-src 'self' https://cdn.jsdelivr.net; "
+        "script-src-elem 'self' https://cdn.jsdelivr.net; "
+        "script-src-attr 'unsafe-inline'; "
         "connect-src 'self'; "
         "frame-ancestors 'self'; "
         "base-uri 'self'; "
         "object-src 'none'"
     )
+    @app.before_request
+    def _validate_api_json_object():
+        if (
+            not request.path.startswith("/api/")
+            or request.method not in {"POST", "PUT", "PATCH", "DELETE"}
+            or not request.is_json
+        ):
+            return None
+
+        try:
+            payload = request.get_json(silent=False)
+        except BadRequest:
+            return jsonify({"ok": False, "error": "JSON 请求体格式错误", "code": 400}), 400
+
+        if not isinstance(payload, dict):
+            return jsonify({"ok": False, "error": "JSON 请求体必须是对象", "code": 400}), 400
+
+        return None
 
     @app.before_request
     def _anti_crawl_guard():

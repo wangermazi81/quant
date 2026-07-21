@@ -8,12 +8,27 @@ let _repTimer    = null
 function rsInit(){
   if(_rsInited) return
   _rsInited = true
+  _rvBindEvents()
   chainSearch('')
   // 研报中心 5 分钟自动刷新（仅该页签激活时），保证始终是最新研报
   if(!_repTimer) _repTimer = setInterval(()=>{
     const pg = document.getElementById('page-search')
     if(pg && pg.classList.contains('active') && _rsTab === 'report') loadReports()
   }, 300000)
+}
+
+function _rvBindEvents(){
+  const page = document.getElementById('page-search')
+  if(!page || page.dataset.rvBound) return
+  page.dataset.rvBound = '1'
+  page.addEventListener('click', e=>{
+    const concept = e.target.closest('[data-rv-concept]')
+    if(concept){ openConcept(concept.dataset.rvConcept, concept); return }
+    const kline = e.target.closest('[data-rv-kline]')
+    if(kline){ showKLine(kline.dataset.rvCode, kline.dataset.rvName); return }
+    const external = e.target.closest('[data-rv-url]')
+    if(external && !e.target.closest('a')) window.open(external.dataset.rvUrl, '_blank', 'noopener')
+  })
 }
 
 function rsSwitch(tab){
@@ -38,7 +53,7 @@ async function chainSearch(q){
     const list = d.concepts||[]
     hint.textContent = list.length ? `${q?'匹配':'热门'} ${list.length} 个概念` : '没找到，换个关键词试试'
     box.innerHTML = list.map(c=>`
-      <div class="srch-result-item" onclick="openConcept('${_rvEsc(c.name)}',this)">
+      <div class="srch-result-item" data-rv-concept="${_rvAttr(c.name)}">
         <div style="display:flex;align-items:center;gap:8px">
           <b style="font-size:13px">${_rvEsc(c.name)}</b>
           ${c.chg!=null ? `<span style="margin-left:auto;font-weight:700;font-size:12px;color:${(c.chg||0)>=0?'#f85149':'#3fb950'}">${(c.chg||0)>=0?'+':''}${c.chg}%</span>` : ''}
@@ -106,7 +121,7 @@ async function openConcept(name, el){
         <td style="text-align:right;color:${up?'#f85149':'#3fb950'};font-weight:600">${up?'+':''}${s.chg}%</td>
         <td style="text-align:right">${s.turnover ?? '—'}</td>
         <td style="text-align:right">${s.mcap ?? '—'}</td>
-        <td style="text-align:right"><button class="btn btn-gray btn-xs" onclick="showKLine('${s.code}','${_rvEsc(s.name)}')">K线</button></td></tr>`
+        <td style="text-align:right"><button class="btn btn-gray btn-xs" data-rv-kline data-rv-code="${_rvAttr(s.code)}" data-rv-name="${_rvAttr(s.name)}">K线</button></td></tr>`
     })
     html += '</tbody></table></div>'
     box.innerHTML = html
@@ -176,7 +191,7 @@ function _renderChainGraph(d, scroll){
         const cd  = isObj ? (s.code||'') : (String(s).match(/\d{6}/)||[''])[0]
         const rel = isObj ? (s.relation||'') : ''
         const lv  = isObj ? (s.level||'') : ''
-        h += `<td class="ct-stock" ${cd?`onclick="showKLine('${cd}','${_rvEsc(nm)}')" style="cursor:pointer" title="点击看K线"`:''}>
+        h += `<td class="ct-stock" ${cd?`data-rv-kline data-rv-code="${_rvAttr(cd)}" data-rv-name="${_rvAttr(nm)}" style="cursor:pointer" title="点击看K线"`:''}>
             <b>${_rvEsc(nm)}</b>${cd?`<div class="ct-code">${cd}</div>`:''}</td>
           <td class="ct-rel">${lv?`<span class="ct-lv" style="color:${lvColor[lv]||'var(--t3)'}">${lv}</span>`:''}${_rvEsc(rel)||'—'}</td></tr>`
       })
@@ -214,10 +229,11 @@ async function loadReports(){
       const rc  = ratingColor[x.rating] || '#888'
       const tag = x.stock ? `<span class="srch-badge">${_rvEsc(x.stock)} ${x.code}</span>`
                 : x.industry ? `<span class="srch-badge">${_rvEsc(x.industry)}</span>` : ''
-      const title = x.url
-        ? `<a href="${_rvEsc(x.url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${_rvEsc(x.title)} <span style="font-size:10px;color:var(--bl)">↗ 阅读</span></a>`
+      const safeUrl = _rvSafeUrl(x.url)
+      const title = safeUrl
+        ? `<a href="${_rvAttr(safeUrl)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${_rvEsc(x.title)} <span style="font-size:10px;color:var(--bl)">↗ 阅读</span></a>`
         : _rvEsc(x.title)
-      html += `<div class="srch-news-card" style="cursor:${x.url?'pointer':'default'}" ${x.url?`onclick="window.open('${_rvEsc(x.url)}','_blank')"`:''}>
+      html += `<div class="srch-news-card" style="cursor:${safeUrl?'pointer':'default'}" ${safeUrl?`data-rv-url="${_rvAttr(safeUrl)}"`:''}>
         <div class="nc-title">${title}</div>
         <div class="nc-meta" onclick="event.stopPropagation()">${x.date} · ${_rvEsc(x.org)}${x.rating ? ` · <b style="color:${rc}">${x.rating}</b>` : ''} ${tag}</div>
       </div>`
@@ -643,6 +659,13 @@ async function generateReview(){
 
 // ── 渲染：左栏情绪温度计 ───────────────────────────────────────
 function _rvEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+function _rvAttr(s){ return _rvEsc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;') }
+function _rvSafeUrl(s){
+  try{
+    const url = new URL(String(s||''), window.location.origin)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : ''
+  }catch(e){ return '' }
+}
 function _rvChg(v){
   const up = (v||0) >= 0
   return `<b style="color:${up?'#f85149':'#3fb950'}">${up?'+':''}${v}%</b>`   // A股红涨绿跌
@@ -855,8 +878,9 @@ async function loadNews(silent){
 
 function _renderNewsItem(n){
   const t     = (n.ts||'').slice(5,16)
-  const title = n.url
-    ? `<a href="${_rvEsc(n.url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${_rvEsc(n.title)}</a>`
+  const safeUrl = _rvSafeUrl(n.url)
+  const title = safeUrl
+    ? `<a href="${_rvAttr(safeUrl)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${_rvEsc(n.title)}</a>`
     : _rvEsc(n.title)
   const body  = n.content && n.content !== n.title
     ? `<div class="rv-news-cnt">${_rvEsc(n.content.slice(0,120))}${n.content.length>120?'…':''}</div>` : ''

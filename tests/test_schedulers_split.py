@@ -89,3 +89,10 @@ def test_start_functions_are_idempotent(monkeypatch):
     schedulers.start_data_schedulers()
     schedulers.start_background_services()
     assert len(started) == n_first, "重复调用不应重复启动线程"
+
+
+def test_scheduler_process_bypasses_blocking_atexit_handlers():
+    source = (Path(__file__).parent.parent / "scheduler_main.py").read_text(encoding="utf-8")
+
+    assert "exit_code = main()" in source
+    assert "os._exit(exit_code)" in source

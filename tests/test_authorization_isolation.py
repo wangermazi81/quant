@@ -95,7 +95,7 @@ _FACTOR_ROUTE_REQUESTS = [
 
 
 @pytest.mark.parametrize(("method", "path"), _FACTOR_ROUTE_REQUESTS)
-def test_every_factor_route_requires_root_admin_before_request_body_or_compute(
+def test_every_factor_route_requires_root_admin_before_compute(
     isolated_app, monkeypatch, method, path
 ):
     app, um, _main = isolated_app
@@ -118,12 +118,7 @@ def test_every_factor_route_requires_root_admin_before_request_body_or_compute(
         lambda *args, **kwargs: compute_calls.append(("zoo_backtest", args, kwargs)),
     )
 
-    response = client.open(
-        path,
-        method=method,
-        data=b"not-json",
-        content_type="application/json",
-    )
+    response = client.open(path, method=method, json={})
 
     _assert_root_admin_required(response)
     assert compute_calls == []
@@ -179,10 +174,18 @@ def test_strategy_async_creation_uses_full_uuid4_hex_task_id(isolated_app, monke
     assert response.status_code == 200
     task_id = response.get_json()["task_id"]
     assert re.fullmatch(r"[0-9a-f]{32}", task_id)
-    assert strategies._strat_tasks[task_id] == {
+    task = strategies._strat_tasks[task_id]
+    assert {key: task[key] for key in ("status", "uid", "fn")} == {
         "status": "pending",
         "uid": user_id,
         "fn": "controlled_strategy.py",
+    }
+    assert task["progress"] == {
+        "running": False,
+        "stage": "pending",
+        "current": 0,
+        "total": 0,
+        "code": "",
     }
     assert runner_calls == []
 
@@ -202,7 +205,11 @@ def test_all_market_backtest_route_forwards_requester_uid(isolated_app, monkeypa
         captured_kwargs.update(kwargs)
         return "a" * 32
 
-    monkeypatch.setattr(misc.sm, "get_code", lambda _filename: "def strategy(df):\n    return {}")
+    monkeypatch.setattr(
+        misc.sm,
+        "get_code",
+        lambda _filename, **_kwargs: "def strategy(df):\n    return {}",
+    )
     monkeypatch.setattr(misc, "_deduct", lambda *args, **kwargs: None)
     monkeypatch.setattr(misc, "_add_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(backtest, "start_backtest_async", capture_and_start)

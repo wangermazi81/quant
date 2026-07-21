@@ -6,11 +6,14 @@
 import logging
 from flask import Blueprint, request, jsonify
 
+from app_security import rate_limit
+
 logger = logging.getLogger(__name__)
 bp = Blueprint("lhb", __name__)
 
 
 @bp.route("/api/lhb/data")
+@rate_limit(6, 60, scope="public_refresh")
 def api_lhb_data():
     from analytics import lhb_engine as le
     date = (request.args.get("date") or "").strip()

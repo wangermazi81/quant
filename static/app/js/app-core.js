@@ -8,6 +8,28 @@ window.onerror = function(msg, src, line, col, err){
 const API = '/api'
 let editor, curStrat=null, scResults=[], charts={}, dlTaskId=null, dlTimer=null
 
+function _coreActionAttrs(action, payload){
+  return `data-core-action="${action}" data-core-payload="${encodeURIComponent(JSON.stringify(payload || {}))}"`
+}
+
+document.addEventListener('click', e=>{
+  const target=e.target.closest('[data-core-action]')
+  if(!target){
+    if(e.target.closest('[data-core-stop]')) e.stopPropagation()
+    return
+  }
+  e.stopPropagation()
+  let payload
+  try{payload=JSON.parse(decodeURIComponent(target.dataset.corePayload||'%7B%7D'))}catch(err){return}
+  const actions={
+    'show-kline': p=>showKLine(p.code,p.name),
+    'add-one-q': p=>addOneQ(p),
+    'manual-buy': p=>manualBuy(p),
+  }
+  const action=actions[target.dataset.coreAction]
+  if(action) action(payload)
+})
+
 window.addEventListener('load', async ()=>{
   // 先检查登录状态，未登录则显示弹层
   await checkAuthState()
@@ -345,24 +367,26 @@ function renderPool(pool){
       ? `<span style="font-size:9px;background:#F2EAFB;color:#8B53C9;border-radius:3px;padding:1px 5px;margin-left:4px;font-weight:700">打板</span>${consecBadge}`
       : `<span style="font-size:9px;background:#2a2a2a;color:#666;border-radius:3px;padding:1px 5px;margin-left:4px">封板</span>${consecBadge}`
     // 操作按钮（"+队"加入待执行，"🛒"立即模拟买入）
+    const buyPayload={code:r.code,name:r.name,price:r.price}
+    const queuePayload={...buyPayload,reason:r.reason||''}
     let actionHtml
     if(!isSignal){
       actionHtml='<span style="font-size:11px;color:var(--t4)">参考</span>'
     } else if(isQueued){
       actionHtml='<button class="btn btn-queued btn-xs" disabled>✓ 已入队</button>'
-      + ` <button class="btn btn-orange btn-xs" onclick="event.stopPropagation();manualBuy(${JSON.stringify({code:r.code,name:r.name,price:r.price})})" title="立即按当前价模拟盘买入（按仓位%计算手数）">🛒 买入</button>`
+      + ` <button class="btn btn-orange btn-xs" ${_coreActionAttrs('manual-buy',buyPayload)} title="立即按当前价模拟盘买入（按仓位%计算手数）">🛒 买入</button>`
     } else {
-      actionHtml=`<button class="btn btn-purple btn-xs" onclick="event.stopPropagation();addOneQ(${JSON.stringify({code:r.code,name:r.name,price:r.price,reason:r.reason||''})})">+队</button>`
-      + ` <button class="btn btn-orange btn-xs" onclick="event.stopPropagation();manualBuy(${JSON.stringify({code:r.code,name:r.name,price:r.price})})" title="跳过队列直接按当前价模拟盘买入（按仓位%计算手数）">🛒 买入</button>`
+      actionHtml=`<button class="btn btn-purple btn-xs" ${_coreActionAttrs('add-one-q',queuePayload)}>+队</button>`
+      + ` <button class="btn btn-orange btn-xs" ${_coreActionAttrs('manual-buy',buyPayload)} title="跳过队列直接按当前价模拟盘买入（按仓位%计算手数）">🛒 买入</button>`
     }
     const isTdx = r.reason?.includes('TDX')||r.reason?.includes('封板')
-    return `<tr style="${rowStyle}" onclick="showKLine('${r.code}','${(r.name||r.code).replace(/'/g,"\\'")}')">
+    return `<tr style="${rowStyle}" ${_coreActionAttrs('show-kline',{code:r.code,name:r.name||r.code})}>
       <td style="font-weight:700;white-space:nowrap">${r.code}${tagHtml}</td>
       <td style="color:var(--t2)">${r.name||'—'}</td>
       <td><b>${(+r.price||0).toFixed(2)}</b>${isTdx?'<span style="font-size:9px;color:#60a5fa;margin-left:3px">L2</span>':''}</td>
       <td class="${chg>=0?'rise':'fall'}" style="font-weight:700">${(chg>=0?'+':'')+chg.toFixed(2)}%</td>
       <td style="font-size:10px;color:var(--t3)">${boardHtml}<span>${(r.reason||'').slice(0,50)}</span></td>
-      <td onclick="event.stopPropagation()">${actionHtml}</td>
+      <td data-core-stop>${actionHtml}</td>
     </tr>`
   }).join('')
 }
@@ -1761,11 +1785,11 @@ function _renderScResults(){
   el.innerHTML=scResults.map(r=>{
     const chg=parseFloat(r.change||0)
     const isQueued=_queuedCodes.has(r.code)
-    const btnPayload = JSON.stringify({code:r.code,name:r.name,price:r.price,reason:r.reason||""})
+    const btnPayload = {code:r.code,name:r.name,price:r.price,reason:r.reason||""}
     const queueBtn = isQueued
       ? '<button class="btn btn-queued btn-xs" disabled>✓ 已入队</button>'
-      : `<button class="btn btn-green btn-xs" onclick='event.stopPropagation();addOneQ(${btnPayload})'>+队</button>`
-    const buyBtn = `<button class="btn btn-orange btn-xs" onclick='event.stopPropagation();manualBuy(${btnPayload})' title="立即按当前价模拟盘买入">🛒 买入</button>`
+      : `<button class="btn btn-green btn-xs" ${_coreActionAttrs('add-one-q',btnPayload)}>+队</button>`
+    const buyBtn = `<button class="btn btn-orange btn-xs" ${_coreActionAttrs('manual-buy',btnPayload)} title="立即按当前价模拟盘买入">🛒 买入</button>`
     const btn = queueBtn + ' ' + buyBtn
     // 六维评分徽章（当因子/选股有返回score时显示信号）
     let sigBadge = ''
@@ -1775,7 +1799,7 @@ function _renderScResults(){
       const scoreColor = r.score>=75?'#238636':r.score>=60?'#1f6feb':r.score>=45?'#e3b341':r.score>=30?'#bd561d':'#da3633'
       sigBadge = `<span class="sig-badge" style="background:${scoreColor}">${r.score}分</span>`
     }
-    return `<div class="sc-row" style="cursor:pointer" onclick="showKLine('${r.code}','${(r.name||r.code).replace(/'/g,"\\'")}')">
+    return `<div class="sc-row" style="cursor:pointer" ${_coreActionAttrs('show-kline',{code:r.code,name:r.name||r.code})}>
       <span style="font-weight:700;width:52px">${r.code}</span>
       <span style="color:var(--t2);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.name}</span>
       <span style="width:56px;text-align:right;font-weight:600">¥${(+r.price||0).toFixed(2)}</span>

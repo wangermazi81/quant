@@ -1,0 +1,15 @@
+[Unit]
+Description=Jianwei Alpha SQLite data backup
+After=quant-platform.service quant-scheduler.service
+
+[Service]
+Type=oneshot
+User=quant
+Group=quant
+WorkingDirectory=/opt/quant
+ExecStart=/opt/quant/venv/bin/python /opt/quant/deploy/backup_quant_data.py
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=192M
+PrivateTmp=yes
+NoNewPrivileges=yes

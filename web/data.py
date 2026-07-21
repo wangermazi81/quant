@@ -2,6 +2,7 @@
 import threading
 import uuid
 import logging
+import re
 import time
 from datetime import datetime, timedelta
 
@@ -9,13 +10,16 @@ from flask import Blueprint, request, jsonify, session
 
 from analytics import data_manager as dm
 from market import market_data as md
-from app_state import require_auth, _add_log
+from app_state import require_auth, require_admin, _add_log
+from app_security import rate_limit
 
 logger = logging.getLogger(__name__)
 
 bp = Blueprint("data", __name__)
 _TRADE_DATE_CACHE: dict[str, tuple[float, str]] = {}
 _TRADE_DATE_CACHE_TTL = 60
+MAX_DOWNLOAD_CODES = 200
+_DOWNLOAD_OWNERS: dict[str, int] = {}
 
 
 def _most_recent_trading_day() -> str:
@@ -62,31 +66,45 @@ def api_data_list():
 
 
 @bp.route("/api/data/download", methods=["POST"])
+@rate_limit(3, 3600, scope="data_download")
 @require_auth
 def api_data_download():
     uid        = session["user_id"]
-    d          = request.json
+    d = request.get_json(silent=True)
+    if not isinstance(d, dict):
+        return jsonify({"ok": False, "msg": "请求字段格式错误"}), 400
     raw_codes  = d.get("codes", "")
     start_date = d.get("start_date", "2020-01-01")
     if isinstance(raw_codes, str):
         codes = [c.strip() for c in raw_codes.replace("，", ",").split(",") if c.strip()]
+    elif isinstance(raw_codes, (list, tuple)):
+        codes = [str(c).strip() for c in raw_codes if str(c).strip()]
     else:
-        codes = raw_codes
+        return jsonify({"ok": False, "msg": "股票代码格式错误"}), 400
+    codes = list(dict.fromkeys(codes))
     if not codes:
-        return jsonify({"ok": False, "msg": "请输入股票代码"})
-    task_id = str(uuid.uuid4())[:8]
+        return jsonify({"ok": False, "msg": "请输入股票代码"}), 400
+    if len(codes) > MAX_DOWNLOAD_CODES:
+        return jsonify({"ok": False, "msg": f"单次最多下载 {MAX_DOWNLOAD_CODES} 只股票"}), 400
+    if any(not re.fullmatch(r"[A-Za-z0-9._-]{1,16}", code) for code in codes):
+        return jsonify({"ok": False, "msg": "股票代码格式错误"}), 400
+    task_id = uuid.uuid4().hex
+    _DOWNLOAD_OWNERS[task_id] = uid
     _add_log(uid, f"开始下载 {len(codes)} 只股票历史数据...")
     dm.start_download(codes, start_date, task_id)
     return jsonify({"ok": True, "task_id": task_id, "total": len(codes)})
 
 
 @bp.route("/api/data/progress/<task_id>")
+@require_auth
 def api_data_progress(task_id):
+    if _DOWNLOAD_OWNERS.get(task_id) != session["user_id"]:
+        return jsonify({"ok": False, "error": "任务不存在"}), 404
     return jsonify(dm.get_progress(task_id))
 
 
 @bp.route("/api/data/delete", methods=["POST"])
-@require_auth
+@require_admin
 def api_data_delete():
     uid  = session["user_id"]
     code = request.json.get("code", "")
@@ -97,7 +115,7 @@ def api_data_delete():
 
 
 @bp.route("/api/data/refresh_names", methods=["POST"])
-@require_auth
+@require_admin
 def api_refresh_names():
     uid = session["user_id"]
     threading.Thread(target=dm.refresh_name_cache, daemon=True).start()

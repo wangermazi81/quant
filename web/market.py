@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from flask import Blueprint, request, jsonify
+
+from app_security import rate_limit
 from copy import deepcopy
 from datetime import datetime
 from time import time
@@ -195,6 +197,7 @@ def _should_use_archive_for_live(now: datetime | None = None) -> bool:
 
 
 @bp.route("/api/market/context")
+@rate_limit(12, 60, scope="public_refresh")
 def api_market_context():
     try:
         force = request.args.get("refresh", "0") == "1"

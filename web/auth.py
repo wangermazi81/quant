@@ -19,7 +19,10 @@ bp = Blueprint("auth", __name__)
 @bp.route("/api/auth/register", methods=["POST"])
 @rate_limit(5, 3600, scope="auth", message="注册过于频繁，请稍后再试")  # 同一 IP 每小时最多 5 次，挡批量注册薅羊毛
 def auth_register():
-    d = request.json or {}
+    d = request.get_json(silent=True)
+    fields = ("username", "email", "password", "invite_code")
+    if not isinstance(d, dict) or any(not isinstance(d.get(field, ""), str) for field in fields):
+        return jsonify({"ok": False, "error": "请求字段格式错误"}), 400
     r = um.register(d.get("username", ""), d.get("email", ""), d.get("password", ""),
                     d.get("invite_code", ""), ip=client_ip())
     return jsonify(r)
@@ -28,8 +31,14 @@ def auth_register():
 @bp.route("/api/auth/login", methods=["POST"])
 @rate_limit(20, 300, scope="auth", message="登录尝试过于频繁，请稍后再试")  # 同一 IP 5 分钟最多 20 次
 def auth_login():
-    d = request.json or {}
-    username = (d.get("username", "") or "").strip()
+    d = request.get_json(silent=True)
+    if not isinstance(d, dict):
+        return jsonify({"ok": False, "error": "请求字段格式错误"}), 400
+    username = d.get("username", "")
+    password = d.get("password", "")
+    if not isinstance(username, str) or not isinstance(password, str):
+        return jsonify({"ok": False, "error": "用户名和密码必须是字符串"}), 400
+    username = username.strip()
     # 防爆破/撞库：按 用户名+IP 计失败次数，达阈值临时锁定（默认 15 分钟内 5 次 → 锁 15 分钟）。
     # 同时挡住「无限尝试烧 PBKDF2 CPU」的 DoS 入口。
     username_key = username.lower()
@@ -42,7 +51,7 @@ def auth_login():
         return jsonify({"ok": False,
                         "error": f"尝试次数过多，请约 {max(1, locked // 60)} 分钟后再试",
                         "code": 429}), 429
-    r = um.login(username, d.get("password", ""))
+    r = um.login(username, password)
     if r["ok"]:
         login_ok(ident)
         for root_ident in root_idents:
@@ -74,8 +83,14 @@ def auth_forgot():
 
     无论邮箱是否存在都统一返回成功，防止用此接口枚举注册邮箱。
     """
-    d = request.json or {}
-    ident = (d.get("email") or d.get("username") or "").strip()
+    d = request.get_json(silent=True)
+    if not isinstance(d, dict):
+        return jsonify({"ok": False, "error": "请求字段格式错误"}), 400
+    email = d.get("email", "")
+    username = d.get("username", "")
+    if not isinstance(email, str) or not isinstance(username, str):
+        return jsonify({"ok": False, "error": "邮箱和用户名必须是字符串"}), 400
+    ident = (email or username).strip()
     # 统一文案：无论邮箱/用户名是否存在都一样返回，防止借此枚举注册账号。
     generic = {"ok": True, "msg": "已提交找回申请。管理员审核后会重置你的密码，并通过原渠道（QQ/微信等）告知临时密码。"}
     if not ident:

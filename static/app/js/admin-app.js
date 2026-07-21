@@ -429,24 +429,27 @@ function permissionCatalogItems(perms=ALL_PERMS){
     </div>`).join('');
 }
 
+function adminUserActionAttrs(action, u){
+  return `data-admin-user-action="${action}" data-user-id="${Number(u.id)}" data-user-name="${encodeURIComponent(String(u.username || ''))}" data-user-points="${Number(u.points || 0)}" data-user-active="${u.is_active ? 1 : 0}" data-user-admin="${u.is_admin ? 1 : 0}"`;
+}
+
 function renderUserActions(u){
-  const uname = escJs(u.username);
   const actions = [];
   if(canPerm('points_manage')){
-    actions.push(`<button class="btn btn-outline btn-sm" onclick="openPointsModal(${u.id},'${uname}',${u.points})"><i class="fas fa-coins"></i> 积分</button>`);
+    actions.push(`<button class="btn btn-outline btn-sm" ${adminUserActionAttrs('points',u)}><i class="fas fa-coins"></i> 积分</button>`);
   }
   if(canPerm('user_manage') && !u.is_root_admin){
-    actions.push(`<button class="btn btn-outline btn-sm" onclick="openResetPwdModal(${u.id},'${uname}')" title="重置密码"><i class="fas fa-key"></i></button>`);
-    actions.push(`<button class="btn btn-outline btn-sm" onclick="toggleActive(${u.id},${u.is_active},'${uname}')" title="${u.is_active?'禁用':'启用'}"><i class="fas fa-${u.is_active?'ban':'check'}"></i></button>`);
+    actions.push(`<button class="btn btn-outline btn-sm" ${adminUserActionAttrs('reset-password',u)} title="重置密码"><i class="fas fa-key"></i></button>`);
+    actions.push(`<button class="btn btn-outline btn-sm" ${adminUserActionAttrs('toggle-active',u)} title="${u.is_active?'禁用':'启用'}"><i class="fas fa-${u.is_active?'ban':'check'}"></i></button>`);
   }
   if(isRootAdmin() && !u.is_root_admin){
     if(u.is_admin){
-      actions.push(`<button class="btn btn-outline btn-sm" onclick="openAdminPermissions(${u.id},'${uname}')" title="调整权限"><i class="fas fa-shield-alt"></i> 权限</button>`);
+      actions.push(`<button class="btn btn-outline btn-sm" ${adminUserActionAttrs('permissions',u)} title="调整权限"><i class="fas fa-shield-alt"></i> 权限</button>`);
     }
-    actions.push(`<button class="btn btn-outline btn-sm" onclick="toggleAdmin(${u.id},${u.is_admin},'${uname}')" title="${u.is_admin?'撤销管理员':'设为管理员'}"><i class="fas fa-${u.is_admin?'user-minus':'user-shield'}"></i></button>`);
+    actions.push(`<button class="btn btn-outline btn-sm" ${adminUserActionAttrs('toggle-admin',u)} title="${u.is_admin?'撤销管理员':'设为管理员'}"><i class="fas fa-${u.is_admin?'user-minus':'user-shield'}"></i></button>`);
   }
   if(canPerm('user_manage') && !u.is_root_admin){
-    actions.push(`<button class="btn btn-danger btn-sm" onclick="delUser(${u.id},'${uname}')" title="删除用户"><i class="fas fa-trash"></i></button>`);
+    actions.push(`<button class="btn btn-danger btn-sm" ${adminUserActionAttrs('delete',u)} title="删除用户"><i class="fas fa-trash"></i></button>`);
   }
   return actions.length ? actions.join('') : '<span style="color:var(--text3);font-size:12px">无可用操作</span>';
 }
@@ -760,7 +763,7 @@ async function renderRoles(){
       <div class="rc-desc">${u.is_root_admin ? '默认拥有后台最高权限，不参与普通管理员勾选。' : '可查看/操作的功能由 admin 勾选授权。'}</div>
       <div class="rc-perms">${u.is_root_admin ? '<span class="rc-perm">全部后台权限</span>' : permissionBadges(u.admin_permissions)}</div>
       <div class="rc-footer">
-        ${u.is_root_admin ? '' : `<button class="btn btn-outline btn-sm" onclick="openAdminPermissions(${u.id},'${escJs(u.username)}')"><i class="fas fa-edit"></i> 调整权限</button>`}
+        ${u.is_root_admin ? '' : `<button class="btn btn-outline btn-sm" ${adminUserActionAttrs('permissions',u)}><i class="fas fa-edit"></i> 调整权限</button>`}
       </div>
     </div>`).join('');
   grid.innerHTML = catalogCard + (adminCards || '<div class="empty" style="padding:36px;color:var(--text2)">暂无普通管理员</div>');
@@ -1067,6 +1070,25 @@ function escJs(s){
 // GLOBAL CLICK CLOSE
 // ================================================================
 document.addEventListener('click',e=>{
+  const userAction=e.target.closest('[data-admin-user-action]');
+  if(userAction){
+    e.preventDefault();
+    const id=Number(userAction.dataset.userId);
+    const name=decodeURIComponent(userAction.dataset.userName||'');
+    const points=Number(userAction.dataset.userPoints||0);
+    const active=Number(userAction.dataset.userActive||0);
+    const isAdmin=Number(userAction.dataset.userAdmin||0);
+    const actions={
+      points:()=>openPointsModal(id,name,points),
+      'reset-password':()=>openResetPwdModal(id,name),
+      'toggle-active':()=>toggleActive(id,active,name),
+      permissions:()=>openAdminPermissions(id,name),
+      'toggle-admin':()=>toggleAdmin(id,isAdmin,name),
+      delete:()=>delUser(id,name),
+    };
+    const action=actions[userAction.dataset.adminUserAction];
+    if(action) action();
+  }
   if(!e.target.closest('#headerUser')) closeDropdown();
   if(!e.target.closest('#noticeBtn')&&!e.target.closest('#noticePanel')) closeNotice();
 });
@@ -2124,9 +2146,12 @@ async function loadResetRequests(){
       <td style="font-size:12px;color:var(--text3)">${esc(q.created_at || '')}</td>
       <td>${q.is_active===0 ? '<span style="color:var(--red)">已禁用</span>' : '正常'}</td>
       <td style="white-space:nowrap">
-        <button class="btn btn-primary" style="padding:4px 10px;font-size:12px" onclick="resolveResetReq(${q.id}, '${esc(q.username)}')">重置并生成临时密码</button>
+        <button class="btn btn-primary" style="padding:4px 10px;font-size:12px" data-reset-request data-reset-id="${esc(q.id)}" data-reset-name="${esc(q.username)}">重置并生成临时密码</button>
         <button class="btn btn-outline" style="padding:4px 10px;font-size:12px" onclick="rejectResetReq(${q.id})">驳回</button>
       </td></tr>`).join('');
+    tb.querySelectorAll('[data-reset-request]').forEach(btn=>{
+      btn.addEventListener('click', ()=>resolveResetReq(Number(btn.dataset.resetId), btn.dataset.resetName));
+    });
   }catch(e){
     tb.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--red)">加载失败（后端需重启一次才生效）</td></tr>';
   }

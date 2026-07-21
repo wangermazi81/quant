@@ -16,6 +16,8 @@ from datetime import datetime
 
 from flask import Blueprint, request, jsonify
 
+from app_security import rate_limit
+
 from app_state import require_auth, _deduct
 from web._params import _bounded_int_arg
 
@@ -206,6 +208,7 @@ def _refresh_archive_market_metrics(archive: dict, date_str: str, re_) -> dict:
 
 
 @bp.route("/api/review/daily")
+@rate_limit(6, 60, scope="public_refresh")
 def api_review_daily():
     from analytics import review_engine as re_
     now = datetime.now()

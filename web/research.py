@@ -7,8 +7,11 @@
 - GET  /api/reports?q=             个股研报（代码或名称，公开，6小时缓存）
 """
 import logging
+import re
 
 from flask import Blueprint, request, jsonify
+
+from app_security import rate_limit
 
 from app_state import require_auth, _deduct
 
@@ -24,11 +27,14 @@ def api_chain_concepts():
 
 
 @bp.route("/api/chain/stocks")
+@rate_limit(20, 60, scope="public_research")
 def api_chain_stocks():
     import research_center as rc
     name = (request.args.get("name") or "").strip()
     if not name:
-        return jsonify({"ok": False, "error": "缺少概念名称"})
+        return jsonify({"ok": False, "error": "缺少概念名称"}), 400
+    if len(name) > 40 or not re.fullmatch(r"[\w\u4e00-\u9fff·&（）()+＋\- ]+", name):
+        return jsonify({"ok": False, "error": "概念名称格式错误"}), 400
     result = rc.get_concept_stocks(name)
     result["graph_exists"] = rc.load_chain(name) is not None
     if not result["graph_exists"]:

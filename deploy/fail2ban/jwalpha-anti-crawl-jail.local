@@ -5,4 +5,4 @@ logpath = /var/log/nginx/access.log
 maxretry = 25
 findtime = 300
 bantime = 1800
-action = iptables-multiport[name=jwalpha, port="http,https"]
+action = iptables-multiport[name=jwalpha, port="http,https,8080"]
