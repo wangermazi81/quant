@@ -301,6 +301,41 @@ def test_market_snapshot_metrics_reuse_one_three_market_snapshot(monkeypatch, tm
     assert metrics["turnover"]["trend"][-1]["amount"] == 30949
 
 
+def test_market_snapshot_metrics_respects_tushare_only_source_order(monkeypatch, tmp_path):
+    fresh_snapshot = {
+        "source": "tushare_replay_daily",
+        "stat_date": "2026-07-06",
+        "turnover": {"today": 30944, "amount": 30944.46, "source": "tushare_replay_daily_info", "degraded": False},
+        "breadth": {"source": "tushare_replay_daily", "up": 1900, "down": 3500, "flat": 119, "total": 5519, "coverage": 1.0, "degraded": False},
+    }
+    monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(market_stats.dg, "get_source_order", lambda: ["tushare"])
+    monkeypatch.setattr(market_stats, "fetch_tushare_replay_market_snapshot", lambda date_text=None: fresh_snapshot)
+    monkeypatch.setattr(
+        market_stats,
+        "fetch_eastmoney_three_market_snapshot",
+        lambda date_text=None: (_ for _ in ()).throw(AssertionError("current snapshot must not be used when fallback is disabled")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        market_stats,
+        "_turnover_from_eastmoney_index",
+        lambda date_text=None: (_ for _ in ()).throw(AssertionError("current turnover must not be used when fallback is disabled")),
+    )
+    monkeypatch.setattr(
+        market_stats,
+        "_safe_turnover_trend",
+        lambda: (_ for _ in ()).throw(AssertionError("current trend must not be used when fallback is disabled")),
+    )
+
+    metrics = market_stats.get_market_snapshot_metrics("2026-07-06")
+
+    assert metrics["source"] == "tushare_replay_daily"
+    assert metrics["breadth"]["source"] == "tushare_replay_daily"
+    assert metrics["turnover"]["source"] == "tushare_replay_daily_info"
+    assert metrics["turnover"]["trend"] == []
+
+
 def test_market_snapshot_metrics_fetches_snapshot_and_trend_concurrently(monkeypatch, tmp_path):
     snapshot_started = threading.Event()
     trend_started = threading.Event()

@@ -5,6 +5,7 @@
 默认全部为安全值（模拟盘、不自动确认），只有通过环境变量或本目录 .env
 显式设置 QUANT_LIVE_TRADING=1 才进入实盘。变量清单见 .env.example。
 """
+from __future__ import annotations
 import os as _os
 from pathlib import Path as _Path
 

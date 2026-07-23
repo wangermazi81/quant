@@ -296,6 +296,78 @@ def test_strategy_async_task_is_indistinguishable_from_unknown_to_another_user(
     _assert_response_hides_owner_data(result)
 
 
+def test_bridge_token_can_fetch_and_report_configured_user_signal(isolated_app, tmp_path, monkeypatch):
+    app, um, _main = isolated_app
+    owner_id = _create_user(um, "bridge_token_owner")
+    signal_id = um.add_trade_signal(
+        owner_id,
+        "000001",
+        "Ping An",
+        "BUY",
+        10.0,
+        100,
+    )
+    assert signal_id > 0
+
+    from web import bridge
+
+    cfg_path = tmp_path / "bridge_config.json"
+    cfg_path.write_text('{"bridge_token":"token-123","bridge_user_id":%d}' % owner_id, encoding="utf-8")
+    monkeypatch.setattr(bridge, "THS_BRIDGE_CONFIG", cfg_path)
+
+    client = app.test_client()
+    headers = {"X-Bridge-Token": "token-123"}
+    fetched = client.get("/api/bridge/signals", headers=headers)
+
+    assert fetched.status_code == 200
+    body = fetched.get_json()
+    assert body["ok"] is True
+    assert [sig["id"] for sig in body["signals"]] == [signal_id]
+    assert um.get_trade_signal(signal_id)["status"] == "sent"
+
+    reported = client.post(
+        f"/api/bridge/signals/{signal_id}/report",
+        json={"status": "submitted", "msg": "手机委托已提交"},
+        headers=headers,
+    )
+    assert reported.status_code == 200
+    assert reported.get_json()["ok"] is True
+    signal = um.get_trade_signal(signal_id)
+    assert signal["status"] == "submitted"
+    assert "手机委托已提交" in signal["msg"]
+
+
+def test_bridge_token_is_scoped_to_configured_user(isolated_app, tmp_path, monkeypatch):
+    app, um, _main = isolated_app
+    owner_id = _create_user(um, "bridge_token_scope_owner")
+    other_id = _create_user(um, "bridge_token_scope_other")
+    signal_id = um.add_trade_signal(other_id, "000002", "Other", "BUY", 11.0, 100, msg="owner-only")
+    assert signal_id > 0
+
+    from web import bridge
+
+    cfg_path = tmp_path / "bridge_config.json"
+    cfg_path.write_text('{"bridge_token":"token-456","bridge_user_id":%d}' % owner_id, encoding="utf-8")
+    monkeypatch.setattr(bridge, "THS_BRIDGE_CONFIG", cfg_path)
+
+    client = app.test_client()
+    headers = {"X-Bridge-Token": "token-456"}
+    response = client.post(
+        f"/api/bridge/signals/{signal_id}/report",
+        json={"status": "submitted", "msg": "wrong-user-report"},
+        headers=headers,
+    )
+    unknown_response = client.post(
+        "/api/bridge/signals/999999/report",
+        json={"status": "submitted", "msg": "wrong-user-report"},
+        headers=headers,
+    )
+
+    _assert_indistinguishable_not_found(response, unknown_response)
+    signal = um.get_trade_signal(signal_id)
+    assert signal["status"] == "pending"
+    assert signal["msg"] == "owner-only"
+
 def test_bridge_report_is_indistinguishable_from_unknown_and_preserves_owner_signal(isolated_app):
     app, um, _main = isolated_app
     owner_id = _create_user(um, "signal_owner")

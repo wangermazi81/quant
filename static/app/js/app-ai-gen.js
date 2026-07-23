@@ -264,12 +264,13 @@ async function refreshLiveTradeBadge(){
     const r = await api('/bridge/live_enabled')
     const el = document.getElementById('liveTradeBadge')
     if(!el || !r) return
+    el.removeAttribute('style')
     if(r.enabled){
-      el.textContent='🔌 实盘下单:开'
-      el.style.cssText='cursor:pointer;user-select:none;background:rgba(34,197,94,.18);color:#22c55e;border:1px solid #22c55e'
+      el.className = 'top-switch live-switch on'
+      el.innerHTML = '<i></i><b>实盘下单 开</b>'
     }else{
-      el.textContent='🛑 实盘下单:已关'
-      el.style.cssText='cursor:pointer;user-select:none;background:rgba(239,68,68,.18);color:#ef4444;border:1px solid #ef4444'
+      el.className = 'top-switch live-switch off'
+      el.innerHTML = '<i></i><b>实盘下单 已关</b>'
     }
   }catch(e){}
 }

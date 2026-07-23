@@ -10,6 +10,8 @@
 - 数值列强制转数值，坏行剔除
 所有上游抓取均容错，单源失败返回缓存或空。
 """
+from __future__ import annotations
+
 import contextlib
 import hashlib
 import json

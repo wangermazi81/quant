@@ -245,6 +245,35 @@ def test_minute_kline_returns_cached_order_book_snapshot_without_waiting_for_slo
     assert out["is_complete"] == [False]
 
 
+def test_daily_kline_does_not_use_legacy_cache_when_current_fallback_disabled(monkeypatch, tmp_path):
+    from analytics import data_gateway as dg
+
+    cache_dir = tmp_path / "daily"
+    cache_dir.mkdir()
+    (cache_dir / "000001.csv").write_text(
+        "date,open,close,high,low,volume\n"
+        "2026-07-01,1,1,1,1,100\n"
+        "2026-07-02,2,2,2,2,200\n"
+        "2026-07-03,3,3,3,3,300\n"
+        "2026-07-04,4,4,4,4,400\n"
+        "2026-07-05,5,5,5,5,500\n"
+        "2026-07-06,6,6,6,6,600\n"
+        "2026-07-07,7,7,7,7,700\n"
+        "2026-07-08,8,8,8,8,800\n"
+        "2026-07-09,9,9,9,9,900\n"
+        "2026-07-10,10,10,10,10,1000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(md, "DAILY_CACHE_DIR", str(cache_dir))
+    monkeypatch.setattr(dg, "get_daily_kline", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(dg, "get_source_order", lambda: ["tushare"])
+    monkeypatch.setattr(md, "_fetch_kline_remote", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy remote kline must not run")))
+
+    df = md.get_kline("000001", period=10)
+
+    assert df.empty
+
+
 def test_minute_kline_returns_live_order_book_snapshot_before_slow_source(monkeypatch, tmp_path):
     monkeypatch.setattr(md, "MINUTE_CACHE_DIR", str(tmp_path))
     if hasattr(md, "clear_intraday_kline_cache"):

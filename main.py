@@ -6,7 +6,7 @@ for _k in ("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy",
            "ALL_PROXY","all_proxy","SOCKS_PROXY","socks_proxy"):
     _os.environ.pop(_k, None)
 
-from flask import Flask
+from flask import Flask, request
 from flask_cors import CORS
 import logging, secrets
 from broker.ths_operator import THSOperator
@@ -65,6 +65,19 @@ if _cors_origins:
 else:
     CORS(app, supports_credentials=True, origins=[])
     logger.info("CORS 未配置跨域来源，仅允许同源访问（设 CORS_ORIGINS 可放行指定来源）")
+
+
+@app.after_request
+def _mobile_ths_fallback_cors(resp):
+    """手机交易兜底端口专用：页面从 5001 打到 5002 时动态放行。"""
+    origin = request.headers.get("Origin", "")
+    if origin and request.path.startswith("/api/mobile_ths/"):
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+        resp.headers["Access-Control-Allow-Headers"] = "content-type"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers.add("Vary", "Origin")
+    return resp
 
 # ── 安全加固：Cookie 硬化 + 安全响应头（详见 app_security.py）──
 from app_security import init_security
@@ -242,4 +255,9 @@ if _os.environ.get("THS_NO_SCHEDULER") != "1" and not _TEST_IMPORT:
 
 
 if __name__ == "__main__":
-    app.run(port=5001, debug=False)
+    # 手机端要访问电脑上的前端/API，默认监听全部网卡；电脑本机仍走 launcher.py 打开的 127.0.0.1。
+    app.run(
+        host=_os.environ.get('THS_BIND_HOST', '0.0.0.0'),
+        port=int(_os.environ.get('THS_BIND_PORT', '5001')),
+        debug=False,
+    )

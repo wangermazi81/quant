@@ -1,4 +1,5 @@
 """数据管理 + K 线 API 蓝图。"""
+from __future__ import annotations
 import threading
 import uuid
 import logging
@@ -48,6 +49,8 @@ def _request_trade_date(code: str) -> str:
     try:
         plain_code = md._plain_stock_code(code) if hasattr(md, "_plain_stock_code") else key[-6:]
         book = md._cache_get(("order_book", plain_code), md.INTRADAY_CACHE_TTL_SECONDS) if hasattr(md, "_cache_get") else None
+        if not isinstance(book, dict) and hasattr(md, "get_order_book"):
+            book = md.get_order_book(code)
         trade_time = str(book.get("trade_time") or "") if isinstance(book, dict) else ""
         if len(trade_time) >= 10:
             date_text = trade_time[:10].replace("-", "")

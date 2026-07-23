@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """策略管理器：加载、保存、执行策略文件"""
+from __future__ import annotations
 
 import json
 import ast

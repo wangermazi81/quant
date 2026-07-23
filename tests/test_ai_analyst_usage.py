@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import sys
+import builtins
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -59,3 +60,32 @@ def test_call_llm_keeps_text_return_by_default(monkeypatch):
     )
 
     assert result == "legacy text"
+
+
+def test_fundamentals_skips_legacy_sources_when_gateway_fallback_disabled(monkeypatch):
+    imported_legacy = []
+    real_import = builtins.__import__
+
+    monkeypatch.setattr(
+        ai_analyst.dg,
+        "get_active_config",
+        lambda: {"provider": "tushare", "fallback_enabled": False},
+    )
+    monkeypatch.setattr(
+        ai_analyst.dg,
+        "get_finance_info",
+        lambda code: {"mktcap": 120.0, "pe_ttm": 12.0, "pb": 1.2, "bps": 3.4, "holders": 1000, "ipo_date": "2020-01-01"},
+    )
+
+    def guard_import(name, *args, **kwargs):
+        if name in {"akshare", "efinance"}:
+            imported_legacy.append(name)
+            raise AssertionError(f"legacy datasource imported: {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guard_import)
+
+    result = ai_analyst._get_fundamentals("000001")
+
+    assert result["text"]
+    assert imported_legacy == []

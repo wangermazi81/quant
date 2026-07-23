@@ -5,6 +5,8 @@ import analytics.datasource_config as cfg
 
 def test_default_config_uses_tushare_provider(monkeypatch, tmp_path):
     monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "datasource_config.json")
+    monkeypatch.delenv("TUSHARE_REPLAY_API_KEY", raising=False)
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
 
     data = cfg.get_config()
 

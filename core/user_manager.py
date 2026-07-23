@@ -1261,6 +1261,34 @@ def cancel_pending_signals(user_id: int = None) -> int:
         return cur.rowcount
 
 
+def restore_stale_sent_signals(user_id: int = None, older_than_sec: int = 120) -> int:
+    """把当天长时间停在 sent 的信号退回 pending。
+
+    sent 只表示桥接器已取走信号；如果桥接器取走后崩溃、手机配置炸、ADB 掉线，
+    信号会卡在 sent，不再下发。submitted/executed/failed 不在这里处理。
+    """
+    try:
+        seconds = max(30, int(older_than_sec))
+    except (TypeError, ValueError):
+        seconds = 120
+    with _lock, _conn() as c:
+        sql = (
+            "UPDATE trade_signals SET status='pending', "
+            "msg=CASE WHEN COALESCE(msg,'')='' THEN '桥接器超时未回报，已重新排队' ELSE msg END, "
+            "updated_at=datetime('now','localtime') "
+            "WHERE status='sent' "
+            "AND date(created_at) = date('now','localtime') "
+            "AND datetime(updated_at) <= datetime('now','localtime', ?)"
+        )
+        args = [f"-{seconds} seconds"]
+        if user_id is not None:
+            sql += " AND user_id=?"
+            args.append(user_id)
+        cur = c.execute(sql, args)
+        c.commit()
+        return cur.rowcount
+
+
 def add_trade_signal(user_id: int, code: str, name: str, action: str,
                      price: float, shares: int, status: str = "pending",
                      msg: str = "") -> int:
@@ -1285,15 +1313,28 @@ def add_trade_signal(user_id: int, code: str, name: str, action: str,
         return cur.lastrowid
 
 
-def get_pending_signals(user_id: int) -> list:
+def get_pending_signals(user_id: int, limit: int = None) -> list:
     """拉取用户当天处于 pending 状态的实盘信号，并原子性地标记为 sent 防止重复拉取。
     只发当天的：隔日遗留信号价格已失效，绝不能补发给交易机执行。"""
     with _lock, _conn() as c:
-        rows = c.execute(
-            "SELECT * FROM trade_signals WHERE user_id=? AND status='pending' "
-            "AND date(created_at) = date('now','localtime') ORDER BY id",
+        c.execute(
+            "UPDATE trade_signals SET status='pending', "
+            "msg=CASE WHEN COALESCE(msg,'')='' THEN '桥接器超时未回报，已重新排队' ELSE msg END, "
+            "updated_at=datetime('now','localtime') "
+            "WHERE user_id=? AND status='sent' "
+            "AND date(created_at) = date('now','localtime') "
+            "AND datetime(updated_at) <= datetime('now','localtime', '-120 seconds')",
             (user_id,),
-        ).fetchall()
+        )
+        sql = (
+            "SELECT * FROM trade_signals WHERE user_id=? AND status='pending' "
+            "AND date(created_at) = date('now','localtime') ORDER BY id"
+        )
+        args = [user_id]
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(max(1, int(limit)))
+        rows = c.execute(sql, args).fetchall()
         res = [dict(r) for r in rows]
         if res:
             ids = [r["id"] for r in res]

@@ -1,5 +1,5 @@
 /* ══════════════ 🤖 AI 交易模块（本地）前端驱动 ══════════════ */
-const aitS = { roles:[], agents:{}, decisions:[], execs:[], pending:{}, providers:{}, strategyCatalog:[], settings:null, tokenUsage:null, candidateTrace:null, es:null, inited:false, curStock:'' };
+const aitS = { roles:[], agents:{}, decisions:[], execs:[], pending:{}, providers:{}, strategyCatalog:[], settings:null, config:null, tokenUsage:null, candidateTrace:null, es:null, inited:false, loading:false, curStock:'', lastError:'' };
 
 function _aiActionAttrs(action, value){
   return `data-ai-action="${action}" data-ai-value="${encodeURIComponent(String(value ?? ''))}"`;
@@ -21,35 +21,62 @@ document.addEventListener('click', e=>{
 });
 
 async function initAiTrader(){
-  if(aitS.inited) return;
-  aitS.inited = true;
-  const meta = await api('/ai_trader/meta');
-  if(meta && meta.ok){ aitS.roles = meta.roles||[]; aitS.providers = meta.providers||{}; aitS.strategyCatalog = meta.strategy_candidates||[]; aitFillProviders(); aitRenderStrategyOptions(); }
-  await aitLoadConfig();
-  await aitLoadSettings();
-  const snap = await api('/ai_trader/snapshot');
-  if(snap && snap.ok) aitApplySnapshot(snap);
-  aitRenderAgents();
-  aitConnectSSE();
-  aitLoadAccount();
-  if(!aitS.acctTimer) aitS.acctTimer = setInterval(aitLoadAccount, 15000);
+  if(aitS.loading) return;
+  if(aitS.inited){ aitRefreshStatus(); return; }
+  aitS.loading = true;
+  aitSetHealth('loading','正在连接 AI 交易引擎','读取模型、风控、账户和实时流');
+  try{
+    const meta = await api('/ai_trader/meta');
+    if(!meta || !meta.ok) throw new Error(aitApiMsg(meta,'AI 交易元信息加载失败'));
+    aitS.roles = meta.roles||[]; aitS.providers = meta.providers||{}; aitS.strategyCatalog = meta.strategy_candidates||[];
+    aitFillProviders(); aitRenderStrategyOptions();
+    await aitLoadConfig();
+    await aitLoadSettings();
+    const snap = await api('/ai_trader/snapshot');
+    if(!snap || !snap.ok) throw new Error(aitApiMsg(snap,'AI 交易快照加载失败'));
+    aitApplySnapshot(snap);
+    aitRenderAgents();
+    aitConnectSSE();
+    await aitLoadAccount();
+    if(!aitS.acctTimer) aitS.acctTimer = setInterval(aitLoadAccount, 15000);
+    aitS.inited = true;
+    aitS.lastError = '';
+    aitRenderHealth();
+  }catch(e){
+    aitS.inited = false;
+    aitS.lastError = e && e.message ? e.message : String(e||'初始化失败');
+    aitSetHealth('error','AI 交易加载失败', aitS.lastError);
+    aitRenderAgents('<div class="ait-empty ait-error">'+esc(aitS.lastError)+'<br><button class="btn btn-blue btn-sm" onclick="initAiTrader()">重新连接</button></div>');
+    fbToast(aitS.lastError, true);
+  }finally{
+    aitS.loading = false;
+  }
 }
 
 function aitConnectSSE(){
   if(aitS.es){ try{aitS.es.close()}catch(e){} }
   const es = new EventSource(API+'/ai_trader/stream');
   aitS.es = es;
-  es.addEventListener('snapshot', e=> aitApplySnapshot(JSON.parse(e.data)));
-  es.addEventListener('ai_status', e=> aitApplyStatus(JSON.parse(e.data)));
-  es.addEventListener('ai_token_usage', e=>{ aitS.tokenUsage=JSON.parse(e.data); aitRenderTokenUsage(); });
-  es.addEventListener('ai_round', e=>{ const d=JSON.parse(e.data); if(d.phase==='start') document.getElementById('aitRound').textContent='第 '+d.round_no+' 轮'; });
-  es.addEventListener('ai_agent', e=> aitOnAgent(JSON.parse(e.data)));
-  es.addEventListener('ai_decision', e=> aitOnDecision(JSON.parse(e.data)));
-  es.addEventListener('ai_exec', e=> aitOnExec(JSON.parse(e.data)));
-  es.addEventListener('ai_pending', e=> aitOnPending(JSON.parse(e.data)));
-  es.addEventListener('ai_pending_resolved', e=>{ const d=JSON.parse(e.data); delete aitS.pending[d.id]; aitRenderPending(); });
-  es.addEventListener('ai_account', e=>{ const d=JSON.parse(e.data); aitRenderAccount(d.account, d.positions); });
+  es.onopen = ()=>{ aitS.lastError=''; aitRenderHealth(); };
+  es.onerror = ()=>{ aitS.lastError='实时流断开，页面会自动重连；若一直断开，多半是登录态过期或后端进程未刷新'; aitRenderHealth(); };
+  es.addEventListener('snapshot', e=> aitSafeEvent(e, aitApplySnapshot));
+  es.addEventListener('ai_status', e=> aitSafeEvent(e, aitApplyStatus));
+  es.addEventListener('ai_token_usage', e=> aitSafeEvent(e, d=>{ aitS.tokenUsage=d; aitRenderTokenUsage(); }));
+  es.addEventListener('ai_round', e=> aitSafeEvent(e, d=>{ const el=document.getElementById('aitRound'); if(d.phase==='start'&&el) el.textContent='第 '+d.round_no+' 轮'; }));
+  es.addEventListener('ai_agent', e=> aitSafeEvent(e, aitOnAgent));
+  es.addEventListener('ai_decision', e=> aitSafeEvent(e, aitOnDecision));
+  es.addEventListener('ai_exec', e=> aitSafeEvent(e, aitOnExec));
+  es.addEventListener('ai_pending', e=> aitSafeEvent(e, aitOnPending));
+  es.addEventListener('ai_pending_resolved', e=> aitSafeEvent(e, d=>{ delete aitS.pending[d.id]; aitRenderPending(); }));
+  es.addEventListener('ai_account', e=> aitSafeEvent(e, d=>{ aitRenderAccount(d.account, d.positions); }));
 }
+
+function aitSafeEvent(e, fn){
+  try{ fn(JSON.parse(e.data)); }
+  catch(err){ aitS.lastError='实时事件解析失败：'+(err&&err.message?err.message:err); aitRenderHealth(); }
+}
+
+function aitApiMsg(r, fallback){ return (r && (r.msg || r.error)) || fallback; }
 
 function aitApplySnapshot(s){
   if(s.roles && s.roles.length) aitS.roles = s.roles;
@@ -61,26 +88,55 @@ function aitApplySnapshot(s){
   if(s.candidate_trace) aitS.candidateTrace = s.candidate_trace;
   aitApplyStatus(s);
   aitRenderAgents(); aitRenderDecisions(); aitRenderExecs(); aitRenderPending(); aitRenderTokenUsage(); aitRenderCandidateTrace();
+  aitRenderHealth();
 }
 
 function aitApplyStatus(s){
   const sb=document.getElementById('aitStatus');
-  if(s.halted_reason){ sb.className='ait-badge halt'; sb.textContent='🔥 已熔断'; sb.title=s.halted_reason; }
-  else if(s.running && s.waiting_reason){ sb.className='ait-badge run'; sb.textContent='● 等待中'; sb.title=s.waiting_reason; }
-  else if(s.running){ sb.className='ait-badge run'; sb.textContent='● 运行中'; sb.title=s.next_round_in_sec>0?('下次扫描约 '+s.next_round_in_sec+' 秒后'):''; }
-  else { sb.className='ait-badge stop'; sb.textContent='● 已停止'; sb.title=''; }
+  if(sb){
+    if(s.halted_reason){ sb.className='ait-badge halt'; sb.textContent='🔥 已熔断'; sb.title=s.halted_reason; }
+    else if(s.running && s.waiting_reason){ sb.className='ait-badge run'; sb.textContent='● 等待中'; sb.title=s.waiting_reason; }
+    else if(s.running){ sb.className='ait-badge run'; sb.textContent='● 运行中'; sb.title=s.next_round_in_sec>0?('下次扫描约 '+s.next_round_in_sec+' 秒后'):''; }
+    else { sb.className='ait-badge stop'; sb.textContent='● 已停止'; sb.title=''; }
+  }
   const mb=document.getElementById('aitMode'), live=(s.broker_mode==='live');
-  mb.className='ait-badge '+(live?'live':'paper');
-  mb.textContent = live?'实盘(需人工确认)':'模拟盘(自动)';
-  if(typeof s.round_no==='number') document.getElementById('aitRound').textContent='第 '+s.round_no+' 轮';
+  if(mb){ mb.className='ait-badge '+(live?'live':'paper'); mb.textContent = live?'实盘(需人工确认)':'模拟盘(自动)'; }
+  const roundEl=document.getElementById('aitRound'); if(roundEl && typeof s.round_no==='number') roundEl.textContent='第 '+s.round_no+' 轮';
   if(s.settings){ aitS.settings=s.settings; aitRenderStrategyBadge(); }
   if(s.token_usage){ aitS.tokenUsage=s.token_usage; aitRenderTokenUsage(); }
   if(s.candidate_trace){ aitS.candidateTrace=s.candidate_trace; aitRenderCandidateTrace(); }
-  document.getElementById('aitBtnStart').disabled=!!s.running;
-  document.getElementById('aitBtnStop').disabled=!s.running;
+  const st=document.getElementById('aitBtnStart'); if(st) st.disabled=!!s.running;
+  const sp=document.getElementById('aitBtnStop'); if(sp) sp.disabled=!s.running;
   const once=!!s.once_running;
   const ro=document.getElementById('aitBtnRunOnce'); if(ro){ ro.disabled=once||!!s.running; ro.textContent=once?'⏳ 分析中…':'🔄 单轮测试'; }
   const so=document.getElementById('aitBtnStopOnce'); if(so) so.style.display=once?'inline-flex':'none';
+  aitRenderHealth(s);
+}
+
+function aitSetHealth(level, title, detail){
+  aitS.health = {level:level||'idle', title:title||'', detail:detail||''};
+  aitRenderHealth();
+}
+
+function aitRenderHealth(status){
+  const box=document.getElementById('aitHealth'); if(!box) return;
+  const cfg=aitS.config||{}, s=status||{}, settings=aitS.settings||{};
+  const modelOk=!!(cfg.enabled && cfg.has_key && cfg.model);
+  const streamOk=!!(aitS.es && aitS.es.readyState===1);
+  const err=aitS.lastError || (aitS.health&&aitS.health.detail) || '';
+  const items=[
+    {cls:modelOk?'ok':'warn', k:'模型', v:modelOk?('已启用 · '+esc(cfg.model)):'未就绪', sub:modelOk?'AI交易会调用当前用户模型':'点“模型”配置 Key、模型并启用'},
+    {cls:streamOk?'ok':(aitS.inited?'warn':'idle'), k:'实时流', v:streamOk?'已连接':'未连接', sub:streamOk?'团队思考/订单会实时刷新':(err||'打开 AI 交易页后自动连接')},
+    {cls:s.running?'ok':'idle', k:'执行', v:s.running?'运行中':'待命', sub:s.waiting_reason || (s.once_running?'单轮分析中':'可启动常驻或单轮测试')},
+    {cls:(settings.strategy_candidates_enabled!==false)?'ok':'warn', k:'候选源', v:(settings.strategy_candidates_enabled!==false)?'策略雷达开启':'策略雷达关闭', sub:aitStrategyHealthText(settings)},
+  ];
+  box.innerHTML=items.map(it=>'<div class="ait-health-card '+it.cls+'"><span>'+it.k+'</span><b>'+it.v+'</b><em>'+it.sub+'</em></div>').join('');
+}
+
+function aitStrategyHealthText(s){
+  const files=s.strategy_candidate_strategies||[];
+  if(files.length) return files.slice(0,2).map(aitStrategyName).join(' / ')+(files.length>2?' 等':'');
+  return '默认策略库 + 全市场初筛 + 自选池';
 }
 
 function aitOnAgent(c){
@@ -97,8 +153,9 @@ function aitOnExec(r){ aitS.execs.push(r); aitS.execs=aitS.execs.slice(-60); ait
 function aitOnPending(p){ aitS.pending[p.id]=p; aitRenderPending(); }
 
 const AIT_ORDER=['lead','market','technical','fundamental','bull','bear','risk'];
-function aitRenderAgents(){
+function aitRenderAgents(forcedHtml){
   const box=document.getElementById('aitAgents'); if(!box) return;
+  if(forcedHtml){ box.innerHTML=forcedHtml; return; }
   const rm={}; aitS.roles.forEach(r=>rm[r.role]=r);
   let html='';
   AIT_ORDER.forEach(role=>{
@@ -179,15 +236,29 @@ function aitRenderPending(){
     +'<button class="btn btn-gray btn-sm" '+_aiActionAttrs('reject',p.id)+'>✕ 拒绝</button></div></div>').join('');
 }
 
-async function aitStart(){ const r=await api('/ai_trader/start','POST'); fbToast((r&&r.msg)||'已请求', r&&!r.ok); }
-async function aitStop(){ const r=await api('/ai_trader/stop','POST'); fbToast((r&&r.msg)||'已停止', r&&!r.ok); }
-async function aitEmergency(){ if(!confirm('确定一键急停？将停止AI交易并清空待确认。')) return; const r=await api('/ai_trader/emergency_stop','POST'); fbToast((r&&r.msg)||'已急停', r&&!r.ok); }
-async function aitRunOnce(){ const r=await api('/ai_trader/run_once','POST'); fbToast((r&&r.msg)||'已触发', r&&!r.ok); }
-async function aitStopOnce(){ const r=await api('/ai_trader/stop_once','POST'); fbToast((r&&r.msg)||'已停止', r&&!r.ok); }
+async function aitControl(path, fallback){
+  const r=await api(path,'POST');
+  const msg=aitApiMsg(r, fallback);
+  if(!r || !r.ok){ aitS.lastError=msg; aitRenderHealth(); }
+  else aitS.lastError='';
+  fbToast(msg, !r || !r.ok);
+  await aitRefreshStatus();
+  return r;
+}
+async function aitRefreshStatus(){
+  const r=await api('/ai_trader/snapshot');
+  if(r&&r.ok) aitApplySnapshot(r);
+  return r;
+}
+async function aitStart(){ await aitControl('/ai_trader/start','AI 交易启动失败'); }
+async function aitStop(){ await aitControl('/ai_trader/stop','AI 交易已停止'); }
+async function aitEmergency(){ if(!confirm('确定一键急停？将停止AI交易并清空待确认。')) return; await aitControl('/ai_trader/emergency_stop','AI 交易已急停'); }
+async function aitRunOnce(){ await aitControl('/ai_trader/run_once','单轮测试触发失败'); }
+async function aitStopOnce(){ await aitControl('/ai_trader/stop_once','单轮测试停止失败'); }
 
 /* 🤖 AI 独立模拟账户 */
 function aitFmt(n){ return (Number(n)||0).toLocaleString('zh-CN',{maximumFractionDigits:0}); }
-async function aitLoadAccount(){ const r=await api('/ai_trader/account'); if(r&&r.ok) aitRenderAccount(r.account, r.positions); }
+async function aitLoadAccount(){ const r=await api('/ai_trader/account'); if(r&&r.ok) aitRenderAccount(r.account, r.positions); return r; }
 function aitRenderAccount(acc, poss){
   const a=document.getElementById('aitAccount');
   if(a&&acc){
@@ -214,7 +285,7 @@ async function aitResetAccount(){
   const r=await api('/ai_trader/account/reset','POST',{initial_capital:parseFloat(v)||1000000});
   fbToast((r&&r.msg)||'已重置', r&&!r.ok); aitLoadAccount();
 }
-async function aitConfirm(id,ap){ const r=await api('/ai_trader/confirm','POST',{id:id,approve:ap}); fbToast((r&&r.msg)||'', r&&!r.ok); delete aitS.pending[id]; aitRenderPending(); }
+async function aitConfirm(id,ap){ const r=await api('/ai_trader/confirm','POST',{id:id,approve:ap}); fbToast(aitApiMsg(r, ap?'确认完成':'已拒绝'), !r||!r.ok); if(r&&r.ok){ delete aitS.pending[id]; aitRenderPending(); aitLoadAccount(); } }
 
 function aitStrategyName(file){
   const it=(aitS.strategyCatalog||[]).find(x=>x.file===file);
@@ -311,29 +382,32 @@ function aitAutoDetect(){
   if(key.length>=8) aitDetectModels();
 }
 async function aitLoadConfig(){
-  const r=await api('/ai_trader/config'); if(!r||!r.ok) return; const c=r.config;
+  const r=await api('/ai_trader/config'); if(!r||!r.ok){ aitS.lastError=aitApiMsg(r,'模型配置读取失败'); aitRenderHealth(); return; } const c=r.config;
+  aitS.config=c||{};
   if(c.provider) document.getElementById('aitCfgProvider').value=c.provider;
   document.getElementById('aitCfgBase').value=c.base_url||'';
   document.getElementById('aitCfgModel').value=c.model||'';
   document.getElementById('aitCfgEnabled').checked=!!c.enabled;
   document.getElementById('aitCfgKey').placeholder=c.has_key?('已配置 '+c.api_key_mask+'（留空不改）'):'sk-...';
+  aitRenderHealth();
 }
 function aitOpenConfig(){ document.getElementById('aitConfigModal').classList.add('show'); }
 async function aitTestConfig(){
   document.getElementById('aitCfgMsg').textContent='测试中…';
   const body={provider:document.getElementById('aitCfgProvider').value,base_url:document.getElementById('aitCfgBase').value,model:document.getElementById('aitCfgModel').value,api_key:document.getElementById('aitCfgKey').value};
   const r=await api('/ai_trader/config/test','POST',body);
-  document.getElementById('aitCfgMsg').textContent=r?r.msg:'测试失败';
+  const ok=!!(r&&r.ok), msg=aitApiMsg(r,'测试失败');
+  const el=document.getElementById('aitCfgMsg'); el.style.color=ok?'#368B63':'#D6456A'; el.textContent=msg;
 }
 async function aitSaveConfig(){
   const body={provider:document.getElementById('aitCfgProvider').value,base_url:document.getElementById('aitCfgBase').value,model:document.getElementById('aitCfgModel').value,enabled:document.getElementById('aitCfgEnabled').checked};
   const k=document.getElementById('aitCfgKey').value; if(k) body.api_key=k;
   const r=await api('/ai_trader/config','POST',body);
-  if(r&&r.ok){ fbToast('模型配置已保存'); document.getElementById('aitConfigModal').classList.remove('show'); document.getElementById('aitCfgKey').value=''; aitLoadConfig(); }
-  else fbToast('保存失败',true);
+  if(r&&r.ok){ aitS.config={...(aitS.config||{}),...(r.config||{}), model:body.model, enabled:body.enabled}; fbToast('模型配置已保存'); document.getElementById('aitConfigModal').classList.remove('show'); document.getElementById('aitCfgKey').value=''; await aitLoadConfig(); }
+  else { aitS.lastError=aitApiMsg(r,'保存失败'); aitRenderHealth(); fbToast(aitS.lastError,true); }
 }
 
-async function aitLoadSettings(){ const r=await api('/ai_trader/settings'); if(r&&r.ok){ aitS.settings=r.settings; aitFillSettings(); } }
+async function aitLoadSettings(){ const r=await api('/ai_trader/settings'); if(r&&r.ok){ aitS.settings=r.settings; aitFillSettings(); aitRenderHealth(); } else { aitS.lastError=aitApiMsg(r,'风控设置读取失败'); aitRenderHealth(); } }
 function aitFillSettings(){
   const s=aitS.settings; if(!s) return; const r=s.risk||{};
   const set=(id,v)=>{const el=document.getElementById(id); if(el)el.value=v;};
@@ -378,6 +452,6 @@ async function aitSaveSettings(){
       single_max_ratio:num('aitSetSingleMax'), daily_trade_limit:num('aitSetDayLimit'), daily_max_loss_pct:num('aitSetMaxLoss'),
       consensus_min_votes:num('aitSetConsensus') } };
   const r=await api('/ai_trader/settings','POST',body);
-  if(r&&r.ok){ aitS.settings=r.settings; aitRenderStrategyOptions(); aitRenderStrategyBadge(); fbToast('设置已保存'); document.getElementById('aitSettingsModal').classList.remove('show'); }
-  else fbToast('保存失败',true);
+  if(r&&r.ok){ aitS.settings=r.settings; aitRenderStrategyOptions(); aitRenderStrategyBadge(); aitRenderHealth(); fbToast('设置已保存'); document.getElementById('aitSettingsModal').classList.remove('show'); }
+  else { aitS.lastError=aitApiMsg(r,'保存失败'); aitRenderHealth(); fbToast(aitS.lastError,true); }
 }

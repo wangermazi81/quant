@@ -1,0 +1,5 @@
+# Android mobile executor dependencies
+uiautomator2==3.7.0
+mitmproxy==12.2.3
+frida==17.16.3
+lief==0.16.4

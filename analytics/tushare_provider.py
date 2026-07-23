@@ -673,6 +673,129 @@ def fetch_stock_sectors_bulk(
     return result
 
 
+def fetch_limit_pools(
+    trade_date: str,
+    token: str | None = None,
+    mode: str | None = None,
+) -> dict:
+    compact = _date_text(trade_date)
+    if not compact:
+        compact = datetime.now().strftime("%Y%m%d")
+    fields = "trade_date,ts_code,name,close,pct_chg,limit,open_times,up_stat,limit_times,industry"
+    rows: list[dict] = []
+    for api_name in ("limit_list_d", "limit_list"):
+        try:
+            rows = query_replay_api(
+                api_name,
+                {"trade_date": compact, "fields": fields},
+                token=token,
+                mode=mode,
+                timeout=15,
+                max_attempts=1,
+            )
+        except Exception as exc:
+            logger.debug(f"[tushare] {api_name} failed for {compact}: {exc}")
+            rows = []
+        if rows:
+            break
+    if not rows:
+        return {}
+
+    out = {
+        "zt_count": 0,
+        "dt_count": 0,
+        "zb_count": 0,
+        "zb_rate": None,
+        "max_height": 0,
+        "ladder": [],
+        "prev_zt_avg": None,
+        "prev_zt_red_rate": None,
+        "source": "tushare_limit_list",
+    }
+    ladder: dict[int, list[dict]] = {}
+    for row in rows:
+        marker = str(row.get("limit") or row.get("limit_type") or "").strip().upper()
+        pct = _num(row.get("pct_chg", row.get("pct_change")))
+        if marker.startswith("D") or marker in {"DOWN", "LIMIT_DOWN"} or pct <= -9.8:
+            out["dt_count"] += 1
+            continue
+        if marker.startswith("Z") or marker in {"OPEN", "BROKEN"}:
+            out["zb_count"] += 1
+            continue
+        if marker and not marker.startswith("U") and pct < 9.0:
+            continue
+        code = _plain_code(str(row.get("ts_code") or row.get("code") or ""))
+        name = str(row.get("name") or row.get("stock_name") or "").strip()
+        if not code or not name:
+            continue
+        height = int(_num(row.get("limit_times") or row.get("up_stat") or 1)) or 1
+        height = max(1, height)
+        ladder.setdefault(height, []).append({
+            "code": code,
+            "name": name,
+            "industry": str(row.get("industry") or ""),
+        })
+        out["zt_count"] += 1
+    if ladder:
+        out["max_height"] = max(ladder.keys())
+        out["ladder"] = [{"height": h, "stocks": ladder[h][:30]} for h in sorted(ladder.keys(), reverse=True)]
+    if out["zt_count"] + out["zb_count"] > 0:
+        out["zb_rate"] = round(out["zb_count"] * 100.0 / (out["zt_count"] + out["zb_count"]), 1)
+    return out if out["zt_count"] or out["dt_count"] or out["zb_count"] else {}
+
+
+def fetch_sector_rankings(
+    trade_date: str | None = None,
+    token: str | None = None,
+    mode: str | None = None,
+) -> dict:
+    compact = _date_text(trade_date or datetime.now().strftime("%Y%m%d"))
+    fields = "ts_code,trade_date,close,pct_change,pct_chg,vol,amount"
+    rows = query_replay_api(
+        "ths_daily",
+        {"trade_date": compact, "fields": fields},
+        token=token,
+        mode=mode,
+        timeout=15,
+        max_attempts=1,
+    )
+    if not rows:
+        return {}
+    basics = query_replay_api(
+        "ths_index",
+        {"fields": "ts_code,name,type,exchange,list_date"},
+        token=token,
+        mode=mode,
+        timeout=15,
+        max_attempts=1,
+    )
+    meta = {str(row.get("ts_code") or ""): row for row in basics or []}
+
+    industry: list[dict] = []
+    concept: list[dict] = []
+    for row in rows:
+        ts_code = str(row.get("ts_code") or "")
+        info = meta.get(ts_code, {})
+        name = str(row.get("name") or info.get("name") or ts_code).strip()
+        chg = _num(row.get("pct_change", row.get("pct_chg")))
+        item = {"code": ts_code, "name": name, "chg": round(chg, 2)}
+        typ = str(info.get("type") or "").strip().upper()
+        if typ in {"I", "INDUSTRY", "HY"}:
+            industry.append(item)
+        elif typ in {"N", "C", "CONCEPT", "GN"}:
+            concept.append(item)
+        else:
+            concept.append(item)
+    industry = sorted(industry, key=lambda x: x.get("chg", 0), reverse=True)
+    concept = sorted(concept, key=lambda x: x.get("chg", 0), reverse=True)
+    return {
+        "industry_top": industry[:10],
+        "industry_bottom": industry[-5:] if industry else [],
+        "concept_top": concept[:10],
+        "source": "tushare_ths_daily",
+    }
+
+
 def fetch_lhb_stocks(
     trade_date: str,
     token: str | None = None,

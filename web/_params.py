@@ -5,6 +5,7 @@
 _bounded_int_arg（共 6 份），工单4 收敛到此处唯一实现。
 保留下划线命名以兼容既有调用点。
 """
+from __future__ import annotations
 from flask import request
 
 

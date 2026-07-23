@@ -5,9 +5,23 @@
 前端经这些接口开关总闸、查当日委托、跟踪单条信号状态。
 路由路径与行为与 main.py 原实现逐行等价。
 """
+import json
 import logging
+import hmac
+import os
 import platform
+import subprocess
+import sys
+import threading
+import time
 from datetime import datetime
+from functools import wraps
+from pathlib import Path
+
+try:
+    import psutil
+except Exception:
+    psutil = None
 
 from flask import Blueprint, jsonify, request, session
 
@@ -16,19 +30,832 @@ from core import user_manager as um
 from core.bridge_state import _live_enabled, set_live_enabled as _set_live_enabled
 from core.daban_state import _DABAN_PEAKS, _LIVE_SELL_PENDING
 from analytics import data_manager as dm
+from strategy_engine import strategy_manager as sm
 
 logger = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+THS_BRIDGE_SCRIPT = PROJECT_ROOT / 'tools' / 'ths_bridge.py'
+THS_BRIDGE_UI_LOG = PROJECT_ROOT / 'logs' / 'bridge_ui.log'
+THS_BRIDGE_CONFIG = PROJECT_ROOT / 'tools' / 'bridge_config.json'
+THS_ADB_EXE = PROJECT_ROOT / '.android-sdk' / 'platform-tools' / ('adb.exe' if platform.system() == 'Windows' else 'adb')
+MOBILE_WEB_PORT = 5001
+MOBILE_HOST_PORT = int(os.environ.get('THS_MOBILE_HOST_PORT') or os.environ.get('THS_BIND_PORT') or MOBILE_WEB_PORT)
+MOBILE_LEGACY_TASK_TIMEOUT_SEC = 45
+_MOBILE_LEGACY_ACTION_LOCK = threading.Lock()
+_MOBILE_LEGACY_STATE_LOCK = threading.Lock()
+_MOBILE_LEGACY_STATE = {
+    "running": False,
+    "task_id": "",
+    "action": "",
+    "target": "",
+    "ok": None,
+    "msg": "",
+    "started_at": 0.0,
+    "updated_at": "",
+}
+
+
+
+def _load_bridge_config():
+    try:
+        with THS_BRIDGE_CONFIG.open("r", encoding="utf-8-sig") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _save_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def _save_bridge_config(cfg):
+    _save_json(THS_BRIDGE_CONFIG, cfg)
+
+
+def _android_profile_path(cfg=None):
+    cfg = cfg or _load_bridge_config()
+    profile = cfg.get("android_profile") or "tools/mobile_ths_profile.json"
+    path = Path(profile)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path
+
+
+def _load_android_profile(cfg=None):
+    path = _android_profile_path(cfg)
+    try:
+        with path.open("r", encoding="utf-8-sig") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _save_android_profile(profile, cfg=None):
+    _save_json(_android_profile_path(cfg), profile)
+
+
+def _request_json():
+    return request.get_json(silent=True) or {}
+
+
+def _mobile_legacy_state_snapshot():
+    with _MOBILE_LEGACY_STATE_LOCK:
+        return dict(_MOBILE_LEGACY_STATE)
+
+
+def _mobile_legacy_state_update(**kwargs):
+    with _MOBILE_LEGACY_STATE_LOCK:
+        _MOBILE_LEGACY_STATE.update(kwargs)
+        _MOBILE_LEGACY_STATE["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+
+def _mark_mobile_legacy_ready(action, target, ok, msg):
+    _mobile_legacy_state_update(
+        running=False,
+        task_id=f"{action}-{int(time.time() * 1000)}",
+        action=action,
+        target=str(target or ""),
+        ok=bool(ok),
+        msg=str(msg or ""),
+        started_at=time.time(),
+    )
+
+
+def _mobile_legacy_state_age_sec(state=None):
+    state = state or _mobile_legacy_state_snapshot()
+    started_at = float(state.get("started_at") or 0.0)
+    if started_at <= 0:
+        return 0.0
+    return max(0.0, time.time() - started_at)
+
+
+def _start_mobile_legacy_task(action, target, worker):
+    task_id = f"{action}-{int(time.time() * 1000)}"
+    with _MOBILE_LEGACY_STATE_LOCK:
+        state = dict(_MOBILE_LEGACY_STATE)
+        stale = bool(state.get("running")) and _mobile_legacy_state_age_sec(state) > MOBILE_LEGACY_TASK_TIMEOUT_SEC
+        if state.get("running") and not stale:
+            return {
+                "ok": True,
+                "accepted": True,
+                "busy": True,
+                "msg": f"\u624b\u673a\u4efb\u52a1\u6267\u884c\u4e2d\uff1a{state.get('action') or 'unknown'}\uff0c\u8bf7\u6c42\u5df2\u6536\u5230",
+                "task": state,
+            }
+        if stale:
+            _MOBILE_LEGACY_STATE.update(
+                running=False,
+                ok=False,
+                msg=f"\u4e0a\u6b21\u4efb\u52a1\u8d85\u65f6\u5df2\u91ca\u653e\uff1a{state.get('action') or 'unknown'}",
+            )
+        _MOBILE_LEGACY_STATE.update(
+            running=True,
+            task_id=task_id,
+            action=action,
+            target=str(target or ""),
+            ok=None,
+            msg="\u6267\u884c\u4e2d",
+            started_at=time.time(),
+            updated_at=datetime.now().isoformat(timespec="seconds"),
+        )
+
+    def finish(**kwargs):
+        with _MOBILE_LEGACY_STATE_LOCK:
+            if _MOBILE_LEGACY_STATE.get("task_id") != task_id:
+                return
+            _MOBILE_LEGACY_STATE.update(kwargs)
+            _MOBILE_LEGACY_STATE["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+    def run():
+        try:
+            result = worker() or {}
+            finish(
+                running=False,
+                action=action,
+                target=str(target or ""),
+                ok=bool(result.get("ok", True)),
+                msg=str(result.get("msg") or result),
+            )
+        except Exception as e:
+            finish(
+                running=False,
+                action=action,
+                target=str(target or ""),
+                ok=False,
+                msg=str(e),
+            )
+
+    threading.Thread(target=run, name=f"mobile-ths-{action}", daemon=True).start()
+    return {
+        "ok": True,
+        "accepted": True,
+        "busy": False,
+        "action": action,
+        "target": target,
+        "msg": f"{action}\u5df2\u63d0\u4ea4\u540e\u53f0\u6267\u884c",
+        "task": _mobile_legacy_state_snapshot(),
+    }
+
+def _normalize_mobile_mode(mode):
+    value = str(mode or "").strip().lower()
+    if value in {"real", "live", "a", "a股", "实盘", "actual"}:
+        return "live"
+    if value in {"sim", "simulation", "mock", "paper", "模拟", "模拟盘"}:
+        return "simulation"
+    return value or "simulation"
+
+
+def _bridge_token_uid():
+    token = (request.headers.get("X-Bridge-Token") or request.args.get("bridge_token") or "").strip()
+    if not token:
+        return None
+    cfg = _load_bridge_config()
+    expected = str(cfg.get("bridge_token") or "").strip()
+    if not expected or not hmac.compare_digest(token, expected):
+        return None
+    try:
+        uid = int(cfg.get("bridge_user_id") or 1)
+    except (TypeError, ValueError):
+        uid = 1
+    return uid if uid > 0 else 1
+
+
+def _bridge_request_uid():
+    token_uid = _bridge_token_uid()
+    if token_uid:
+        return token_uid
+    return session.get("user_id")
+
+
+def require_bridge_or_auth(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not _bridge_request_uid():
+            return jsonify({"ok": False, "error": "请先登录", "code": 401}), 401
+        return f(*args, **kwargs)
+    return wrapper
+
+def require_bridge_token(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not _bridge_token_uid():
+            return jsonify({"ok": False, "error": "bridge token required", "code": 403}), 403
+        return f(*args, **kwargs)
+    return wrapper
+
+
+def _adb_command(args, timeout=8):
+    exe = str(THS_ADB_EXE if THS_ADB_EXE.exists() else 'adb')
+    try:
+        result = subprocess.run(
+            [exe] + list(args),
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=timeout,
+            check=False,
+        )
+        return {
+            'ok': result.returncode == 0,
+            'code': result.returncode,
+            'stdout': result.stdout or '',
+            'stderr': result.stderr or '',
+        }
+    except FileNotFoundError as exc:
+        return {'ok': False, 'code': 127, 'stdout': '', 'stderr': str(exc)}
+    except subprocess.TimeoutExpired as exc:
+        return {'ok': False, 'code': 124, 'stdout': exc.stdout or '', 'stderr': exc.stderr or 'adb timeout'}
+
+
+def _adb_usb_devices():
+    result = _adb_command(['devices', '-l'], timeout=8)
+    devices = []
+    if result.get('ok'):
+        for line in result.get('stdout', '').splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 2 and parts[1] == 'device' and not parts[0].startswith('*'):
+                devices.append({'serial': parts[0], 'raw': line.strip()})
+    return devices, result
+
+
+def _ensure_usb_reverse(cfg=None, profile=None, port=MOBILE_WEB_PORT):
+    cfg = cfg or _load_bridge_config()
+    profile = profile or _load_android_profile(cfg)
+    devices, devices_result = _adb_usb_devices()
+    if not devices:
+        return {
+            'ok': False,
+            'msg': '\u672a\u53d1\u73b0 USB \u8c03\u8bd5\u8bbe\u5907',
+            'devices': [],
+            'adb': devices_result,
+        }
+    configured = str(cfg.get('device_serial') or profile.get('device_serial') or '').strip()
+    serials = {item['serial'] for item in devices}
+    serial = configured if configured in serials else devices[0]['serial']
+    host_port = int(os.environ.get('THS_MOBILE_HOST_PORT') or os.environ.get('THS_BIND_PORT') or MOBILE_HOST_PORT)
+    reverse_result = _adb_command(['-s', serial, 'reverse', f'tcp:{port}', f'tcp:{host_port}'], timeout=8)
+    reverse_list = _adb_command(['-s', serial, 'reverse', '--list'], timeout=8)
+    expected = f'{serial} tcp:{port} tcp:{host_port}'
+    ok = bool(reverse_result.get('ok'))
+    return {
+        'ok': ok,
+        'msg': '\u5df2\u5efa\u7acb USB \u53cd\u5411\u901a\u9053' if ok else '\u5efa\u7acb USB \u53cd\u5411\u901a\u9053\u5931\u8d25',
+        'device_serial': serial,
+        'devices': devices,
+        'reverse': reverse_list.get('stdout', '').strip(),
+        'expected': expected,
+        'adb': reverse_result,
+    }
+
+
+def _bridge_python_exe():
+    anaconda = Path('D:/Anaconda/python.exe')
+    if anaconda.exists():
+        return str(anaconda)
+    return sys.executable
+
+
+def _bridge_env():
+    env = os.environ.copy()
+    platform_tools = PROJECT_ROOT / '.android-sdk' / 'platform-tools'
+    if platform_tools.exists():
+        env['PATH'] = str(platform_tools) + os.pathsep + env.get('PATH', '')
+        env['ANDROID_HOME'] = str(PROJECT_ROOT / '.android-sdk')
+        env['ANDROID_SDK_ROOT'] = str(PROJECT_ROOT / '.android-sdk')
+    env['PYTHONUTF8'] = '1'
+    return env
+
+
+
+
+def _build_android_operator_for_web():
+    cfg = _load_bridge_config()
+    if str(cfg.get("executor_type") or "").lower() != "android":
+        cfg["executor_type"] = "android"
+    from tools.ths_bridge import build_operator, DEFAULT_CONFIG
+    merged = {**DEFAULT_CONFIG, **cfg}
+    return build_operator(merged)
+
+def _bridge_processes():
+    script_path = str(THS_BRIDGE_SCRIPT.resolve()).lower()
+    root_path = str(PROJECT_ROOT.resolve()).lower()
+
+    if psutil is not None:
+        processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                name = (proc.info.get('name') or '').lower()
+                cmdline = proc.info.get('cmdline') or []
+                cmd = ' '.join(str(part) for part in cmdline)
+                cmd_lower = cmd.lower()
+                cwd = ''
+                try:
+                    cwd = (proc.cwd() or '').lower()
+                except Exception:
+                    pass
+                if 'python' in name and 'ths_bridge.py' in cmd_lower:
+                    if script_path in cmd_lower or root_path in cmd_lower or cwd == root_path:
+                        processes.append({'pid': int(proc.info['pid']), 'command': cmd})
+            except Exception:
+                continue
+        return processes
+
+    if platform.system() == 'Windows':
+        root = str(PROJECT_ROOT).replace("'", "''")
+        ps_script = f'''
+$needle = 'ths_bridge.py'
+$root = '{root}'
+Get-CimInstance Win32_Process |
+  Where-Object {{ $_.Name -match 'python' -and $_.CommandLine -match [regex]::Escape($needle) -and $_.CommandLine -match [regex]::Escape($root) }} |
+  Select-Object ProcessId,CommandLine |
+  ConvertTo-Json -Compress
+'''
+        result = subprocess.run(
+            ['powershell', '-NoProfile', '-Command', ps_script],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        raw = (result.stdout or '').strip()
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return []
+        if isinstance(data, dict):
+            data = [data]
+        return [
+            {'pid': int(p.get('ProcessId')), 'command': p.get('CommandLine') or ''}
+            for p in data
+            if p.get('ProcessId')
+        ]
+
+    result = subprocess.run(
+        ['pgrep', '-af', 'ths_bridge.py'],
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    processes = []
+    for line in (result.stdout or '').splitlines():
+        parts = line.strip().split(maxsplit=1)
+        if parts and parts[0].isdigit() and str(PROJECT_ROOT) in line:
+            processes.append({'pid': int(parts[0]), 'command': parts[1] if len(parts) > 1 else ''})
+    return processes
+
+
+def bridge_process_status_payload():
+    processes = _bridge_processes()
+    return {
+        'running': bool(processes),
+        'pid': processes[0]['pid'] if processes else None,
+        'pids': [p['pid'] for p in processes],
+        'processes': processes,
+    }
+
+
+def stop_bridge_process():
+    processes = _bridge_processes()
+    if not processes:
+        return {'stopped': 0, 'pids': []}
+    pids = [p['pid'] for p in processes]
+    if platform.system() == 'Windows':
+        subprocess.run(
+            ['powershell', '-NoProfile', '-Command', 'Stop-Process -Id ' + ','.join(map(str, pids)) + ' -Force'],
+            cwd=str(PROJECT_ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        subprocess.run(['kill', '-TERM'] + [str(pid) for pid in pids], check=False)
+    return {'stopped': len(pids), 'pids': pids}
+
+
+def start_bridge_process():
+    status = bridge_process_status_payload()
+    if status['running']:
+        return {'pid': status['pid'], 'already_running': True}
+
+    creationflags = subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
+    THS_BRIDGE_UI_LOG.parent.mkdir(parents=True, exist_ok=True)
+    log = THS_BRIDGE_UI_LOG.open('ab')
+    proc = subprocess.Popen(
+        [_bridge_python_exe(), str(THS_BRIDGE_SCRIPT)],
+        cwd=str(PROJECT_ROOT),
+        stdout=log,
+        stderr=log,
+        stdin=subprocess.DEVNULL,
+        creationflags=creationflags,
+        env=_bridge_env(),
+    )
+    return {'pid': proc.pid, 'already_running': False}
+
+
 bp = Blueprint("bridge", __name__)
 
 
-@bp.route("/api/bridge/signals", methods=["GET"])
+def _as_float(value, default=None):
+    try:
+        if value is None or value == "":
+            return default
+        return float(str(value).replace(",", ""))
+    except Exception:
+        return default
+
+
+def _execution_account_base(s, broker_cfg, mobile_profile):
+    """统一仓位金额基数：手机最近资金 > 实盘配置资金 > 账户面板资金。"""
+    last_account = mobile_profile.get("last_account_snapshot") or {}
+    for key in ("total_asset", "equity", "asset", "balance"):
+        amount = _as_float(last_account.get(key))
+        if amount and amount > 0:
+            return amount, "mobile_snapshot"
+
+    live_cash = _as_float((broker_cfg.get("config") or {}).get("live_cash"))
+    if live_cash and live_cash > 0:
+        return live_cash, "live_cash"
+
+    capital = _as_float(s.get("capital"), 0.0) or 0.0
+    return capital, "account_capital"
+
+
+def _execution_position_policy(s, broker_cfg, mobile_profile, bridge_cfg):
+    active_strategy = s.get("active_strategy") or ""
+    try:
+        pos_cfg = sm.get_position_config(active_strategy)
+    except Exception:
+        logger.exception("读取策略仓位规则失败")
+        pos_cfg = {}
+
+    max_daily = int(_as_float(pos_cfg.get("max_daily"), 0) or 0)
+    sizing = str(pos_cfg.get("sizing") or "equal").lower()
+    if max_daily > 0 and sizing == "equal":
+        ratio = 1.0 / max_daily
+        mode = "strategy"
+    else:
+        ratio = _as_float(s.get("position_ratio"), 0.2) or 0.2
+        mode = "account"
+
+    account_base, account_source = _execution_account_base(s, broker_cfg, mobile_profile)
+    target_amount = round(account_base * ratio, 2) if account_base else None
+    max_hold = int(_as_float(pos_cfg.get("max_hold"), 0) or 0)
+    max_positions = max_hold or max_daily or int(_as_float(s.get("max_positions"), 0) or 0)
+    max_order_amount = _as_float(bridge_cfg.get("max_order_amount"))
+    if max_order_amount is None:
+        try:
+            from config import MAX_ORDER_AMOUNT
+            max_order_amount = _as_float(MAX_ORDER_AMOUNT)
+        except Exception:
+            max_order_amount = None
+
+    return {
+        "mode": mode,
+        "sizing": sizing,
+        "max_daily": max_daily,
+        "max_hold": max_hold,
+        "max_positions": max_positions,
+        "target_ratio": round(ratio, 6),
+        "target_amount": target_amount,
+        "account_base": round(account_base, 2) if account_base else None,
+        "account_source": account_source,
+        "max_order_amount": max_order_amount,
+    }
+
+
+@bp.route("/api/execution/state", methods=["GET"])
 @require_auth
-def bridge_get_signals():
+def execution_state():
     uid = session["user_id"]
+    s = get_user_state(uid)
+    broker_cfg = um.get_user_broker_config(uid)
+    bridge_cfg = _load_bridge_config()
+    mobile_profile = _load_android_profile(bridge_cfg)
+    bridge_process = bridge_process_status_payload()
+    mobile_task = _mobile_legacy_state_snapshot()
+    broker_type = str(broker_cfg.get("broker_type") or s.get("broker_type") or "paper").lower()
+    executor_type = str(bridge_cfg.get("executor_type") or "android").lower()
+    mobile_mode = mobile_profile.get("trade_mode") or mobile_profile.get("trade_mode_target") or "unknown"
+    confirm_mode = bridge_cfg.get("confirm_mode") or mobile_profile.get("confirm_mode") or "manual"
+    connection_mode = bridge_cfg.get("connection_mode") or mobile_profile.get("connection_mode") or "usb"
+    live_trade_enabled = bool(_live_enabled(uid))
+    active_target = "mobile" if executor_type in {"android", "mobile", "phone"} else ("desktop" if broker_type in {"live", "real"} else "paper")
+
+    operator = get_operator()
+    trade_settings = None
+    try:
+        trade_settings = operator.get_trade_settings() if operator else None
+    except Exception:
+        trade_settings = None
+
+    last_account = mobile_profile.get("last_account_snapshot") or {}
+    positions = last_account.get("positions") if isinstance(last_account, dict) else []
+    if not isinstance(positions, list):
+        positions = []
+
+    return jsonify({
+        "ok": True,
+        "strategy": {
+            "running": bool(s.get("running") or s.get("vibe_active")),
+            "auto_execute": bool(s.get("auto_execute")),
+            "active_strategy": s.get("active_strategy") or "",
+            "today_trades": int(s.get("today_trades") or 0),
+            "queue_count": len(s.get("queue") or []),
+        },
+        "execution": {
+            "active_target": active_target,
+            "executor_type": executor_type,
+            "broker_type": broker_type,
+            "live_trade_enabled": live_trade_enabled,
+        },
+        "mobile": {
+            "bridge_running": bool(bridge_process.get("running")),
+            "bridge_pid": bridge_process.get("pid"),
+            "connection_mode": connection_mode,
+            "trade_mode": mobile_mode,
+            "confirm_mode": confirm_mode,
+            "device_serial": mobile_profile.get("device_serial") or bridge_cfg.get("device_serial") or "",
+            "app_package": mobile_profile.get("app_package") or "com.hexin.plat.android",
+            "task": mobile_task,
+            "account": {
+                "ok": bool(last_account.get("ok")) if isinstance(last_account, dict) else False,
+                "available": _as_float(last_account.get("available")) if isinstance(last_account, dict) else None,
+                "total_asset": _as_float(last_account.get("total_asset")) if isinstance(last_account, dict) else None,
+                "market_value": _as_float(last_account.get("market_value")) if isinstance(last_account, dict) else None,
+                "positions_count": len(positions),
+            },
+        },
+        "desktop": {
+            "xiadan_ready": bool(operator),
+            "trade_mode": "live" if broker_type in {"live", "real"} else "paper",
+            "trade_settings": trade_settings,
+        },
+        "position_policy": _execution_position_policy(s, broker_cfg, mobile_profile, bridge_cfg),
+    })
+
+
+@bp.route("/api/bridge/process", methods=["GET"])
+@require_auth
+def bridge_process_status():
+    return jsonify({"ok": True, **bridge_process_status_payload()})
+
+
+@bp.route("/api/bridge/process/start", methods=["POST"])
+@require_auth
+def bridge_process_start():
+    result = start_bridge_process()
+    return jsonify({"ok": True, **result, **bridge_process_status_payload()})
+
+
+@bp.route("/api/bridge/process/stop", methods=["POST"])
+@require_auth
+def bridge_process_stop():
+    result = stop_bridge_process()
+    return jsonify({"ok": True, **result, **bridge_process_status_payload()})
+
+
+@bp.route("/api/mobile_ths/profile", methods=["GET", "POST"])
+def mobile_ths_legacy_profile():
+    cfg = _load_bridge_config()
+    profile = _load_android_profile(cfg)
+    task = _mobile_legacy_state_snapshot()
+    last_account = profile.get('last_account_snapshot') or {}
+    return jsonify({
+        'last_account_snapshot': last_account,
+        "ok": True,
+        "backend": "jianwei-alpha",
+        "executor_type": cfg.get("executor_type", "android"),
+        "connection_mode": cfg.get("connection_mode") or profile.get("connection_mode") or "usb",
+        "trade_mode": profile.get("trade_mode") or "unknown",
+        "confirm_mode": cfg.get("confirm_mode") or profile.get("confirm_mode") or "manual",
+        "device_serial": profile.get("device_serial") or cfg.get("device_serial") or "",
+        "app_package": profile.get("app_package") or "com.hexin.plat.android",
+        "bridge_running": bool(cfg.get("bridge_running", True)),
+        "mobile_task": task,
+    })
+
+
+@bp.route("/api/mobile_ths/connection", methods=["GET", "POST"])
+def mobile_ths_legacy_connection():
+    data = _request_json()
+    mode = (data.get("connection_mode") or data.get("mode") or request.args.get("connection_mode") or request.args.get("mode") or "usb")
+    mode = str(mode).strip().lower() or "usb"
+    cfg = _load_bridge_config()
+    profile = _load_android_profile(cfg)
+    cfg["connection_mode"] = mode
+    profile["connection_mode"] = mode
+    usb_status = None
+    if mode == "usb":
+        usb_status = _ensure_usb_reverse(cfg, profile)
+        if usb_status.get("device_serial"):
+            cfg["device_serial"] = usb_status["device_serial"]
+            profile["device_serial"] = usb_status["device_serial"]
+    _save_bridge_config(cfg)
+    _save_android_profile(profile, cfg)
+    ok = True if usb_status is None else bool(usb_status.get("ok"))
+    msg = f"\u8fde\u63a5\u65b9\u5f0f\u5df2\u5207\u6362\u4e3a {mode}"
+    if usb_status is not None:
+        msg = usb_status.get("msg") or msg
+    _mark_mobile_legacy_ready("connection", mode, ok, msg)
+    return jsonify({"ok": ok, "connection_mode": mode, "device_serial": cfg.get("device_serial"), "usb": usb_status, "msg": msg})
+
+
+@bp.route("/api/mobile_ths/confirm_mode", methods=["GET", "POST"])
+def mobile_ths_legacy_confirm_mode():
+    data = _request_json()
+    mode = (data.get("confirm_mode") or data.get("mode") or request.args.get("confirm_mode") or request.args.get("mode") or "auto")
+    mode = "auto" if str(mode).strip().lower() in {"auto", "自动", "true", "1", "yes", "on"} else "manual"
+    cfg = _load_bridge_config()
+    profile = _load_android_profile(cfg)
+    cfg["confirm_mode"] = mode
+    profile["confirm_mode"] = mode
+    _save_bridge_config(cfg)
+    _save_android_profile(profile, cfg)
+    msg = "confirm_mode=auto" if mode == "auto" else "confirm_mode=manual"
+    _mark_mobile_legacy_ready("confirm_mode", mode, True, msg)
+    return jsonify({"ok": True, "confirm_mode": mode, "msg": "已切换为全自动确认" if mode == "auto" else "已切换为手动确认"})
+
+
+@bp.route("/api/mobile_ths/account", methods=["GET", "POST"])
+def mobile_ths_legacy_account():
+    cfg = _load_bridge_config()
+    profile = _load_android_profile(cfg)
+
+    def worker():
+        operator = _build_android_operator_for_web()
+        if hasattr(operator, 'query_account_snapshot'):
+            result = operator.query_account_snapshot() or {}
+        elif hasattr(operator, 'get_account'):
+            result = operator.get_account() or {}
+        else:
+            result = {'ok': False, 'msg': '当前执行器缺少账户读取能力'}
+        result.setdefault('ok', True)
+        result.setdefault('source', 'mobile_ui')
+        result['trade_mode'] = profile.get('trade_mode') or cfg.get('trade_mode') or 'simulation'
+        result['connection_mode'] = cfg.get('connection_mode') or profile.get('connection_mode') or 'usb'
+        result['bridge_running'] = bool(bridge_process_status_payload().get('bridge_running'))
+        result['confirm_mode'] = cfg.get('confirm_mode') or profile.get('confirm_mode') or 'manual'
+        try:
+            uid = int(cfg.get('bridge_user_id') or session.get('user_id') or 0)
+            total_asset = result.get('total_asset') or result.get('asset') or 0
+            if uid > 0 and result.get('ok') and total_asset:
+                broker_cfg = um.get_user_broker_config(uid)
+                broker_type = broker_cfg.get('broker_type', 'paper')
+                broker_inner = dict(broker_cfg.get('config') or {})
+                broker_inner['live_cash'] = float(total_asset)
+                um.save_user_broker_config(uid, broker_type, broker_inner)
+                result['live_cash_synced'] = True
+        except Exception as e:
+            result['live_cash_sync_error'] = str(e)
+        fresh_profile = _load_android_profile(cfg)
+        fresh_profile['last_account_snapshot'] = result
+        _save_android_profile(fresh_profile, cfg)
+        return result
+
+    result = _start_mobile_legacy_task('account', '', worker)
+    result['last_account_snapshot'] = profile.get('last_account_snapshot') or {}
+    return jsonify(result)
+    try:
+        operator = _build_android_operator_for_web()
+        if hasattr(operator, "query_account_snapshot"):
+            result = operator.query_account_snapshot() or {}
+        elif hasattr(operator, "get_account"):
+            result = operator.get_account() or {}
+        elif hasattr(operator, "query_funds"):
+            result = operator.query_funds() or {}
+        else:
+            return jsonify({"ok": False, "msg": "当前执行器缺少账户读取函数"})
+        if not isinstance(result, dict):
+            result = {"data": result}
+        result.setdefault("ok", True)
+        result.setdefault("source", "mobile_ui")
+        result["connection_mode"] = cfg.get("connection_mode") or profile.get("connection_mode") or "usb"
+        result["device_serial"] = profile.get("device_serial") or cfg.get("device_serial") or ""
+        result["confirm_mode"] = cfg.get("confirm_mode") or profile.get("confirm_mode") or "manual"
+        return jsonify(result)
+    except Exception as e:
+        logger.exception(f"读取手机同花顺账户失败: {e}")
+        return jsonify({"ok": False, "msg": f"读取手机同花顺账户失败: {e}"})
+
+
+@bp.route("/api/mobile_ths/open_ths", methods=["GET", "POST"])
+def mobile_ths_legacy_open_ths():
+    def worker():
+        operator = _build_android_operator_for_web()
+        if not hasattr(operator, "open_app"):
+            return {"ok": False, "msg": "当前执行器缺少 open_app"}
+        return operator.open_app()
+
+    return jsonify(_start_mobile_legacy_task("open_ths", "", worker))
+
+    try:
+        operator = _build_android_operator_for_web()
+        result = operator.open_app() if hasattr(operator, "open_app") else {"ok": False, "msg": "当前执行器缺少 open_app"}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"ok": False, "msg": f"打开手机同花顺失败: {e}"})
+
+
+@bp.route("/api/mobile_ths/mode", methods=["GET", "POST"])
+def mobile_ths_legacy_mode():
+    data = _request_json()
+    mode = _normalize_mobile_mode(data.get("mode") or data.get("trade_mode") or request.args.get("mode") or request.args.get("trade_mode"))
+    cfg = _load_bridge_config()
+    profile = _load_android_profile(cfg)
+    profile["trade_mode"] = mode
+    profile["trade_mode_target"] = mode
+    _save_android_profile(profile, cfg)
+
+    def worker():
+        operator = _build_android_operator_for_web()
+        if not hasattr(operator, "switch_trade_mode"):
+            return {"ok": False, "msg": "当前执行器缺少 switch_trade_mode"}
+        result = operator.switch_trade_mode(mode)
+        if result.get("ok"):
+            cfg = _load_bridge_config()
+            profile = _load_android_profile(cfg)
+            profile["trade_mode"] = mode
+            profile["trade_mode_target"] = mode
+            _save_android_profile(profile, cfg)
+        return result
+
+    return jsonify(_start_mobile_legacy_task("switch_mode", mode, worker))
+
+    try:
+        operator = _build_android_operator_for_web()
+        if not hasattr(operator, "switch_trade_mode"):
+            return jsonify({"ok": False, "msg": "当前执行器缺少 switch_trade_mode"})
+        result = operator.switch_trade_mode(mode)
+        if result.get("ok"):
+            cfg = _load_bridge_config()
+            profile = _load_android_profile(cfg)
+            profile["trade_mode"] = mode
+            _save_android_profile(profile, cfg)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"ok": False, "msg": f"切换手机同花顺模式失败: {e}"})
+
+
+@bp.route("/api/mobile_ths/restart_bridge", methods=["GET", "POST"])
+def mobile_ths_legacy_restart_bridge():
+    def worker():
+        stopped = stop_bridge_process()
+        started = start_bridge_process()
+        return {"ok": True, "msg": "桥接器已后台重启", "stopped": stopped, "started": started}
+
+    return jsonify(_start_mobile_legacy_task("restart_bridge", "", worker))
+
+    stopped = stop_bridge_process()
+    started = start_bridge_process()
+    return jsonify({"ok": True, "msg": "桥接器已后台重启", "stopped": stopped, "started": started, **bridge_process_status_payload()})
+
+
+
+
+@bp.route("/api/bridge/mobile/open-app", methods=["POST"])
+@require_bridge_or_auth
+def bridge_mobile_open_app():
+    try:
+        operator = _build_android_operator_for_web()
+        if not hasattr(operator, "open_app"):
+            return jsonify({"ok": False, "msg": "当前执行器缺少 open_app"})
+        return jsonify(operator.open_app())
+    except Exception as e:
+        return jsonify({"ok": False, "msg": f"打开手机同花顺失败: {e}"})
+
+
+@bp.route("/api/bridge/mobile/mode", methods=["POST"])
+@require_bridge_or_auth
+def bridge_mobile_mode_switch():
+    data = request.json or {}
+    mode = data.get("mode") or request.args.get("mode") or "simulation"
+    try:
+        operator = _build_android_operator_for_web()
+        if not hasattr(operator, "switch_trade_mode"):
+            return jsonify({"ok": False, "msg": "当前执行器缺少 switch_trade_mode"})
+        return jsonify(operator.switch_trade_mode(mode))
+    except Exception as e:
+        return jsonify({"ok": False, "msg": f"切换手机同花顺模式失败: {e}"})
+
+
+@bp.route("/api/bridge/signals", methods=["GET"])
+@require_bridge_token
+def bridge_get_signals():
+    uid = _bridge_request_uid()
     # ★ 实盘下单总闸：关闭时不给桥接器任何信号（桥接器照常轮询但拿不到单 → 不下单）
     if not _live_enabled(uid):
         return jsonify({"ok": True, "signals": [], "live_disabled": True})
-    signals = um.get_pending_signals(uid)
+    cfg = _load_bridge_config()
+    limit = 1 if str(cfg.get('confirm_mode', 'manual')).lower() == 'manual' else None
+    signals = um.get_pending_signals(uid, limit=limit)
     return jsonify({"ok": True, "signals": signals})
 
 
@@ -137,9 +964,9 @@ def bridge_signal_status(signal_id):
 
 
 @bp.route("/api/bridge/signals/<int:signal_id>/report", methods=["POST"])
-@require_auth
+@require_bridge_token
 def bridge_report_signal(signal_id):
-    uid = session["user_id"]
+    uid = _bridge_request_uid()
     sig = um.get_trade_signal(signal_id)
     if not sig or sig.get("user_id") != uid:
         return jsonify({"ok": False, "error": "not found"}), 404
@@ -153,12 +980,15 @@ def bridge_report_signal(signal_id):
     if not res.get("ok"):
         return jsonify(res)
 
-    action_label = "买入" if res["action"] == "BUY" else "卖出"
-    # 三态显示：executed=✅ 成功 / submitted=⏳ 已提交未确认 / 其他=❌ 失败
+    action_labels = {"BUY": "买入", "SELL": "卖出", "CANCEL": "撤单"}
+    action_label = action_labels.get(res["action"], res["action"])
+    # executed=✅ 成功 / submitted=⏳ 已提交未确认 / cancelled=🧹 已撤 / 其他=❌ 失败
     if status == "executed":
         sign = "✅"; log_level = "buy"
     elif status == "submitted":
-        sign = "⏳"; log_level = "info"   # 中间态，不当失败标红
+        sign = "⏳"; log_level = "info"
+    elif status == "cancelled":
+        sign = "🧹"; log_level = "info"
     else:
         sign = "❌"; log_level = "error"
     log_msg = f"{action_label} {res['code']} {res['name'] or ''} {res['shares']}股 @{res['price']:.2f} — 执行完毕: {msg}"

@@ -221,6 +221,14 @@ def _historical_market_snapshot(date_text: str | None) -> dict | None:
     return get_verified_market_snapshot(date_text) or load_cached_market_snapshot(date_text)
 
 
+def _configured_source_order() -> list[str]:
+    try:
+        return dg.get_source_order()
+    except Exception as exc:
+        logger.debug(f"[market_stats] datasource order unavailable: {exc}")
+        return ["tushare", "current"]
+
+
 def fetch_tushare_replay_market_snapshot(date_text: str | None = None) -> dict:
     try:
         from .tushare_replay import fetch_daily_market_snapshot
@@ -236,11 +244,17 @@ def _fetch_primary_market_snapshot(date_text: str | None = None) -> dict:
     snapshot = _historical_market_snapshot(date_text)
     if snapshot:
         return snapshot
-    try:
-        return fetch_tushare_replay_market_snapshot(date_text)
-    except Exception as exc:
-        logger.warning(f"[market_stats] tushare replay snapshot failed: {exc}")
-    return fetch_eastmoney_three_market_snapshot(date_text)
+    errors: list[str] = []
+    for source in _configured_source_order():
+        try:
+            if source == "tushare":
+                return fetch_tushare_replay_market_snapshot(date_text)
+            if source == "current":
+                return fetch_eastmoney_three_market_snapshot(date_text)
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+            logger.warning(f"[market_stats] {source} snapshot failed: {exc}")
+    raise RuntimeError("; ".join(errors) or "no market snapshot source available")
 
 
 def parse_legu_activity(df: pd.DataFrame) -> dict:
@@ -729,7 +743,7 @@ def _safe_turnover_trend() -> list[dict]:
 def _turnover_from_snapshot_with_trend(snapshot: dict, trend: list[dict] | None = None) -> dict:
     result = dict(snapshot["turnover"])
     if trend is None:
-        trend = _safe_turnover_trend()
+        trend = _safe_turnover_trend() if "current" in _configured_source_order() else []
     if trend:
         trend[-1]["amount"] = result["today"]
     result["trend"] = trend
@@ -755,7 +769,7 @@ def _snapshot_turnover_is_verified_or_two_market(snapshot: dict | None) -> bool:
 def _turnover_with_trend(turnover: dict, trend: list[dict] | None = None) -> dict:
     result = dict(turnover or {})
     if trend is None:
-        trend = _safe_turnover_trend()
+        trend = _safe_turnover_trend() if "current" in _configured_source_order() else []
     if result.get("today") is not None and trend:
         trend[-1]["amount"] = result["today"]
     result["trend"] = trend or []
@@ -769,16 +783,19 @@ def get_market_snapshot_metrics(date_text: str | None = None) -> dict:
     ``get_market_breadth`` and ``get_market_turnover`` separately can pull the
     same paged Eastmoney snapshot twice on a cold request.
     """
+    source_order = _configured_source_order()
     with ThreadPoolExecutor(max_workers=3) as executor:
         snapshot_future = executor.submit(lambda: _fetch_primary_market_snapshot(date_text))
-        turnover_future = executor.submit(lambda: _turnover_from_eastmoney_index(date_text))
-        trend_future = executor.submit(_safe_turnover_trend)
+        turnover_future = executor.submit(lambda: _turnover_from_eastmoney_index(date_text)) if "current" in source_order else None
+        trend_future = executor.submit(_safe_turnover_trend) if "current" in source_order else None
         snapshot = snapshot_future.result()
         try:
             if _snapshot_turnover_is_verified_or_two_market(snapshot):
                 turnover_source = snapshot.get("turnover")
-            else:
+            elif turnover_future is not None:
                 turnover_source = turnover_future.result()
+            else:
+                turnover_source = {}
         except Exception as exc:
             logger.warning(f"[market_stats] eastmoney index turnover for metrics failed: {exc}")
             if _snapshot_turnover_is_verified_or_two_market(snapshot):
@@ -791,7 +808,7 @@ def get_market_snapshot_metrics(date_text: str | None = None) -> dict:
                     turnover_source = {}
             else:
                 turnover_source = {}
-        trend = trend_future.result()
+        trend = trend_future.result() if trend_future is not None else []
     breadth = dict(snapshot["breadth"])
     if _is_explicit_today_request(date_text) and breadth.get("degraded"):
         breadth = {
@@ -817,36 +834,26 @@ def get_market_breadth(expected_count: int | None = None, date_text: str | None 
     if snapshot:
         return snapshot["breadth"]
 
-    try:
-        snapshot = fetch_tushare_replay_market_snapshot(date_text)
-        if _is_explicit_today_request(date_text) and (snapshot.get("breadth") or {}).get("degraded"):
-            return {
-                "source": "none",
-                "degraded": True,
-                "reason": f"official breadth unavailable for requested {_date_ymd(date_text)}: {(snapshot.get('breadth') or {}).get('reason', 'degraded breadth')}",
-            }
-        return snapshot["breadth"]
-    except Exception as exc:
-        logger.warning(f"[market_stats] tushare replay breadth failed: {exc}")
-
-    try:
-        snapshot = fetch_eastmoney_three_market_snapshot(date_text)
-        if _is_explicit_today_request(date_text) and (snapshot.get("breadth") or {}).get("degraded"):
-            return {
-                "source": "none",
-                "degraded": True,
-                "reason": f"official breadth unavailable for requested {_date_ymd(date_text)}: {(snapshot.get('breadth') or {}).get('reason', 'degraded breadth')}",
-            }
-        return snapshot["breadth"]
-    except Exception as exc:
-        logger.warning(f"[market_stats] eastmoney three-market breadth failed: {exc}")
-        if _is_explicit_today_request(date_text) and _is_official_unavailable_error(exc):
-            reason_prefix = "date mismatch" if _is_date_mismatch_error(exc) else "official breadth unavailable"
-            return {
-                "source": "none",
-                "degraded": True,
-                "reason": f"{reason_prefix} for requested {_date_ymd(date_text)}: {exc}",
-            }
+    source_order = _configured_source_order()
+    for source in source_order:
+        try:
+            snapshot = fetch_tushare_replay_market_snapshot(date_text) if source == "tushare" else fetch_eastmoney_three_market_snapshot(date_text)
+            if _is_explicit_today_request(date_text) and (snapshot.get("breadth") or {}).get("degraded"):
+                return {
+                    "source": "none",
+                    "degraded": True,
+                    "reason": f"official breadth unavailable for requested {_date_ymd(date_text)}: {(snapshot.get('breadth') or {}).get('reason', 'degraded breadth')}",
+                }
+            return snapshot["breadth"]
+        except Exception as exc:
+            logger.warning(f"[market_stats] {source} breadth failed: {exc}")
+            if source == "current" and _is_explicit_today_request(date_text) and _is_official_unavailable_error(exc):
+                reason_prefix = "date mismatch" if _is_date_mismatch_error(exc) else "official breadth unavailable"
+                return {
+                    "source": "none",
+                    "degraded": True,
+                    "reason": f"{reason_prefix} for requested {_date_ymd(date_text)}: {exc}",
+                }
 
     if _is_explicit_historical_date(date_text):
         return {
@@ -854,6 +861,9 @@ def get_market_breadth(expected_count: int | None = None, date_text: str | None 
             "degraded": True,
             "reason": f"historical breadth snapshot unavailable for {_date_ymd(date_text)}",
         }
+
+    if "current" not in source_order:
+        return {"source": "none", "degraded": True, "reason": "current breadth fallback disabled by datasource config"}
 
     try:
         import akshare as ak
@@ -887,27 +897,32 @@ def get_market_breadth(expected_count: int | None = None, date_text: str | None 
 
 
 def get_market_turnover(date_text: str | None = None, prefer_official: bool | None = None) -> dict:
+    source_order = _configured_source_order()
     snapshot = _historical_market_snapshot(date_text)
     if snapshot and _snapshot_turnover_is_verified_or_two_market(snapshot):
         return _turnover_from_snapshot_with_trend(snapshot)
 
     if _is_explicit_historical_date(date_text):
         if snapshot:
+            if "current" not in source_order:
+                return {"today": None, "trend": [], "source": "none", "degraded": True, "reason": "current historical turnover fallback disabled by datasource config"}
             try:
                 return _turnover_with_trend(_turnover_from_eastmoney_index(date_text))
             except Exception as exc:
                 logger.warning(f"[market_stats] eastmoney index turnover for cached historical snapshot failed: {exc}")
         else:
-            try:
-                snapshot = fetch_tushare_replay_market_snapshot(date_text)
-                return _turnover_from_snapshot_with_trend(snapshot)
-            except Exception as exc:
-                logger.warning(f"[market_stats] historical tushare replay turnover unavailable: {exc}")
-            try:
-                fetch_eastmoney_three_market_snapshot(date_text)
-                return _turnover_with_trend(_turnover_from_eastmoney_index(date_text))
-            except Exception as exc:
-                logger.warning(f"[market_stats] historical three-market/index turnover unavailable: {exc}")
+            for source in source_order:
+                try:
+                    if source == "tushare":
+                        snapshot = fetch_tushare_replay_market_snapshot(date_text)
+                        return _turnover_from_snapshot_with_trend(snapshot)
+                    if source == "current":
+                        fetch_eastmoney_three_market_snapshot(date_text)
+                        return _turnover_with_trend(_turnover_from_eastmoney_index(date_text))
+                except Exception as exc:
+                    logger.warning(f"[market_stats] historical {source} turnover unavailable: {exc}")
+            if "current" not in source_order:
+                return {"today": None, "trend": [], "source": "none", "degraded": True, "reason": "current historical turnover fallback disabled by datasource config"}
         try:
             result = _turnover_from_official_exchange(date_text)
         except Exception as exc:
@@ -928,51 +943,43 @@ def get_market_turnover(date_text: str | None = None, prefer_official: bool | No
         result["trend"] = trend
         return result
 
-    try:
-        snapshot = fetch_tushare_replay_market_snapshot(date_text)
-        return _turnover_from_snapshot_with_trend(snapshot)
-    except Exception as exc:
-        logger.warning(f"[market_stats] tushare replay turnover failed: {exc}")
+    for source in source_order:
+        try:
+            if source == "tushare":
+                snapshot = fetch_tushare_replay_market_snapshot(date_text)
+                return _turnover_from_snapshot_with_trend(snapshot)
+            if source == "current":
+                try:
+                    return _turnover_with_trend(_turnover_from_eastmoney_index(date_text))
+                except Exception as index_exc:
+                    logger.warning(f"[market_stats] eastmoney index turnover failed: {index_exc}")
+                    snapshot = fetch_eastmoney_three_market_snapshot(date_text)
+                    if not _snapshot_turnover_is_verified_or_two_market(snapshot):
+                        raise RuntimeError("two-market index turnover unavailable in market snapshot") from index_exc
+                    result = _turnover_from_snapshot_with_trend(snapshot)
+                    if _is_explicit_today_request(date_text) and _safe_float(result.get("amount", result.get("today"))) <= 0:
+                        return {
+                            "today": None,
+                            "trend": [],
+                            "source": "none",
+                            "degraded": True,
+                            "reason": f"official turnover unavailable for requested {_date_ymd(date_text)}: zero turnover",
+                        }
+                    return result
+        except Exception as exc:
+            logger.warning(f"[market_stats] {source} turnover failed: {exc}")
+            if source == "current" and _is_explicit_today_request(date_text) and _is_official_unavailable_error(exc):
+                reason_prefix = "date mismatch" if _is_date_mismatch_error(exc) else "official turnover unavailable"
+                return {
+                    "today": None,
+                    "trend": [],
+                    "source": "none",
+                    "degraded": True,
+                    "reason": f"{reason_prefix} for requested {_date_ymd(date_text)}: {exc}",
+                }
 
-    try:
-        return _turnover_with_trend(_turnover_from_eastmoney_index(date_text))
-    except Exception as exc:
-        logger.warning(f"[market_stats] eastmoney index turnover failed: {exc}")
-        if _is_explicit_today_request(date_text) and _is_official_unavailable_error(exc):
-            reason_prefix = "date mismatch" if _is_date_mismatch_error(exc) else "official turnover unavailable"
-            return {
-                "today": None,
-                "trend": [],
-                "source": "none",
-                "degraded": True,
-                "reason": f"{reason_prefix} for requested {_date_ymd(date_text)}: {exc}",
-            }
-
-    try:
-        snapshot = fetch_eastmoney_three_market_snapshot(date_text)
-        if not _snapshot_turnover_is_verified_or_two_market(snapshot):
-            raise RuntimeError("two-market index turnover unavailable in market snapshot")
-        result = _turnover_from_snapshot_with_trend(snapshot)
-        if _is_explicit_today_request(date_text) and _safe_float(result.get("amount", result.get("today"))) <= 0:
-            return {
-                "today": None,
-                "trend": [],
-                "source": "none",
-                "degraded": True,
-                "reason": f"official turnover unavailable for requested {_date_ymd(date_text)}: zero turnover",
-            }
-        return result
-    except Exception as exc:
-        logger.warning(f"[market_stats] eastmoney three-market turnover failed: {exc}")
-        if _is_explicit_today_request(date_text) and _is_official_unavailable_error(exc):
-            reason_prefix = "date mismatch" if _is_date_mismatch_error(exc) else "official turnover unavailable"
-            return {
-                "today": None,
-                "trend": [],
-                "source": "none",
-                "degraded": True,
-                "reason": f"{reason_prefix} for requested {_date_ymd(date_text)}: {exc}",
-            }
+    if "current" not in source_order:
+        return {"today": None, "trend": [], "source": "none", "degraded": True, "reason": "current turnover fallback disabled by datasource config"}
 
     prefer_official = (not _is_trading_time()) if prefer_official is None else prefer_official
     sources = (_turnover_from_official_exchange, _turnover_from_tdx_index) if prefer_official else (_turnover_from_tdx_index, _turnover_from_official_exchange)

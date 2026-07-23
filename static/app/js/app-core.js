@@ -6,6 +6,7 @@ window.onerror = function(msg, src, line, col, err){
 }
 
 const API = '/api'
+const MOBILE_API_FALLBACK = `${location.protocol}//${location.hostname}:5002/api`
 let editor, curStrat=null, scResults=[], charts={}, dlTaskId=null, dlTimer=null
 
 function _coreActionAttrs(action, payload){
@@ -57,12 +58,151 @@ function initAuthenticatedShell(){
   if(!_currentUser) return
   loadAnnouncements()
   refreshLiveTradeBadge()
+  refreshBridgeProcessBadge()
+  if(!window._bridgeProcessTimer) window._bridgeProcessTimer = setInterval(refreshBridgeProcessBadge, 5000)
   startPoll()
   initAI()
   initBrokerConfig()
   initNotifyConfig()
   loadTradeMode()
 }
+
+function bridgeProcessErrorText(r, path=''){
+  const msg = (r && (r.msg || r.error)) || '请求没有返回有效结果'
+  const bits = []
+  if(path) bits.push(path)
+  if(r?.status) bits.push('HTTP '+r.status)
+  if(r?.network) bits.push('网络连接失败')
+  const host = location.hostname || ''
+  if(['127.0.0.1','localhost'].includes(host)) bits.push('手机访问时要用电脑局域网IP，不是 '+host)
+  bits.push(msg)
+  return bits.join(' ｜ ')
+}
+
+function _setSwitchBadge(el, cls, text, title){
+  if(!el) return
+  el.className = cls
+  el.innerHTML = `<i></i><b>${text}</b>`
+  if(title) el.title = title
+}
+
+function _renderCurrentModeBadge(id, mode, label){
+  const el = document.getElementById(id)
+  if(!el) return
+  const raw = String(mode || '').toLowerCase()
+  const isLive = raw === 'live' || raw === 'real'
+  const isPaper = raw === 'paper' || raw === 'simulation' || raw === 'sim'
+  const text = isLive ? '实盘' : (isPaper ? '模拟盘' : '读取中')
+  el.className = 'exec-current-mode ' + (isLive ? 'live' : (isPaper ? 'paper' : 'unknown'))
+  el.innerHTML = `<i></i><b>${label}当前：${text}</b>`
+  el.title = `${label}当前交易环境：${text}`
+}
+
+async function refreshBridgeProcessBadge(){
+  const bridgeEl = document.getElementById('bridgeProcessBadge')
+  const topEl = document.getElementById('mobileTradeBadge')
+  const r = await api('/bridge/process')
+  if(!r || !r.ok){
+    const title = '读取桥接器后台状态失败：' + bridgeProcessErrorText(r, '/api/bridge/process')
+    _setSwitchBadge(bridgeEl, 'bridge-switch checking', '桥接器 未知', title)
+    _setSwitchBadge(topEl, 'bridge-switch checking', '手机交易 未知', title)
+    return null
+  }
+  if(r.running){
+    _setSwitchBadge(bridgeEl, 'bridge-switch on', `桥接器 开 ${r.pid||''}`, '点击关闭后台桥接器进程')
+    _setSwitchBadge(topEl, 'bridge-switch on', '手机交易 已连接', '打开交易执行控制台：桥接器运行中')
+  }else{
+    _setSwitchBadge(bridgeEl, 'bridge-switch off', '桥接器 关', '点击后台启动桥接器，不弹 CMD 窗口')
+    _setSwitchBadge(topEl, 'bridge-switch off', '手机交易 未启动', '打开交易执行控制台：桥接器未启动')
+  }
+  return r
+}
+
+async function toggleBridgeProcess(){
+    const el = document.getElementById('bridgeProcessBadge') || document.getElementById('mobileTradeBadge')
+    if(el){
+      el.classList.add('busy')
+      el.innerHTML = '<i></i><b>处理中</b>'
+    }
+    const cur = await refreshBridgeProcessBadge()
+    const path = cur && cur.running ? '/bridge/process/stop' : '/bridge/process/start'
+    const r = await api(path, 'POST', {})
+    if(el) el.classList.remove('busy')
+    await refreshBridgeProcessBadge()
+    if(typeof toast === 'function') toast(r && r.ok ? (r.running ? '桥接器已后台运行' : '桥接器已关闭') : ('桥接器操作失败：' + bridgeProcessErrorText(r, '/api'+path)))
+  }
+
+function _setMobileChainStatus(text, ok=null){
+  const el = document.getElementById('mobileChainStatus')
+  if(!el) return
+  el.textContent = text
+  el.style.color = ok === true ? '#368B63' : (ok === false ? '#D6456A' : 'var(--t2)')
+}
+
+async function refreshMobileProfileBadge(){
+  const r = await api('/mobile_ths/profile')
+  const connEl = document.getElementById('mobileConnText')
+  const modeEl = document.getElementById('mobileModeText')
+  const profileEl = document.getElementById('mobileProfileText')
+  if(!r || !r.ok){
+    const msg = (r && (r.msg || r.error)) || '读取失败'
+    if(connEl) connEl.textContent = '连接：读取失败'
+    if(modeEl) modeEl.textContent = '模式：读取失败'
+    if(profileEl) profileEl.textContent = msg
+    _setMobileChainStatus('手机配置读取失败：' + msg, false)
+    return null
+  }
+  const conn = r.connection_mode || 'usb'
+  const mode = r.trade_mode === 'live' ? '实盘' : (r.trade_mode === 'simulation' ? '模拟盘' : (r.trade_mode || '未知'))
+  const confirm = r.confirm_mode === 'auto' ? '全自动确认' : '手动确认'
+  const task = r.mobile_task || {}
+  _renderCurrentModeBadge('mobileCurrentModeBadge', r.trade_mode || 'unknown', '手机')
+  if(connEl) connEl.textContent = `连接：${conn.toUpperCase()}${r.device_serial ? ' · '+r.device_serial : ''}`
+  if(modeEl) modeEl.textContent = `模式：${mode}`
+  if(profileEl) profileEl.textContent = `设备：${r.device_serial || '未绑定'} ｜ 确认：${confirm} ｜ App：${r.app_package || '-'}`
+  if(task.running) _setMobileChainStatus(`手机任务执行中：${task.action || 'unknown'} ${task.target || ''}`, null)
+  else if(task.msg) _setMobileChainStatus(`手机任务：${task.msg}`, task.ok)
+  else _setMobileChainStatus(`链路配置：${conn.toUpperCase()} / ${mode} / ${confirm}`, true)
+  return r
+}
+
+async function _mobilePost(path, body, busyText){
+  _setMobileChainStatus(busyText || '手机任务提交中...', null)
+  const r = await api(path, 'POST', body || {})
+  const ok = !!(r && r.ok)
+  _setMobileChainStatus(ok ? (r.msg || '任务已提交') : ((r && (r.msg || r.error)) || '任务失败'), ok)
+  await refreshMobileProfileBadge()
+  await refreshBridgeProcessBadge()
+  if(path === '/mobile_ths/mode') refreshExecutionState()
+  return r
+}
+
+function _mobileTaskId(resp){ return resp && resp.task && resp.task.task_id ? String(resp.task.task_id) : '' }
+function _mobileAccountPayload(profile){
+  const task = profile && profile.mobile_task || {}
+  if(task.action === 'account' && task.msg && typeof task.msg === 'object') return task.msg
+  return profile && profile.last_account_snapshot || null
+}
+async function waitMobileTaskDone(action, taskId, timeoutMs=65000){
+  const deadline = Date.now() + timeoutMs
+  let lastProfile = null
+  while(Date.now() < deadline){
+    await new Promise(resolve => setTimeout(resolve, 2500))
+    const profile = await refreshMobileProfileBadge()
+    if(!profile || !profile.ok) continue
+    lastProfile = profile
+    const task = profile.mobile_task || {}
+    const sameAction = !action || task.action === action
+    const sameTask = !taskId || String(task.task_id || '') === String(taskId)
+    if(sameAction && sameTask && task.running === false) return profile
+  }
+  return lastProfile || await refreshMobileProfileBadge()
+}
+
+function setMobileConnection(mode){ return _mobilePost('/mobile_ths/connection', {connection_mode: mode}, '正在切换手机连接方式...') }
+function switchMobileMode(mode){ return _mobilePost('/mobile_ths/mode', {mode}, '正在切换手机交易模式...') }
+function openMobileThs(){ return _mobilePost('/mobile_ths/open_ths', {}, '正在打开手机同花顺...') }
+function restartMobileBridge(){ return _mobilePost('/mobile_ths/restart_bridge', {}, '正在后台重启桥接器...') }
 
 function setEdSt(s){ document.getElementById('edSt').textContent=s }
 
@@ -110,6 +250,8 @@ function startPoll(){
 // 并作为下单手数计算(pbCalcShares)的资金基数。失败则回退 fetchSt 的配置资金。
 let _availFunds = null
 let _fundsMode  = null   // 记录上次资金来源；'real' 时停止自动轮询（避免抢焦点）
+let _accountTotalAsset = null
+let _targetPositionRatio = 0.2
 async function fetchFunds(){
   if(!_currentUser) return
   if(_pollInflight.funds) return
@@ -120,6 +262,9 @@ async function fetchFunds(){
     if(d.mode) _fundsMode = d.mode
     if(!d.ok || d.available==null) return   // 实盘暂无缓存时 available 为 null，保留药丸原值
     _availFunds = +d.available
+    const totalAsset = d.total_asset!=null ? +d.total_asset : (d.equity!=null ? +d.equity : null)
+    if(Number.isFinite(totalAsset) && totalAsset>0) _accountTotalAsset = totalAsset
+    else if(Number.isFinite(_availFunds) && d.market_value!=null) _accountTotalAsset = _availFunds + (+d.market_value||0)
     const capEl = document.getElementById('nCapital')
     if(capEl){
       capEl.textContent = '¥'+_availFunds.toLocaleString('zh-CN',{maximumFractionDigits:0})
@@ -139,10 +284,14 @@ async function fetchSt(force=false){
   const d=await api('/status'); if(!d) return
   const monitoring = !!(d.running || d.vibe_active)
   const rb=document.getElementById('runBadge')
-  rb.textContent=monitoring?'运行中':'已停止'
-  rb.className='badge '+(monitoring?'run':'stop')
-  document.getElementById('nScanned').textContent=d.scanned||0
-  document.getElementById('nExecuted').textContent=d.executed||0
+  if(rb){
+    rb.textContent=monitoring?'运行中':'已停止'
+    rb.className='badge '+(monitoring?'run':'stop')
+  }
+  const scannedEl=document.getElementById('nScanned')
+  const executedEl=document.getElementById('nExecuted')
+  if(scannedEl) scannedEl.textContent=d.scanned||0
+  if(executedEl) executedEl.textContent=d.executed||0
   // 账户信息
   const todayEl=document.getElementById('nToday')
   const limitEl=document.getElementById('nLimit')
@@ -162,6 +311,9 @@ async function fetchSt(force=false){
   if(di&&!di.matches(':focus')) di.value=d.max_daily_trades||3
   if(si&&!si.matches(':focus')) si.value=Math.round((d.single_position_max_ratio||0.2)*100)
   if(mi&&!mi.matches(':focus')) mi.value=d.max_positions||5
+  const maxPosForTarget = +(d.max_positions||0)
+  const ratioForTarget = +(d.position_ratio||0)
+  _targetPositionRatio = ratioForTarget>0 ? ratioForTarget : (maxPosForTarget>0 ? 1/maxPosForTarget : 0.2)
   const ss=document.getElementById('scanSt')
   ss.innerHTML=monitoring?`<span class="spin">⟳</span> ${d.vibe_active?'Alpha监控中':'监控中'}`:'已停止'
   ss.style.color=monitoring?'var(--gl)':'var(--t3)'
@@ -171,6 +323,13 @@ async function fetchSt(force=false){
     _renderAutoSwitch(_autoExec)
   }
   const pool = d.pool||[], queue = d.queue||[], logs = d.logs||[]
+  const maxPos = +(d.max_positions||5)
+  const occupiedCodes = new Set(Object.keys(d.positions||{}))
+  queue.forEach(q=>{ if(q?.code && String(q.action||'buy').toLowerCase()==='buy' && ['pending','sent','submitted'].includes(String(q.status||'pending'))) occupiedCodes.add(q.code) })
+  if(ss && monitoring && d.auto_execute && maxPos>0 && occupiedCodes.size>=maxPos){
+    ss.innerHTML = `<span class="spin">⟳</span> 运行中 · 持仓已满 ${occupiedCodes.size}/${maxPos}，停止开新仓`
+    ss.style.color = '#D6456A'
+  }
   const poolSig = _statusPayloadSig(pool), queueSig = _statusPayloadSig(queue), logsSig = _statusPayloadSig(logs)
   const queueChanged = queueSig!==_statusRenderSig.queue
   if(poolSig!==_statusRenderSig.pool || queueChanged){
@@ -232,8 +391,8 @@ async function fetchPositions(){
     renderPositions(Array.isArray(data)?data:[])
   }finally{ _pollInflight.positions = false }
 }
-async function mStart(){ await api('/start','POST'); fetchSt() }
-async function mStop() { await api('/stop','POST');  fetchSt() }
+async function mStart(){ const r=await api('/start','POST'); if(typeof toast==='function') toast((r&&(r.msg||r.error))||(r&&r.ok?'策略已启动':'策略启动失败')); fetchSt() }
+async function mStop() { const r=await api('/stop','POST');  if(typeof toast==='function') toast((r&&(r.msg||r.error))||(r&&r.ok?'策略已停止':'策略停止失败')); fetchSt() }
 async function clearQ(){
   if(!confirm('确认清空执行队列？')) return
   await api('/queue/clear','POST')
@@ -268,6 +427,21 @@ function _renderAutoSwitch(on){
 document.getElementById('autoExecLabel').onclick = toggleAutoExec
 
 // 持仓渲染
+function _positionWeightBase(positions, account){
+  const accountTotal = account && account.total_asset!=null ? +account.total_asset : null
+  if(Number.isFinite(accountTotal) && accountTotal>0) return accountTotal
+  if(Number.isFinite(_accountTotalAsset) && _accountTotalAsset>0) return _accountTotalAsset
+  const marketValue = (positions||[]).reduce((s,p)=>s+(+(p.market_value||0)),0)
+  const cash = Number.isFinite(_availFunds) ? _availFunds : 0
+  return marketValue + cash || marketValue || 0
+}
+function _positionWeightHtml(marketValue, base){
+  const actual = base>0 ? marketValue/base : 0
+  const target = _targetPositionRatio || 0.2
+  const diff = actual - target
+  const color = Math.abs(diff)<=0.01 ? 'var(--t3)' : (diff>0 ? '#f59e0b' : 'var(--t4)')
+  return `<div style="font-size:10px;color:${color};margin-top:1px">${(actual*100).toFixed(1)}% / 目标${(target*100).toFixed(0)}%</div>`
+}
 function renderPositions(positions){
   const tb   = document.getElementById('posBody')
   const totEl= document.getElementById('posTotal')
@@ -287,6 +461,7 @@ function renderPositions(positions){
     pnlEl.style.color = totalPnl>=0?'var(--rl)':'var(--gl)'
     pnlEl.style.fontWeight='700'
   }
+  const weightBase = _positionWeightBase(positions)
   tb.innerHTML = positions.map(p=>{
     const pUp  = p.pnl_pct>=0
     const sign = pUp?'+':''
@@ -299,7 +474,7 @@ function renderPositions(positions){
       <td style="padding:5px 10px;text-align:right;color:var(--t4);font-size:11px">${(+p.cost).toFixed(2)}</td>
       <td style="padding:5px 10px;text-align:right;font-weight:700">${(+p.cur_price).toFixed(2)}</td>
       <td style="padding:5px 10px;text-align:right;font-weight:700;color:${pColor}">${sign}${p.pnl_pct.toFixed(2)}%</td>
-      <td style="padding:5px 10px;text-align:right;color:var(--t3);font-size:11px">¥${(+(p.market_value||0)).toLocaleString('zh-CN',{maximumFractionDigits:0})}</td>
+      <td style="padding:5px 10px;text-align:right;color:var(--t3);font-size:11px">¥${(+(p.market_value||0)).toLocaleString('zh-CN',{maximumFractionDigits:0})}${_positionWeightHtml(+(p.market_value||0), weightBase)}</td>
       <td style="padding:5px 8px;text-align:right" onclick="event.stopPropagation()">
         <button class="btn btn-red btn-xs" onclick="sellPos('${p.code}',${p.cur_price})">卖出</button>
       </td>
@@ -651,21 +826,15 @@ async function loadTradeMode(){
 
 function _renderTradeModeBadge(){
   const el = document.getElementById('tradeModeBadge')
+  _renderCurrentModeBadge('desktopCurrentModeBadge', _tradeMode, '电脑')
   if(!el) return
+  el.removeAttribute('style')
   if(_tradeMode === 'live'){
-    el.textContent = '🔴 实盘'
-    el.className = 'badge'
-    el.style.background = '#ef4444'
-    el.style.color = '#fff'
-    el.style.boxShadow = '0 0 8px rgba(239,68,68,.5)'
-    el.style.animation = 'pulse 2s infinite'
+    el.className = 'top-switch trade-switch on'
+    el.innerHTML = '<i></i><b>实盘</b>'
   } else {
-    el.textContent = '🛡️ 模拟'
-    el.className = 'badge dry'
-    el.style.background = ''
-    el.style.color = ''
-    el.style.boxShadow = ''
-    el.style.animation = ''
+    el.className = 'top-switch trade-switch off'
+    el.innerHTML = '<i></i><b>模拟</b>'
   }
 }
 
@@ -731,10 +900,13 @@ async function refreshAutoModeBadge(){ _renderAutoModeBadge(await _fetchTradeSet
 async function saveTradeSettingsPanel(){
   const hint = document.getElementById('tsSaveHint')
   if(hint){ hint.textContent='保存中...'; hint.style.color='var(--t3)' }
-  const r = await api('/account/trade_settings','POST', _readTradeRadios('ts'))
+  const payload = _readTradeRadios('ts')
+  const r = await api('/account/trade_settings','POST', payload)
   if(r && r.ok){
+    await api('/mobile_ths/confirm_mode','POST', {mode: payload.auto_confirm_order ? 'auto' : 'manual'})
     _renderAutoModeBadge(r)   // 顶部状态标签同步更新
     if(hint){ hint.textContent = `✅ 已保存：下单${r.auto_confirm_order?'自动确认':'手动确认'} · ${r.auto_cancel_unfilled?`自动撤单(${Math.round(r.auto_cancel_delay)}秒)`:'手动撤单'}`; hint.style.color='#22c55e' }
+    refreshMobileProfileBadge()
   }else if(hint){
     hint.textContent = '⚠️ '+((r&&r.msg)||'保存失败（实盘操作员未就绪？仅实盘可设）'); hint.style.color='#ef4444'
   }
@@ -749,11 +921,277 @@ function openTodayOrders(){
   // 清掉上次的「当日委托」残留，避免误读旧数据。
   const ob = document.getElementById('acctOrdersBody')
   if(ob) ob.innerHTML = ''
+  loadTradeMode()
+  if(typeof refreshLiveTradeBadge === 'function') refreshLiveTradeBadge()
   loadTradeSettings('ts')   // 回填当前实盘自动化设置（下单确认/自动撤单）
+  refreshBridgeProcessBadge()
+  refreshMobileProfileBadge()
+  refreshExecutionState()
 }
 function closeTodayOrders(ev){
   if(ev && ev.target !== document.getElementById('todayOrdersModal')) return
   document.getElementById('todayOrdersModal').classList.remove('open')
+}
+
+function openExecutionConsole(){
+  openTodayOrders()
+}
+
+function _setExecText(id, text, ok=null){
+  const el = document.getElementById(id)
+  if(!el) return
+  el.textContent = text
+  el.style.color = ok === true ? '#368B63' : (ok === false ? '#D6456A' : 'var(--t2)')
+  const lamp = el.closest && el.closest('.exec-lamp')
+  if(lamp){
+    lamp.classList.remove('on','off','idle')
+    lamp.classList.add(ok === true ? 'on' : (ok === false ? 'off' : 'idle'))
+  }
+}
+
+function openExecutionPage(){
+  openExecutionConsole()
+}
+
+function _execMoney(v){
+  return (v==null || isNaN(+v)) ? '—' : '¥'+(+v).toLocaleString('zh-CN',{maximumFractionDigits:2})
+}
+
+function _execPositionsCount(d){
+  if(Array.isArray(d?.positions)) return d.positions.length
+  if(d?.positions_count!=null) return +d.positions_count
+  return null
+}
+
+function _renderExecFundsPanel(id, data, opts={}){
+  const el = document.getElementById(id)
+  if(!el) return
+  const title = opts.title || (id === 'execMobileFundsPanel' ? '手机资金 / 仓位' : '电脑资金 / 仓位')
+  if(opts.loading){
+    el.innerHTML = '<div class="exec-funds-title"><span>'+esc(title)+'</span></div><div class="exec-funds-empty">'+esc(opts.loading)+'</div>'
+    return
+  }
+  if(opts.error){
+    el.innerHTML = '<div class="exec-funds-title"><span>'+esc(title)+'</span></div><div class="exec-funds-error">'+esc(opts.error)+'</div>'
+    return
+  }
+  if(!data){ return }
+  const totalAsset = data.total_asset!=null ? +data.total_asset : (data.equity!=null ? +data.equity : null)
+  const targetAmount = Number.isFinite(totalAsset) && totalAsset > 0 ? totalAsset * (_targetPositionRatio || 0.2) : null
+  const posCount = _execPositionsCount(data)
+  const kpis = [
+    ['可用资金', _execMoney(data.available), 'primary'],
+    ['总资产', _execMoney(totalAsset), ''],
+    ['目标单仓', _execMoney(targetAmount), 'warn'],
+    ['持仓数', posCount==null ? '—' : String(posCount), 'neu'],
+  ]
+  const cards = kpis.map(([k,v,cls])=>'<div class="exec-funds-kpi '+cls+'"><div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+'</div></div>').join('')
+  const meta = [
+    opts.source && '来源 '+opts.source,
+    data.source && '数据 '+data.source,
+    data.connection_mode && '连接 '+String(data.connection_mode).toUpperCase(),
+    data.device_serial && '设备 '+data.device_serial,
+    opts.mode && '模式 '+opts.mode,
+  ].filter(Boolean).join(' ｜ ')
+  el.innerHTML = '<div class="exec-funds-title"><span>'+esc(title)+'</span></div><div class="exec-funds-kpis">'+cards+'</div>'+(meta?'<div class="exec-funds-meta">'+esc(meta)+'</div>':'')
+}
+
+
+async function _fallbackExecutionState(){
+  const settled = await Promise.allSettled([
+    api('/status'),
+    api('/user/broker_config'),
+    api('/bridge/process'),
+    api('/mobile_ths/profile'),
+    api('/bridge/live_enabled'),
+  ])
+  const pick = i => settled[i].status === 'fulfilled' ? (settled[i].value || {}) : {}
+  const st = pick(0), broker = pick(1), bridge = pick(2), mobile = pick(3), live = pick(4)
+  const brokerType = String(broker.broker_type || st.broker_type || 'paper').toLowerCase()
+  const lastAccount = mobile.last_account_snapshot || {}
+  const positions = Array.isArray(lastAccount.positions) ? lastAccount.positions : []
+  const ratio = +(st.position_ratio || _targetPositionRatio || 0.2)
+  const accountBase = +(lastAccount.total_asset || lastAccount.equity || (broker.config||{}).live_cash || st.capital || 0)
+  return {
+    ok: true,
+    fallback: true,
+    strategy: {
+      running: !!(st.running || st.vibe_active),
+      auto_execute: !!st.auto_execute,
+      active_strategy: st.active_strategy || '',
+      today_trades: +(st.today_trades || 0),
+      queue_count: Array.isArray(st.queue) ? st.queue.length : 0,
+    },
+    execution: {
+      active_target: String(mobile.executor_type || 'android').toLowerCase().includes('android') ? 'mobile' : (brokerType === 'paper' ? 'paper' : 'desktop'),
+      executor_type: mobile.executor_type || 'android',
+      broker_type: brokerType,
+      live_trade_enabled: !!live.enabled,
+    },
+    mobile: {
+      bridge_running: !!bridge.running,
+      bridge_pid: bridge.pid || null,
+      connection_mode: mobile.connection_mode || 'usb',
+      trade_mode: mobile.trade_mode || 'unknown',
+      confirm_mode: mobile.confirm_mode || 'manual',
+      device_serial: mobile.device_serial || '',
+      app_package: mobile.app_package || 'com.hexin.plat.android',
+      task: mobile.mobile_task || {},
+      account: {
+        ok: !!lastAccount.ok,
+        available: lastAccount.available == null ? null : +lastAccount.available,
+        total_asset: lastAccount.total_asset == null ? null : +lastAccount.total_asset,
+        market_value: lastAccount.market_value == null ? null : +lastAccount.market_value,
+        positions_count: positions.length,
+      },
+    },
+    desktop: {
+      xiadan_ready: brokerType !== 'paper',
+      trade_mode: brokerType === 'paper' ? 'paper' : 'live',
+      trade_settings: null,
+    },
+    position_policy: {
+      mode: 'client_fallback',
+      sizing: 'equal',
+      max_daily: ratio > 0 ? Math.round(1 / ratio) : 0,
+      max_hold: ratio > 0 ? Math.round(1 / ratio) : 0,
+      max_positions: ratio > 0 ? Math.round(1 / ratio) : 0,
+      target_ratio: ratio,
+      target_amount: accountBase > 0 ? +(accountBase * ratio).toFixed(2) : null,
+      account_base: accountBase > 0 ? accountBase : null,
+      account_source: lastAccount.total_asset ? 'mobile_snapshot' : ((broker.config||{}).live_cash ? 'live_cash' : 'account_capital'),
+      max_order_amount: null,
+    },
+  }
+}
+
+async function refreshExecutionState(){
+  const hint = document.getElementById('execStateHint')
+  if(hint) hint.textContent = '正在读取执行状态...'
+  let r = await api('/execution/state')
+  if(!r || !r.ok){
+    if(hint && r && r.status === 404) hint.textContent = '当前服务未挂载聚合接口，正在切换旧接口聚合...'
+    const fallback = await _fallbackExecutionState()
+    if(fallback && fallback.ok){ r = fallback }
+  }
+  if(!r || !r.ok){
+    const msg = (r && (r.msg || r.error)) || '执行状态接口读取失败'
+    _setExecText('execStrategyLamp', '未知', false)
+    _setExecText('execAutoLamp', '未知', false)
+    _setExecText('execMobileLamp', '未知', false)
+    _setExecText('execDesktopLamp', '未知', false)
+    _setExecText('execPositionLamp', '未知', false)
+    if(hint){ hint.textContent = msg; hint.style.color = '#D6456A' }
+    return null
+  }
+  const st = r.strategy || {}
+  const ex = r.execution || {}
+  const mobile = r.mobile || {}
+  const desktop = r.desktop || {}
+  const pos = r.position_policy || {}
+  _setExecText('execStrategyLamp', st.running ? '运行中' : '停止', !!st.running)
+  _setExecText('execAutoLamp', st.auto_execute ? '开启' : '关闭', !!st.auto_execute)
+  _setExecText('execMobileLamp', mobile.bridge_running ? '已连接' : '未启动', !!mobile.bridge_running)
+  _setExecText('execDesktopLamp', ex.live_trade_enabled ? '开启' : '关闭', !!ex.live_trade_enabled)
+  _renderCurrentModeBadge('mobileCurrentModeBadge', mobile.trade_mode || 'unknown', '手机')
+  _renderCurrentModeBadge('desktopCurrentModeBadge', desktop.trade_mode || ex.broker_type || _tradeMode, '电脑')
+  const targetRatio = pos.target_ratio!=null ? `${(+pos.target_ratio*100).toFixed(0)}%` : '—'
+  const targetAmount = pos.target_amount!=null ? '¥'+(+pos.target_amount).toLocaleString('zh-CN',{maximumFractionDigits:0}) : '—'
+  _setExecText('execPositionLamp', `${targetRatio} / ${targetAmount}`, true)
+  const mobileCls = mobile.bridge_running ? 'bridge-switch on' : 'bridge-switch off'
+  const mobileText = mobile.bridge_running ? '手机桥接 已连接' : '手机桥接 未启动'
+  _setSwitchBadge(document.getElementById('execMobileBadge'), mobileCls, mobileText)
+  const conn = mobile.connection_mode ? String(mobile.connection_mode).toUpperCase() : '—'
+  const mode = mobile.trade_mode === 'live' ? '实盘' : (mobile.trade_mode === 'simulation' ? '模拟盘' : (mobile.trade_mode || '—'))
+  const confirm = mobile.confirm_mode === 'auto' ? '全自动确认' : '手动确认'
+  const mobileMeta = document.getElementById('execMobileMeta')
+  if(mobileMeta) mobileMeta.textContent = `连接：${conn} ｜ 模式：${mode} ｜ 确认：${confirm}${mobile.device_serial ? ' ｜ 设备：'+mobile.device_serial : ''}`
+  if(mobile.account && (mobile.account.ok || mobile.account.available!=null || mobile.account.total_asset!=null)){
+    _renderExecFundsPanel('execMobileFundsPanel', {
+      ...mobile.account,
+      connection_mode: mobile.connection_mode,
+      device_serial: mobile.device_serial,
+    }, {source:'上次手机快照', mode})
+  }
+  const desktopMeta = document.getElementById('execDesktopMeta')
+  if(desktopMeta) desktopMeta.textContent = `交易模式：${desktop.trade_mode || ex.broker_type || 'paper'} ｜ 实盘总闸：${ex.live_trade_enabled ? '开' : '关'}`
+  if(hint){
+    hint.textContent = `当前策略：${st.active_strategy || '未选择'} ｜ 执行端：${ex.active_target || '按当前交易模式'} ｜ 仓位模式：${pos.mode || 'strategy'}${r.fallback ? ' ｜ 旧接口聚合' : ''}`
+    hint.style.color = 'var(--t2)'
+  }
+  return r
+}
+
+async function refreshMobileFunds(){
+  const body = document.getElementById('mobileFundsBody')
+  const btn = document.getElementById('mobileFundsRefresh')
+  const oldTxt = btn ? btn.textContent : '查资金/仓位'
+  if(btn){ btn.disabled = true; btn.textContent = '读取中...' }
+  if(body) body.innerHTML = '<div class="empty-hint">正在读取手机同花顺资金，等待手机端返回...</div>'
+  _renderExecFundsPanel('execMobileFundsPanel', null, {loading:'正在读取手机同花顺资金，等待手机端返回...'})
+  try{
+    const r = await api('/mobile_ths/account')
+    if(!r || !r.ok){
+      const msg = r && r.status === 404
+        ? '手机资金接口未加载：当前 5001 还是旧服务，重启见微平台后加载 /api/mobile_ths/account'
+        : ((r&&(r.msg||r.error))||'读取手机资金失败')
+      if(body) body.innerHTML = `<div style="color:#D6456A;font-size:12px;padding:10px">${esc(msg)}</div>`
+      _renderExecFundsPanel('execMobileFundsPanel', null, {error:msg})
+      _setMobileChainStatus(msg, false)
+      return
+    }
+
+    let profile = null
+    let data = null
+    const taskId = _mobileTaskId(r)
+    if(r.accepted || (r.task && r.task.running)){
+      _setMobileChainStatus('手机资金读取任务执行中...', null)
+      profile = await waitMobileTaskDone('account', taskId)
+      data = _mobileAccountPayload(profile)
+    } else {
+      data = r.last_account_snapshot && r.last_account_snapshot.ok ? r.last_account_snapshot : r
+    }
+
+    if(!data || data.ok === false){
+      const task = profile && profile.mobile_task || {}
+      const msg = (data && (data.msg || data.error)) || (task && (task.msg || task.error)) || '手机资金读取未返回账户数据'
+      if(body) body.innerHTML = `<div style="color:#D6456A;font-size:12px;padding:10px">${esc(typeof msg === 'string' ? msg : JSON.stringify(msg))}</div>`
+      _renderExecFundsPanel('execMobileFundsPanel', null, {error:typeof msg === 'string' ? msg : JSON.stringify(msg)})
+      _setMobileChainStatus(typeof msg === 'string' ? msg : '手机资金读取未返回账户数据', false)
+      return
+    }
+
+    if(body) body.innerHTML = renderMobileFundsCard(data) + (Array.isArray(data.positions) ? renderPositionsTable(data.positions, 'mobile', data) : '')
+    _renderExecFundsPanel('execMobileFundsPanel', data, {source:'手机同花顺', mode:data.trade_mode || data.mode || '手机'})
+    if(data.available!=null){
+      const mobileCapEl = document.getElementById('nMobileCapital')
+      const mobileFunds = +data.available
+      if(mobileCapEl){
+        mobileCapEl.textContent = '¥'+mobileFunds.toLocaleString('zh-CN',{maximumFractionDigits:0})
+        mobileCapEl.parentElement?.setAttribute('title', `手机同花顺可用资金：¥${mobileFunds.toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})}`)
+      }
+    }
+    _setMobileChainStatus(`手机资金读取完成：${data.source || 'mobile_ui'}`, true)
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = oldTxt || '查资金/仓位' }
+  }
+}
+
+function renderMobileFundsCard(d){
+  const fmt = v => (v==null||isNaN(+v)) ? '—' : '¥'+(+v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})
+  const totalAsset = d.total_asset!=null ? +d.total_asset : null
+  if(Number.isFinite(totalAsset) && totalAsset>0) _accountTotalAsset = totalAsset
+  const targetAmount = Number.isFinite(totalAsset) && totalAsset>0 ? totalAsset * (_targetPositionRatio || 0.2) : null
+  const kpis = [
+    ['可用资金', fmt(d.available), 'primary'],
+    ['总资产', fmt(d.total_asset), ''],
+    ['目标单仓', fmt(targetAmount), 'warn'],
+    ['持仓市值', fmt(d.market_value), 'neu'],
+    ['浮动盈亏', fmt(d.profit_loss), (+d.profit_loss||0) >= 0 ? 'warn' : 'primary'],
+  ]
+  const cards = kpis.map(([k,v,cls])=>`<div class="mobile-kpi ${cls}"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('')
+  const meta = [d.connection_mode && `连接 ${String(d.connection_mode).toUpperCase()}`, d.device_serial && `设备 ${d.device_serial}`, d.source && `来源 ${d.source}`].filter(Boolean).join(' ｜ ')
+  return `<div class="mobile-kpi-grid">${cards}</div>${meta?`<div class="mobile-muted" style="margin-top:8px">${esc(meta)}</div>`:''}`
 }
 async function refreshTodayOrders(){
   const body = document.getElementById('acctOrdersBody')
@@ -796,19 +1234,29 @@ async function refreshTodayOrders(){
 async function refreshAccountSnapshot(){
   const body = document.getElementById('acctSnapshotBody')
   const btn  = document.getElementById('acctSnapRefresh')
-  btn.disabled = true
-  const oldTxt = btn.textContent
-  btn.textContent = '⏳ 读取中...'
-  body.innerHTML = '<div style="padding:24px;color:var(--t3);font-size:13px;text-align:center">⏳ 正在读取账户资金 + 持仓...<br><span style="font-size:11px">实盘会按 F4 截图（约 2-3 秒），期间请勿操作鼠标键盘</span></div>'
+  if(btn) btn.disabled = true
+  const oldTxt = btn ? btn.textContent : '查资金/持仓'
+  if(btn) btn.textContent = '⏳ 读取中...'
+  if(body) body.innerHTML = '<div style="padding:24px;color:var(--t3);font-size:13px;text-align:center">⏳ 正在读取账户资金 + 持仓...<br><span style="font-size:11px">实盘会按 F4 截图（约 2-3 秒），期间请勿操作鼠标键盘</span></div>'
+  _renderExecFundsPanel('execDesktopFundsPanel', null, {loading:'正在读取电脑侧账户资金和持仓...'})
 
   const r = await api('/account/snapshot')
-  btn.disabled = false
-  btn.textContent = oldTxt
+  if(btn) btn.disabled = false
+  if(btn) btn.textContent = oldTxt
 
-  if(!r){ body.innerHTML = '<div style="color:#ef4444;padding:16px">⚠️ 网络错误</div>'; return }
-  if(!r.ok){ body.innerHTML = `<div style="color:#ef4444;padding:16px">⚠️ ${r.msg||'获取失败'}</div>`; return }
+  if(!r){
+    if(body) body.innerHTML = '<div style="color:#ef4444;padding:16px">⚠️ 网络错误</div>'
+    _renderExecFundsPanel('execDesktopFundsPanel', null, {error:'网络错误'})
+    return
+  }
+  if(!r.ok){
+    const msg = r.msg || '获取失败'
+    if(body) body.innerHTML = `<div style="color:#ef4444;padding:16px">⚠️ ${esc(msg)}</div>`
+    _renderExecFundsPanel('execDesktopFundsPanel', null, {error:msg})
+    return
+  }
 
-  let html = renderFundsCard(r) + renderPositionsTable(r.positions, r.mode)
+  let html = renderFundsCard(r) + renderPositionsTable(r.positions, r.mode, r)
   if(r.screenshot){
     const url = '/' + r.screenshot + '?t=' + Date.now()
     html += `<details style="margin-top:10px">
@@ -817,16 +1265,20 @@ async function refreshAccountSnapshot(){
     </details>`
   }
   if(r.msg) html += `<div style="font-size:11px;color:var(--t3);padding:6px 0">${r.msg}</div>`
-  body.innerHTML = html
+  if(body) body.innerHTML = html
+  _renderExecFundsPanel('execDesktopFundsPanel', r, {source:r.mode === 'paper' ? '电脑模拟盘' : 'xiadan', mode:r.mode || 'desktop'})
 }
 
 // 资金概览卡片：可用资金 / 总资产 / 持仓市值
 function renderFundsCard(d){
   const fmt = v => (v==null||isNaN(+v)) ? '—' : '¥'+(+v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})
+  const totalAsset = d.total_asset!=null ? +d.total_asset : (d.equity!=null ? +d.equity : null)
+  if(Number.isFinite(totalAsset) && totalAsset>0) _accountTotalAsset = totalAsset
+  const targetAmount = Number.isFinite(totalAsset) && totalAsset>0 ? totalAsset * (_targetPositionRatio || 0.2) : null
   const modeBadge = d.mode==='paper'
     ? '<span style="font-size:10px;color:#0ea5e9;border:1px solid #0ea5e9;border-radius:4px;padding:1px 6px">模拟盘（本地账本）</span>'
     : '<span style="font-size:10px;color:#ef4444;border:1px solid #ef4444;border-radius:4px;padding:1px 6px">实盘（OCR 识别）</span>'
-  const cards = [['可用资金', fmt(d.available), '#22c55e'], ['总资产', fmt(d.total_asset), 'var(--t1)']]
+  const cards = [['可用资金', fmt(d.available), '#22c55e'], ['总资产', fmt(d.total_asset), 'var(--t1)'], ['目标单仓', fmt(targetAmount), '#f59e0b']]
   if(d.market_value!=null) cards.push(['持仓市值', fmt(d.market_value), 'var(--t2)'])
   const cardHtml = cards.map(([k,v,c])=>`
     <div style="flex:1;min-width:120px;background:rgba(255,255,255,.03);border:1px solid var(--b1);border-radius:8px;padding:10px 12px">
@@ -838,32 +1290,38 @@ function renderFundsCard(d){
 }
 
 // 持仓表：模拟盘结构化字段齐全；实盘 OCR 仅 code/name 可靠 + numbers/raw 供参考
-function renderPositionsTable(positions, mode){
+function renderPositionsTable(positions, mode, account){
   if(!positions || !positions.length){
     return '<div style="font-size:12px;color:var(--t3);padding:8px 0">（无持仓，或 OCR 未解析出持仓行——请看下方截图）</div>'
   }
   const isPaper = mode==='paper' || positions[0].cost_price!=null
   if(isPaper){
+    const weightBase = _positionWeightBase(positions, account)
+    const targetPct = ((_targetPositionRatio || 0.2) * 100).toFixed(0)
     const rows = positions.map(p=>{
-      const pnl = +p.pnl_amount||0
+      const curPrice = p.cur_price!=null ? +p.cur_price : +(p.current_price||0)
+      const pnl = p.pnl_amount!=null ? +p.pnl_amount : +(p.profit_loss||0)
       const pc  = pnl>0?'#ef4444':(pnl<0?'#22c55e':'var(--t2)')   // A股红涨绿跌
-      const pct = ((p.pnl_pct>0?'+':'')+(p.pnl_pct||0))+'%'
+      const pnlPct = p.pnl_pct!=null ? +p.pnl_pct : +(p.profit_rate||0)
+      const pct = ((pnlPct>0?'+':'')+(Number.isFinite(pnlPct)?pnlPct:0))+'%'
+      const marketValue = +(p.market_value||0)
       return `<tr>
-        <td style="padding:4px 8px;font-family:monospace">${p.code}</td>
+        <td style="padding:4px 8px;font-family:monospace">${p.code||'-'}</td>
         <td style="padding:4px 8px">${p.name||'-'}</td>
         <td style="padding:4px 8px;text-align:right">${p.shares||0}</td>
         <td style="padding:4px 8px;text-align:right">${(+p.cost_price||0).toFixed(3)}</td>
-        <td style="padding:4px 8px;text-align:right">${(+p.cur_price||0).toFixed(2)}</td>
+        <td style="padding:4px 8px;text-align:right">${curPrice.toFixed(2)}</td>
         <td style="padding:4px 8px;text-align:right;color:${pc};font-weight:600">${pnl.toFixed(2)}<br><span style="font-size:10px">${pct}</span></td>
-        <td style="padding:4px 8px;text-align:right">${(+p.market_value||0).toFixed(0)}</td>
+        <td style="padding:4px 8px;text-align:right">${marketValue.toFixed(0)}${_positionWeightHtml(marketValue, weightBase)}</td>
       </tr>`
     }).join('')
-    return `<table style="width:100%;border-collapse:collapse;font-size:12px;margin:6px 0">
+    return `<div style="font-size:11px;color:var(--t3);padding:2px 0">目标均仓：${targetPct}% / 只，实际按市值÷总资产显示</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;margin:6px 0">
       <thead><tr style="border-bottom:1px solid var(--b1);color:var(--t3)">
         <th style="padding:4px 8px;text-align:left">代码</th><th style="padding:4px 8px;text-align:left">名称</th>
         <th style="padding:4px 8px;text-align:right">股数</th><th style="padding:4px 8px;text-align:right">成本</th>
         <th style="padding:4px 8px;text-align:right">现价</th><th style="padding:4px 8px;text-align:right">盈亏</th>
-        <th style="padding:4px 8px;text-align:right">市值</th>
+        <th style="padding:4px 8px;text-align:right">市值/仓位</th>
       </tr></thead><tbody>${rows}</tbody></table>`
   }
   // 实盘 OCR：代码/名称可靠，数字列仅供参考
@@ -1006,6 +1464,7 @@ async function _switchTradeMode(newMode, extraConfig){
   if(r?.ok){
     _tradeMode = newMode
     _renderTradeModeBadge()
+    refreshExecutionState()
     const msg = newMode === 'live'
       ? `⚠️ 已切到实盘模式 — 真余额 ¥${(extraConfig?.live_cash || 0).toLocaleString()}，仓位按此 × 20% 算。请确认桥接器在运行`
       : '✅ 已切回模拟模式 — 后续所有买卖单走 paper_broker'
@@ -3261,13 +3720,22 @@ function toggleLog(hd){
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
 
 async function api(path,method='GET',body=null){
-  const opts={method,credentials:'include',headers:{'Content-Type':'application/json'}}
+  const makeOpts = ()=>({method,credentials:'include',headers:{'Content-Type':'application/json'}})
+  const opts=makeOpts()
   if(body) opts.body=JSON.stringify(body)
   try{
-    const r=await fetch(API+path,opts)
-    if(!r.ok) throw new Error('HTTP '+r.status)
-    return await r.json()
-  }catch(e){ console.warn('API失败:',path,e); return null }
+    let r=await fetch(API+path,opts)
+    if(r.status===404 && String(path||'').startsWith('/mobile_ths/') && location.port!=='5002'){
+      const retryOpts=makeOpts()
+      if(body) retryOpts.body=JSON.stringify(body)
+      r=await fetch(MOBILE_API_FALLBACK+path,retryOpts)
+    }
+    const txt=await r.text()
+    let data=null
+    if(txt){ try{ data=JSON.parse(txt) }catch(e){ data={ok:false,error:txt.slice(0,240)} } }
+    if(!r.ok) return {...(data||{}), ok:false, status:r.status, error:(data&&(data.error||data.msg))||('HTTP '+r.status)}
+    return data || {ok:true}
+  }catch(e){ console.warn('API失败:',path,e); return {ok:false,error:e&&e.message?e.message:String(e),network:true} }
 }
 
 // ══════════════════════════════════════════════════

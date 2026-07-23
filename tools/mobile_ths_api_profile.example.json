@@ -1,0 +1,50 @@
+{
+  "session_max_age_sec": 300,
+  "account": {
+    "method": "POST",
+    "url": "https://APP_URL/account",
+    "decoder": "json",
+    "headers": {},
+    "body": {},
+    "data_path": ["data", "funds"],
+    "field_map": {
+      "available": "available",
+      "total_asset": "total_asset"
+    }
+  },
+  "positions": {
+    "method": "POST",
+    "url": "https://APP_URL/positions",
+    "decoder": "json",
+    "headers": {},
+    "body": {},
+    "data_path": ["data", "positions"],
+    "field_map": {
+      "code": "code",
+      "name": "name",
+      "shares": "shares",
+      "available_shares": "available_shares",
+      "cost_price": "cost_price",
+      "market_value": "market_value"
+    }
+  },
+  "orders": {
+    "method": "POST",
+    "url": "https://APP_URL/orders",
+    "decoder": "json",
+    "headers": {},
+    "body": {},
+    "data_path": ["data", "orders"],
+    "field_map": {
+      "order_ref": "order_ref",
+      "code": "code",
+      "status": "status",
+      "msg": "message"
+    },
+    "status_map": {
+      "已成": "executed",
+      "已报": "submitted",
+      "废单": "failed"
+    }
+  }
+}

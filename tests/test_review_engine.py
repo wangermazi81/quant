@@ -1,12 +1,57 @@
 from tests._module_stubs import stub_project_module
 import sys
 import types
+import builtins
 from pathlib import Path
 from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from analytics import review_engine
+
+
+def test_collect_zt_skips_current_fallback_when_tushare_only(monkeypatch):
+    from analytics import data_gateway as dg
+
+    imported = []
+    real_import = builtins.__import__
+    monkeypatch.setattr(dg, "get_source_order", lambda: ["tushare"])
+    monkeypatch.setattr(dg, "get_limit_pools", lambda compact: {})
+
+    def guard_import(name, *args, **kwargs):
+        if name == "akshare":
+            imported.append(name)
+            raise AssertionError("current limit-pool source must not run")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guard_import)
+
+    out = review_engine._collect_zt("20260717")
+
+    assert out["zt_count"] == 0
+    assert imported == []
+
+
+def test_collect_sectors_skips_current_fallback_when_tushare_only(monkeypatch):
+    from analytics import data_gateway as dg
+
+    imported = []
+    real_import = builtins.__import__
+    monkeypatch.setattr(dg, "get_source_order", lambda: ["tushare"])
+    monkeypatch.setattr(dg, "get_sector_rankings", lambda: {})
+
+    def guard_import(name, *args, **kwargs):
+        if name == "akshare":
+            imported.append(name)
+            raise AssertionError("current sector source must not run")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guard_import)
+
+    out = review_engine._collect_sectors()
+
+    assert out == {"industry_top": [], "industry_bottom": [], "concept_top": []}
+    assert imported == []
 
 
 def test_lhb_preloader_retries_until_today_is_cached(monkeypatch):

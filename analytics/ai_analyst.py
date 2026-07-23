@@ -719,11 +719,18 @@ def _get_fundamentals(code: str) -> dict:
             }.items() if v not in (None, "")})
     except Exception:
         pass
+    try:
+        _ds_cfg = dg.get_active_config()
+        _allow_legacy_sources = _ds_cfg.get("provider") == "current" or bool(_ds_cfg.get("fallback_enabled", True))
+    except Exception:
+        _allow_legacy_sources = True
     _bak = {k: _os.environ.pop(k, None) for k in
             ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY")}
     try:
         # ① 百度估值（可靠主干：市值/PE-TTM/PE静/PB）
         try:
+            if not _allow_legacy_sources:
+                raise RuntimeError("legacy datasource fallback disabled")
             import akshare as _ak
             for _ind, _key in (("总市值", "mktcap"), ("市盈率(TTM)", "pe_ttm"),
                                ("市盈率(静)", "pe_static"), ("市净率", "pb")):
@@ -737,6 +744,8 @@ def _get_fundamentals(code: str) -> dict:
             pass
         # ② efinance（东财富字段，best-effort + 重试，东财掐连接时优雅跳过）
         try:
+            if not _allow_legacy_sources:
+                raise RuntimeError("legacy datasource fallback disabled")
             import efinance as _ef
             import time as _eft
             s = None

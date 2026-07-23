@@ -26,6 +26,13 @@ def lot_shares(budget: float, price: float) -> int:
     return max(int(budget / price / LOT) * LOT, LOT)
 
 
+def strict_lot_shares(budget: float, price: float) -> int:
+    """按预算和价格算可买手数：向下取整到 100 股整数倍，不强行补 1 手。"""
+    if price <= 0 or budget <= 0:
+        return 0
+    return int(budget / price / LOT) * LOT
+
+
 def pick_ratio(panel_ratio: float, single_max: float,
                strat_ratio: float = 0.0, strat_equal: float = 0.0) -> float:
     """选择单笔仓位比例（占总资金）。优先级：

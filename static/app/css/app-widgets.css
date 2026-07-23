@@ -9,8 +9,13 @@
 .ait-badge.paper{background:var(--candy-blue-bg);color:#3D6FD0;border-color:var(--candy-blue-bd)}
 .ait-badge.token{background:var(--candy-amber-bg);color:#A9791C;border-color:var(--candy-amber-bd)}
 .ait-badge.strategy{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ait-grid{flex:1;min-height:0;display:grid;grid-template-columns:1.15fr 1fr 0.95fr;gap:10px;padding:10px 14px;overflow:hidden}
-.ait-pane{display:flex;flex-direction:column;min-height:0;background:var(--panel);border:1px solid var(--b1);border-radius:16px;overflow:hidden;box-shadow:0 8px 30px rgba(120,90,60,.045)}
+.ait-health{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:10px 14px 0;flex-shrink:0}
+.ait-health-card{min-height:72px;border:1px solid var(--b1);border-radius:16px;background:var(--panel);padding:10px 12px;box-shadow:0 8px 26px rgba(180,150,110,.08);position:relative;overflow:hidden}
+.ait-health-card:before{content:"";position:absolute;inset:0 0 auto 0;height:3px;background:#64748b;opacity:.9}
+.ait-health-card.ok:before{background:#22c55e;box-shadow:0 0 20px rgba(34,197,94,.45)}.ait-health-card.warn:before{background:#eab308;box-shadow:0 0 20px rgba(234,179,8,.38)}.ait-health-card.error:before{background:#ef4444;box-shadow:0 0 20px rgba(239,68,68,.45)}
+.ait-health-card span{display:block;font-size:11px;color:var(--t3);font-weight:900;letter-spacing:.08em}.ait-health-card b{display:block;font-size:15px;color:var(--t1);margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ait-health-card em{display:block;font-style:normal;font-size:11px;color:var(--t2);margin-top:5px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ait-grid{flex:1;min-height:0;display:grid;grid-template-columns:1.05fr 1.05fr .95fr;gap:10px;padding:10px 14px;overflow:hidden}
+.ait-pane{display:flex;flex-direction:column;min-height:0;background:var(--panel);border:1px solid var(--b1);border-radius:16px;overflow:hidden;box-shadow:0 8px 30px rgba(120,90,60,.045);color:var(--t1)}
 .ait-pane-hd{padding:10px 14px;border-bottom:1px solid var(--b1);font-weight:700;font-size:13px;color:var(--t1);display:flex;align-items:center;gap:6px;flex-shrink:0}
 .ait-pane-bd{flex:1;overflow-y:auto;min-height:0;padding:8px}
 .ait-agent{border:1px solid var(--b1);border-radius:12px;padding:9px 11px;margin-bottom:8px;background:var(--card);transition:.2s}
@@ -43,10 +48,10 @@
 .ait-pend-row{display:flex;gap:8px;margin-top:8px}
 .ait-exec{display:flex;align-items:center;gap:7px;font-size:12px;padding:6px 8px;border-bottom:1px solid var(--b2)}
 .ait-exec .ok{color:#368B63}.ait-exec .fail{color:#D6456A}
-.ait-empty{color:var(--t4);font-size:12px;text-align:center;padding:24px 8px}
+.ait-empty{color:var(--t4);font-size:12px;text-align:center;padding:24px 8px}.ait-error{color:#fca5a5;line-height:1.7}
 .ait-modal{display:none;position:fixed;inset:0;z-index:9998;background:rgba(58,44,34,.40);backdrop-filter:blur(3px);align-items:center;justify-content:center}
 .ait-modal.show{display:flex}
-.ait-modal-box{background:#fff;border:1px solid var(--b1);border-radius:18px;box-shadow:0 20px 60px rgba(120,90,60,.25);width:min(560px,92vw);max-height:88vh;overflow-y:auto;padding:18px 20px}
+.ait-modal-box{background:#fff;color:var(--t1);border:1px solid var(--b1);border-radius:18px;box-shadow:0 20px 60px rgba(120,90,60,.25);width:min(560px,92vw);max-height:88vh;overflow-y:auto;padding:18px 20px}
 .ait-modal-box h3{font-size:16px;margin-bottom:14px;color:var(--t1)}
 .ait-field{margin-bottom:11px}
 .ait-field label{display:block;font-size:12px;color:var(--t3);margin-bottom:4px;font-weight:600}
@@ -63,7 +68,7 @@
 .ait-trace-row{border:1px solid var(--b1);background:var(--card);border-radius:8px;padding:7px 8px;margin-bottom:6px}
 .ait-trace-row b{color:var(--t1)}
 .ait-trace-sub{font-size:11px;color:var(--t3);margin-top:3px;line-height:1.45}
-/* 决策可追溯：展开各 agent 对该票的建议 */
+/* 鍐崇瓥鍙拷婧細灞曞紑鍚?agent 瀵硅绁ㄧ殑寤鸿 */
 .ait-dec-hd{user-select:none}
 .ait-dec-exp{font-size:11px;color:var(--t3);width:12px;display:inline-block}
 .ait-dec-detail{margin-top:8px;padding-top:8px;border-top:1px dashed var(--b1)}
@@ -74,7 +79,7 @@
 .ait-dec-ag-t{font-size:11px;color:var(--t3);line-height:1.55;white-space:pre-wrap;margin-top:4px;max-height:150px;overflow-y:auto}
 .ait-dec-ag details summary{font-size:11px;color:var(--blue);cursor:pointer;margin-top:3px;list-style:none}
 .ait-dec-ag details summary::-webkit-details-marker{display:none}
-/* 右栏分区标题 + AI 模拟账户 */
+/* 鍙虫爮鍒嗗尯鏍囬 + AI 妯℃嫙璐︽埛 */
 .ait-sec-hd{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--t2);margin:10px 4px 6px;padding-bottom:4px;border-bottom:1px solid var(--b1)}
 .ait-sec-hd:first-child{margin-top:2px}
 .ait-acct-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:4px}
@@ -85,3 +90,4 @@
 .ait-pos-row .ait-pos-nm{color:var(--t3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ait-acct .up,.ait-pos-row .up{color:#E0536C}
 .ait-acct .dn,.ait-pos-row .dn{color:#4A7C59}
+@media (max-width:1450px){.ait-health{grid-template-columns:repeat(2,minmax(0,1fr))}.ait-grid{grid-template-columns:1fr 1fr}.ait-grid .ait-pane:nth-child(3){grid-column:1 / -1}}

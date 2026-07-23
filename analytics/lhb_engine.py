@@ -6,6 +6,8 @@
 游资识别：内置约 150 条主要营业部→游资标签映射，模糊匹配。
 缓存策略：盘中（<15:30）5 分钟；盘后当天缓存；历史数据永久磁盘存储。
 """
+from __future__ import annotations
+
 import json
 import importlib
 import logging
@@ -16,6 +18,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _allow_current_sources() -> bool:
+    try:
+        from analytics import data_gateway as dg
+
+        return "current" in dg.get_source_order()
+    except Exception as e:
+        logger.debug(f"[lhb] datasource order unavailable, allowing current fallback: {e}")
+        return True
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LHB_DIR  = BASE_DIR / "data" / "lhb"
@@ -632,7 +644,7 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
         source = picked.get("source") or source
     except Exception as e:
         logger.debug(f"[lhb] unified datasource failed, using current source: {e}")
-        stocks = fetch_lhb_stocks_current(yyyymmdd)
+        stocks = fetch_lhb_stocks_current(yyyymmdd) if _allow_current_sources() else []
     if not stocks:
         if not force_refresh:
             disk = _disk_get(yyyymmdd)
@@ -655,7 +667,7 @@ def get_lhb_data(date: str = None, force_refresh: bool = False) -> dict:
                     branches = dg.get_lhb_seats(s["code"], date_str)
                 except Exception as e:
                     logger.debug(f"[lhb] unified seat datasource failed, using current source: {e}")
-                    branches = fetch_lhb_seats_current(s["code"], date_str)
+                    branches = fetch_lhb_seats_current(s["code"], date_str) if _allow_current_sources() else []
             for b in branches:
                 b["tag"] = _tag_branch(b["name"])
             s["branches"] = branches

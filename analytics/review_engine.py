@@ -32,12 +32,23 @@ BASE_DIR   = Path(__file__).resolve().parent.parent
 REVIEW_DIR = BASE_DIR / "data" / "review"
 
 
+def _allow_current_sources() -> bool:
+    try:
+        from analytics import data_gateway as dg
+        return "current" in dg.get_source_order()
+    except Exception as exc:
+        logger.debug(f"[review] datasource order unavailable, allowing current fallback: {exc}")
+        return True
+
+
 def _today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
 def _refresh_market_snapshot(date_str: str) -> bool:
     """Capture the latest Eastmoney whole-market snapshot before archiving review data."""
+    if not _allow_current_sources():
+        return False
     try:
         from market import market_stats as _mstats
 
@@ -60,6 +71,19 @@ def _safe_float(v, default=0.0):
 
 def _collect_zt(compact: str) -> dict:
     """涨停池 + 跌停池 + 炸板池 + 昨日涨停表现 → 天梯与情绪指标。"""
+    try:
+        from analytics import data_gateway as dg
+        routed = dg.get_limit_pools(compact)
+        if routed:
+            out = {"zt_count": 0, "dt_count": 0, "zb_count": 0, "zb_rate": None,
+                   "max_height": 0, "ladder": [], "prev_zt_avg": None, "prev_zt_red_rate": None}
+            out.update({k: v for k, v in routed.items() if k in out or k == "source"})
+            return out
+    except Exception as e:
+        logger.debug(f"[review] limit pools route failed: {e}")
+    if not _allow_current_sources():
+        return {"zt_count": 0, "dt_count": 0, "zb_count": 0, "zb_rate": None,
+                "max_height": 0, "ladder": [], "prev_zt_avg": None, "prev_zt_red_rate": None}
     import akshare as ak
     out = {"zt_count": 0, "dt_count": 0, "zb_count": 0, "zb_rate": None,
            "max_height": 0, "ladder": [], "prev_zt_avg": None, "prev_zt_red_rate": None}
@@ -134,6 +158,19 @@ def _collect_turnover(compact: str | None = None) -> dict:
 
 def _collect_sectors() -> dict:
     """行业 + 概念板块涨跌榜（各取前10/后5）。"""
+    try:
+        from analytics import data_gateway as dg
+        routed = dg.get_sector_rankings()
+        if routed:
+            out = {"industry_top": [], "industry_bottom": [], "concept_top": []}
+            out.update({k: v for k, v in routed.items() if k in out or k == "source"})
+            return out
+    except Exception as e:
+        logger.debug(f"[review] sector ranking route failed: {e}")
+
+    if not _allow_current_sources():
+        return {"industry_top": [], "industry_bottom": [], "concept_top": []}
+
     import akshare as ak
     import pandas as pd
     out = {"industry_top": [], "industry_bottom": [], "concept_top": []}

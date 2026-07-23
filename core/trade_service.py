@@ -12,8 +12,9 @@ import logging
 from datetime import datetime
 
 from app_state import get_user_state, _add_log, _persist_state
-from config import DRY_RUN
+from config import DRY_RUN, MAX_ORDER_AMOUNT
 from core import user_manager as um
+from core import order_sizing
 from core import sell_rules
 from core import daban_strategy_runtime as daban_runtime
 from core.daban_state import (
@@ -22,6 +23,53 @@ from core.daban_state import (
 from broker import paper_broker as pb
 
 logger = logging.getLogger(__name__)
+
+
+def _live_safe_buy_shares(uid: int, state: dict, broker_cfg: dict,
+                          price: float, requested_shares: int) -> tuple[int, str]:
+    """实盘信号写队列前的二次仓位夹子：只缩仓，不放大。"""
+    try:
+        price_value = float(price)
+        requested = int(requested_shares)
+    except (TypeError, ValueError):
+        return 0, "实盘买入数量或价格格式错误"
+    requested = int(requested / order_sizing.LOT) * order_sizing.LOT
+    if price_value <= 0 or requested < order_sizing.LOT:
+        return 0, "实盘买入价格或整手数量无效"
+
+    cfg = broker_cfg.get("config") or {}
+    try:
+        live_cash = float(cfg.get("live_cash") or 0)
+    except (TypeError, ValueError):
+        live_cash = 0
+    if live_cash <= 0:
+        return 0, "实盘资金 live_cash 未配置，本次未生成下单信号"
+
+    try:
+        panel_ratio = float(state.get("position_ratio") or 0.20)
+    except (TypeError, ValueError):
+        panel_ratio = 0.20
+    try:
+        single_cap = float(state.get("single_position_max_ratio") or 0.20)
+    except (TypeError, ValueError):
+        single_cap = 0.20
+    eff_ratio = min(panel_ratio, single_cap)
+    budget = live_cash * eff_ratio
+    by_budget = order_sizing.strict_lot_shares(budget, price_value)
+    if by_budget < order_sizing.LOT:
+        return 0, f"实盘仓位预算不足一手: ¥{budget:,.0f} @{price_value:.2f}"
+
+    safe = min(requested, by_budget)
+    safe, clamped_by_amount = order_sizing.clamp_to_max_order(safe, price_value, MAX_ORDER_AMOUNT)
+    if safe < order_sizing.LOT:
+        return 0, f"单笔金额护栏低于一手: @{price_value:.2f} × 100 > ¥{MAX_ORDER_AMOUNT:,.0f}"
+
+    notes = []
+    if safe < requested:
+        notes.append(f"仓位夹仓 {requested}->{safe}股")
+    if clamped_by_amount:
+        notes.append(f"金额护栏 ¥{MAX_ORDER_AMOUNT:,.0f}")
+    return safe, "；".join(notes)
 
 
 def _reset_daily_if_needed(uid: int):
@@ -82,9 +130,15 @@ def execute_buy(uid: int, code: str, name: str, price: float, shares: int,
             return {"ok": False, "msg": msg}
     else:
         # ── 实盘逻辑：写入信号队列 ──
-        signal_id = um.add_trade_signal(uid, code, name, "BUY", price, shares)
-        _add_log(uid, f"⏳ 实盘买入信号已发送队列: {code} {name} {shares}股 @{price:.2f}", "info")
-        return {"ok": True, "msg": "已生成实盘买入信号，等待本地执行...", "signal_id": signal_id}
+        safe_shares, sizing_msg = _live_safe_buy_shares(uid, s, broker_cfg, price, shares)
+        if safe_shares <= 0:
+            _add_log(uid, f"⏭ 实盘买入信号跳过: {code} {name} — {sizing_msg}", "error")
+            return {"ok": False, "msg": sizing_msg}
+        if safe_shares != int(shares):
+            _add_log(uid, f"🛡 实盘买入夹仓: {code} {name} {shares}->{safe_shares}股 @{price:.2f}；{sizing_msg}", "info")
+        signal_id = um.add_trade_signal(uid, code, name, "BUY", price, safe_shares)
+        _add_log(uid, f"⏳ 实盘买入信号已发送队列: {code} {name} {safe_shares}股 @{price:.2f}", "info")
+        return {"ok": True, "msg": "已生成实盘买入信号，等待本地执行...", "signal_id": signal_id, "shares": safe_shares}
 
 
 def execute_sell(uid: int, code: str, price: float, sell_reason: str = "手动卖出") -> dict:

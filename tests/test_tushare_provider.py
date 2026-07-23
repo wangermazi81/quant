@@ -165,7 +165,7 @@ def test_fetch_realtime_quotes_uses_replay_rt_tick(monkeypatch):
     assert calls[0]["params"]["ts_code"] == "000001.SZ"
     assert len(rows) == 1
     row = rows[0]
-    assert row | {
+    expected = {
         "code": "000001",
         "ts_code": "000001.SZ",
         "name": "Ping An",
@@ -184,7 +184,9 @@ def test_fetch_realtime_quotes_uses_replay_rt_tick(monkeypatch):
         "ask1_vol": 6800.0,
         "source": "tushare_rt_tick",
         "level": "L1-5",
-    } == row
+    }
+    for key, value in expected.items():
+        assert row[key] == value
     assert row["bid2"] == 0.0
     assert row["ask5_vol"] == 0.0
 

@@ -52,6 +52,16 @@ def _source_order(cfg: dict | None = None) -> list[str]:
     return order
 
 
+def get_source_order() -> list[str]:
+    """Public source order for modules that still own aggregate-source logic."""
+    return _source_order(_config())
+
+
+def get_active_config() -> dict:
+    """Internal datasource config without exposing it through every caller."""
+    return _config().copy()
+
+
 def _has_tushare(cfg: dict) -> bool:
     return bool(cfg.get("tushare_enabled") and cfg.get("tushare_token"))
 
@@ -65,6 +75,20 @@ def _empty_result(kind: str, cfg: dict, error: str = "") -> dict:
         "fallback_used": False,
         "error": error,
     }
+
+
+def _find_col(df: pd.DataFrame, *needles: str):
+    if df is None or df.empty:
+        return None
+    for needle in needles:
+        for col in df.columns:
+            if str(col) == needle:
+                return col
+    for needle in needles:
+        for col in df.columns:
+            if needle in str(col):
+                return col
+    return None
 
 
 def get_stock_universe() -> list[str]:
@@ -251,7 +275,7 @@ def get_order_book_result(code: str) -> dict:
                 book = {"code": clean, "bids": bids, "asks": asks, "quote": quote}
         except Exception as exc:
             errors.append(f"{source}: {exc}")
-        if book and (book.get("bids") or book.get("asks") or book.get("quote")):
+        if book and (book.get("bids") or book.get("asks") or book.get("quote") or book.get("price") or book.get("trade_time")):
             result.update({"ok": True, "source": source, "fallback_used": idx > 0, "order_book": book, "error": ""})
             return result
         errors.append(f"{source}: no data")
@@ -341,6 +365,155 @@ def get_minute_kline_result(code: str, freq: str = "1MIN", limit: int = 240) -> 
 
 def get_minute_kline(code: str, freq: str = "1MIN", limit: int = 240) -> pd.DataFrame:
     return get_minute_kline_result(code, freq=freq, limit=limit).get("df", pd.DataFrame())
+
+
+def _current_limit_pools(trade_date: str) -> dict:
+    import akshare as ak
+
+    out = {
+        "zt_count": 0,
+        "dt_count": 0,
+        "zb_count": 0,
+        "zb_rate": None,
+        "max_height": 0,
+        "ladder": [],
+        "prev_zt_avg": None,
+        "prev_zt_red_rate": None,
+        "source": "current_akshare",
+    }
+    df = ak.stock_zt_pool_em(date=trade_date)
+    if df is not None and not df.empty:
+        out["zt_count"] = len(df)
+        lb_col = _find_col(df, "\u8fde\u677f\u6570", "\u8fde\u7eed\u6da8\u505c")
+        name_col = _find_col(df, "\u540d\u79f0", "\u80a1\u7968\u540d\u79f0")
+        code_col = _find_col(df, "\u4ee3\u7801", "\u80a1\u7968\u4ee3\u7801")
+        ind_col = _find_col(df, "\u6240\u5c5e\u884c\u4e1a", "\u884c\u4e1a")
+        if name_col:
+            ladder: dict[int, list[dict]] = {}
+            for _, row in df.iterrows():
+                height = max(1, int(_num(row.get(lb_col), 1))) if lb_col else 1
+                ladder.setdefault(height, []).append({
+                    "code": normalize_code(str(row.get(code_col, ""))) if code_col else "",
+                    "name": str(row.get(name_col) or ""),
+                    "industry": str(row.get(ind_col) or "") if ind_col else "",
+                })
+            out["max_height"] = max(ladder.keys()) if ladder else 0
+            out["ladder"] = [{"height": h, "stocks": ladder[h][:30]} for h in sorted(ladder.keys(), reverse=True)]
+    try:
+        df_dt = ak.stock_zt_pool_dtgc_em(date=trade_date)
+        out["dt_count"] = 0 if df_dt is None else len(df_dt)
+    except Exception as exc:
+        logger.debug(f"[gateway] current limit-down pool failed: {exc}")
+    try:
+        df_zb = ak.stock_zt_pool_zbgc_em(date=trade_date)
+        out["zb_count"] = 0 if df_zb is None else len(df_zb)
+    except Exception as exc:
+        logger.debug(f"[gateway] current broken-limit pool failed: {exc}")
+    if out["zt_count"] + out["zb_count"] > 0:
+        out["zb_rate"] = round(out["zb_count"] * 100.0 / (out["zt_count"] + out["zb_count"]), 1)
+    try:
+        df_prev = ak.stock_zt_pool_previous_em(date=trade_date)
+        chg_col = _find_col(df_prev, "\u6da8\u8dcc\u5e45")
+        if df_prev is not None and not df_prev.empty and chg_col:
+            chg = pd.to_numeric(df_prev[chg_col], errors="coerce").dropna()
+            if len(chg):
+                out["prev_zt_avg"] = round(float(chg.mean()), 2)
+                out["prev_zt_red_rate"] = round(float((chg > 0).mean() * 100), 1)
+    except Exception as exc:
+        logger.debug(f"[gateway] current previous limit-up pool failed: {exc}")
+    return out
+
+
+def get_limit_pools_result(trade_date: str) -> dict:
+    cfg = _config()
+    result = _empty_result("limit_pools", cfg)
+    compact = "".join(ch for ch in str(trade_date or "") if ch.isdigit())[:8]
+    errors: list[str] = []
+    for idx, source in enumerate(_source_order(cfg)):
+        data: dict = {}
+        try:
+            if source == "tushare" and _has_tushare(cfg):
+                data = tushare_provider.fetch_limit_pools(compact, token=cfg.get("tushare_token"), mode=cfg.get("tushare_mode"))
+            elif source == "current":
+                data = _current_limit_pools(compact)
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+        if data and (data.get("zt_count") or data.get("dt_count") or data.get("zb_count") or data.get("ladder")):
+            data.setdefault("source", source)
+            result.update({"ok": True, "source": source, "fallback_used": idx > 0, "data": data, "error": ""})
+            return result
+        errors.append(f"{source}: no data")
+    result["data"] = {}
+    result["error"] = "; ".join(errors[-4:])
+    return result
+
+
+def get_limit_pools(trade_date: str) -> dict:
+    return get_limit_pools_result(trade_date).get("data", {})
+
+
+def _rank_board_frame(df: pd.DataFrame, n_top: int = 10, n_bottom: int = 0) -> tuple[list[dict], list[dict]]:
+    if df is None or df.empty:
+        return [], []
+    chg_col = _find_col(df, "\u6da8\u8dcc\u5e45", "pct_change", "pct_chg", "change_pct")
+    name_col = _find_col(df, "\u540d\u79f0", "name", "index_name") or df.columns[0]
+    code_col = _find_col(df, "\u4ee3\u7801", "ts_code", "code")
+    if not chg_col:
+        return [], []
+    ranked = df.copy()
+    ranked[chg_col] = pd.to_numeric(ranked[chg_col], errors="coerce")
+    ranked = ranked.dropna(subset=[chg_col]).sort_values(chg_col, ascending=False)
+
+    def _row(row) -> dict:
+        item = {"name": str(row.get(name_col) or ""), "chg": round(float(row.get(chg_col)), 2)}
+        if code_col:
+            item["code"] = str(row.get(code_col) or "")
+        return item
+
+    top = [_row(row) for _, row in ranked.head(n_top).iterrows()]
+    bottom = [_row(row) for _, row in ranked.tail(n_bottom).iterrows()] if n_bottom else []
+    return top, bottom
+
+
+def _current_sector_rankings() -> dict:
+    import akshare as ak
+
+    out = {"industry_top": [], "industry_bottom": [], "concept_top": [], "source": "current_akshare"}
+    df_ind = ak.stock_board_industry_name_em()
+    if df_ind is not None and not df_ind.empty:
+        out["industry_top"], out["industry_bottom"] = _rank_board_frame(df_ind, 10, 5)
+    df_con = ak.stock_board_concept_name_em()
+    if df_con is not None and not df_con.empty:
+        out["concept_top"], _ = _rank_board_frame(df_con, 10)
+    return out
+
+
+def get_sector_rankings_result(trade_date: str | None = None) -> dict:
+    cfg = _config()
+    result = _empty_result("sector_rankings", cfg)
+    compact = "".join(ch for ch in str(trade_date or "") if ch.isdigit())[:8]
+    errors: list[str] = []
+    for idx, source in enumerate(_source_order(cfg)):
+        data: dict = {}
+        try:
+            if source == "tushare" and _has_tushare(cfg):
+                data = tushare_provider.fetch_sector_rankings(compact, token=cfg.get("tushare_token"), mode=cfg.get("tushare_mode"))
+            elif source == "current":
+                data = _current_sector_rankings()
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+        if data and (data.get("industry_top") or data.get("industry_bottom") or data.get("concept_top")):
+            data.setdefault("source", source)
+            result.update({"ok": True, "source": source, "fallback_used": idx > 0, "data": data, "error": ""})
+            return result
+        errors.append(f"{source}: no data")
+    result["data"] = {"industry_top": [], "industry_bottom": [], "concept_top": []}
+    result["error"] = "; ".join(errors[-4:])
+    return result
+
+
+def get_sector_rankings(trade_date: str | None = None) -> dict:
+    return get_sector_rankings_result(trade_date).get("data", {})
 
 
 def get_stock_sectors_bulk(codes: list[str]) -> dict[str, dict]:

@@ -12,6 +12,7 @@ PYTHON    = sys.executable
 MAIN      = os.path.join(BASE_DIR, "main.py")
 SCHEDULER = os.path.join(BASE_DIR, "scheduler_main.py")
 SCHED_PID = os.path.join(BASE_DIR, "data", "scheduler.pid")
+ADB       = os.path.join(BASE_DIR, ".android-sdk", "platform-tools", "adb.exe")
 URL       = "http://127.0.0.1:5001"
 PORT      = 5001
 
@@ -64,6 +65,32 @@ def server_ready(timeout=60):
         time.sleep(1)
     return False
 
+
+def setup_adb_reverse():
+    """USB 连接 Android 时，把手机 127.0.0.1:5001 反向转发到电脑 127.0.0.1:5001。"""
+    if not os.path.exists(ADB):
+        return
+    try:
+        devices = subprocess.run(
+            [ADB, 'devices'],
+            cwd=BASE_DIR,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if '\tdevice' not in (devices.stdout or ''):
+            return
+        subprocess.run(
+            [ADB, 'reverse', f'tcp:{PORT}', f'tcp:{PORT}'],
+            cwd=BASE_DIR,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+        print(f'[launcher] Android USB 反向转发已开启: phone 127.0.0.1:{PORT} -> PC 127.0.0.1:{PORT}')
+    except Exception as e:
+        print(f'[launcher] Android USB 反向转发跳过: {e}')
 if __name__ == "__main__":
     print("🔬 见微 Alpha — 正在启动...")
     kill_port(PORT)
@@ -89,6 +116,7 @@ if __name__ == "__main__":
 
     print("[launcher] 等待服务就绪（最多60秒）...")
     if server_ready(60):
+        setup_adb_reverse()
         print(f"[launcher] 见微 Alpha 已就绪，打开浏览器: {URL}")
         webbrowser.open(URL)
     else:

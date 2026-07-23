@@ -141,3 +141,12 @@ data/scheduler.pid
 # /v2 双轨已移除（工单7c），防止误还原
 frontend/
 static/dist/
+
+# Codex local artifacts / Android automation runtime
+.android-sdk/
+.playwright-cli/
+.codex-*.png
+data/research/
+tools/mobile_ths_api_profile.json
+tools/mobile_ths_profile.json
+tools/bridge_config.json.codex-test-backup

@@ -8,6 +8,7 @@
 
 函数体与 main.py 原实现逐行等价。
 """
+from __future__ import annotations
 import logging
 import threading
 import time

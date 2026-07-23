@@ -106,7 +106,7 @@ def test_preload_today_keeps_retrying_until_today_payload_is_finalized(monkeypat
 def test_get_lhb_data_does_not_persist_incomplete_historical_payload(monkeypatch, tmp_path):
     monkeypatch.setattr(lhb_engine, "LHB_DIR", tmp_path)
     monkeypatch.setattr(lhb_engine, "_today", lambda: "20260708")
-    monkeypatch.setattr(lhb_engine, "_fetch_lhb_stocks", lambda yyyymmdd: [
+    monkeypatch.setattr(lhb_engine, "fetch_lhb_stocks_current", lambda yyyymmdd: [
         {"code": "000001", "name": "骞冲畨閾惰", "branches": [], "youzai": []}
     ])
     monkeypatch.setattr(lhb_engine, "_fetch_seat_detail", lambda code, date_str: [])
@@ -123,7 +123,7 @@ def test_get_lhb_data_does_not_persist_incomplete_historical_payload(monkeypatch
 def test_get_lhb_data_enriches_stocks_with_sector_labels(monkeypatch, tmp_path):
     monkeypatch.setattr(lhb_engine, "LHB_DIR", tmp_path)
     monkeypatch.setattr(lhb_engine, "_today", lambda: "20260708")
-    monkeypatch.setattr(lhb_engine, "_fetch_lhb_stocks", lambda yyyymmdd: [
+    monkeypatch.setattr(lhb_engine, "fetch_lhb_stocks_current", lambda yyyymmdd: [
         {"code": "000001", "name": "Ping An", "branches": [], "youzai": []}
     ])
     monkeypatch.setattr(
@@ -143,6 +143,25 @@ def test_get_lhb_data_enriches_stocks_with_sector_labels(monkeypatch, tmp_path):
 
     assert data["stocks"][0]["industry"] == "银行"
     assert data["stocks"][0]["concepts"] == ["大金融", "中特估"]
+
+
+def test_get_lhb_data_respects_tushare_only_when_gateway_stock_list_fails(monkeypatch, tmp_path):
+    from analytics import data_gateway as dg
+
+    monkeypatch.setattr(lhb_engine, "LHB_DIR", tmp_path)
+    monkeypatch.setattr(lhb_engine, "_today", lambda: "20260708")
+    monkeypatch.setattr(dg, "get_source_order", lambda: ["tushare"])
+    monkeypatch.setattr(dg, "get_lhb_stocks_result", lambda yyyymmdd: (_ for _ in ()).throw(RuntimeError("gateway down")))
+    monkeypatch.setattr(
+        lhb_engine,
+        "fetch_lhb_stocks_current",
+        lambda yyyymmdd: (_ for _ in ()).throw(AssertionError("current LHB stock fallback must not run")),
+    )
+
+    data = lhb_engine.get_lhb_data("2026-07-06", force_refresh=True)
+
+    assert data["ok"] is False
+    assert data["stocks"] == []
 
 
 def test_get_lhb_data_enriches_historical_disk_cache(monkeypatch, tmp_path):
@@ -193,7 +212,7 @@ def test_get_lhb_data_refetches_unfinalized_historical_disk_cache(monkeypatch, t
         calls.append(yyyymmdd)
         return [{"code": "000002", "name": "final", "branches": [], "youzai": []}]
 
-    monkeypatch.setattr(lhb_engine, "_fetch_lhb_stocks", fake_fetch_stocks)
+    monkeypatch.setattr(lhb_engine, "fetch_lhb_stocks_current", fake_fetch_stocks)
     monkeypatch.setattr(
         lhb_engine,
         "_fetch_seat_detail",

@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 """
 本地历史数据管理
 数据源：akshare stock_zh_a_hist_tx（腾讯财经）
@@ -38,6 +40,16 @@ _PROXY_KEYS = (
 _saved_proxies = {k: os.environ.pop(k) for k in _PROXY_KEYS if k in os.environ}
 
 logger = logging.getLogger(__name__)
+
+
+def _allow_current_sources() -> bool:
+    try:
+        from analytics import data_gateway as dg
+
+        return "current" in dg.get_source_order()
+    except Exception as e:
+        logger.debug(f"data_gateway source order unavailable, allowing current fallback: {e}")
+        return True
 
 DATA_DIR       = Path(__file__).parent.parent / "data" / "daily"
 META_FILE      = Path(__file__).parent.parent / "data" / "metadata.json"
@@ -79,6 +91,8 @@ def get_stock_sectors_bulk(codes: list[str]) -> dict[str, dict]:
         return dg.get_stock_sectors_bulk(codes)
     except Exception as e:
         logger.debug(f"data_gateway sector route failed, using current source: {e}")
+        if not _allow_current_sources():
+            return {}
         return get_stock_sectors_bulk_current(codes)
 
 
@@ -1077,6 +1091,18 @@ def get_stock_sector(code: str) -> dict:
     """
     now = time.time()
     result = {"industry": "", "concepts": []}
+    clean_code = str(code or "").zfill(6)
+
+    try:
+        sector_map = get_stock_sectors_bulk([clean_code]) or {}
+        routed = sector_map.get(clean_code) or sector_map.get(str(code)) or {}
+        if routed.get("industry") or routed.get("concepts"):
+            return {
+                "industry": str(routed.get("industry") or ""),
+                "concepts": list(routed.get("concepts") or [])[:5],
+            }
+    except Exception as e:
+        logger.debug(f"data_gateway single sector route failed for {code}: {e}")
 
     meta = _load_meta()
     cached = meta.get(code, {})
@@ -1091,6 +1117,8 @@ def get_stock_sector(code: str) -> dict:
     if result["industry"] and result["concepts"] and now - sector_cached_at < _SECTOR_CACHE_TTL:
         return result
     if sector_error_at and now - sector_error_at < _SECTOR_FAILURE_TTL and (result["industry"] or result["concepts"]):
+        return result
+    if not _allow_current_sources():
         return result
 
     try:

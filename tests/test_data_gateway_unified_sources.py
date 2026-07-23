@@ -30,3 +30,49 @@ def test_unified_gateway_routes_extended_sources_to_tushare(monkeypatch):
     assert dg.get_index_quotes_result([(1, "000001")])["source"] == "tushare"
     assert dg.get_finance_info("000001")["pe_ttm"] == 12.0
     assert calls == ["sectors", "lhb", "seats", "index_kline", "index_quotes", "finance"]
+
+
+def test_unified_gateway_routes_limit_pools_and_sector_rankings_to_tushare(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dg.datasource_config, "get_internal_config", lambda: _tushare_cfg())
+    monkeypatch.setattr(
+        dg.tushare_provider,
+        "fetch_limit_pools",
+        lambda trade_date, **kwargs: calls.append(("limit", trade_date)) or {"zt_count": 2, "dt_count": 1, "zb_count": 0, "ladder": [{"height": 1, "stocks": []}]},
+    )
+    monkeypatch.setattr(
+        dg.tushare_provider,
+        "fetch_sector_rankings",
+        lambda trade_date=None, **kwargs: calls.append(("sector", trade_date)) or {"industry_top": [{"name": "bank", "pct": 1.2}], "concept_top": []},
+    )
+
+    limit_result = dg.get_limit_pools_result("2026-07-17")
+    sector_result = dg.get_sector_rankings_result("20260717")
+
+    assert limit_result["ok"] is True
+    assert limit_result["source"] == "tushare"
+    assert limit_result["data"]["zt_count"] == 2
+    assert sector_result["ok"] is True
+    assert sector_result["source"] == "tushare"
+    assert sector_result["data"]["industry_top"][0]["name"] == "bank"
+    assert calls == [("limit", "20260717"), ("sector", "20260717")]
+
+
+def test_unified_gateway_uses_current_only_when_config_selects_current(monkeypatch):
+    monkeypatch.setattr(
+        dg.datasource_config,
+        "get_internal_config",
+        lambda: {**_tushare_cfg(), "provider": "current", "fallback_enabled": False},
+    )
+    monkeypatch.setattr(
+        dg.tushare_provider,
+        "fetch_limit_pools",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("tushare must not be used when current-only is selected")),
+    )
+    monkeypatch.setattr(dg, "_current_limit_pools", lambda trade_date: {"zt_count": 1, "source": "current_akshare"})
+
+    result = dg.get_limit_pools_result("20260717")
+
+    assert result["ok"] is True
+    assert result["source"] == "current"
+    assert result["data"]["zt_count"] == 1

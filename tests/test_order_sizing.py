@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.order_sizing import lot_shares, pick_ratio, clamp_to_max_order, LOT
+from core.order_sizing import lot_shares, pick_ratio, clamp_to_max_order, strict_lot_shares, LOT
 
 
 # ── lot_shares ────────────────────────────────────────────
@@ -103,3 +103,14 @@ class TestClampToMaxOrder:
 
     def test_disabled_when_limit_zero(self):
         assert clamp_to_max_order(10000, 50.0, 0) == (10000, False)
+
+
+class TestStrictLotShares:
+    def test_round_down_without_forcing_one_lot(self):
+        assert strict_lot_shares(10000, 12.5) == 800
+
+    def test_budget_below_one_lot_returns_zero(self):
+        assert strict_lot_shares(999, 10.0) == 0
+
+    def test_bad_price_returns_zero(self):
+        assert strict_lot_shares(10000, 0) == 0

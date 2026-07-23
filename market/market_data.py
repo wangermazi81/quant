@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import threading
 import time
@@ -92,6 +94,16 @@ def _tushare_cfg() -> dict | None:
     return None
 
 
+def _allow_current_sources() -> bool:
+    try:
+        from analytics import data_gateway as dg
+
+        return "current" in dg.get_source_order()
+    except Exception as e:
+        logger.debug(f"[market] datasource order unavailable, allowing current fallback: {e}")
+        return True
+
+
 def _tushare_quotes_frame(rows: list[dict]) -> pd.DataFrame:
     mapped = []
     for row in rows or []:
@@ -136,6 +148,10 @@ def get_kline(code: str, period: int = 60) -> pd.DataFrame:
         logger.debug(f"配置数据源K线读取失败 {code}: {e}")
 
     # 1. 本地 CSV 缓存
+    if not _allow_current_sources():
+        logger.debug(f"current daily kline fallback disabled by datasource config: {code}")
+        return pd.DataFrame()
+
     cache_path = os.path.join(DAILY_CACHE_DIR, f"{code}.csv")
     if os.path.exists(cache_path):
         try:

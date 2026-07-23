@@ -99,6 +99,41 @@ def test_get_stock_sectors_bulk_reads_industry_and_concepts(monkeypatch):
     }
 
 
+def test_get_stock_sectors_bulk_respects_tushare_only_when_gateway_fails(monkeypatch):
+    from analytics import data_gateway as dg
+
+    monkeypatch.setattr(dg, "get_source_order", lambda: ["tushare"])
+    monkeypatch.setattr(dg, "get_stock_sectors_bulk", lambda codes: (_ for _ in ()).throw(RuntimeError("gateway down")))
+    monkeypatch.setattr(
+        dm,
+        "get_stock_sectors_bulk_current",
+        lambda codes: (_ for _ in ()).throw(AssertionError("current sector fallback must not run")),
+    )
+
+    assert dm.get_stock_sectors_bulk(["000001"]) == {}
+
+
+def test_get_stock_sector_uses_gateway_before_legacy_sector_scan(monkeypatch, tmp_path):
+    from analytics import data_gateway as dg
+
+    legacy_calls = []
+    monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+    monkeypatch.setattr(dg, "get_stock_sectors_bulk", lambda codes: {"000001": {"industry": "bank", "concepts": ["finance"]}})
+    monkeypatch.setattr(
+        dm.ak,
+        "stock_individual_info_em",
+        lambda symbol: legacy_calls.append("industry") or (_ for _ in ()).throw(AssertionError("legacy industry scan must not run")),
+    )
+    monkeypatch.setattr(
+        dm.ak,
+        "stock_board_concept_name_em",
+        lambda: legacy_calls.append("concept") or (_ for _ in ()).throw(AssertionError("legacy concept scan must not run")),
+    )
+
+    assert dm.get_stock_sector("000001") == {"industry": "bank", "concepts": ["finance"]}
+    assert legacy_calls == []
+
+
 def test_get_stock_sectors_bulk_falls_back_to_baostock_industry(monkeypatch):
     monkeypatch.setattr(
         dm,

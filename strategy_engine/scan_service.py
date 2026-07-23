@@ -9,6 +9,7 @@ _scan_thread_worker：单用户扫描线程入口（防重复并发 + 异常兜�
 market_data.is_trading_time，相关测试请 monkeypatch 本模块属性
 （scan_service.is_trading_time / scan_service.DRY_RUN）。
 """
+from __future__ import annotations
 import logging
 import threading
 from datetime import datetime

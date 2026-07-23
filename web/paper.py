@@ -192,7 +192,7 @@ def paper_manual_buy():
         # 透传 execute_buy 所有字段（含实盘的 signal_id，前端轮询用）
         return jsonify({
             "ok":         True,
-            "shares":     shares,
+            "shares":     res.get("shares", shares),
             "msg":        res.get("msg") or f"已买入 {code} {shares}股 @{price}",
             "signal_id":  res.get("signal_id"),     # 实盘模式才有
             "exec_price": res.get("exec_price"),    # 模拟模式才有

@@ -17,7 +17,7 @@ def test_admin_datasource_config_requires_data_permission(isolated_app, monkeypa
     assert um.set_admin_permissions(uid, ["data_config"], granted_by=1)["ok"]
     allowed = client.get("/api/admin/datasource/config")
     assert allowed.status_code == 200
-    assert allowed.get_json()["provider"] == "current"
+    assert allowed.get_json()["provider"] == "tushare"
 
 
 def test_admin_datasource_config_save_masks_token(isolated_app, monkeypatch, tmp_path):
