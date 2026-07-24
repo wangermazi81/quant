@@ -135,8 +135,13 @@ async function toggleBridgeProcess(){
 function _setMobileChainStatus(text, ok=null){
   const el = document.getElementById('mobileChainStatus')
   if(!el) return
+  const color = ok === true ? '#368B63' : (ok === false ? '#D6456A' : 'var(--t2)')
+  el.style.color = color
+  if(el.classList && el.classList.contains('exec-human-status')){
+    el.innerHTML = '<i></i><span>'+esc(text)+'</span>'
+    return
+  }
   el.textContent = text
-  el.style.color = ok === true ? '#368B63' : (ok === false ? '#D6456A' : 'var(--t2)')
 }
 
 async function refreshMobileProfileBadge(){
@@ -159,7 +164,7 @@ async function refreshMobileProfileBadge(){
   _renderCurrentModeBadge('mobileCurrentModeBadge', r.trade_mode || 'unknown', '手机')
   if(connEl) connEl.textContent = `连接：${conn.toUpperCase()}${r.device_serial ? ' · '+r.device_serial : ''}`
   if(modeEl) modeEl.textContent = `模式：${mode}`
-  if(profileEl) profileEl.textContent = `设备：${r.device_serial || '未绑定'} ｜ 确认：${confirm} ｜ App：${r.app_package || '-'}`
+  if(profileEl) profileEl.textContent = `设备：${r.device_serial || '未绑定'} ｜ 确认：${confirm}`
   if(task.running) _setMobileChainStatus(`手机任务执行中：${task.action || 'unknown'} ${task.target || ''}`, null)
   else if(task.msg) _setMobileChainStatus(`手机任务：${task.msg}`, task.ok)
   else _setMobileChainStatus(`链路配置：${conn.toUpperCase()} / ${mode} / ${confirm}`, true)
@@ -940,8 +945,13 @@ function openExecutionConsole(){
 function _setExecText(id, text, ok=null){
   const el = document.getElementById(id)
   if(!el) return
+  const color = ok === true ? '#368B63' : (ok === false ? '#D6456A' : 'var(--t2)')
+  el.style.color = color
+  if(el.classList && el.classList.contains('exec-human-status')){
+    el.innerHTML = '<i></i><span>'+esc(text)+'</span>'
+    return
+  }
   el.textContent = text
-  el.style.color = ok === true ? '#368B63' : (ok === false ? '#D6456A' : 'var(--t2)')
   const lamp = el.closest && el.closest('.exec-lamp')
   if(lamp){
     lamp.classList.remove('on','off','idle')
@@ -967,12 +977,16 @@ function _renderExecFundsPanel(id, data, opts={}){
   const el = document.getElementById(id)
   if(!el) return
   const title = opts.title || (id === 'execMobileFundsPanel' ? '手机资金 / 仓位' : '电脑资金 / 仓位')
+  const action = id === 'execMobileFundsPanel'
+    ? '<button class="btn btn-gray btn-xs" onclick="refreshMobileFunds();refreshExecutionState()" id="mobileFundsRefresh">查资金/仓位</button>'
+    : '<button class="btn btn-gray btn-xs" onclick="refreshAccountSnapshot();refreshExecutionState()" id="acctSnapRefresh" title="读取电脑账户资金和持仓">查资金/持仓</button>'
+  const titleHtml = '<div class="exec-funds-title"><span>'+esc(title)+'</span>'+action+'</div>'
   if(opts.loading){
-    el.innerHTML = '<div class="exec-funds-title"><span>'+esc(title)+'</span></div><div class="exec-funds-empty">'+esc(opts.loading)+'</div>'
+    el.innerHTML = titleHtml + '<div class="exec-funds-empty">'+esc(opts.loading)+'</div>'
     return
   }
   if(opts.error){
-    el.innerHTML = '<div class="exec-funds-title"><span>'+esc(title)+'</span></div><div class="exec-funds-error">'+esc(opts.error)+'</div>'
+    el.innerHTML = titleHtml + '<div class="exec-funds-error">'+esc(opts.error)+'</div>'
     return
   }
   if(!data){ return }
@@ -990,10 +1004,9 @@ function _renderExecFundsPanel(id, data, opts={}){
     opts.source && '来源 '+opts.source,
     data.source && '数据 '+data.source,
     data.connection_mode && '连接 '+String(data.connection_mode).toUpperCase(),
-    data.device_serial && '设备 '+data.device_serial,
     opts.mode && '模式 '+opts.mode,
   ].filter(Boolean).join(' ｜ ')
-  el.innerHTML = '<div class="exec-funds-title"><span>'+esc(title)+'</span></div><div class="exec-funds-kpis">'+cards+'</div>'+(meta?'<div class="exec-funds-meta">'+esc(meta)+'</div>':'')
+  el.innerHTML = titleHtml + '<div class="exec-funds-kpis">'+cards+'</div>'+(meta?'<div class="exec-funds-meta">'+esc(meta)+'</div>':'')
 }
 
 
@@ -1105,7 +1118,7 @@ async function refreshExecutionState(){
   const mode = mobile.trade_mode === 'live' ? '实盘' : (mobile.trade_mode === 'simulation' ? '模拟盘' : (mobile.trade_mode || '—'))
   const confirm = mobile.confirm_mode === 'auto' ? '全自动确认' : '手动确认'
   const mobileMeta = document.getElementById('execMobileMeta')
-  if(mobileMeta) mobileMeta.textContent = `连接：${conn} ｜ 模式：${mode} ｜ 确认：${confirm}${mobile.device_serial ? ' ｜ 设备：'+mobile.device_serial : ''}`
+  if(mobileMeta) mobileMeta.textContent = `连接：${conn} ｜ 模式：${mode} ｜ 确认：${confirm}`
   if(mobile.account && (mobile.account.ok || mobile.account.available!=null || mobile.account.total_asset!=null)){
     _renderExecFundsPanel('execMobileFundsPanel', {
       ...mobile.account,
@@ -1161,7 +1174,7 @@ async function refreshMobileFunds(){
       return
     }
 
-    if(body) body.innerHTML = renderMobileFundsCard(data) + (Array.isArray(data.positions) ? renderPositionsTable(data.positions, 'mobile', data) : '')
+    if(body) body.innerHTML = Array.isArray(data.positions) ? renderPositionsTable(data.positions, 'mobile', data) : '<div class="empty-hint">暂无持仓明细</div>'
     _renderExecFundsPanel('execMobileFundsPanel', data, {source:'手机同花顺', mode:data.trade_mode || data.mode || '手机'})
     if(data.available!=null){
       const mobileCapEl = document.getElementById('nMobileCapital')
@@ -1199,7 +1212,7 @@ async function refreshTodayOrders(){
   btn.disabled = true
   const oldTxt = btn.textContent
   btn.textContent = '⏳ 截图中...'
-  body.innerHTML = '<div style="padding:24px;color:var(--t3);font-size:13px;border-top:1px dashed var(--b1)">⏳ 桥接器正按 F4 截图 xiadan 当日委托页...<br>预计 2-3 秒，期间请勿操作鼠标键盘</div>'
+  body.innerHTML = '<div style="padding:24px;color:var(--t3);font-size:13px;border-top:1px dashed var(--b1)">⏳ 正在读取电脑当日委托...</div>'
 
   // navigate=1：让桥接器在 F4 后自校准点击左侧「当日委托」再截图（拿真实成交状态）
   const r = await api('/bridge/today_orders?navigate=1')
@@ -1223,7 +1236,7 @@ async function refreshTodayOrders(){
       ${tabsHint}
       ${renderOrdersTable(r.orders)}
       <details ${(r.orders&&r.orders.length)?'':'open'} style="margin-top:10px">
-        <summary style="cursor:pointer;font-size:12px;color:var(--t3)">📷 原始截图（OCR 难免误差，可对照核对）</summary>
+        <summary style="cursor:pointer;font-size:12px;color:var(--t3)">账户页面凭证</summary>
         <img src="${url}" style="max-width:100%;border:1px solid var(--b1);border-radius:6px;margin-top:8px" alt="当日委托截图">
       </details>
     </div>
@@ -1237,7 +1250,7 @@ async function refreshAccountSnapshot(){
   if(btn) btn.disabled = true
   const oldTxt = btn ? btn.textContent : '查资金/持仓'
   if(btn) btn.textContent = '⏳ 读取中...'
-  if(body) body.innerHTML = '<div style="padding:24px;color:var(--t3);font-size:13px;text-align:center">⏳ 正在读取账户资金 + 持仓...<br><span style="font-size:11px">实盘会按 F4 截图（约 2-3 秒），期间请勿操作鼠标键盘</span></div>'
+  if(body) body.innerHTML = '<div style="padding:24px;color:var(--t3);font-size:13px;text-align:center">⏳ 正在读取账户资金和持仓...</div>'
   _renderExecFundsPanel('execDesktopFundsPanel', null, {loading:'正在读取电脑侧账户资金和持仓...'})
 
   const r = await api('/account/snapshot')
@@ -1256,17 +1269,17 @@ async function refreshAccountSnapshot(){
     return
   }
 
-  let html = renderFundsCard(r) + renderPositionsTable(r.positions, r.mode, r)
+  let html = renderPositionsTable(r.positions, r.mode, r)
   if(r.screenshot){
     const url = '/' + r.screenshot + '?t=' + Date.now()
     html += `<details style="margin-top:10px">
-      <summary style="cursor:pointer;font-size:12px;color:var(--t3)">📷 原始截图（OCR 难免误差，可对照核对）</summary>
+      <summary style="cursor:pointer;font-size:12px;color:var(--t3)">账户页面凭证</summary>
       <img src="${url}" style="max-width:100%;border:1px solid var(--b1);border-radius:6px;margin-top:8px" alt="账户截图">
     </details>`
   }
   if(r.msg) html += `<div style="font-size:11px;color:var(--t3);padding:6px 0">${r.msg}</div>`
   if(body) body.innerHTML = html
-  _renderExecFundsPanel('execDesktopFundsPanel', r, {source:r.mode === 'paper' ? '电脑模拟盘' : 'xiadan', mode:r.mode || 'desktop'})
+  _renderExecFundsPanel('execDesktopFundsPanel', r, {source:r.mode === 'paper' ? '电脑模拟盘' : '电脑客户端', mode:r.mode || 'desktop'})
 }
 
 // 资金概览卡片：可用资金 / 总资产 / 持仓市值
@@ -1277,7 +1290,7 @@ function renderFundsCard(d){
   const targetAmount = Number.isFinite(totalAsset) && totalAsset>0 ? totalAsset * (_targetPositionRatio || 0.2) : null
   const modeBadge = d.mode==='paper'
     ? '<span style="font-size:10px;color:#0ea5e9;border:1px solid #0ea5e9;border-radius:4px;padding:1px 6px">模拟盘（本地账本）</span>'
-    : '<span style="font-size:10px;color:#ef4444;border:1px solid #ef4444;border-radius:4px;padding:1px 6px">实盘（OCR 识别）</span>'
+    : '<span style="font-size:10px;color:#ef4444;border:1px solid #ef4444;border-radius:4px;padding:1px 6px">实盘账户</span>'
   const cards = [['可用资金', fmt(d.available), '#22c55e'], ['总资产', fmt(d.total_asset), 'var(--t1)'], ['目标单仓', fmt(targetAmount), '#f59e0b']]
   if(d.market_value!=null) cards.push(['持仓市值', fmt(d.market_value), 'var(--t2)'])
   const cardHtml = cards.map(([k,v,c])=>`
@@ -1292,7 +1305,7 @@ function renderFundsCard(d){
 // 持仓表：模拟盘结构化字段齐全；实盘 OCR 仅 code/name 可靠 + numbers/raw 供参考
 function renderPositionsTable(positions, mode, account){
   if(!positions || !positions.length){
-    return '<div style="font-size:12px;color:var(--t3);padding:8px 0">（无持仓，或 OCR 未解析出持仓行——请看下方截图）</div>'
+    return '<div style="font-size:12px;color:var(--t3);padding:8px 0">暂无持仓明细</div>'
   }
   const isPaper = mode==='paper' || positions[0].cost_price!=null
   if(isPaper){
@@ -1316,13 +1329,13 @@ function renderPositionsTable(positions, mode, account){
       </tr>`
     }).join('')
     return `<div style="font-size:11px;color:var(--t3);padding:2px 0">目标均仓：${targetPct}% / 只，实际按市值÷总资产显示</div>
-      <table style="width:100%;border-collapse:collapse;font-size:12px;margin:6px 0">
+      <div class="exec-position-wrap"><table style="width:100%;border-collapse:collapse;font-size:12px;margin:6px 0">
       <thead><tr style="border-bottom:1px solid var(--b1);color:var(--t3)">
         <th style="padding:4px 8px;text-align:left">代码</th><th style="padding:4px 8px;text-align:left">名称</th>
         <th style="padding:4px 8px;text-align:right">股数</th><th style="padding:4px 8px;text-align:right">成本</th>
         <th style="padding:4px 8px;text-align:right">现价</th><th style="padding:4px 8px;text-align:right">盈亏</th>
         <th style="padding:4px 8px;text-align:right">市值/仓位</th>
-      </tr></thead><tbody>${rows}</tbody></table>`
+      </tr></thead><tbody>${rows}</tbody></table></div>`
   }
   // 实盘 OCR：代码/名称可靠，数字列仅供参考
   const rows = positions.map(p=>{
@@ -1334,12 +1347,12 @@ function renderPositionsTable(positions, mode, account){
       <td style="padding:4px 8px;font-size:11px;color:var(--t3)" title="${(p.raw||'').replace(/"/g,'&quot;')}">${p.raw||''}</td>
     </tr>`
   }).join('')
-  return `<div style="font-size:11px;color:#f59e0b;padding:2px 0">⚠️ 实盘持仓数字列由 OCR 识别，仅供参考，请以截图为准</div>
-    <table style="width:100%;border-collapse:collapse;font-size:12px;margin:6px 0">
+  return `<div style="font-size:11px;color:#f59e0b;padding:2px 0">实盘持仓明细来自账户页面，数字列用于快速核对</div>
+    <div class="exec-position-wrap"><table style="width:100%;border-collapse:collapse;font-size:12px;margin:6px 0">
     <thead><tr style="border-bottom:1px solid var(--b1);color:var(--t3)">
       <th style="padding:4px 8px;text-align:left">代码</th><th style="padding:4px 8px;text-align:left">名称</th>
-      <th style="padding:4px 8px;text-align:left">OCR数字</th><th style="padding:4px 8px;text-align:left">OCR原文</th>
-    </tr></thead><tbody>${rows}</tbody></table>`
+      <th style="padding:4px 8px;text-align:left">识别数字</th><th style="padding:4px 8px;text-align:left">页面原文</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>`
 }
 // 委托状态 → 颜色
 function _orderStatusColor(s){
@@ -1353,7 +1366,7 @@ function _orderStatusColor(s){
 // 把 OCR 解析出的结构化委托渲染成表格
 function renderOrdersTable(orders){
   if(!orders || !orders.length){
-    return '<div style="font-size:12px;color:var(--t3);padding:8px 0">（本地 OCR 未解析出委托行，请看下方截图。如未安装 OCR 请在桥接器机器上 <code>pip install winocr</code> 后重试）</div>'
+    return '<div style="font-size:12px;color:var(--t3);padding:8px 0">暂无委托明细</div>'
   }
   const _n = v => (v==null||isNaN(+v)) ? '-' : (+v).toLocaleString('zh-CN')
   let rows = orders.map(o=>{
@@ -1381,7 +1394,7 @@ function renderOrdersTable(orders){
       <th style="padding:4px 8px;text-align:right">委托量</th>
       <th style="padding:4px 8px;text-align:right">成交量</th>
       <th style="padding:4px 8px;text-align:right">委托价</th>
-      <th style="padding:4px 8px;text-align:left">OCR原文</th>
+      <th style="padding:4px 8px;text-align:left">页面原文</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`
@@ -3814,7 +3827,7 @@ async function _renderKLineMode(mode, allowFallback){
 
   let resp = KL_STATE[mode]
   if(!resp){
-    const waitMs = allowFallback && mode!=='daily' ? 2200 : 0
+    const waitMs = allowFallback && mode==='second' ? 5500 : (allowFallback && mode==='minute' ? 2500 : 0)
     resp = await _withTimeout(_fetchKLineMode(mode, stateCode), waitMs)
     if(KL_STATE.code!==stateCode) return
     if(resp) KL_STATE[mode] = resp
@@ -4002,7 +4015,12 @@ function drawSecondLine(canvas, rawData){
   data.forEach((d,i)=>{ const xx=x(i), yy=py(d.price); i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy) })
   ctx.stroke()
   const last=data[n-1]
-  ctx.fillStyle='#14b8a6'; ctx.beginPath(); ctx.arc(x(n-1), py(last.price), 3, 0, Math.PI*2); ctx.fill()
+    if(n===1){
+    const yy=py(last.price)
+    ctx.strokeStyle='rgba(20,184,166,.45)'; ctx.lineWidth=1.2; ctx.beginPath(); ctx.moveTo(PAD.l,yy); ctx.lineTo(PAD.l+CW,yy); ctx.stroke()
+    ctx.fillStyle='rgba(20,184,166,.20)'; ctx.beginPath(); ctx.arc(x(n-1), yy, 10, 0, Math.PI*2); ctx.fill()
+  }
+  ctx.fillStyle='#14b8a6'; ctx.beginPath(); ctx.arc(x(n-1), py(last.price), 5, 0, Math.PI*2); ctx.fill()
 
   const barW=Math.max(1, Math.floor(CW/Math.max(n,1))*.58)
   vols.forEach((v,i)=>{
@@ -4022,12 +4040,12 @@ function drawSecondLine(canvas, rawData){
   const color=change>=0?'#ef4444':'#22c55e'
   const hi=Math.max(...prices), lo=Math.min(...prices)
   document.getElementById('klInfo').innerHTML=`
-    <span>?? <b style="color:${color}">${last.price.toFixed(2)}</b></span>
+    <span>最新 <b style="color:${color}">${last.price.toFixed(2)}</b></span>
     <span style="color:${color};font-weight:700">${change>=0?'+':''}${change.toFixed(2)} / ${pct>=0?'+':''}${pct.toFixed(2)}%</span>
-    <span>?? <b>${firstRef.toFixed(2)}</b></span>
-    <span>? <b style="color:#ef4444">${hi.toFixed(2)}</b></span>
-    <span>? <b style="color:#22c55e">${lo.toFixed(2)}</b></span>
-    <span>?? <b>${_fmtVol(last.volume)}</b></span>
+    <span>参考 <b>${firstRef.toFixed(2)}</b></span>
+    <span>高 <b style="color:#ef4444">${hi.toFixed(2)}</b></span>
+    <span>低 <b style="color:#22c55e">${lo.toFixed(2)}</b></span>
+    <span>成交 <b>${_fmtVol(last.volume)}</b></span>
     <span style="color:var(--t4);margin-left:8px">${String(last.datetime||last.date||'')}</span>
   `
 }
@@ -4086,7 +4104,12 @@ function drawMinuteLine(canvas, rawData){
   data.forEach((d,i)=>{ const xx=x(i), yy=py(d.close); i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy) })
   ctx.stroke()
   const last=data[n-1]
-  ctx.fillStyle='#58a6ff'; ctx.beginPath(); ctx.arc(x(n-1), py(last.close), 3, 0, Math.PI*2); ctx.fill()
+    if(n===1){
+    const yy=py(last.close)
+    ctx.strokeStyle='rgba(88,166,255,.45)'; ctx.lineWidth=1.2; ctx.beginPath(); ctx.moveTo(PAD.l,yy); ctx.lineTo(PAD.l+CW,yy); ctx.stroke()
+    ctx.fillStyle='rgba(88,166,255,.20)'; ctx.beginPath(); ctx.arc(x(n-1), yy, 10, 0, Math.PI*2); ctx.fill()
+  }
+  ctx.fillStyle='#58a6ff'; ctx.beginPath(); ctx.arc(x(n-1), py(last.close), 5, 0, Math.PI*2); ctx.fill()
 
   const barW=Math.max(1, Math.floor(CW/Math.max(n,1))*.58)
   vols.forEach((v,i)=>{

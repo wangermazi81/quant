@@ -288,7 +288,7 @@ def get_order_book(code: str) -> dict:
     return get_order_book_result(code).get("order_book", {})
 
 
-def get_tick_series_result(code: str, limit: int = 120) -> dict:
+def get_tick_series_result(code: str, limit: int | None = 120, trade_date: str | None = None) -> dict:
     cfg = _config()
     result = _empty_result("tick_series", cfg)
     clean = normalize_code(code)
@@ -300,6 +300,7 @@ def get_tick_series_result(code: str, limit: int = 120) -> dict:
                 df = tushare_provider.fetch_tick_series(
                     clean,
                     limit=limit,
+                    trade_date=trade_date,
                     token=cfg.get("tushare_token"),
                     mode=cfg.get("tushare_mode"),
                 )
@@ -327,11 +328,11 @@ def get_tick_series_result(code: str, limit: int = 120) -> dict:
     return result
 
 
-def get_tick_series(code: str, limit: int = 120) -> list[dict]:
-    return get_tick_series_result(code, limit=limit).get("ticks", [])
+def get_tick_series(code: str, limit: int | None = 120, trade_date: str | None = None) -> list[dict]:
+    return get_tick_series_result(code, limit=limit, trade_date=trade_date).get("ticks", [])
 
 
-def get_minute_kline_result(code: str, freq: str = "1MIN", limit: int = 240) -> dict:
+def get_minute_kline_result(code: str, freq: str = "1MIN", limit: int | None = 240, trade_date: str | None = None) -> dict:
     cfg = _config()
     result = _empty_result("minute_kline", cfg)
     clean = normalize_code(code)
@@ -344,12 +345,13 @@ def get_minute_kline_result(code: str, freq: str = "1MIN", limit: int = 240) -> 
                     clean,
                     freq=freq,
                     limit=limit,
+                    trade_date=trade_date,
                     token=cfg.get("tushare_token"),
                     mode=cfg.get("tushare_mode"),
                 )
             elif source == "current":
                 from market import market_data
-                payload = market_data.get_minute_kline_current(clean)
+                payload = market_data.get_minute_kline_current(clean, trade_date)
                 df = pd.DataFrame(payload)
         except Exception as exc:
             errors.append(f"{source}: {exc}")
@@ -363,8 +365,13 @@ def get_minute_kline_result(code: str, freq: str = "1MIN", limit: int = 240) -> 
     return result
 
 
-def get_minute_kline(code: str, freq: str = "1MIN", limit: int = 240) -> pd.DataFrame:
-    return get_minute_kline_result(code, freq=freq, limit=limit).get("df", pd.DataFrame())
+def get_minute_kline(
+    code: str,
+    freq: str = "1MIN",
+    limit: int | None = 240,
+    trade_date: str | None = None,
+) -> pd.DataFrame:
+    return get_minute_kline_result(code, freq=freq, limit=limit, trade_date=trade_date).get("df", pd.DataFrame())
 
 
 def _current_limit_pools(trade_date: str) -> dict:

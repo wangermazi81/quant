@@ -63,6 +63,65 @@ def _request_trade_date(code: str) -> str:
     return date_text
 
 
+def _minute_bars_from_ticks(ticks: dict) -> dict:
+    """把秒级成交聚合成 1 分钟 OHLC，作为分时源兜底。"""
+    times = ticks.get("datetime") or [] if isinstance(ticks, dict) else []
+    prices = ticks.get("price") or [] if isinstance(ticks, dict) else []
+    volumes = ticks.get("volume") or [] if isinstance(ticks, dict) else []
+    amounts = ticks.get("amount") or [] if isinstance(ticks, dict) else []
+    bars: dict[str, dict] = {}
+    order: list[str] = []
+    for idx, dt in enumerate(times):
+        dt_text = str(dt)
+        price = prices[idx] if idx < len(prices) else None
+        try:
+            price = float(price)
+        except Exception:
+            continue
+        if price <= 0:
+            continue
+        minute_key = dt_text[:16] if len(dt_text) >= 16 else dt_text[:5]
+        if not minute_key:
+            continue
+        hhmm = dt_text[11:16] if len(dt_text) >= 16 else dt_text[:5]
+        if not ("09:30" <= hhmm <= "11:30" or "13:00" <= hhmm <= "15:00"):
+            continue
+        vol = volumes[idx] if idx < len(volumes) else 0
+        amt = amounts[idx] if idx < len(amounts) else 0
+        try:
+            vol = float(vol or 0)
+        except Exception:
+            vol = 0
+        try:
+            amt = float(amt or 0)
+        except Exception:
+            amt = 0
+        bar = bars.get(minute_key)
+        if bar is None:
+            bar = {
+                "datetime": minute_key + ":00" if len(minute_key) == 16 else minute_key,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": 0.0,
+                "amount": 0.0,
+                "is_complete": False,
+            }
+            bars[minute_key] = bar
+            order.append(minute_key)
+        bar["high"] = max(float(bar["high"]), price)
+        bar["low"] = min(float(bar["low"]), price)
+        bar["close"] = price
+        bar["volume"] = float(bar.get("volume") or 0) + vol
+        bar["amount"] = float(bar.get("amount") or 0) + amt
+    rows = [bars[k] for k in sorted(order)]
+    result = {"datetime": [], "open": [], "high": [], "low": [], "close": [], "volume": [], "amount": [], "is_complete": []}
+    for row in rows:
+        for col in result:
+            result[col].append(row.get(col))
+    return result
+
 @bp.route("/api/data/stocks")
 def api_data_list():
     return jsonify(dm.list_stocks())
@@ -237,14 +296,32 @@ def api_minute_kline(code):
     try:
         date_text = _request_trade_date(code)
         raw = md.get_minute_kline(code, date_text)
+        source = raw.get("source") or "tushare_minute"
         times = raw.get("datetime") or []
+        if len(times) <= 1:
+            tick_raw = md.get_second_ticks(code, date_text)
+            tick_minute = _minute_bars_from_ticks(tick_raw)
+            tick_times = tick_minute.get("datetime") or []
+            if len(tick_times) <= len(times):
+                from analytics import data_gateway as dg
+                rows = dg.get_tick_series(code, limit=None, trade_date=date_text)
+                tick_raw = {
+                    col: [row.get(col) for row in rows]
+                    for col in ("datetime", "price", "volume", "amount", "prev_price", "kind")
+                }
+                tick_minute = _minute_bars_from_ticks(tick_raw)
+                tick_times = tick_minute.get("datetime") or []
+            if len(tick_times) > len(times):
+                raw = tick_minute
+                times = tick_times
+                source = "tick_agg_minute"
         if not times:
             return jsonify({"ok": False, "code": code, "data": [], "source": "minute", "msg": "no minute data"})
         data = []
+        fallback = [None] * len(times)
+        zeroes = [0] * len(times)
         for idx, dt in enumerate(times):
             dt_text = str(dt)
-            fallback = [None] * len(times)
-            zeroes = [0] * len(times)
             data.append({
                 "date": dt_text[11:16] if len(dt_text) >= 16 else dt_text,
                 "datetime": dt_text,
@@ -255,7 +332,7 @@ def api_minute_kline(code):
                 "volume": (raw.get("volume") or zeroes)[idx],
                 "amount": (raw.get("amount") or zeroes)[idx],
             })
-        return jsonify({"ok": True, "code": code, "source": "tushare_minute", "freq": "1MIN", "data": data})
+        return jsonify({"ok": True, "code": code, "source": source, "freq": "1MIN", "data": data})
     except Exception as exc:
         logger.warning(f"minute kline api failed {code}: {exc}")
         return jsonify({"ok": False, "code": code, "data": [], "error": str(exc)})

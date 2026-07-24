@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import threading
@@ -201,23 +201,26 @@ def get_minute_kline(code: str, date: str) -> dict:
     if cached is not None:
         return cached
 
-    quick_snap = _minute_snapshot(code, cache_key)
-    if quick_snap is not None:
-        return quick_snap
-
     if not _try_begin_fetch(cache_key):
         snap = _minute_snapshot(code, cache_key)
         return snap if snap is not None else _empty_minute_kline()
 
     try:
         from analytics import data_gateway as dg
-        df = dg.get_minute_kline(code, freq="1MIN", limit=240)
+        df = dg.get_minute_kline(code, freq="1MIN", limit=None, trade_date=date)
         result = _empty_minute_kline()
         if df is not None and not df.empty and "datetime" in df.columns:
             df = df.copy()
             df["datetime"] = df["datetime"].apply(lambda v: v.strftime("%Y-%m-%d %H:%M:%S") if hasattr(v, "strftime") else str(v))
         for col in ("datetime", "open", "high", "low", "close", "volume", "amount", "is_complete"):
             result[col] = df[col].tolist() if col in df.columns else []
+        if len(result.get("datetime") or []) > 1:
+            return _cache_set(cache_key, result)
+        if str(date or "") == datetime.now().strftime("%Y%m%d"):
+            rows = dg.get_tick_series(code, limit=None, trade_date=date)
+            tick_result = _minute_kline_from_tick_rows(rows)
+            if len(tick_result.get("datetime") or []) > len(result.get("datetime") or []):
+                return _cache_set(cache_key, tick_result)
         if result.get("datetime"):
             return _cache_set(cache_key, result)
         snap = _minute_snapshot(code, cache_key)
@@ -228,14 +231,69 @@ def get_minute_kline(code: str, date: str) -> dict:
         _end_fetch(cache_key)
 
 
+def _minute_kline_from_tick_rows(rows: list[dict]) -> dict:
+    bars: dict[str, dict] = {}
+    order: list[str] = []
+    for row in rows or []:
+        dt_text = str(row.get("datetime") or "")
+        minute_key = dt_text[:16] if len(dt_text) >= 16 else dt_text[:5]
+        if not minute_key:
+            continue
+        hhmm = dt_text[11:16] if len(dt_text) >= 16 else dt_text[:5]
+        if not ("09:30" <= hhmm <= "11:30" or "13:00" <= hhmm <= "15:00"):
+            continue
+        try:
+            price = float(row.get("price") or 0)
+        except Exception:
+            continue
+        if price <= 0:
+            continue
+        try:
+            volume = float(row.get("volume") or 0)
+        except Exception:
+            volume = 0.0
+        try:
+            amount = float(row.get("amount") or 0)
+        except Exception:
+            amount = 0.0
+        bar = bars.get(minute_key)
+        if bar is None:
+            bar = {
+                "datetime": minute_key + ":00" if len(minute_key) == 16 else minute_key,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": 0.0,
+                "amount": 0.0,
+                "is_complete": False,
+            }
+            bars[minute_key] = bar
+            order.append(minute_key)
+        bar["high"] = max(float(bar["high"]), price)
+        bar["low"] = min(float(bar["low"]), price)
+        bar["close"] = price
+        bar["volume"] = float(bar.get("volume") or 0) + volume
+        bar["amount"] = float(bar.get("amount") or 0) + amount
+    result = {"datetime": [], "open": [], "high": [], "low": [], "close": [], "volume": [], "amount": [], "is_complete": []}
+    for key in sorted(order):
+        bar = bars[key]
+        for col in result:
+            result[col].append(bar.get(col))
+    result["source"] = "tick_agg_minute"
+    return result
+
+
 def get_minute_kline_current(code: str, date: str | None = None) -> dict:
     """Fetch 1-minute bars from the legacy/current datasource only."""
     code = _plain_stock_code(code)
     date = str(date or datetime.now().strftime("%Y%m%d"))
     os.makedirs(MINUTE_CACHE_DIR, exist_ok=True)
     cache_path = os.path.join(MINUTE_CACHE_DIR, f"{code}_{date}.csv")
+    today = datetime.now().strftime("%Y%m%d")
+    use_disk_cache = date != today
 
-    if os.path.exists(cache_path):
+    if use_disk_cache and os.path.exists(cache_path):
         try:
             df = pd.read_csv(cache_path)
         except Exception:
@@ -243,12 +301,14 @@ def get_minute_kline_current(code: str, date: str | None = None) -> dict:
     else:
         df = pd.DataFrame()
         try:
+            start_text = f"{date[:4]}-{date[4:6]}-{date[6:8]} 09:30:00"
+            end_text = f"{date[:4]}-{date[4:6]}-{date[6:8]} 15:00:00"
             raw = ak.stock_zh_a_hist_min_em(
                 symbol=code,
-                start_date=date,
-                end_date=date,
+                start_date=start_text,
+                end_date=end_text,
                 period="1",
-                adjust="qfq",
+                adjust="",
             )
             col_map = {
                 "\u65f6\u95f4": "datetime",
@@ -257,15 +317,17 @@ def get_minute_kline_current(code: str, date: str | None = None) -> dict:
                 "\u6700\u4f4e": "low",
                 "\u6536\u76d8": "close",
                 "\u6210\u4ea4\u91cf": "volume",
+                "\u6210\u4ea4\u989d": "amount",
             }
             raw = raw.rename(columns={k: v for k, v in col_map.items() if k in raw.columns})
-            raw.to_csv(cache_path, index=False)
+            if raw is not None and not raw.empty:
+                raw.to_csv(cache_path, index=False)
             df = raw
         except Exception as e:
             logger.warning(f"current minute kline failed {code} {date}: {e}")
 
     result = {}
-    for col in ("datetime", "open", "high", "low", "close", "volume"):
+    for col in ("datetime", "open", "high", "low", "close", "volume", "amount"):
         result[col] = df[col].tolist() if col in df.columns else []
     return result
 
@@ -292,6 +354,16 @@ def _minute_snapshot(code: str, cache_key: tuple, fetch_order_book: bool = True)
     return _cache_set(cache_key, result)
 
 
+def _regular_trade_datetime(dt_text: str, expected_date: str | None = None) -> bool:
+    text = str(dt_text or "")
+    if len(text) < 16:
+        return False
+    day = text[:10].replace("-", "")
+    if expected_date and day != str(expected_date).replace("-", "")[:8]:
+        return False
+    hm = text[11:16]
+    return ("09:30" <= hm <= "11:30") or ("13:00" <= hm <= "15:00")
+
 def get_second_ticks(code: str, date: str | None = None) -> dict:
     """Fetch second-level tick series through the unified datasource gateway."""
     code = _plain_stock_code(code)
@@ -301,12 +373,12 @@ def get_second_ticks(code: str, date: str | None = None) -> dict:
         return cached
 
     if not _try_begin_fetch(cache_key):
-        snap = _second_tick_snapshot(code, cache_key)
+        snap = _second_tick_snapshot(code, cache_key, date)
         return snap if snap is not None else _empty_second_ticks()
 
     try:
         from analytics import data_gateway as dg
-        rows = dg.get_tick_series(code, limit=240)
+        rows = dg.get_tick_series(code, limit=None, trade_date=date)
         if rows:
             df = pd.DataFrame(rows)
             if "datetime" in df.columns:
@@ -315,7 +387,7 @@ def get_second_ticks(code: str, date: str | None = None) -> dict:
             for col in ("datetime", "price", "volume", "amount", "prev_price", "kind"):
                 result[col] = df[col].tolist() if col in df.columns else []
             return _cache_set(cache_key, result)
-        snap = _second_tick_snapshot(code, cache_key)
+        snap = _second_tick_snapshot(code, cache_key, date)
         if snap is not None:
             return snap
         return _cache_set(cache_key, _empty_second_ticks())
@@ -323,11 +395,18 @@ def get_second_ticks(code: str, date: str | None = None) -> dict:
         _end_fetch(cache_key)
 
 
-def _second_tick_snapshot(code: str, cache_key: tuple) -> dict | None:
+def _second_tick_snapshot(code: str, cache_key: tuple, date: str | None = None) -> dict | None:
     book = _cache_get(("order_book", code), INTRADAY_CACHE_TTL_SECONDS) or get_order_book(code)
     price = book.get("price") if isinstance(book, dict) else None
     trade_time = str(book.get("trade_time") or "") if isinstance(book, dict) else ""
     if not price or not trade_time:
+        return None
+    expected_date = str(date or "").replace("-", "")[:8]
+    if expected_date:
+        today = datetime.now().strftime("%Y%m%d")
+        if expected_date != today or not is_trading_time():
+            return None
+    if not _regular_trade_datetime(trade_time, expected_date or None):
         return None
     result = {
         "datetime": [trade_time],

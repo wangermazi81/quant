@@ -12,7 +12,7 @@
 <script src="/static/lib/python.min.js"></script>
 <script src="/static/lib/chart.min.js"></script>
 <script defer src="/static/lib/rb-effects.js"></script>
-<link rel="stylesheet" href="/static/app/css/app-base.css?v=20260723-exec-mode-badges">
+<link rel="stylesheet" href="/static/app/css/app-base.css?v=20260723-exec-console-brand-clean">
 <link rel="stylesheet" href="/static/lib/theme-candy.css">
 </head>
 <body>
@@ -858,13 +858,13 @@
       <div class="trade-console-head">
         <div>
           <h4>交易执行控制台</h4>
-          <div class="trade-console-sub">见微信号统一进来，在这里选择手机 / 电脑、模拟盘 / 实盘、资金读取、确认和撤单。</div>
+          <div class="trade-console-sub">策略信号统一进来，只保留交易员要看的开关、资金、仓位和操作。</div>
         </div>
         <div class="trade-console-actions">
           <div class="exec-stat-strip" title="策略执行统计">
             <span>今日 <b id="nToday">0</b>/<b id="nLimit">3</b></span>
-            <span>电脑资金 <b id="nCapital">—</b></span>
-            <span>手机资金 <b id="nMobileCapital">—</b></span>
+            <span class="fund-stat">电脑资金 <b id="nCapital">—</b></span>
+            <span class="fund-stat">手机资金 <b id="nMobileCapital">—</b></span>
             <span>扫描 <b id="nScanned">0</b>/<b id="nExecuted">0</b></span>
           </div>
         </div>
@@ -908,11 +908,7 @@
                 </div>
                 <button class="btn btn-blue btn-sm" onclick="switchMobileMode('simulation')">切到模拟</button>
               </div>
-              <div class="exec-control-row">
-                <button class="btn btn-gray btn-xs" onclick="openMobileThs()">打开同花顺</button>
-                <button class="btn btn-gray btn-xs" onclick="refreshMobileFunds()" id="mobileFundsRefresh">查资金/仓位</button>
-              </div>
-              <div class="exec-hint">手机模拟界面和实盘界面一致，用同一套搜索、买入、卖出、撤单动作链路。</div>
+              <div class="exec-hint">模拟/实盘共用同一套手机动作；账户、打开同花顺、重启桥接都放到下面操作区。</div>
             </article>
 
             <article class="exec-mode-card live-mode">
@@ -926,7 +922,6 @@
               <div class="exec-control-row">
                 <span id="bridgeProcessBadge" class="bridge-switch checking" onclick="toggleBridgeProcess()" title="后台启动/关闭桥接器，不弹 CMD 窗口"><i></i><b>桥接器 检测中</b></span>
                 <button class="btn btn-gray btn-xs" onclick="restartMobileBridge()">重启桥接器</button>
-                <button class="btn btn-gray btn-xs" onclick="openMobileThs()">打开同花顺</button>
               </div>
               <div class="exec-control-row compact">
                 <button class="btn btn-gray btn-xs" onclick="setMobileConnection('usb')">USB</button>
@@ -938,25 +933,31 @@
                 <span id="mobileModeText" class="mobile-muted">模式：读取中</span>
                 <span id="mobileProfileText" class="mobile-muted">设备与确认模式读取中...</span>
               </div>
-              <div id="execMobileMeta" class="exec-hint">连接、设备、确认模式读取中...</div>
+              <div id="execMobileMeta" class="exec-hint">手机执行状态读取中...</div>
             </article>
           </div>
 
-          <div class="exec-sub-grid">
+          <div class="exec-sub-grid clean-data-grid">
             <section class="trade-console-card mobile-funds-card">
-              <div class="trade-card-title">手机资金与仓位</div>
+              <div class="trade-card-title">手机账户</div>
               <div class="exec-funds-panel" id="execMobileFundsPanel">
-                <div class="exec-funds-title"><span>手机资金 / 仓位</span><button class="btn btn-gray btn-xs" onclick="refreshMobileFunds();refreshExecutionState()">刷新</button></div>
-                <div class="exec-funds-empty">还没有读取手机资金。点“查资金/仓位”后，这里显示可用资金、总资产、目标单仓和持仓数。</div>
+                <div class="exec-funds-title"><span>资金 / 仓位</span><button class="btn btn-gray btn-xs" onclick="refreshMobileFunds();refreshExecutionState()" id="mobileFundsRefresh">查资金/仓位</button></div>
+                <div class="exec-funds-empty">点“查资金/仓位”后显示手机侧可用资金、总资产、目标单仓和持仓。</div>
               </div>
-              <div id="mobileFundsBody" class="mobile-funds-body">
+              <div id="mobileFundsBody" class="mobile-funds-body exec-body-panel">
                 <div class="empty-hint">点“查资金/仓位”读取 Android 同花顺账户。</div>
               </div>
             </section>
-            <section class="trade-console-card mobile-flow-card">
-              <div class="trade-card-title">手机执行链路</div>
-              <div class="link-flow"><b>见微信号</b><span>→</span><b>桥接器</b><span>→</span><b>手机同花顺</b><span>→</span><b>成交/撤单</b></div>
-              <div id="mobileChainStatus" class="mobile-chain-status">链路状态读取中...</div>
+
+            <section class="trade-console-card exec-action-card mobile-action-card">
+              <div class="trade-card-title">手机操作</div>
+              <div class="exec-action-grid">
+                <button class="btn btn-gray btn-xs" onclick="openMobileThs()">打开同花顺</button>
+                <button class="btn btn-gray btn-xs" onclick="refreshMobileFunds();refreshExecutionState()">查资金/仓位</button>
+                <button class="btn btn-gray btn-xs" onclick="restartMobileBridge()">重启桥接器</button>
+                <button class="btn btn-blue btn-xs" onclick="refreshExecutionState()">刷新状态</button>
+              </div>
+              <div id="mobileChainStatus" class="exec-human-status"><i></i><span>手机状态读取中...</span></div>
             </section>
           </div>
         </section>
@@ -965,11 +966,11 @@
           <div class="exec-board-head">
             <div>
               <h5>电脑交易</h5>
-              <p>电脑 xiadan.exe 和本地模拟盘共用策略信号，资金、持仓、当日委托集中在这里看。</p>
+              <p>电脑客户端和本地模拟盘共用策略信号，资金、持仓、当日委托集中在这里看。</p>
             </div>
             <div class="exec-head-badges">
               <span id="desktopCurrentModeBadge" class="exec-current-mode unknown"><i></i><b>电脑当前：读取中</b></span>
-              <span class="exec-board-tag">xiadan / 本地账本</span>
+              <span class="exec-board-tag">电脑客户端 / 模拟账本</span>
             </div>
           </div>
 
@@ -982,10 +983,7 @@
                 </div>
                 <span id="tradeModeBadge" class="top-switch trade-switch off" onclick="toggleTradeMode()" title="点击切换实盘/模拟（实盘需二次确认）"><i></i><b>模拟</b></span>
               </div>
-              <div class="exec-control-row">
-                <button class="btn btn-gray btn-xs" onclick="refreshAccountSnapshot()" title="模拟盘下读取本地账本，实盘下读取 xiadan">查模拟资金/持仓</button>
-              </div>
-              <div class="exec-hint">策略不开实盘总闸时，信号先进本地模拟盘，仓位由见微账户参数控制。</div>
+              <div class="exec-hint">策略总闸关闭时，信号先进本地模拟盘；仓位由见微账户参数控制。</div>
             </article>
 
             <article class="exec-mode-card live-mode">
@@ -995,10 +993,6 @@
                   <h6>实盘</h6>
                 </div>
                 <span id="liveTradeBadge" class="top-switch live-switch off" onclick="toggleLiveTrade()" title="实盘下单总闸：关闭后桥接器收不到任何信号、彻底不下单到同花顺（其他功能照常）"><i></i><b>实盘下单 已关</b></span>
-              </div>
-              <div class="exec-control-row">
-                <button class="btn btn-gray btn-xs" onclick="refreshAccountSnapshot()" id="acctSnapRefresh" title="读 F4 资金股票页：可用资金/总资产/持仓">查资金/持仓</button>
-                <button class="btn btn-gray btn-xs" onclick="refreshTodayOrders()" id="todayOrdersRefresh" title="F4 进查询页后自动点击当日委托并 OCR 解析">查当日委托</button>
               </div>
               <div class="trade-settings-grid compact-settings">
                 <label class="mobile-toggle-option"><input type="radio" name="tsConfirm" value="auto"><span>下单自动确认</span></label>
@@ -1013,19 +1007,19 @@
             </article>
           </div>
 
-          <div class="exec-sub-grid desktop-data-grid">
+          <div class="exec-sub-grid clean-data-grid desktop-data-grid">
             <section class="trade-console-card desktop-account-card">
-              <div class="trade-card-title">电脑资金 / 持仓</div>
+              <div class="trade-card-title">电脑账户</div>
               <div class="exec-funds-panel" id="execDesktopFundsPanel">
-                <div class="exec-funds-title"><span>电脑资金 / 仓位</span><button class="btn btn-gray btn-xs" onclick="refreshAccountSnapshot();refreshExecutionState()">刷新</button></div>
-                <div class="exec-funds-empty">电脑模拟盘和 xiadan 资金分开读取。点“查资金/持仓”后，这里显示电脑侧账户概览。</div>
+                <div class="exec-funds-title"><span>资金 / 仓位</span><button class="btn btn-gray btn-xs" onclick="refreshAccountSnapshot();refreshExecutionState()" id="acctSnapRefresh" title="读取电脑账户资金和持仓">查资金/持仓</button></div>
+                <div class="exec-funds-empty">点“查资金/持仓”后显示电脑侧可用资金、总资产、目标单仓和持仓。</div>
               </div>
-              <div id="acctSnapshotBody" style="padding:6px 0">
+              <div id="acctSnapshotBody" class="exec-body-panel">
                 <div class="empty-hint" style="color:var(--t3);padding:16px;text-align:center">点“查资金/持仓”读取当前账户。</div>
               </div>
             </section>
             <section class="trade-console-card desktop-orders-card">
-              <div class="trade-card-title">电脑当日委托</div>
+              <div class="exec-funds-title"><span>电脑当日委托</span><button class="btn btn-gray btn-xs" onclick="refreshTodayOrders()" id="todayOrdersRefresh" title="读取电脑当日委托">查当日委托</button></div>
               <div id="acctOrdersBody" style="padding:6px 0"></div>
             </section>
           </div>
@@ -1033,7 +1027,7 @@
       </div>
 
       <div class="trade-console-note">
-        手机资金走 Android 同花顺界面读取；电脑 xiadan 资金/持仓/委托走 F4 截图 + 本地 OCR。见微信号统一进交易执行控制台，再按手机/电脑、模拟/实盘当前开关执行。
+        手机账户和电脑账户分开显示；策略信号进入交易执行控制台后，按当前手机/电脑、模拟/实盘开关执行。
       </div>
       <div style="display:flex;justify-content:flex-end;margin-top:10px">
         <button class="btn btn-gray btn-sm" onclick="closeTodayOrders()">关闭</button>
@@ -1060,7 +1054,7 @@
       <h4 style="color:#ef4444">⚠️ 切换到实盘交易模式</h4>
       <div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:10px;font-size:12px;color:var(--t1);line-height:1.7;margin-bottom:12px">
         切换到 <b style="color:#ef4444">实盘</b> 后：<br>
-        • 所有买卖单 → 通过桥接器按键到 xiadan.exe <b>真实下单到券商</b><br>
+        • 所有买卖单 → 通过电脑客户端 <b>真实下单到券商</b><br>
         • 桥接器 <b>必须在运行</b><br>
         • 单笔预估金额 > MAX_ORDER_AMOUNT (50,000) 会被桥接器拒<br>
         • 切换不会影响已有持仓
@@ -1489,7 +1483,7 @@
 
 <link rel="stylesheet" href="/static/app/css/app-pages.css">
 
-<script src="/static/app/js/app-core.js?v=20260723-exec-mode-badges"></script>
+<script src="/static/app/js/app-core.js?v=20260723-exec-console-brand-clean"></script>
 
 <!-- AI 写策略弹窗 -->
 <div class="kl-overlay" id="aiGenOverlay" onclick="if(event.target===this)closeAiGen()" style="z-index:2100">

@@ -499,7 +499,9 @@ def fetch_tick_series(
     params: dict[str, Any] = {"ts_code": _ts_code(code)}
     if trade_date:
         params["trade_date"] = _date_text(trade_date)
-    if limit:
+    if limit is None and trade_date:
+        params["limit"] = 10000
+    elif limit:
         params["limit"] = int(limit)
     rows = _replay_get("a_share_ticks", token, params, timeout=REALTIME_REPLAY_TIMEOUT, max_attempts=1)
     return _normalize_tick_frame(pd.DataFrame(rows))
@@ -537,6 +539,7 @@ def fetch_minute_kline(
     code: str,
     freq: str = "1MIN",
     limit: int | None = None,
+    trade_date: str | None = None,
     token: str | None = None,
     mode: str | None = None,
 ) -> pd.DataFrame:
@@ -550,14 +553,19 @@ def fetch_minute_kline(
     ts_code = _ts_code(code)
     if resolved_mode == "replay":
         params: dict[str, Any] = {"ts_code": ts_code, "freq": freq_key}
+        if trade_date:
+            params["trade_date"] = _date_text(trade_date)
         rows = _replay_get("rt_min", token, params, timeout=REALTIME_REPLAY_TIMEOUT, max_attempts=1)
-        return _normalize_minute_frame(pd.DataFrame(rows))
+        df = _normalize_minute_frame(pd.DataFrame(rows))
+        if limit and df is not None and not df.empty:
+            df = df.tail(int(limit))
+        return df
 
     ts = _load_tushare()
     api = ts.pro_api(token)
     sdk_freq = freq_key.lower().replace("min", "min")
-    end = datetime.now().strftime("%Y%m%d")
-    start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+    end = _date_text(trade_date) if trade_date else datetime.now().strftime("%Y%m%d")
+    start = end if trade_date else (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
     df = ts.pro_bar(ts_code=ts_code, api=api, start_date=start, end_date=end, freq=sdk_freq, asset="E")
     if limit and df is not None and not df.empty:
         df = df.tail(int(limit))
