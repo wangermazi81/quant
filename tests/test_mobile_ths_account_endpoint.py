@@ -38,7 +38,9 @@ def test_mobile_account_endpoint_queues_background_task(monkeypatch):
     assert response.status_code == 200
     assert response.get_json()['action'] == 'account'
     assert calls and calls[0][0] == 'account'
-    assert calls[0][2]()['available'] == 123.45
+    worker_result = calls[0][2]()
+    assert worker_result['available'] == 123.45
+    assert 'live_cash_sync_error' not in worker_result
 
 
 def test_mobile_legacy_busy_is_accepted(monkeypatch):
@@ -62,6 +64,24 @@ def test_mobile_legacy_busy_is_accepted(monkeypatch):
     assert result['status'] == 'busy'
 
     bridge._mobile_legacy_state_update(running=False, action='', target='', ok=None, msg='', started_at=0.0)
+
+
+def test_mobile_legacy_task_keeps_structured_result(monkeypatch):
+    from web import bridge
+
+    bridge._mobile_legacy_state_update(running=False, action='', target='', ok=None, msg='', result=None, started_at=0.0)
+
+    result = bridge._start_mobile_legacy_task('account', '', lambda: {'ok': True, 'available': 88.0, 'positions': []})
+    assert result['accepted'] is True
+
+    deadline = bridge.time.time() + 2
+    state = bridge._mobile_legacy_state_snapshot()
+    while state.get('running') and bridge.time.time() < deadline:
+        bridge.time.sleep(0.02)
+        state = bridge._mobile_legacy_state_snapshot()
+
+    assert state['ok'] is True
+    assert state['result']['available'] == 88.0
 
 
 def test_mobile_connection_and_confirm_clear_stale_failed_task(monkeypatch):

@@ -186,6 +186,7 @@ async function _mobilePost(path, body, busyText){
 function _mobileTaskId(resp){ return resp && resp.task && resp.task.task_id ? String(resp.task.task_id) : '' }
 function _mobileAccountPayload(profile){
   const task = profile && profile.mobile_task || {}
+  if(task.action === 'account' && task.result && typeof task.result === 'object') return task.result
   if(task.action === 'account' && task.msg && typeof task.msg === 'object') return task.msg
   return profile && profile.last_account_snapshot || null
 }

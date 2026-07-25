@@ -50,6 +50,7 @@ _MOBILE_LEGACY_STATE = {
     "target": "",
     "ok": None,
     "msg": "",
+    "result": None,
     "started_at": 0.0,
     "updated_at": "",
 }
@@ -120,6 +121,7 @@ def _mark_mobile_legacy_ready(action, target, ok, msg):
         target=str(target or ""),
         ok=bool(ok),
         msg=str(msg or ""),
+        result=None,
         started_at=time.time(),
     )
 
@@ -153,6 +155,7 @@ def _start_mobile_legacy_task(action, target, worker):
                 running=False,
                 ok=False,
                 msg=f"\u4e0a\u6b21\u4efb\u52a1\u8d85\u65f6\u5df2\u91ca\u653e\uff1a{state.get('action') or 'unknown'}",
+                result=None,
             )
         _MOBILE_LEGACY_STATE.update(
             running=True,
@@ -161,6 +164,7 @@ def _start_mobile_legacy_task(action, target, worker):
             target=str(target or ""),
             ok=None,
             msg="\u6267\u884c\u4e2d",
+            result=None,
             started_at=time.time(),
             updated_at=datetime.now().isoformat(timespec="seconds"),
         )
@@ -181,6 +185,7 @@ def _start_mobile_legacy_task(action, target, worker):
                 target=str(target or ""),
                 ok=bool(result.get("ok", True)),
                 msg=str(result.get("msg") or result),
+                result=result,
             )
         except Exception as e:
             finish(
@@ -189,6 +194,7 @@ def _start_mobile_legacy_task(action, target, worker):
                 target=str(target or ""),
                 ok=False,
                 msg=str(e),
+                result={"ok": False, "msg": str(e)},
             )
 
     threading.Thread(target=run, name=f"mobile-ths-{action}", daemon=True).start()
@@ -625,14 +631,11 @@ def bridge_process_stop():
     return jsonify({"ok": True, **result, **bridge_process_status_payload()})
 
 
-@bp.route("/api/mobile_ths/profile", methods=["GET", "POST"])
-def mobile_ths_legacy_profile():
-    cfg = _load_bridge_config()
-    profile = _load_android_profile(cfg)
+def _mobile_profile_payload(cfg=None, profile=None):
+    cfg = cfg or _load_bridge_config()
+    profile = profile or _load_android_profile(cfg)
     task = _mobile_legacy_state_snapshot()
-    last_account = profile.get('last_account_snapshot') or {}
-    return jsonify({
-        'last_account_snapshot': last_account,
+    return {
         "ok": True,
         "backend": "jianwei-alpha",
         "executor_type": cfg.get("executor_type", "android"),
@@ -641,16 +644,14 @@ def mobile_ths_legacy_profile():
         "confirm_mode": cfg.get("confirm_mode") or profile.get("confirm_mode") or "manual",
         "device_serial": profile.get("device_serial") or cfg.get("device_serial") or "",
         "app_package": profile.get("app_package") or "com.hexin.plat.android",
-        "bridge_running": bool(cfg.get("bridge_running", True)),
+        "bridge_running": bool(bridge_process_status_payload().get("running")),
         "mobile_task": task,
-    })
+        "last_account_snapshot": profile.get("last_account_snapshot") or {},
+    }
 
 
-@bp.route("/api/mobile_ths/connection", methods=["GET", "POST"])
-def mobile_ths_legacy_connection():
-    data = _request_json()
-    mode = (data.get("connection_mode") or data.get("mode") or request.args.get("connection_mode") or request.args.get("mode") or "usb")
-    mode = str(mode).strip().lower() or "usb"
+def _set_mobile_connection(mode):
+    mode = str(mode or "usb").strip().lower() or "usb"
     cfg = _load_bridge_config()
     profile = _load_android_profile(cfg)
     cfg["connection_mode"] = mode
@@ -664,69 +665,26 @@ def mobile_ths_legacy_connection():
     _save_bridge_config(cfg)
     _save_android_profile(profile, cfg)
     ok = True if usb_status is None else bool(usb_status.get("ok"))
-    msg = f"\u8fde\u63a5\u65b9\u5f0f\u5df2\u5207\u6362\u4e3a {mode}"
-    if usb_status is not None:
-        msg = usb_status.get("msg") or msg
+    msg = usb_status.get("msg") if usb_status is not None else f"连接方式已切换为 {mode}"
     _mark_mobile_legacy_ready("connection", mode, ok, msg)
-    return jsonify({"ok": ok, "connection_mode": mode, "device_serial": cfg.get("device_serial"), "usb": usb_status, "msg": msg})
+    return {"ok": ok, "connection_mode": mode, "device_serial": cfg.get("device_serial"), "usb": usb_status, "msg": msg}
 
 
-@bp.route("/api/mobile_ths/confirm_mode", methods=["GET", "POST"])
-def mobile_ths_legacy_confirm_mode():
-    data = _request_json()
-    mode = (data.get("confirm_mode") or data.get("mode") or request.args.get("confirm_mode") or request.args.get("mode") or "auto")
-    mode = "auto" if str(mode).strip().lower() in {"auto", "自动", "true", "1", "yes", "on"} else "manual"
+def _set_mobile_confirm_mode(mode):
+    mode = "auto" if str(mode or "auto").strip().lower() in {"auto", "自动", "true", "1", "yes", "on"} else "manual"
     cfg = _load_bridge_config()
     profile = _load_android_profile(cfg)
     cfg["confirm_mode"] = mode
     profile["confirm_mode"] = mode
     _save_bridge_config(cfg)
     _save_android_profile(profile, cfg)
-    msg = "confirm_mode=auto" if mode == "auto" else "confirm_mode=manual"
+    msg = "已切换为全自动确认" if mode == "auto" else "已切换为手动确认"
     _mark_mobile_legacy_ready("confirm_mode", mode, True, msg)
-    return jsonify({"ok": True, "confirm_mode": mode, "msg": "已切换为全自动确认" if mode == "auto" else "已切换为手动确认"})
+    return {"ok": True, "confirm_mode": mode, "msg": msg}
 
 
-@bp.route("/api/mobile_ths/account", methods=["GET", "POST"])
-def mobile_ths_legacy_account():
-    cfg = _load_bridge_config()
-    profile = _load_android_profile(cfg)
-
+def _mobile_account_worker(uid, cfg, profile):
     def worker():
-        operator = _build_android_operator_for_web()
-        if hasattr(operator, 'query_account_snapshot'):
-            result = operator.query_account_snapshot() or {}
-        elif hasattr(operator, 'get_account'):
-            result = operator.get_account() or {}
-        else:
-            result = {'ok': False, 'msg': '当前执行器缺少账户读取能力'}
-        result.setdefault('ok', True)
-        result.setdefault('source', 'mobile_ui')
-        result['trade_mode'] = profile.get('trade_mode') or cfg.get('trade_mode') or 'simulation'
-        result['connection_mode'] = cfg.get('connection_mode') or profile.get('connection_mode') or 'usb'
-        result['bridge_running'] = bool(bridge_process_status_payload().get('running'))
-        result['confirm_mode'] = cfg.get('confirm_mode') or profile.get('confirm_mode') or 'manual'
-        try:
-            uid = int(cfg.get('bridge_user_id') or session.get('user_id') or 0)
-            total_asset = result.get('total_asset') or result.get('asset') or 0
-            if uid > 0 and result.get('ok') and total_asset:
-                broker_cfg = um.get_user_broker_config(uid)
-                broker_type = broker_cfg.get('broker_type', 'paper')
-                broker_inner = dict(broker_cfg.get('config') or {})
-                broker_inner['live_cash'] = float(total_asset)
-                um.save_user_broker_config(uid, broker_type, broker_inner)
-                result['live_cash_synced'] = True
-        except Exception as e:
-            result['live_cash_sync_error'] = str(e)
-        fresh_profile = _load_android_profile(cfg)
-        fresh_profile['last_account_snapshot'] = result
-        _save_android_profile(fresh_profile, cfg)
-        return result
-
-    result = _start_mobile_legacy_task('account', '', worker)
-    result['last_account_snapshot'] = profile.get('last_account_snapshot') or {}
-    return jsonify(result)
-    try:
         operator = _build_android_operator_for_web()
         if hasattr(operator, "query_account_snapshot"):
             result = operator.query_account_snapshot() or {}
@@ -735,42 +693,45 @@ def mobile_ths_legacy_account():
         elif hasattr(operator, "query_funds"):
             result = operator.query_funds() or {}
         else:
-            return jsonify({"ok": False, "msg": "当前执行器缺少账户读取函数"})
+            result = {"ok": False, "msg": "当前执行器缺少账户读取能力"}
         if not isinstance(result, dict):
-            result = {"data": result}
+            result = {"ok": True, "data": result}
         result.setdefault("ok", True)
         result.setdefault("source", "mobile_ui")
+        result["trade_mode"] = profile.get("trade_mode") or cfg.get("trade_mode") or "simulation"
         result["connection_mode"] = cfg.get("connection_mode") or profile.get("connection_mode") or "usb"
         result["device_serial"] = profile.get("device_serial") or cfg.get("device_serial") or ""
+        result["bridge_running"] = bool(bridge_process_status_payload().get("running"))
         result["confirm_mode"] = cfg.get("confirm_mode") or profile.get("confirm_mode") or "manual"
-        return jsonify(result)
-    except Exception as e:
-        logger.exception(f"读取手机同花顺账户失败: {e}")
-        return jsonify({"ok": False, "msg": f"读取手机同花顺账户失败: {e}"})
+        try:
+            total_asset = result.get("total_asset") or result.get("asset") or 0
+            if uid and result.get("ok") and total_asset:
+                broker_cfg = um.get_user_broker_config(uid)
+                broker_type = broker_cfg.get("broker_type", "paper")
+                broker_inner = dict(broker_cfg.get("config") or {})
+                broker_inner["live_cash"] = float(total_asset)
+                um.save_user_broker_config(uid, broker_type, broker_inner)
+                result["live_cash_synced"] = True
+        except Exception as e:
+            result["live_cash_sync_error"] = str(e)
+        fresh_profile = _load_android_profile(cfg)
+        fresh_profile["last_account_snapshot"] = result
+        _save_android_profile(fresh_profile, cfg)
+        return result
+    return worker
 
 
-@bp.route("/api/mobile_ths/open_ths", methods=["GET", "POST"])
-def mobile_ths_legacy_open_ths():
+def _mobile_open_app_worker():
     def worker():
         operator = _build_android_operator_for_web()
         if not hasattr(operator, "open_app"):
             return {"ok": False, "msg": "当前执行器缺少 open_app"}
         return operator.open_app()
-
-    return jsonify(_start_mobile_legacy_task("open_ths", "", worker))
-
-    try:
-        operator = _build_android_operator_for_web()
-        result = operator.open_app() if hasattr(operator, "open_app") else {"ok": False, "msg": "当前执行器缺少 open_app"}
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"ok": False, "msg": f"打开手机同花顺失败: {e}"})
+    return worker
 
 
-@bp.route("/api/mobile_ths/mode", methods=["GET", "POST"])
-def mobile_ths_legacy_mode():
-    data = _request_json()
-    mode = _normalize_mobile_mode(data.get("mode") or data.get("trade_mode") or request.args.get("mode") or request.args.get("trade_mode"))
+def _mobile_switch_mode_worker(mode):
+    mode = _normalize_mobile_mode(mode)
     cfg = _load_bridge_config()
     profile = _load_android_profile(cfg)
     profile["trade_mode"] = mode
@@ -783,42 +744,71 @@ def mobile_ths_legacy_mode():
             return {"ok": False, "msg": "当前执行器缺少 switch_trade_mode"}
         result = operator.switch_trade_mode(mode)
         if result.get("ok"):
-            cfg = _load_bridge_config()
-            profile = _load_android_profile(cfg)
-            profile["trade_mode"] = mode
-            profile["trade_mode_target"] = mode
-            _save_android_profile(profile, cfg)
+            fresh_cfg = _load_bridge_config()
+            fresh_profile = _load_android_profile(fresh_cfg)
+            fresh_profile["trade_mode"] = mode
+            fresh_profile["trade_mode_target"] = mode
+            _save_android_profile(fresh_profile, fresh_cfg)
         return result
+    return mode, worker
 
-    return jsonify(_start_mobile_legacy_task("switch_mode", mode, worker))
 
+def _mobile_restart_bridge_worker():
+    def worker():
+        stopped = stop_bridge_process()
+        started = start_bridge_process()
+        return {"ok": True, "msg": "桥接器已后台重启", "stopped": stopped, "started": started, **bridge_process_status_payload()}
+    return worker
+
+
+@bp.route("/api/mobile_ths/profile", methods=["GET", "POST"])
+def mobile_ths_legacy_profile():
+    return jsonify(_mobile_profile_payload())
+
+
+@bp.route("/api/mobile_ths/connection", methods=["GET", "POST"])
+def mobile_ths_legacy_connection():
+    data = _request_json()
+    mode = (data.get("connection_mode") or data.get("mode") or request.args.get("connection_mode") or request.args.get("mode") or "usb")
+    return jsonify(_set_mobile_connection(mode))
+
+
+@bp.route("/api/mobile_ths/confirm_mode", methods=["GET", "POST"])
+def mobile_ths_legacy_confirm_mode():
+    data = _request_json()
+    mode = (data.get("confirm_mode") or data.get("mode") or request.args.get("confirm_mode") or request.args.get("mode") or "auto")
+    return jsonify(_set_mobile_confirm_mode(mode))
+
+
+@bp.route("/api/mobile_ths/account", methods=["GET", "POST"])
+def mobile_ths_legacy_account():
+    cfg = _load_bridge_config()
+    profile = _load_android_profile(cfg)
     try:
-        operator = _build_android_operator_for_web()
-        if not hasattr(operator, "switch_trade_mode"):
-            return jsonify({"ok": False, "msg": "当前执行器缺少 switch_trade_mode"})
-        result = operator.switch_trade_mode(mode)
-        if result.get("ok"):
-            cfg = _load_bridge_config()
-            profile = _load_android_profile(cfg)
-            profile["trade_mode"] = mode
-            _save_android_profile(profile, cfg)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"ok": False, "msg": f"切换手机同花顺模式失败: {e}"})
+        uid = int(cfg.get('bridge_user_id') or session.get('user_id') or 0)
+    except Exception:
+        uid = 0
+    worker = _mobile_account_worker(uid, cfg, profile)
+    result = _start_mobile_legacy_task('account', '', worker)
+    result['last_account_snapshot'] = profile.get('last_account_snapshot') or {}
+    return jsonify(result)
+
+
+@bp.route("/api/mobile_ths/open_ths", methods=["GET", "POST"])
+def mobile_ths_legacy_open_ths():
+    return jsonify(_start_mobile_legacy_task("open_ths", "", _mobile_open_app_worker()))
+
+
+@bp.route("/api/mobile_ths/mode", methods=["GET", "POST"])
+def mobile_ths_legacy_mode():
+    data = _request_json()
+    mode, worker = _mobile_switch_mode_worker(data.get("mode") or data.get("trade_mode") or request.args.get("mode") or request.args.get("trade_mode"))
+    return jsonify(_start_mobile_legacy_task("switch_mode", mode, worker))
 
 
 @bp.route("/api/mobile_ths/restart_bridge", methods=["GET", "POST"])
 def mobile_ths_legacy_restart_bridge():
-    def worker():
-        stopped = stop_bridge_process()
-        started = start_bridge_process()
-        return {"ok": True, "msg": "桥接器已后台重启", "stopped": stopped, "started": started}
-
-    return jsonify(_start_mobile_legacy_task("restart_bridge", "", worker))
-
-    stopped = stop_bridge_process()
-    started = start_bridge_process()
-    return jsonify({"ok": True, "msg": "桥接器已后台重启", "stopped": stopped, "started": started, **bridge_process_status_payload()})
+    return jsonify(_start_mobile_legacy_task("restart_bridge", "", _mobile_restart_bridge_worker()))
 
 
 
@@ -827,10 +817,7 @@ def mobile_ths_legacy_restart_bridge():
 @require_bridge_or_auth
 def bridge_mobile_open_app():
     try:
-        operator = _build_android_operator_for_web()
-        if not hasattr(operator, "open_app"):
-            return jsonify({"ok": False, "msg": "当前执行器缺少 open_app"})
-        return jsonify(operator.open_app())
+        return jsonify(_mobile_open_app_worker()())
     except Exception as e:
         return jsonify({"ok": False, "msg": f"打开手机同花顺失败: {e}"})
 
@@ -839,12 +826,11 @@ def bridge_mobile_open_app():
 @require_bridge_or_auth
 def bridge_mobile_mode_switch():
     data = request.json or {}
-    mode = data.get("mode") or request.args.get("mode") or "simulation"
+    mode, worker = _mobile_switch_mode_worker(data.get("mode") or request.args.get("mode") or "simulation")
     try:
-        operator = _build_android_operator_for_web()
-        if not hasattr(operator, "switch_trade_mode"):
-            return jsonify({"ok": False, "msg": "当前执行器缺少 switch_trade_mode"})
-        return jsonify(operator.switch_trade_mode(mode))
+        result = worker()
+        result.setdefault("trade_mode", mode)
+        return jsonify(result)
     except Exception as e:
         return jsonify({"ok": False, "msg": f"切换手机同花顺模式失败: {e}"})
 
