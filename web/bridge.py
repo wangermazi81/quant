@@ -138,11 +138,14 @@ def _start_mobile_legacy_task(action, target, worker):
         state = dict(_MOBILE_LEGACY_STATE)
         stale = bool(state.get("running")) and _mobile_legacy_state_age_sec(state) > MOBILE_LEGACY_TASK_TIMEOUT_SEC
         if state.get("running") and not stale:
+            action_name = state.get('action') or 'unknown'
+            msg = f"执行中：{action_name}，请等完成后再操作"
             return {
                 "ok": True,
-                "accepted": True,
+                "accepted": False,
                 "busy": True,
-                "msg": f"\u624b\u673a\u4efb\u52a1\u6267\u884c\u4e2d\uff1a{state.get('action') or 'unknown'}\uff0c\u8bf7\u6c42\u5df2\u6536\u5230",
+                "status": "busy",
+                "msg": msg,
                 "task": state,
             }
         if stale:
@@ -701,7 +704,7 @@ def mobile_ths_legacy_account():
         result.setdefault('source', 'mobile_ui')
         result['trade_mode'] = profile.get('trade_mode') or cfg.get('trade_mode') or 'simulation'
         result['connection_mode'] = cfg.get('connection_mode') or profile.get('connection_mode') or 'usb'
-        result['bridge_running'] = bool(bridge_process_status_payload().get('bridge_running'))
+        result['bridge_running'] = bool(bridge_process_status_payload().get('running'))
         result['confirm_mode'] = cfg.get('confirm_mode') or profile.get('confirm_mode') or 'manual'
         try:
             uid = int(cfg.get('bridge_user_id') or session.get('user_id') or 0)

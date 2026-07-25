@@ -174,14 +174,15 @@ async function refreshMobileProfileBadge(){
 async function _mobilePost(path, body, busyText){
   _setMobileChainStatus(busyText || '手机任务提交中...', null)
   const r = await api(path, 'POST', body || {})
-  const ok = !!(r && r.ok)
-  _setMobileChainStatus(ok ? (r.msg || '任务已提交') : ((r && (r.msg || r.error)) || '任务失败'), ok)
+  const busy = !!(r && r.busy)
+  const ok = !!(r && r.ok && !busy)
+  const msg = (r && (r.msg || r.error)) || (busy ? '手机任务执行中' : '任务失败')
+  _setMobileChainStatus(busy ? msg : (ok ? msg || '任务已提交' : msg), busy ? null : ok)
   await refreshMobileProfileBadge()
   await refreshBridgeProcessBadge()
   if(path === '/mobile_ths/mode') refreshExecutionState()
   return r
 }
-
 function _mobileTaskId(resp){ return resp && resp.task && resp.task.task_id ? String(resp.task.task_id) : '' }
 function _mobileAccountPayload(profile){
   const task = profile && profile.mobile_task || {}
