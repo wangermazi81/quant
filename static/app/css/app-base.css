@@ -201,6 +201,34 @@ tr:hover td{background:var(--card)}
 @media (max-width:1180px){.execution-console{grid-template-columns:1fr}.exec-lamp-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.exec-funds-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:980px){.trade-console-head{flex-direction:column}.trade-console-actions{justify-content:flex-start}.exec-mode-grid,.exec-sub-grid{grid-template-columns:1fr}.trade-settings-grid{grid-template-columns:1fr}.exec-lamp-grid{grid-template-columns:1fr 1fr}}
 
+/* 2026-07-26 UI 打磨：借鉴 Uiverse 的轻拟物按钮/开关质感，保留原糖果浅色主题 */
+:root{--jw-shadow:0 14px 36px rgba(180,150,110,.13);--jw-shadow-sm:0 8px 22px rgba(180,150,110,.10);--jw-focus:0 0 0 3px rgba(255,123,147,.18)}
+body .nav{height:72px;padding:0 16px;border-bottom:1px solid rgba(234,220,201,.92);box-shadow:0 10px 30px rgba(120,90,60,.07);background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(255,250,246,.9));backdrop-filter:blur(10px)}
+.nav .nav-brand{min-width:360px;flex-basis:360px;margin-right:16px}.nav .nav-brand svg{height:62px;max-width:232px;filter:drop-shadow(0 8px 14px rgba(239,91,120,.10))}
+.nav .ntab{height:38px;padding:0 11px;border:1px solid transparent;border-radius:14px;color:#7b6b5b;font-weight:850;transition:background .16s,border-color .16s,color .16s,transform .16s,box-shadow .16s}
+.nav .ntab:hover{background:rgba(255,240,243,.68);border-color:rgba(255,202,210,.72);color:#D6456A;transform:translateY(-1px)}
+.nav .ntab.active{background:linear-gradient(135deg,#FFF0F3,#FFF9FB);border-color:#FFCAD2;color:#D6456A;box-shadow:inset 0 -2px 0 rgba(255,123,147,.55),0 8px 20px rgba(255,123,147,.10)}
+.nav-r.top-actions{gap:8px}.top-group{height:38px;padding:4px 5px;border-color:rgba(234,220,201,.9);background:rgba(255,255,255,.78);box-shadow:var(--jw-shadow-sm),inset 0 1px 0 rgba(255,255,255,.82)}
+.nav .badge,.nav .pill,.top-chip,.top-switch,.bridge-switch{box-shadow:inset 0 1px 0 rgba(255,255,255,.78)}
+.top-switch,.bridge-switch,.top-chip{height:30px;border-radius:999px;transition:background .14s,border-color .14s,color .14s,box-shadow .14s,transform .14s}.top-switch:hover,.bridge-switch:hover,.top-chip:hover,.btn:hover{transform:translateY(-1px)}
+.nav .top-btn{height:28px;min-width:54px;border:1px solid rgba(255,255,255,.72);box-shadow:0 8px 18px rgba(180,150,110,.12)}
+.btn{border-radius:12px;transition:transform .14s,box-shadow .14s,filter .14s,border-color .14s}.btn:focus-visible,.ntab:focus-visible,.top-chip:focus-visible,.top-switch:focus-visible,.bridge-switch:focus-visible{outline:none;box-shadow:var(--jw-focus),var(--jw-shadow-sm)}
+.btn-green,.btn-blue,.btn-red,.btn-purple{box-shadow:0 8px 18px rgba(120,90,60,.12)}.btn-gray:hover{background:#fff;border-color:#DFCDB7;filter:none}
+#todayOrdersModal .rename-box{border:1px solid rgba(234,220,201,.95);border-radius:26px;background:linear-gradient(180deg,#fff,#FFFCF8);box-shadow:0 28px 90px rgba(78,52,30,.24)}
+.trade-console-head{padding:4px 4px 14px;margin-bottom:16px;border-bottom:1px solid rgba(234,220,201,.82)}.trade-console-head h4{font-size:21px;font-weight:950;color:#2D2A26}.trade-console-sub{font-size:12px;color:#8A7765}
+.exec-stat-strip{border-color:rgba(234,220,201,.86);box-shadow:var(--jw-shadow-sm);background:rgba(255,255,255,.78)}.exec-stat-strip span{height:28px;background:linear-gradient(180deg,#fff,#FFFBF7);border:1px solid rgba(234,220,201,.55)}
+.exec-overview-card,.exec-board,.trade-console-card{border-color:rgba(234,220,201,.92);box-shadow:var(--jw-shadow);background:linear-gradient(145deg,rgba(255,255,255,.96),rgba(255,248,242,.86))}
+.exec-overview-card:after{height:4px;background:linear-gradient(90deg,#52B788,#FF7B93,#B580E8);opacity:.52}.exec-board:before{height:4px;background:linear-gradient(90deg,#FF7B93,#B580E8,#52B788);opacity:.72}
+.exec-board.mobile-board:before{background:linear-gradient(90deg,#52B788,#5B8DEF)}.exec-board.desktop-board:before{background:linear-gradient(90deg,#FF7B93,#B580E8)}
+.exec-board-head h5{font-size:18px;letter-spacing:.01em}.exec-board-tag,.exec-current-mode{box-shadow:inset 0 1px 0 rgba(255,255,255,.72)}
+.exec-lamp,.exec-mode-card,.trade-console-card{transition:transform .14s,box-shadow .14s,border-color .14s}.exec-lamp:hover,.exec-mode-card:hover,.trade-console-card:hover{transform:translateY(-1px);box-shadow:0 18px 42px rgba(180,150,110,.15)}
+.exec-mode-card{min-height:136px;border-radius:20px}.exec-mode-card.paper-mode{background:linear-gradient(180deg,#fff,rgba(234,241,254,.66))}.exec-mode-card.live-mode{background:linear-gradient(180deg,#fff,rgba(255,240,243,.72))}
+.exec-human-status{border-color:rgba(91,141,239,.28);background:linear-gradient(135deg,rgba(234,241,254,.75),rgba(255,255,255,.72));box-shadow:inset 0 1px 0 rgba(255,255,255,.72)}
+.exec-body-panel{scrollbar-gutter:stable}.trade-console-note{background:linear-gradient(135deg,rgba(255,255,255,.8),rgba(251,243,221,.5));box-shadow:inset 0 1px 0 rgba(255,255,255,.72)}
+@media (max-width:1500px){body .nav{height:102px}.nav .nav-brand{min-width:336px;flex-basis:336px}.nav .nav-brand svg{height:58px;max-width:218px}.nav-r.top-actions{justify-content:flex-start;overflow-x:auto;padding-bottom:2px}}
+@media (max-width:980px){body .nav{height:auto;min-height:108px}.nav .nav-brand{min-width:300px;flex-basis:300px}.nav .nav-brand svg{height:54px}.nav .ntab{height:34px}.top-group{height:36px}}
+@media (prefers-reduced-motion:reduce){.nav .ntab,.top-switch,.bridge-switch,.top-chip,.btn,.exec-lamp,.exec-mode-card,.trade-console-card{transition:none!important}.nav .ntab:hover,.top-switch:hover,.bridge-switch:hover,.top-chip:hover,.btn:hover,.exec-lamp:hover,.exec-mode-card:hover,.trade-console-card:hover{transform:none!important}}
+
 
 /* 编辑器 */
 .se{display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}

@@ -15,7 +15,8 @@
   // 0. 自注入最小 CSS（无需依赖 rb-effects.css 也能用 ripple/flash）
   //    rb-effects.css 已加载时这部分被覆盖，行为完全一致
   // ============================================================
-  if (!document.getElementById("rb-effects-min-style")) {
+  const hasBundledEffectsCss = !!document.querySelector('link[href*="rb-effects.css"]');
+  if (!hasBundledEffectsCss && !document.getElementById("rb-effects-min-style")) {
     const style = document.createElement("style");
     style.id = "rb-effects-min-style";
     style.textContent = `

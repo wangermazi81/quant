@@ -64,7 +64,7 @@ def test_minute_kline_uses_tushare_when_selected(monkeypatch, tmp_path):
         "amount": [10450.0],
         "is_complete": [True],
     })
-    monkeypatch.setattr(md.tushare_provider, "fetch_minute_kline", lambda code, freq="1MIN", limit=None, token=None, mode=None: frame)
+    monkeypatch.setattr(md.tushare_provider, "fetch_minute_kline", lambda code, freq="1MIN", limit=None, trade_date=None, token=None, mode=None: frame)
     monkeypatch.setattr(md.ak, "stock_zh_a_hist_min_em", lambda **kwargs: (_ for _ in ()).throw(AssertionError("akshare should not run")))
 
     result = md.get_minute_kline("000001", "20260709")
@@ -171,8 +171,11 @@ def test_second_ticks_fallback_to_realtime_order_book(monkeypatch):
     def slow_ticks(*args, **kwargs):
         raise TimeoutError("slow")
 
-    monkeypatch.setattr(md.tushare_provider, "fetch_tick_series", slow_ticks)
-    monkeypatch.setattr(md.tushare_provider, "fetch_order_book", lambda *args, **kwargs: {
+    from analytics import data_gateway as dg
+
+    monkeypatch.setattr(dg, "get_tick_series", slow_ticks)
+    monkeypatch.setattr(md, "_target_is_live_intraday", lambda date=None: True)
+    monkeypatch.setattr(dg, "get_order_book", lambda *args, **kwargs: {
         "trade_time": "2026-07-09 10:01:02",
         "price": 10.49,
         "amount": 1294500.0,
@@ -208,8 +211,8 @@ def test_minute_kline_reuse_short_memory_cache(monkeypatch, tmp_path):
         "is_complete": [True],
     })
 
-    def fake_fetch(code, freq="1MIN", limit=None, token=None, mode=None):
-        calls.append((code, freq, limit, token, mode))
+    def fake_fetch(code, freq="1MIN", limit=None, trade_date=None, token=None, mode=None):
+        calls.append((code, freq, limit, trade_date, token, mode))
         return frame
 
     monkeypatch.setattr(md.tushare_provider, "fetch_minute_kline", fake_fetch)
@@ -226,6 +229,7 @@ def test_minute_kline_returns_cached_order_book_snapshot_without_waiting_for_slo
     monkeypatch.setattr(md, "MINUTE_CACHE_DIR", str(tmp_path))
     if hasattr(md, "clear_intraday_kline_cache"):
         md.clear_intraday_kline_cache()
+    monkeypatch.setattr(md, "_target_is_live_intraday", lambda date=None: True)
     md._cache_set(("order_book", "000001"), {
         "trade_time": "2026-07-15 10:01:02",
         "price": 11.23,
@@ -278,6 +282,7 @@ def test_minute_kline_returns_live_order_book_snapshot_before_slow_source(monkey
     monkeypatch.setattr(md, "MINUTE_CACHE_DIR", str(tmp_path))
     if hasattr(md, "clear_intraday_kline_cache"):
         md.clear_intraday_kline_cache()
+    monkeypatch.setattr(md, "_target_is_live_intraday", lambda date=None: True)
 
     from analytics import data_gateway as dg
 
@@ -307,6 +312,7 @@ def test_minute_kline_fallback_to_realtime_order_book(monkeypatch, tmp_path):
     })
     if hasattr(md, "clear_intraday_kline_cache"):
         md.clear_intraday_kline_cache()
+    monkeypatch.setattr(md, "_target_is_live_intraday", lambda date=None: True)
 
     def slow_minute(*args, **kwargs):
         raise TimeoutError("slow")

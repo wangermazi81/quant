@@ -57,8 +57,9 @@ def test_mobile_legacy_busy_is_accepted(monkeypatch):
     result = bridge._start_mobile_legacy_task('open_ths', '', lambda: {'ok': True})
 
     assert result['ok'] is True
-    assert result['accepted'] is True
+    assert result['accepted'] is False
     assert result['busy'] is True
+    assert result['status'] == 'busy'
 
     bridge._mobile_legacy_state_update(running=False, action='', target='', ok=None, msg='', started_at=0.0)
 

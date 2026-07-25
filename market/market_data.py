@@ -81,6 +81,16 @@ def _empty_minute_kline() -> dict:
     return {"datetime": [], "open": [], "high": [], "low": [], "close": [], "volume": [], "amount": [], "is_complete": []}
 
 
+def _now() -> datetime:
+    return datetime.now()
+
+
+def _target_is_live_intraday(date: str | None = None) -> bool:
+    expected_date = str(date or "").replace("-", "")[:8]
+    today = _now().strftime("%Y%m%d")
+    return (not expected_date or expected_date == today) and is_trading_time()
+
+
 def _tushare_cfg() -> dict | None:
     if not datasource_config or not tushare_provider:
         return None
@@ -201,8 +211,14 @@ def get_minute_kline(code: str, date: str) -> dict:
     if cached is not None:
         return cached
 
+    live_intraday = _target_is_live_intraday(date)
+    if live_intraday:
+        snap = _minute_snapshot(code, cache_key, date)
+        if snap is not None:
+            return snap
+
     if not _try_begin_fetch(cache_key):
-        snap = _minute_snapshot(code, cache_key)
+        snap = _minute_snapshot(code, cache_key, date) if live_intraday else None
         return snap if snap is not None else _empty_minute_kline()
 
     try:
@@ -223,7 +239,7 @@ def get_minute_kline(code: str, date: str) -> dict:
                 return _cache_set(cache_key, tick_result)
         if result.get("datetime"):
             return _cache_set(cache_key, result)
-        snap = _minute_snapshot(code, cache_key)
+        snap = _minute_snapshot(code, cache_key, date) if live_intraday else None
         if snap is not None:
             return snap
         return result
@@ -332,7 +348,9 @@ def get_minute_kline_current(code: str, date: str | None = None) -> dict:
     return result
 
 
-def _minute_snapshot(code: str, cache_key: tuple, fetch_order_book: bool = True) -> dict | None:
+def _minute_snapshot(code: str, cache_key: tuple, date: str | None = None, fetch_order_book: bool = True) -> dict | None:
+    if not _target_is_live_intraday(date):
+        return None
     book = _cache_get(("order_book", code), INTRADAY_CACHE_TTL_SECONDS)
     if book is None and fetch_order_book:
         book = get_order_book(code)
@@ -378,7 +396,11 @@ def get_second_ticks(code: str, date: str | None = None) -> dict:
 
     try:
         from analytics import data_gateway as dg
-        rows = dg.get_tick_series(code, limit=None, trade_date=date)
+        try:
+            rows = dg.get_tick_series(code, limit=None, trade_date=date)
+        except Exception as exc:
+            logger.warning(f"second ticks source failed {code} {date}: {exc}")
+            rows = []
         if rows:
             df = pd.DataFrame(rows)
             if "datetime" in df.columns:
@@ -402,10 +424,8 @@ def _second_tick_snapshot(code: str, cache_key: tuple, date: str | None = None) 
     if not price or not trade_time:
         return None
     expected_date = str(date or "").replace("-", "")[:8]
-    if expected_date:
-        today = datetime.now().strftime("%Y%m%d")
-        if expected_date != today or not is_trading_time():
-            return None
+    if not _target_is_live_intraday(date):
+        return None
     if not _regular_trade_datetime(trade_time, expected_date or None):
         return None
     result = {
@@ -440,7 +460,7 @@ def get_order_book(code: str) -> dict:
 
 def is_trading_time() -> bool:
     """判断是否在 A 股交易时间"""
-    now = datetime.now()
+    now = _now()
     if now.weekday() >= 5:
         return False
     t = now.hour * 100 + now.minute
