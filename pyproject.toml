@@ -2,6 +2,12 @@
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# pytest-timeout 早就装了却从未启用：单个用例挂死会占满整个 CI 时长。
+# 60s 对本套件足够宽松（全量约 130s，最慢的单例远低于 60s）。
+timeout = 60
+markers = [
+    "allow_network: 允许该用例连非本地地址（默认全部拦截，见 tests/conftest.py）",
+]
 
 [tool.ruff]
 line-length = 120

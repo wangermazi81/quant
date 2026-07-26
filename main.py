@@ -67,15 +67,29 @@ else:
     logger.info("CORS 未配置跨域来源，仅允许同源访问（设 CORS_ORIGINS 可放行指定来源）")
 
 
+# 手机交易兜底端口的放行白名单。原实现把请求方 Origin **原样反射**回
+# Access-Control-Allow-Origin 并带 Allow-Credentials —— 正是 CORS 规范禁止用 `*`
+# 的场景：任意网站的 JS 都能跨域读取该前缀下的响应体（总资产、持仓、设备序列号）。
+# 只放行本机兜底端口；需要额外来源用 MOBILE_CORS_ORIGINS（逗号分隔）显式配置。
+_MOBILE_CORS_ALLOWED = {
+    o.strip() for o in _os.environ.get(
+        "MOBILE_CORS_ORIGINS",
+        "http://127.0.0.1:5002,http://localhost:5002,"
+        "http://127.0.0.1:5001,http://localhost:5001",
+    ).split(",") if o.strip()
+}
+
+
 @app.after_request
 def _mobile_ths_fallback_cors(resp):
-    """手机交易兜底端口专用：页面从 5001 打到 5002 时动态放行。"""
+    """手机交易兜底端口专用：页面从 5001 打到 5002 时按白名单放行。"""
     origin = request.headers.get("Origin", "")
     if origin and request.path.startswith("/api/mobile_ths/"):
-        resp.headers["Access-Control-Allow-Origin"] = origin
-        resp.headers["Access-Control-Allow-Credentials"] = "true"
-        resp.headers["Access-Control-Allow-Headers"] = "content-type"
-        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        if origin in _MOBILE_CORS_ALLOWED:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Allow-Headers"] = "content-type"
+            resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
         resp.headers.add("Vary", "Origin")
     return resp
 

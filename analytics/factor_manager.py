@@ -135,20 +135,48 @@ def list_factors() -> list:
     return result
 
 
+def _safe_factor_name(filename: str) -> str:
+    """把 API 传入的因子标识归一成安全文件名，非法则返回空串。
+
+    save() 一直有净化，而 get_meta/get_code/delete 直接拿原值拼路径。当前打不穿
+    纯属巧合（Flask `<filename>` 默认转换器不匹配 `/`；delete 靠 _read_meta 的
+    builtin 默认值 True 意外挡住），任何一处改动都会变成任意文件读/删。
+    """
+    if not isinstance(filename, str):
+        return ""
+    return "".join(c for c in filename if c.isalnum() or c in "_-")
+
+
+def _factor_path(filename: str):
+    """解析因子文件路径；名称非法或越出 FACTORS_DIR 一律返回 None。"""
+    safe = _safe_factor_name(filename)
+    if not safe:
+        return None
+    path = FACTORS_DIR / f"{safe}.py"
+    try:
+        if not path.resolve().is_relative_to(FACTORS_DIR.resolve()):
+            return None
+    except (OSError, ValueError):
+        return None
+    return path
+
+
 def get_meta(filename: str) -> dict:
-    path = FACTORS_DIR / f"{filename}.py"
-    if not path.exists():
+    path = _factor_path(filename)
+    if path is None or not path.exists():
         return {"name": filename, "desc": "", "category": "综合", "period": 20, "builtin": True}
     return _read_meta(path)
 
 
 def get_code(filename: str) -> str:
-    path = FACTORS_DIR / f"{filename}.py"
+    path = _factor_path(filename)
+    if path is None:
+        return ""
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
 def save(filename: str, code: str) -> dict:
-    safe = "".join(c for c in filename if c.isalnum() or c in "_-")
+    safe = _safe_factor_name(filename)
     if not safe:
         return {"ok": False, "msg": "文件名不合法"}
     # 复用 strategy_manager 的 AST 安全检查
@@ -167,7 +195,9 @@ def save(filename: str, code: str) -> dict:
 
 
 def delete(filename: str) -> dict:
-    path = FACTORS_DIR / f"{filename}.py"
+    path = _factor_path(filename)
+    if path is None:
+        return {"ok": False, "msg": "文件名不合法"}
     meta = _read_meta(path) if path.exists() else {}
     if meta.get("builtin", True):
         return {"ok": False, "msg": "内置因子不可删除"}

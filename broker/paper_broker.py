@@ -474,7 +474,9 @@ class PaperBroker:
                     return {"ok": False,
                             "msg": f"T+1 拒卖: {code} 当天买入（{pos['buy_time']}）不可当天卖出，请明日再试"}
             except Exception as _e:
-                logger.debug(f"[PB] T+1 检查异常（放行）: {_e}")
+                # 放行是有意的（解析不出日期就无法判断是否当日，拒卖会让持仓永远卖不掉），
+                # 但这等于绕过一条风控 —— 必须是 WARNING 而不是 debug，否则静默失效无人知晓。
+                logger.warning(f"[PB] T+1 检查无法判定，本次放行: buy_time={pos['buy_time']!r} err={_e}")
 
             # ── 跌停封单检查（已跌停时，看卖出封单是否砸得出去）──
             # 卖出封单金额 = ask1 卖盘手数 × 100 × 跌停价
@@ -528,8 +530,15 @@ class PaperBroker:
             pnl       = self._scale_pnl_amount(raw_pnl)
             pnl_pct   = round(raw_pnl / buy_cost * 100, 4) if buy_cost > 0 else 0
             new_cash  = round(cash + buy_cost + pnl, 2)
-            buy_dt    = datetime.strptime(pos["buy_time"][:10], "%Y-%m-%d")
-            hold_days = (datetime.now() - buy_dt).days
+            # buy_time 损坏时不能让整笔卖出崩掉：上面的 T+1 检查已经容错放行了，
+            # 这里若再裸 strptime 就会抛 ValueError，结果是这笔持仓根本卖不出去
+            # （前端只看到 500/异常，而不是一句可读的失败原因）。持有天数退化为 0。
+            try:
+                buy_dt    = datetime.strptime(pos["buy_time"][:10], "%Y-%m-%d")
+                hold_days = (datetime.now() - buy_dt).days
+            except (TypeError, ValueError):
+                logger.warning(f"[PB] buy_time 无法解析，hold_days 记 0: {pos['buy_time']!r}")
+                hold_days = 0
 
             con.execute(
                 "UPDATE paper_trades SET sell_time=?,sell_price=?,sell_income=?,"

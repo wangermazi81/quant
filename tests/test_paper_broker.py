@@ -46,6 +46,65 @@ def broker(tmp_path, monkeypatch):
     return b
 
 
+@pytest.fixture
+def raw_broker(tmp_path, monkeypatch):
+    """不做 buy_time 回拨的 PaperBroker —— 专门用来验 T+1 规则本身。
+
+    上面的 broker fixture 为了让「卖出/风控/统计」用例能在同一天内跑完，
+    统一把买入时间回拨了一天，于是 T+1 拒卖这条分支从来没有被任何用例走到过：
+    真把日期比较改坏（比如时间格式变更让 strptime 抛异常而走「放行」分支），
+    模拟盘会允许当日回转交易，而全套测试依然全绿。
+    """
+    from broker import paper_broker as pb
+    monkeypatch.setattr(pb, "DB_PATH", tmp_path / "test_paper_t1.db")
+    pb.init_paper_db()
+    return pb.PaperBroker(user_id=998)
+
+
+class TestT1Rule:
+    def test_same_day_sell_is_rejected(self, raw_broker):
+        """★A 股 T+1：当天买入当天不可卖出"""
+        assert raw_broker.submit_buy("000001", "平安银行", 10.0, 100)["ok"] is True
+        result = raw_broker.submit_sell("000001", 11.0)
+        assert result["ok"] is False
+        assert "T+1" in result["msg"]
+
+    def test_position_bought_yesterday_can_be_sold(self, raw_broker):
+        """回拨到昨天即可正常卖出——确认拒卖不是无条件的"""
+        from datetime import datetime, timedelta
+
+        assert raw_broker.submit_buy("000001", "平安银行", 10.0, 100)["ok"] is True
+        con = raw_broker._conn()
+        yday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        con.execute("UPDATE paper_positions SET buy_time=? WHERE user_id=?",
+                    (yday, raw_broker._uid))
+        con.commit()
+        con.close()
+        assert raw_broker.submit_sell("000001", 11.0)["ok"] is True
+
+    def test_unparsable_buy_time_falls_open_but_warns(self, raw_broker, caplog):
+        """buy_time 格式非法时当前行为是「放行」，锁死该行为并要求留下 WARNING。
+
+        放行是有意的：解析不出日期就无法判断是否当日，拒卖会让这笔持仓永远卖不掉。
+        但这等于绕过了一条风控，必须在日志里看得见。
+        """
+        import logging
+
+        assert raw_broker.submit_buy("000001", "平安银行", 10.0, 100)["ok"] is True
+        con = raw_broker._conn()
+        con.execute("UPDATE paper_positions SET buy_time=? WHERE user_id=?",
+                    ("not-a-date", raw_broker._uid))
+        con.commit()
+        con.close()
+
+        with caplog.at_level(logging.WARNING, logger="broker.paper_broker"):
+            result = raw_broker.submit_sell("000001", 11.0)
+
+        assert result["ok"] is True
+        assert any("T+1" in r.message for r in caplog.records), \
+            "T+1 检查被跳过时必须留下 WARNING，否则风控静默失效无人知晓"
+
+
 # ══════════════════════════════════════════════════════
 # 1. 买入测试
 # ══════════════════════════════════════════════════════

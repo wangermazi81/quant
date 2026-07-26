@@ -25,13 +25,26 @@ def _conn(path: str) -> sqlite3.Connection:
 
 
 def _safe_add_column(conn, table: str, column: str, definition: str):
-    """幂等地给已存在的表补加一列（列已存在时静默跳过）。"""
+    """幂等地给已存在的表补加一列（列已存在时跳过）。
+
+    失败必须复查而不是一律当作「列已存在」吞掉：ALTER 也可能因
+    database is locked / 磁盘异常而失败，静默跳过会让幂等性假设破产 ——
+    user_settings 缺列后 save_user_settings 持续失败（只 warning），
+    today_trades 无法持久化 → 重启当天日内开仓限额失效可超限开仓；
+    max_positions / 单笔上限回退 config 默认，护栏被悄悄放松。
+    """
     try:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         conn.commit()
         logger.info(f"[migration] {table}.{column} 列已添加")
-    except Exception:
-        pass  # 列已存在，忽略
+    except Exception as e:
+        if _col_exists(conn, table, column):
+            return                      # 真的已存在 → 正常的幂等路径
+        logger.error(
+            "[migration] %s.%s 补列失败且该列确实不存在：%s —— "
+            "依赖此列的功能（用户设置/日内限额等护栏）将失效，请检查数据库",
+            table, column, e)
+        raise
 
 
 def _col_exists(c, table, col):
