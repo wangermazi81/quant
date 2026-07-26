@@ -253,8 +253,10 @@ class PaperBroker:
                         _qs = _cli.get_quotes([p["code"] for p in positions])
                         cur_prices = {q["code"]: float(q.get("price") or 0)
                                       for q in _qs if float(q.get("price") or 0) > 0}
-                except Exception:
-                    pass
+                except Exception as _e:
+                    # 拿不到实时价时净值快照会退化成按成本价计市值（曲线不含浮动盈亏），
+                    # 这是已知降级但必须看得见，否则净值曲线失真无人知晓（A-9）。
+                    logger.warning(f"[PB uid={self._uid}] 净值快照取实时价失败，本次按成本价计市值: {_e}")
             mval = sum(
                 (cur_prices or {}).get(p["code"], p["cost_price"]) * p["shares"]
                 for p in positions

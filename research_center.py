@@ -25,6 +25,12 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+# no_proxy 的全局补丁状态（见下方 docstring 里的 A-10 说明）
+_no_proxy_lock = threading.Lock()
+_no_proxy_depth = 0
+_no_proxy_orig = None
+
+
 @contextlib.contextmanager
 def no_proxy():
     """强制 requests 忽略系统代理（含 Windows 注册表代理）。
@@ -34,20 +40,40 @@ def no_proxy():
     会被随机掐(RemoteDisconnected)，国内源直连反而稳。
     在 merge_environment_settings 层面把 proxies 置空，注册表+环境变量全覆盖。
     LLM 调用走 urllib 不受此补丁影响。
+
+    ⚠️ 必须是全局补丁，不能改成「返回一个禁代理的 Session」：
+    10 个调用点里有 6 个是 `ak.xxx()`（akshare 内部自己建 requests 会话），
+    外部注入不进去。所以这里保留类方法替换。
+
+    A-10 修的是它的**线程安全**问题：原实现直接 orig=... / 用完还原，
+    并发或嵌套调用时，内层的 finally 会把外层的补丁提前还原，
+    导致本该去代理的请求又走了代理 —— 偶发且极难复现。
+    现在用锁 + 引用计数：只有最外层退出时才真正还原。
     """
     import requests
-    orig = requests.Session.merge_environment_settings
 
-    def patched(self, url, proxies, stream, verify, cert):
-        s = orig(self, url, proxies, stream, verify, cert)
-        s["proxies"] = {}
-        return s
+    global _no_proxy_depth, _no_proxy_orig
+    with _no_proxy_lock:
+        if _no_proxy_depth == 0:
+            _no_proxy_orig = requests.Session.merge_environment_settings
 
-    requests.Session.merge_environment_settings = patched
+            def patched(self, url, proxies, stream, verify, cert):
+                s = _no_proxy_orig(self, url, proxies, stream, verify, cert)
+                s["proxies"] = {}
+                return s
+
+            requests.Session.merge_environment_settings = patched
+        _no_proxy_depth += 1
     try:
         yield
     finally:
-        requests.Session.merge_environment_settings = orig
+        with _no_proxy_lock:
+            _no_proxy_depth -= 1
+            if _no_proxy_depth <= 0:
+                _no_proxy_depth = 0
+                if _no_proxy_orig is not None:
+                    requests.Session.merge_environment_settings = _no_proxy_orig
+                    _no_proxy_orig = None
 
 BASE_DIR  = Path(__file__).resolve().parent
 CHAIN_DIR = BASE_DIR / "data" / "chains"

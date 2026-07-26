@@ -934,8 +934,10 @@ def bridge_today_orders():
                     "date":  datetime.now().strftime("%Y-%m-%d"),
                     "codes": [p.get("code") for p in r["positions"] if p.get("code")],
                 }
-        except Exception:
-            pass
+        except Exception as _e:
+            # 这层缓存是「今天实盘到底持有哪些票」的判断依据，静默失败会让
+            # 后续去重/风控按空持仓处理，必须留痕（A-9）。
+            logger.warning(f"[bridge] 缓存实盘 OCR 持仓失败: {_e}")
         return jsonify(r)
     except Exception as e:
         logger.exception(f"读当日委托失败: {e}")

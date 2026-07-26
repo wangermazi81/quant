@@ -757,6 +757,15 @@ def _load_full_market_data(start_date: str, end_date: str, logs: list,
         top_codes = [q["code"] for q in active[:BACKTEST_MAX_CODES] if q["code"] not in all_data]
         logs.append({"level": "INFO",
                      "msg": f"[全市场] TDX补充标的: {len(top_codes)} 只（排除本地已有）"})
+        # ★ C-7：股票池是按**当前**实时行情筛出来的（今天仍活跃、价格>3元、按当前成交量排序），
+        #   这带来两重偏差，回测收益会系统性高于实盘：
+        #   ① 幸存者偏差——期间退市/仙股化/长期停牌的标的根本不在池子里；
+        #   ② 前视偏差——用「今天的成交量排名」去选回测期初的标的。
+        #   彻底修要落一份含退市股的历史股票宇宙表（独立工单）。在那之前必须让用户看见，
+        #   否则会拿一个虚高的回测结果去决定要不要投实盘。
+        logs.append({"level": "WARN",
+                     "msg": "[偏差提示] 全市场股票池按『当前』行情筛选（今日仍活跃、价格>3元、"
+                            "当前成交量排序），存在幸存者偏差与前视偏差，实盘表现通常低于此回测结果"})
 
         for i, code in enumerate(top_codes):
             if progress_fn and i % 10 == 0:
