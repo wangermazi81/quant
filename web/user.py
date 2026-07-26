@@ -89,6 +89,9 @@ def user_get_ai_config():
         cfg["api_key_masked"] = key[:4] + "****" + key[-4:]
     else:
         cfg["api_key_masked"] = "****" if key else ""
+    # 与 /api/ai/config 一致：只回脱敏值，明文 key 不出响应体
+    cfg.pop("api_key", None)
+    cfg["has_api_key"] = bool(key)
     return jsonify({"ok": True, **cfg})
 
 

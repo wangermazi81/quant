@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 小米MiMo API 诊断脚本
-运行方式：python test_mimo.py
+运行方式：python tools/diag_mimo.py
 会打印出服务器返回的完整原始内容，帮助定位 400 错误原因
+
+注意：本脚本会用真实 api_key 发网络请求，且缺配置时模块级 sys.exit——
+故不能放在 tests/ 下（曾名 tests/test_mimo.py，会被 pytest 收集并打断整个 CI）。
 """
 import urllib.request
 import urllib.error

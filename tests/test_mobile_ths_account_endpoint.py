@@ -27,6 +27,7 @@ def test_mobile_account_endpoint_queues_background_task(monkeypatch):
             return {'ok': True, 'available': 123.45, 'positions': []}
 
     profile = {'trade_mode': 'simulation', 'confirm_mode': 'auto', 'connection_mode': 'usb'}
+    monkeypatch.setattr(bridge, '_bridge_request_uid', lambda: 1)
     monkeypatch.setattr(bridge, '_load_bridge_config', lambda: {})
     monkeypatch.setattr(bridge, '_load_android_profile', lambda cfg=None: dict(profile))
     monkeypatch.setattr(bridge, '_save_android_profile', lambda *args, **kwargs: None)
@@ -93,6 +94,7 @@ def test_mobile_connection_and_confirm_clear_stale_failed_task(monkeypatch):
     cfg = {'connection_mode': 'wifi', 'confirm_mode': 'manual'}
     profile = {'connection_mode': 'wifi', 'confirm_mode': 'manual'}
 
+    monkeypatch.setattr(bridge, '_bridge_request_uid', lambda: 1)
     monkeypatch.setattr(bridge, '_load_bridge_config', lambda: dict(cfg))
     monkeypatch.setattr(bridge, '_load_android_profile', lambda cfg=None: dict(profile))
     monkeypatch.setattr(bridge, '_save_bridge_config', lambda new_cfg: cfg.update(new_cfg))
@@ -109,11 +111,12 @@ def test_mobile_connection_and_confirm_clear_stale_failed_task(monkeypatch):
         started_at=bridge.time.time(),
     )
 
+    # 改状态的 legacy 入口已收敛为 POST（GET 可被跨站顶层导航触发），故用 json body 传参
     client = app.test_client()
-    conn = client.get('/api/mobile_ths/connection?mode=usb').get_json()
+    conn = client.post('/api/mobile_ths/connection', json={'mode': 'usb'}).get_json()
     state_after_conn = bridge._mobile_legacy_state_snapshot()
 
-    confirm = client.get('/api/mobile_ths/confirm_mode?mode=auto').get_json()
+    confirm = client.post('/api/mobile_ths/confirm_mode', json={'mode': 'auto'}).get_json()
     state_after_confirm = bridge._mobile_legacy_state_snapshot()
 
     assert conn['ok'] is True
@@ -123,3 +126,37 @@ def test_mobile_connection_and_confirm_clear_stale_failed_task(monkeypatch):
     assert confirm['confirm_mode'] == 'auto'
     assert state_after_confirm['action'] == 'confirm_mode'
     assert state_after_confirm['ok'] is True
+
+
+# ── 安全回归：legacy 手机入口曾整组无鉴权且接受 GET ────────────────
+# 未登录 GET /api/mobile_ths/confirm_mode?mode=auto 即可打开「自动确认下单」，
+# 恶意页面一个 <img> 或顶层导航就能远程开闸。以下两条锁死修复。
+
+_LEGACY_STATE_CHANGING = [
+    '/api/mobile_ths/connection',
+    '/api/mobile_ths/confirm_mode',
+    '/api/mobile_ths/mode',
+    '/api/mobile_ths/open_ths',
+    '/api/mobile_ths/restart_bridge',
+]
+
+
+def _bridge_client():
+    from web import bridge
+
+    app = Flask(__name__)
+    app.register_blueprint(bridge.bp)
+    return app.test_client()
+
+
+def test_mobile_legacy_routes_reject_anonymous():
+    client = _bridge_client()
+    for path in _LEGACY_STATE_CHANGING + ['/api/mobile_ths/profile', '/api/mobile_ths/account']:
+        method = client.get if path.endswith(('profile', 'account')) else client.post
+        assert method(path).status_code == 401, f'{path} 未拒绝匿名访问'
+
+
+def test_mobile_legacy_state_changing_routes_reject_get():
+    client = _bridge_client()
+    for path in _LEGACY_STATE_CHANGING:
+        assert client.get(path).status_code == 405, f'{path} 仍接受 GET（可被跨站导航触发）'

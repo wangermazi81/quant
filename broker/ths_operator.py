@@ -130,19 +130,29 @@ class THSOperator:
         return Path(__file__).resolve().parent.parent / "data" / "trade_settings.json"
 
     def _load_trade_settings(self):
-        """启动时从 data/trade_settings.json 覆盖默认开关（让网页设置重启后仍生效）。"""
+        """启动时从 data/trade_settings.json 覆盖默认开关（让网页设置重启后仍生效）。
+
+        安全约束：auto_confirm_order（真成交开关）只能被磁盘文件「收紧」，不能放开——
+        config 的 .env 双开关（QUANT_LIVE_TRADING + QUANT_AUTO_CONFIRM_ORDER）是唯一授权源。
+        否则一份被误提交的 JSON 就能架空双闸并随 git pull 分发到每台机器。
+        """
         try:
             import json
             p = self._trade_settings_path()
             if p.exists():
                 d = json.loads(p.read_text(encoding="utf-8"))
                 if "auto_confirm_order" in d:
-                    self.auto_confirm_order = bool(d["auto_confirm_order"])
+                    self.auto_confirm_order = AUTO_CONFIRM_ORDER and bool(d["auto_confirm_order"])
+                    if bool(d["auto_confirm_order"]) and not AUTO_CONFIRM_ORDER:
+                        logger.warning(
+                            "trade_settings.json 要求自动确认下单，但 .env 未授权"
+                            "（需 QUANT_LIVE_TRADING=1 且 QUANT_AUTO_CONFIRM_ORDER=1）→ 已按安全默认拒绝")
                 if "auto_cancel_unfilled" in d:
                     self.auto_cancel_unfilled = bool(d["auto_cancel_unfilled"])
                 if "auto_cancel_delay" in d:
                     self.auto_cancel_delay = float(d["auto_cancel_delay"])
-                logger.info(f"已加载交易自动化设置: 自动确认={self.auto_confirm_order} "
+                logger.info(f"已加载交易自动化设置: 自动确认={self.auto_confirm_order}"
+                            f"(config授权={AUTO_CONFIRM_ORDER}) "
                             f"自动撤单={self.auto_cancel_unfilled} 撤单延迟={self.auto_cancel_delay}s")
         except Exception as e:
             logger.warning(f"加载交易设置失败（用默认）: {e}")

@@ -617,15 +617,17 @@ def bridge_process_status():
     return jsonify({"ok": True, **bridge_process_status_payload()})
 
 
+# 桥接进程是全局单例、服务机主本人的实盘执行：启停权限收敛到 root admin，
+# 否则任一登录用户都能在实盘运行中 kill 掉它（已下发信号无人执行、持仓失去自动止损）。
 @bp.route("/api/bridge/process/start", methods=["POST"])
-@require_auth
+@require_root_admin
 def bridge_process_start():
     result = start_bridge_process()
     return jsonify({"ok": True, **result, **bridge_process_status_payload()})
 
 
 @bp.route("/api/bridge/process/stop", methods=["POST"])
-@require_auth
+@require_root_admin
 def bridge_process_stop():
     result = stop_bridge_process()
     return jsonify({"ok": True, **result, **bridge_process_status_payload()})
@@ -761,26 +763,34 @@ def _mobile_restart_bridge_worker():
     return worker
 
 
+# ── legacy 手机执行入口 ───────────────────────────────────────────
+# 鉴权：本组曾整组无装饰器（任意人可调），与下方新版 /api/bridge/mobile/* 对齐补齐。
+# 方法：改状态的一律只收 POST——GET 可被 <img>/顶层导航跨站触发，
+#       SameSite=Lax 对顶层 GET 仍会带上 session cookie。只读的两条保留 GET。
 @bp.route("/api/mobile_ths/profile", methods=["GET", "POST"])
+@require_bridge_or_auth
 def mobile_ths_legacy_profile():
     return jsonify(_mobile_profile_payload())
 
 
-@bp.route("/api/mobile_ths/connection", methods=["GET", "POST"])
+@bp.route("/api/mobile_ths/connection", methods=["POST"])
+@require_bridge_or_auth
 def mobile_ths_legacy_connection():
     data = _request_json()
-    mode = (data.get("connection_mode") or data.get("mode") or request.args.get("connection_mode") or request.args.get("mode") or "usb")
+    mode = (data.get("connection_mode") or data.get("mode") or "usb")
     return jsonify(_set_mobile_connection(mode))
 
 
-@bp.route("/api/mobile_ths/confirm_mode", methods=["GET", "POST"])
+@bp.route("/api/mobile_ths/confirm_mode", methods=["POST"])
+@require_bridge_or_auth
 def mobile_ths_legacy_confirm_mode():
     data = _request_json()
-    mode = (data.get("confirm_mode") or data.get("mode") or request.args.get("confirm_mode") or request.args.get("mode") or "auto")
+    mode = (data.get("confirm_mode") or data.get("mode") or "auto")
     return jsonify(_set_mobile_confirm_mode(mode))
 
 
 @bp.route("/api/mobile_ths/account", methods=["GET", "POST"])
+@require_bridge_or_auth
 def mobile_ths_legacy_account():
     cfg = _load_bridge_config()
     profile = _load_android_profile(cfg)
@@ -794,19 +804,22 @@ def mobile_ths_legacy_account():
     return jsonify(result)
 
 
-@bp.route("/api/mobile_ths/open_ths", methods=["GET", "POST"])
+@bp.route("/api/mobile_ths/open_ths", methods=["POST"])
+@require_bridge_or_auth
 def mobile_ths_legacy_open_ths():
     return jsonify(_start_mobile_legacy_task("open_ths", "", _mobile_open_app_worker()))
 
 
-@bp.route("/api/mobile_ths/mode", methods=["GET", "POST"])
+@bp.route("/api/mobile_ths/mode", methods=["POST"])
+@require_bridge_or_auth
 def mobile_ths_legacy_mode():
     data = _request_json()
-    mode, worker = _mobile_switch_mode_worker(data.get("mode") or data.get("trade_mode") or request.args.get("mode") or request.args.get("trade_mode"))
+    mode, worker = _mobile_switch_mode_worker(data.get("mode") or data.get("trade_mode"))
     return jsonify(_start_mobile_legacy_task("switch_mode", mode, worker))
 
 
-@bp.route("/api/mobile_ths/restart_bridge", methods=["GET", "POST"])
+@bp.route("/api/mobile_ths/restart_bridge", methods=["POST"])
+@require_bridge_or_auth
 def mobile_ths_legacy_restart_bridge():
     return jsonify(_start_mobile_legacy_task("restart_bridge", "", _mobile_restart_bridge_worker()))
 

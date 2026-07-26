@@ -100,6 +100,10 @@
   "OPTIONS,POST"
  ],
  [
+  "/api/admin/factor-mining/status",
+  "GET,HEAD,OPTIONS"
+ ],
+ [
   "/api/admin/factor-watchlist",
   "GET,HEAD,OPTIONS"
  ],
@@ -408,6 +412,26 @@
   "OPTIONS,POST"
  ],
  [
+  "/api/bridge/mobile/mode",
+  "OPTIONS,POST"
+ ],
+ [
+  "/api/bridge/mobile/open-app",
+  "OPTIONS,POST"
+ ],
+ [
+  "/api/bridge/process",
+  "GET,HEAD,OPTIONS"
+ ],
+ [
+  "/api/bridge/process/start",
+  "OPTIONS,POST"
+ ],
+ [
+  "/api/bridge/process/stop",
+  "OPTIONS,POST"
+ ],
+ [
   "/api/bridge/signals",
   "GET,HEAD,OPTIONS"
  ],
@@ -470,6 +494,10 @@
  [
   "/api/execute",
   "OPTIONS,POST"
+ ],
+ [
+  "/api/execution/state",
+  "GET,HEAD,OPTIONS"
  ],
  [
   "/api/factors",
@@ -578,6 +606,34 @@
  [
   "/api/market/review",
   "GET,HEAD,OPTIONS"
+ ],
+ [
+  "/api/mobile_ths/account",
+  "GET,HEAD,OPTIONS,POST"
+ ],
+ [
+  "/api/mobile_ths/confirm_mode",
+  "OPTIONS,POST"
+ ],
+ [
+  "/api/mobile_ths/connection",
+  "OPTIONS,POST"
+ ],
+ [
+  "/api/mobile_ths/mode",
+  "OPTIONS,POST"
+ ],
+ [
+  "/api/mobile_ths/open_ths",
+  "OPTIONS,POST"
+ ],
+ [
+  "/api/mobile_ths/profile",
+  "GET,HEAD,OPTIONS,POST"
+ ],
+ [
+  "/api/mobile_ths/restart_bridge",
+  "OPTIONS,POST"
  ],
  [
   "/api/news/feed",

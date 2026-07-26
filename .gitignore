@@ -26,6 +26,8 @@ data/users.db-wal
 data/users.db-shm
 data/search_config.json
 data/notify_config.json
+# 实盘自动化开关（运行态；曾被误提交且 auto_confirm_order=true，会架空 .env 双开关）
+data/trade_settings.json
 .env
 secrets.json
 api_keys.json

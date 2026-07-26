@@ -15,6 +15,7 @@ from flask import Blueprint, jsonify, request, session
 
 from app_state import (
     require_auth, get_user_state, _persist_state, _add_log, get_operator,
+    is_root_admin_session,
 )
 from config import DRY_RUN
 from core import user_manager as um
@@ -22,7 +23,6 @@ from core.trade_service import execute_buy, execute_sell, _auto_buy, _paper_live
 from broker import paper_broker as pb
 from analytics import data_manager as dm
 from analytics import data_gateway as dg
-from strategy_engine import strategy_manager as sm
 from web._params import _positive_float_value, _int_value
 
 logger = logging.getLogger(__name__)
@@ -434,11 +434,17 @@ def account_trade_settings():
       - auto_cancel_unfilled 未成交自动撤单(True) / 手动撤单(False)
       - auto_cancel_delay    未成交多少秒后撤
     这是驱动单一 xiadan 客户端的全局设置，持久化到 data/trade_settings.json（重启仍生效）。
+
+    权限：GET 任意登录用户可读（面板回显）；POST 仅 root admin——
+    operator 是全进程单例、驱动机主本人的真实券商客户端，普通用户不得改机主的成交开关。
     """
     operator = get_operator()
     if not operator:
         return jsonify({"ok": False, "msg": "xiadan 操作员未初始化（DRY_RUN 或 Linux），无实盘设置"})
     if request.method == "POST":
+        if not is_root_admin_session():
+            return jsonify({"ok": False, "error": "root admin required",
+                            "code": "root_admin_required"}), 403
         d = request.json or {}
         s = operator.set_trade_settings(
             auto_confirm_order=d.get("auto_confirm_order"),

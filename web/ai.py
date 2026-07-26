@@ -199,6 +199,10 @@ def ai_get_config():
         cfg["api_key_masked"] = key[:4] + "****" + key[-4:]
     else:
         cfg["api_key_masked"] = "****" if key else ""
+    # 明文 key 绝不出响应体：load_config 会把 .env 的平台级 key 合并进来，
+    # 只回脱敏值与 has_key（写入侧保持「传空则不改」语义，前端无需原值）。
+    cfg.pop("api_key", None)
+    cfg["has_api_key"] = bool(key)
     return jsonify({**cfg, "presets": ai.PROVIDER_PRESETS})
 
 
