@@ -643,6 +643,20 @@ def admin_add_points(uid):
     return jsonify(r)
 
 
+@bp.route("/api/admin/users/<int:uid>", methods=["PUT"])
+@require_admin_perm("user_manage")
+def admin_update_user(uid):
+    """编辑用户资料（用户名/邮箱）。root 管理员的资料只允许其本人改。"""
+    d = request.json or {}
+    target = um.get_user(uid)
+    if not target:
+        return jsonify({"ok": False, "error": "用户不存在"}), 404
+    if um.is_root_admin_user(target) and uid != session.get("user_id"):
+        return jsonify({"ok": False, "error": "不能编辑最高管理员资料"}), 403
+    return jsonify(um.update_user_profile(
+        uid, username=d.get("username"), email=d.get("email")))
+
+
 @bp.route("/api/admin/users/<int:uid>/active", methods=["POST"])
 @require_admin_perm("user_manage")
 def admin_set_active(uid):

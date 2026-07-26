@@ -60,17 +60,20 @@ async function doPaperBuy(){
   const priceV = document.getElementById('pbPrice').value
   const sharesV= document.getElementById('pbShares').value
 
-  if(!code || code.length!==6){ alert('请输入6位股票代码'); return }
+  if(!code || code.length!==6){ toast('请输入6位股票代码', 'error'); return }
 
   let price = parseFloat(priceV)
   // 若未填价格，先从监控池/选股结果拿实时价
   if(!price){
     const poolItem = (_lastPool||[]).find(x=>x.code===code)
     if(poolItem?.price) price = poolItem.price
-    if(!price){ alert('请填写买入价格（或先在监控中心启动扫描获取实时行情）'); return }
+    if(!price){ toast('请填写买入价格（或先在监控中心启动扫描获取实时行情）', 'error'); return }
   }
 
   const shares = parseInt(sharesV) || 0
+  // 当前是实盘模式时，此单会真实成交 → 强确认（此前无任何确认）
+  const live = (typeof _tradeMode !== 'undefined' && _tradeMode === 'live')
+  if(live && !confirm(`🔴 注意：当前是实盘模式，此单会真实下单、动用真实资金！\n\n${code} ${name} @ ¥${price}\n仍要继续吗？`)) return
 
   const btn = document.getElementById('pbSubmitBtn')
   btn.disabled = true; btn.textContent = '提交中...'
@@ -80,10 +83,10 @@ async function doPaperBuy(){
 
   if(r?.ok){
     closePaperBuy()
-    alert(`✅ 模拟买入成功！\n${code} ${name}\n${r.shares}股 @ ¥${price}`)
+    toast(`✅ 已${live?'实盘':'模拟'}买入 ${code} ${name} ${r.shares}股 @ ¥${price}`, 'success')
     loadPaperPage(); fetchFunds()
   } else {
-    alert('❌ 买入失败：' + (r?.msg || '未知错误'))
+    toast('❌ 买入失败：' + (r?.msg || '未知错误'), 'error')
   }
 }
 
@@ -199,7 +202,7 @@ async function loadPaperOrders(){
         <td><b>${(+r.exec_price).toFixed(2)}</b></td>
         <td>${r.shares}</td>
         <td style="color:var(--t3)">¥${(+(r.commission||0)).toFixed(1)}${r.tax?'+税¥'+(+r.tax).toFixed(1):''}</td>
-        <td><span class="sbadge" style="background:${r.status==='filled'?'#1a4731':'#4a1a1a'};
+        <td><span class="sbadge" style="background:${r.status==='filled'?'#E7F7EC':'#FDEAEE'};
           color:${r.status==='filled'?'var(--gl)':'var(--rl)'}">
           ${r.status==='filled'?'成交':'拒绝'}</span></td>
       </tr>`).join('')}

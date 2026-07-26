@@ -1,0 +1,331 @@
+/* ══════════════════════════════════════════════════════════════════
+   app-shell.css — 分组侧边栏 + 精简顶栏（2026-07-26 梯度B 导航改造）
+   ------------------------------------------------------------------
+   必须最后加载（在 theme-candy.css 之后），用更高特异性接管导航外壳。
+   设计：左侧固定 208px 分组侧栏占据 body 的 padding-left 留白，
+        原 .nav 降级为 52px 精简顶栏（只留运行态/模式/用户）。
+        页面 DOM 结构完全不变 → 零风险接管。
+   注：侧栏条目仍带 .ntab 类，switchPage/_gotoHash 等既有 JS 无需改动。
+   ══════════════════════════════════════════════════════════════════ */
+
+:root{
+  /* 补齐缺失的全局 token/类（审计发现）：
+     --hover 被 app-pages.css 引用 8 处却从未定义 → hover 反馈/表头底色全部静默失效 */
+  --hover: #F5EFE6;
+  --shell-w: 208px;          /* 侧栏宽度 */
+  --shell-w-mini: 64px;      /* 窄屏图标模式 */
+  --shell-bg: #FFFDFA;
+  --shell-border: #EFE3D2;
+  --shell-txt: #6B5F52;      /* 未激活项：4.9:1 on #FFFDFA，达 AA */
+  --shell-txt-strong: #2D2A26;
+  --shell-accent: #C7345B;   /* 加深粉：5.2:1，替代 2.47:1 的 #FF7B93 做文字色 */
+  --shell-accent-bg: #FDEEF3;
+  --shell-hover: #F7F1E8;
+}
+
+/* ── body 让出左侧栏空间 ───────────────────────────────────────── */
+body{ padding-left: var(--shell-w); }
+
+/* ── 侧栏容器 ─────────────────────────────────────────────────── */
+.side{
+  position:fixed; left:0; top:0; bottom:0; width:var(--shell-w); z-index:900;
+  background:var(--shell-bg); border-right:1px solid var(--shell-border);
+  display:flex; flex-direction:column;
+  box-shadow:2px 0 16px rgba(180,150,110,.06);
+}
+.side-brand{
+  height:52px; flex:0 0 52px; display:flex; align-items:center; gap:8px;
+  padding:0 14px; border-bottom:1px solid var(--shell-border); cursor:pointer;
+}
+.side-brand svg{ height:34px; width:auto; display:block; flex:0 0 auto; }
+.side-brand-txt{ font-size:15px; font-weight:800; color:var(--shell-txt-strong); letter-spacing:.02em; white-space:nowrap; }
+
+.side-scroll{ flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:10px 0 14px; }
+.side-scroll::-webkit-scrollbar{ width:6px }
+.side-scroll::-webkit-scrollbar-thumb{ background:#E6D8C6; border-radius:999px }
+
+.side-group{ margin-bottom:4px; }
+.side-group-t{
+  padding:9px 16px 5px; font-size:10px; font-weight:900; letter-spacing:.14em;
+  color:#AA9C8B; text-transform:uppercase; user-select:none;
+}
+
+/* ── 侧栏条目（复用 .ntab 类，故用 .side .ntab 提高特异性覆盖旧规则）── */
+.side .ntab,
+.side .side-link{
+  display:flex; align-items:center; gap:9px;
+  height:38px; margin:1px 8px; padding:0 10px;
+  border:0; border-radius:9px;
+  font-size:13.5px; font-weight:600; line-height:1;
+  color:var(--shell-txt); background:transparent;
+  cursor:pointer; user-select:none; white-space:nowrap;
+  transition:background .14s, color .14s;
+}
+.side .ntab:hover,
+.side .side-link:hover{ background:var(--shell-hover); color:var(--shell-txt-strong); }
+.side .ntab.active{
+  background:var(--shell-accent-bg); color:var(--shell-accent); font-weight:800;
+  box-shadow:inset 3px 0 0 var(--shell-accent);
+}
+.side-ico{ width:18px; text-align:center; font-size:14px; flex:0 0 18px; }
+.side-label{ overflow:hidden; text-overflow:ellipsis; }
+
+/* 键盘焦点环：侧栏条目是 tabindex 化的 div，必须能看见焦点落在哪 */
+.side .ntab:focus-visible,
+.side .side-link:focus-visible{
+  outline:2px solid var(--shell-accent); outline-offset:-2px;
+  background:var(--shell-hover); color:var(--shell-txt-strong);
+}
+
+/* 侧栏底部：用户/管理/退出
+   显隐必须 class 驱动（.on），不能用 JS 写内联 style —— 内联样式会击穿
+   下方 760px 断点里的 display:none，导致手机端账户区与顶栏重复显示。 */
+.side-foot{
+  flex:0 0 auto; border-top:1px solid var(--shell-border); padding:8px;
+  display:none; flex-direction:column; gap:2px; background:#FFFCF7;
+}
+.side-foot.on{ display:flex; }
+.side-foot .side-link{ height:34px; margin:0; font-size:12.5px; }
+.side-user{
+  display:flex; align-items:center; gap:8px; padding:7px 10px 9px;
+  border-bottom:1px solid var(--shell-border); margin-bottom:6px;
+}
+.side-avatar{
+  width:26px; height:26px; flex:0 0 26px; border-radius:50%;
+  background:linear-gradient(135deg,#FF9DB4,#C7345B); color:#fff;
+  display:flex; align-items:center; justify-content:center;
+  font-size:12px; font-weight:800;
+}
+.side-uname{ font-size:12.5px; font-weight:700; color:var(--shell-txt-strong);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.side-points{ font-size:11px; color:#8A7D6E; white-space:nowrap; }
+
+/* ── 顶栏降级为精简条 ─────────────────────────────────────────── */
+body .nav{
+  height:52px; min-height:52px; padding:0 16px; gap:8px;
+  flex-wrap:nowrap; overflow:visible;
+  background:rgba(255,255,255,.94); backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--shell-border);
+}
+body .nav .nav-brand{ display:none; }          /* 品牌已移入侧栏 */
+body .nav .ntab{ display:none; }               /* 页签已移入侧栏 */
+body .nav .nav-r.top-actions{ margin-left:auto; flex-wrap:nowrap; }
+
+/* 账户信息归侧栏底部；顶栏只留运行状态，避免同一信息两处重复。
+   （navUser 块保留在 DOM 中：手机端侧栏底部隐藏时改由顶栏承担，见 760px 断点） */
+body .nav #navUser{ display:none!important; }
+body .nav .log-chip{ display:none; }   /* 更新日志入口已在侧栏底部 */
+
+/* 顶栏当前页标题 */
+.nav-title{
+  font-size:15px; font-weight:800; color:var(--shell-txt-strong);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+
+/* ── 交易执行页（原 todayOrdersModal 弹窗，已升级为一级页面）──────────
+   .page 是 display:flex + overflow:hidden，内容必须由内层容器自己滚动，
+   否则原本 max-height:92vh 弹窗里的长内容会被直接裁掉。 */
+#page-execution{ overflow:hidden; }
+#page-execution.active{ display:flex; }
+.exec-page-wrap{
+  flex:1; min-width:0; min-height:0; overflow-y:auto; overflow-x:hidden;
+  padding:16px 20px 32px;
+}
+/* 原弹窗内是白卡片底，页面化后由各 section 自己承载，头部间距收一收 */
+.exec-page-wrap .trade-console-head{ margin-bottom:14px; }
+.exec-page-wrap::-webkit-scrollbar{ width:8px }
+.exec-page-wrap::-webkit-scrollbar-thumb{ background:#E6D8C6; border-radius:999px }
+@media (max-width:760px){
+  .exec-page-wrap{ padding:12px 12px 28px; }
+}
+
+/* ── 风控中心页 ──────────────────────────────────────────────── */
+.risk-wrap{ flex:1; min-width:0; min-height:0; overflow-y:auto; padding:18px 22px 36px; }
+.risk-wrap::-webkit-scrollbar{ width:8px }
+.risk-wrap::-webkit-scrollbar-thumb{ background:#E6D8C6; border-radius:999px }
+.risk-runtime{
+  display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;
+}
+.risk-rt-item{
+  flex:1 1 120px; background:#FFFDFA; border:1px solid var(--shell-border);
+  border-radius:12px; padding:9px 14px; display:flex; flex-direction:column; gap:3px;
+}
+.risk-rt-item small{ font-size:10.5px; color:#9C8B7A; font-weight:700; letter-spacing:.04em }
+.risk-rt-item b{ font-size:15px; color:var(--shell-txt-strong); font-weight:800 }
+.risk-rt-item b.rk-on{ color:#2A7A50 }
+.risk-rt-item b.rk-warn{ color:#8A5D00 }
+.risk-rt-item b.rk-danger{ color:#C1274B }
+
+.risk-note{ border-radius:12px; padding:10px 14px; font-size:12.5px; font-weight:600;
+  line-height:1.6; margin-bottom:16px; }
+.risk-note.ok{ background:#E7F5EE; color:#2A7A50; border:1px solid #B6E0C8 }
+.risk-note.warn{ background:#FFF6E5; color:#8A5D00; border:1px solid #F2DCA6 }
+.risk-note.danger{ background:#FDE7ED; color:#C1274B; border:1px solid #F0A9BC }
+
+.risk-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:14px; max-width:1180px }
+.risk-card{
+  background:#fff; border:1px solid var(--shell-border); border-radius:16px; padding:16px 18px;
+  box-shadow:0 2px 10px rgba(180,150,110,.06); display:flex; flex-direction:column; gap:12px;
+}
+.risk-card-primary{ border-color:#F0C9D6; box-shadow:0 2px 14px rgba(199,52,91,.08) }
+.risk-card-hd{ display:flex; align-items:flex-start; justify-content:space-between; gap:10px }
+.risk-card-hd h4{ margin:0 0 3px; font-size:14.5px; color:var(--shell-txt-strong); font-weight:800 }
+.risk-card-hd small{ font-size:11px; color:#9C8B7A; line-height:1.5; display:block }
+.risk-tag{ flex:0 0 auto; font-size:10.5px; font-weight:800; padding:3px 9px; border-radius:999px;
+  background:#F5EFE6; color:#8A7D6E; border:1px solid var(--shell-border); white-space:nowrap }
+.risk-tag.live{ background:#FDEEF3; color:var(--shell-accent); border-color:#F0C9D6 }
+.risk-tag.danger{ background:#FDE7ED; color:#C1274B; border-color:#F0A9BC }
+
+.risk-fields{ display:grid; grid-template-columns:1fr 1fr; gap:9px }
+.risk-fields label{ font-size:11px; color:#8A7D6E; font-weight:700; display:flex; flex-direction:column; gap:4px }
+.risk-fields input{
+  background:#FFFDFA; border:1px solid var(--shell-border); border-radius:9px;
+  padding:7px 10px; font-size:13px; color:var(--shell-txt-strong); font-weight:700; width:100%;
+}
+.risk-fields input:focus{ outline:2px solid var(--shell-accent); outline-offset:-2px }
+
+.risk-kv{ display:flex; flex-direction:column; gap:6px }
+.risk-kv > div{ display:flex; justify-content:space-between; align-items:center; gap:10px;
+  font-size:12.5px; padding:5px 0; border-bottom:1px dashed #EFE3D2 }
+.risk-kv > div:last-child{ border-bottom:0 }
+.risk-kv span{ color:#8A7D6E }
+.risk-kv b{ color:var(--shell-txt-strong); font-weight:800 }
+.risk-loading{ font-size:12px; color:#B6A795 }
+.risk-sub{ border-top:1px dashed #EFE3D2; padding-top:10px; margin-top:2px }
+.risk-sub-t{ font-size:10.5px; font-weight:800; letter-spacing:.06em; color:#AA9C8B; margin-bottom:6px }
+
+/* ── 对比度整改（审计：--t3 3.16:1 / --t4 2.25:1 大量用于 10-11px 小字不达标）── */
+:root{
+  --t3:#6B5F52;   /* 4.9:1，弱文字达 AA */
+  --t4:#8A7A67;   /* ~4:1，提示/占位文字 */
+}
+a{ color:#C7345B; }   /* 链接原用 --blue=#FF7B93 仅 2.47:1 → 加深粉 5.2:1 */
+
+/* ── K线弹窗深浅撕裂修复（白弹窗里嵌 GitHub 深黑周期条/五档盘口）──
+   K线画布本身是 JS 画的深色图（视为图表图片，保留）；周边控件全部亮化。 */
+.kl-tabs{ background:#F5EFE6; border-color:var(--shell-border); }
+.kl-tab:hover{ color:var(--shell-txt-strong); background:rgba(58,44,34,.07); }
+.kl-book{ background:#FFFDFA; border-color:var(--shell-border); }
+.kl-book-row:hover{ background:rgba(58,44,34,.05); }
+
+/* ── 遮罩统一（原三套：死黑 .55 / 暖棕 .40 / 暖模糊）→ 一套暖色+微模糊 ── */
+.rename-modal{ background:rgba(58,44,34,.45); backdrop-filter:blur(3px); }
+.ait-modal{ background:rgba(58,44,34,.45); backdrop-filter:blur(3px); }
+
+/* ── 吉祥物横幅可折叠（原 ~124px 占首屏黄金位不可关，笔记本上执行队列只剩 85px）── */
+.mas-banner{ position:relative; }
+#masFold{
+  position:absolute; top:6px; right:8px; width:22px; height:22px; border:1px solid var(--shell-border);
+  border-radius:7px; background:#FFFDFA; color:#8A7A67; font-size:13px; line-height:1;
+  cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:2;
+}
+#masFold:hover{ color:var(--shell-txt-strong); background:var(--shell-hover); }
+.mas-banner.jw-fold{ padding:6px 40px 6px 14px; margin-top:4px; }
+.mas-banner.jw-fold .mas-avatar,
+.mas-banner.jw-fold .mas-msg{ display:none; }
+.mas-banner.jw-fold .mas-body{ max-width:none; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.mas-banner.jw-fold .mas-tags{ margin:0; }
+
+/* ── 复盘/产业链页窄屏适配（两页栅格全写在内联 style 里，只能 !important 压）──
+   复盘三栏合计 min-width ~1060px、产业链主从 260px+，容器 overflow:hidden，
+   窄窗口下右栏被直接裁掉且滚不到。≤1100px 改纵向堆叠 + 页面自身滚动。 */
+@media (max-width:1100px){
+  #page-review > div,
+  #rsView-chain{
+    flex-direction:column !important;
+    overflow-y:auto !important; overflow-x:hidden !important;
+  }
+  #page-review > div > div,
+  #rsView-chain > div{
+    width:100% !important; min-width:0 !important; max-width:none !important;
+    border-right:0 !important; border-bottom:1px solid var(--shell-border);
+    flex:0 0 auto !important; overflow:visible !important; max-height:none !important;
+  }
+}
+
+/* ── rb-effects.css 深色时代残留清理（本文件最后加载，同特异性后者胜出）── */
+body::before{ display:none !important; }                     /* 冷色极光 + hue-rotate 常驻动画 */
+.card:hover{ border-color:var(--shell-border); box-shadow:0 4px 18px rgba(180,150,110,.16); }
+.card:hover::after{ animation:none; opacity:0; }             /* 蓝色扫光 shimmer */
+*::-webkit-scrollbar-track{ background:transparent; }        /* 深黑轨道 → 透明 */
+*::-webkit-scrollbar-thumb{ background:#E6D8C6; border:2px solid transparent; border-radius:5px; }
+button:focus-visible, input:focus-visible,
+select:focus-visible, textarea:focus-visible{
+  outline:2px solid rgba(199,52,91,.55); outline-offset:2px; /* 蓝焦点环 → 品牌粉 */
+}
+
+/* ── 买卖语义色统一（A股约定：买/涨=红，卖/跌=绿）────────────────
+   此前三处自相矛盾：app-base:455 买=绿/卖=红（反）、theme-candy:201 同样反、
+   theme-candy §6a 还把 .ai-sum-buy 整卡划进薄荷绿组 → 绿卡片里红"买入"大字。 */
+.ai-act-buy{ color:var(--rl,#E0536C); }
+.ai-act-sell{ color:var(--gl,#4A7C59); }
+.ai-sum-buy{ background:#FDEEF3; border-color:#F0A9BC; }
+.ai-sum-sell{ background:#EAF5EE; border-color:#B6E0C8; }
+
+/* .empty-hint 被 index.html + app-research.js 引用 29 处但从未定义过 →
+   「加载中/暂无研报」等占位一直以裸文本顶格显示（半成品感的来源之一） */
+.empty-hint{
+  display:flex; align-items:center; justify-content:center;
+  padding:32px 16px; color:#B6A795; font-size:13px; text-align:center; line-height:1.6;
+}
+.risk-actions{ display:flex; align-items:center; gap:10px; margin-top:auto; padding-top:4px }
+.risk-hint{ font-size:11.5px; font-weight:700 }
+@media (max-width:760px){
+  .risk-wrap{ padding:12px 12px 28px }
+  .risk-fields{ grid-template-columns:1fr }
+  .risk-grid{ grid-template-columns:1fr }
+}
+
+/* ── 系统设置页（原策略中心右栏第 5 个 rtab，已抽为一级页面）────────
+   原来在 .rpanel 里，宽度受右栏 560px 约束；现在是整页，需要自己滚动
+   并给内容一个舒适的最大宽度，避免超宽屏上表单被拉成一条线。 */
+#page-settings > .ai-settings{
+  flex:1; min-width:0; min-height:0; overflow-y:auto; overflow-x:hidden;
+  padding:18px 24px 36px; max-width:1080px; width:100%;
+}
+#page-settings > .ai-settings::-webkit-scrollbar{ width:8px }
+#page-settings > .ai-settings::-webkit-scrollbar-thumb{ background:#E6D8C6; border-radius:999px }
+@media (max-width:760px){
+  #page-settings > .ai-settings{ padding:12px 12px 28px; }
+}
+
+/* ── 窄屏：侧栏收成图标条 ─────────────────────────────────────────
+   断点定在 1280px 而非更窄，是有原因的：复盘页三栏内联 min-width
+   合计约 1030px 且容器 overflow:hidden。若侧栏在 1200px 左右仍占
+   208px，页面只剩约 992px → 右侧「财经快讯」列会被直接裁掉。
+   1281px 时页面仍有约 1073px，安全。（复盘页自身的响应式改造在梯度C） */
+@media (max-width:1280px){
+  body{ padding-left:var(--shell-w-mini); }
+  .side{ width:var(--shell-w-mini); }
+  .side-brand{ justify-content:center; padding:0 6px; }
+  .side-brand-txt, .side-group-t, .side-label,
+  .side-uname, .side-points{ display:none; }
+  .side .ntab, .side .side-link{ justify-content:center; padding:0; margin:2px 8px; gap:0; }
+  .side-group{ margin-bottom:8px; border-top:1px solid var(--shell-border); padding-top:6px; }
+  .side-group:first-child{ border-top:0; padding-top:0; }
+  .side-user{ justify-content:center; padding:8px 0; }
+}
+
+/* 极窄屏（手机）：侧栏转为顶部横向滚动条，避免吃掉半个屏幕 */
+@media (max-width:760px){
+  body{ padding-left:0; padding-top:0; }
+  .side{
+    position:static; width:auto; flex-direction:row; align-items:center;
+    border-right:0; border-bottom:1px solid var(--shell-border);
+    overflow:hidden; box-shadow:none;   /* 滚动交给内层 .side-scroll，避免双滚动条 */
+  }
+  .side-brand{ display:none; }
+  .side-scroll{ display:flex; flex-direction:row; padding:6px 8px; overflow-x:auto; min-width:0; }
+  .side-group{ display:flex; flex-direction:row; margin:0; border:0; padding:0; }
+  .side-group-t{ display:none; }
+  .side .ntab, .side .side-link{ margin:0 3px; padding:0 12px; height:34px; gap:6px; }
+  /* 1280 断点把 .side-label 隐藏成了纯图标；手机横向条要把文字找回来，
+     否则只剩 7 个 emoji 且 title 在触屏不弹出，用户只能靠猜。 */
+  .side-label{ display:inline; }
+  .side .ntab.active{ box-shadow:inset 0 -3px 0 var(--shell-accent); }
+  .side-foot, .side-foot.on{ display:none; }   /* 手机端用户操作改由顶栏承担 ↓ */
+  body .nav{ padding:0 10px; overflow-x:auto; }
+  body .nav #navUser{ display:flex!important; }   /* 恢复顶栏账户区，保证手机端仍可退出/进后台 */
+  body .nav .log-chip{ display:inline-flex; }     /* 侧栏底部已隐藏，更新日志入口回到顶栏 */
+  body .nav .nav-title{ display:none; }           /* 窄屏让位给账户与状态 */
+}

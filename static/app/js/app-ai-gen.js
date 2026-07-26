@@ -4,9 +4,8 @@ let _aiGenMode = 'strat'   // 'strat' | 'factor'
 function _checkAiConfigured(){
   if(!(_currentUser && _currentUser.is_admin)) return true   // 普通用户：AI配置由后端全局提供
   if(!aiCfg?.enabled || !aiCfg?.api_key_masked || aiCfg.api_key_masked==='未配置'){
-    if(!confirm('AI功能尚未配置API Key。\n\n请先前往「策略中心 → ⚙ 设置」填写API Key并启用。\n\n是否前往设置？')) return false
-    switchPage('strategy', document.querySelectorAll('.ntab')[1])
-    switchRTab('aiset', document.querySelectorAll('.rtab')[4])
+    if(!confirm('AI功能尚未配置API Key。\n\n请先前往「⚙ 系统设置」填写API Key并启用。\n\n是否前往设置？')) return false
+    switchPage('settings')
     return false
   }
   return true
@@ -86,11 +85,19 @@ function _renderTplGrid(cat){
   if(!grid) return
   const list = cat==='all' ? _stratTemplates : _stratTemplates.filter(t=>t.category===cat)
   grid.innerHTML = list.map(t=>`
-    <div class="tpl-card ${t.id===_selTplId?'active':''}" data-ui-click="_selectTpl('${t.id}',\`${t.prompt.replace(/`/g,'\\`')}\`)">
+    <div class="tpl-card ${t.id===_selTplId?'active':''}" data-ui-click="_selectTplById('${t.id}')">
       <div class="tpl-name">${esc(t.name)}</div>
       <span class="tpl-tag">${esc(t.category)}</span>
       <div style="font-size:10px;color:var(--t4);margin-top:3px;line-height:1.3">${esc(t.desc.substring(0,30))}...</div>
     </div>`).join('')
+}
+
+// 按 id 从模板表取 prompt，避免把整段 prompt 塞进 data-ui-click 的模板字面量里
+// （模板字面量参数无法被安全解析器处理，会逼着保留 CSP unsafe-eval）
+function _selectTplById(id){
+  const t = (_stratTemplates || []).find(x => String(x.id) === String(id))
+  if(!t) return
+  _selectTpl(t.id, t.prompt)
 }
 
 function _selectTpl(id, prompt){
@@ -235,7 +242,7 @@ async function doAiGen(){
   st.style.color='var(--gl)'; st.textContent='✅ 生成完成！已填入编辑器，请检查后保存。'
   setTimeout(()=>{
     closeAiGen()
-    switchPage('strategy', document.querySelectorAll('.ntab')[1])
+    switchPage('strategy', document.querySelector('.ntab[data-page="strategy"]'))
     editor.focus()
   }, 2000)
 }
@@ -272,6 +279,8 @@ async function refreshLiveTradeBadge(){
       el.className = 'top-switch live-switch off'
       el.innerHTML = '<i></i><b>实盘下单 已关</b>'
     }
+    if(typeof _liveGateOn !== 'undefined'){ _liveGateOn = !!r.enabled }
+    if(typeof _renderNavModeBadge === 'function') _renderNavModeBadge()
   }catch(e){}
 }
 
@@ -288,9 +297,9 @@ async function toggleLiveTrade(){
   const r = await api('/bridge/live_enabled','POST',{enabled:next})
   if(r && r.ok){
     refreshLiveTradeBadge()
-    if(typeof toast==='function') toast(next?'⚠️ 已开启实盘下单':'🛑 已关闭实盘下单（桥接器不再下单）')
+    toast(next?'⚠️ 已开启实盘下单，信号将真实成交':'🛑 已关闭实盘下单（桥接器不再下单）', next?'warn':'success')
   }else{
-    if(typeof toast==='function') toast('操作失败，请重试')
+    toast('操作失败，请重试', 'error')
   }
 }
 
@@ -309,7 +318,7 @@ function showAnnouncements(list){
   const old = document.getElementById('annOverlay'); if(old) old.remove()
   const ov = document.createElement('div')
   ov.id = 'annOverlay'
-  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:99999'
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(58,44,34,.45);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:99999'
   const cards = list.map(a=>`
     <div style="border-left:4px solid ${typeColor[a.type]||'#3b82f6'};background:rgba(127,127,127,.08);border-radius:8px;padding:14px 16px;margin-bottom:12px">
       <div style="font-weight:700;font-size:15px;margin-bottom:6px">${esc(a.title||'公告')}</div>
@@ -317,7 +326,7 @@ function showAnnouncements(list){
       <div style="font-size:11px;opacity:.5;margin-top:8px">${esc(a.created_at||'')}</div>
     </div>`).join('')
   ov.innerHTML = `
-    <div style="background:#121826;border:1px solid #2a3142;border-radius:12px;max-width:560px;width:90%;max-height:80vh;overflow:auto;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.5);color:#e5e7eb">
+    <div style="background:#FFFDFA;border:1px solid #EADCC9;border-radius:16px;max-width:560px;width:90%;max-height:80vh;overflow:auto;padding:20px;box-shadow:0 16px 48px rgba(120,90,60,.25);color:#3A2E24">
       <div style="font-size:18px;font-weight:800;margin-bottom:16px">📢 平台公告</div>
       ${cards}
       <div style="text-align:right;margin-top:8px">
@@ -381,6 +390,10 @@ async function doRegister(){
   const password = document.getElementById('regPass').value
   if(!inviteCode){ setAuthMsg(msg,'请输入邀请码','err'); return }
   if(!username||!email||!password){ setAuthMsg(msg,'请填写所有字段','err'); return }
+  // 前端即时校验（此前只靠后端报错，来回一趟才知道格式不对）
+  if(username.length < 2){ setAuthMsg(msg,'用户名至少 2 个字符','err'); return }
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ setAuthMsg(msg,'邮箱格式不正确','err'); return }
+  if(password.length < 6){ setAuthMsg(msg,'密码至少 6 位','err'); return }
   btn.disabled = true; btn.textContent = '注册中...'
   const r = await api('/auth/register','POST',{username, email, password, invite_code: inviteCode})
   btn.disabled = false; btn.textContent = '注册账号'
@@ -464,19 +477,35 @@ function updateNavUser(user){
   el.style.display = 'flex'
   document.getElementById('navUsername').textContent = user.username
   document.getElementById('navPoints').textContent   = user.points
+  // 侧栏底部用户区（导航改造后的主入口）
+  const foot = document.getElementById('sideFoot')
+  if(foot){
+    foot.classList.add('on')   // 用 class 而非内联 style：内联会击穿 760px 断点的隐藏规则
+    const av = document.getElementById('sideAvatar')
+    if(av) av.textContent = (user.username || '·').slice(0,1).toUpperCase()
+    const un = document.getElementById('sideUname')
+    if(un) un.textContent = user.username
+    const sp = document.getElementById('sidePoints')
+    if(sp) sp.textContent = user.points
+  }
   if(user.is_admin){
     document.getElementById('navAdminBtn').style.display = 'inline-flex'
+    const sa = document.getElementById('sideAdminBtn')
+    if(sa) sa.style.display = 'flex'
   }
-  if(!user.is_admin){
-    // AI接口配置仅管理员：隐藏策略中心「⚙ 设置」页签与各处入口按钮
-    document.querySelectorAll('[onclick*="aiset"]').forEach(el=>{ el.style.display = 'none' })
-  }
+  // 系统设置（AI接口/券商通道/消息推送）仅管理员可见。
+  // 注：原实现用 [onclick*="aiset"] 选择器，但这些元素用的是 data-ui-click，
+  //     选择器从来没匹配上过 —— 非管理员其实一直能看到入口。这里改为按真实入口隐藏。
+  const setTab = document.getElementById('sideSettingsTab')
+  if(setTab) setTab.style.display = user.is_admin ? '' : 'none'
 }
 
 async function doLogout(){
   await api('/auth/logout','POST',{})
   _currentUser = null
   document.getElementById('navUser').style.display = 'none'
+  const foot = document.getElementById('sideFoot')
+  if(foot) foot.classList.remove('on')
   showAuthOverlay()
 }
 
@@ -494,6 +523,8 @@ async function refreshNavPoints(){
   const r = await api('/user/points')
   if(r?.ok && document.getElementById('navPoints')){
     document.getElementById('navPoints').textContent = r.points
+    const sp = document.getElementById('sidePoints')
+    if(sp) sp.textContent = r.points
     if(_currentUser) _currentUser.points = r.points
   }
 }

@@ -174,7 +174,7 @@ function _renderStockDetail(r){
 
 async function analyzeFromSearch(){
   if(!_srchCurCode) return
-  switchPage('monitor', document.querySelectorAll('.ntab')[0])
+  switchPage('monitor', document.querySelector('.ntab[data-page="monitor"]'))
   // 填入分析代码框并触发分析
   await new Promise(r=>setTimeout(r,200))
   const inp = document.getElementById('aiCode')

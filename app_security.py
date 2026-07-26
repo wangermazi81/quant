@@ -337,17 +337,23 @@ def init_security(app):
     )
 
     # 脚本/样式元素与遗留属性分开控制；元素禁止内联执行，旧页面属性逐步迁移。
-    # 前端未使用 eval/new Function，因此不放行 unsafe-eval。
+    # 'unsafe-eval' 已于 2026-07-26 移除：ui-events.js 改为「安全调用解析器 +
+    # ui-handlers.gen.js 预编译静态表」两级求值，不再使用 new Function/eval。
+    # ⚠️ 若以后新增带 if/赋值等复杂语法的 data-ui-* 处理器，必须重跑
+    #    `python tools/gen_ui_handlers.py` 把它编译进静态表，否则该处理器会失效
+    #    （控制台会显式报错，不会静默）。
     # 外部资源只允许 Google Fonts、cdnjs FontAwesome 和 jsdelivr echarts。
+    # 2026-07-26 起全站资源已本地化（FA 本地托管/谷歌字体删除/echarts 删除），
+    # 外部主机全部从 CSP 移除 —— 现在任何第三方脚本/样式都无法注入加载。
     csp = (
         "default-src 'self'; "
         "img-src 'self' data: blob:; "
-        "style-src 'self' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
-        "style-src-elem 'self' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
+        "style-src 'self'; "
+        "style-src-elem 'self'; "
         "style-src-attr 'unsafe-inline'; "
-        "font-src 'self' data: https://fonts.gstatic.com https://cdnjs.cloudflare.com; "
-        "script-src 'self' https://cdn.jsdelivr.net; "
-        "script-src-elem 'self' https://cdn.jsdelivr.net; "
+        "font-src 'self' data:; "
+        "script-src 'self'; "
+        "script-src-elem 'self'; "
         "script-src-attr 'unsafe-inline'; "
         "connect-src 'self'; "
         "frame-ancestors 'self'; "

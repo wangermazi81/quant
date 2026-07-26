@@ -44,6 +44,20 @@ jobs:
           python tools/gen_api_doc.py
           git diff --exit-code docs/API.md
 
+      - name: Verify data-ui handler map is up to date (CSP 无 eval 防线)
+        run: |
+          # ui-events.js 已不再用 eval/new Function（CSP 去掉了 'unsafe-eval'）。
+          # 带 if/赋值等复杂语法的 data-ui-* 处理器必须预编译进 ui-handlers.gen.js，
+          # 否则运行时会失效。这里守住"改了处理器却忘记重跑生成器"。
+          python tools/gen_ui_handlers.py --check
+
+      - name: Guard against 'unsafe-eval' creeping back into CSP
+        run: |
+          if grep -q "unsafe-eval" app_security.py; then
+            echo "::error::CSP 重新引入了 'unsafe-eval'。请改用 tools/gen_ui_handlers.py 的静态表方案。"
+            exit 1
+          fi
+
       - name: Guard against side-effecting scripts under tests/
         run: |
           # tests/ 下曾放过 test_mimo.py：会用真实 api_key 发网络请求，缺配置时

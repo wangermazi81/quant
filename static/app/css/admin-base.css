@@ -78,7 +78,7 @@ body{font-family:'Segoe UI',system-ui,'Microsoft YaHei',sans-serif;font-size:14p
 .tab .tab-close:hover{background:rgba(255,255,255,.3);opacity:1}
 
 /* ===== CONTENT ===== */
-.content{flex:1;overflow-y:auto;padding:20px}
+.content{flex:1;overflow-y:auto;padding:20px;padding-bottom:44px}/* 底部留白：避让 fixed 的 ICP 备案脚注，否则长表格最后一行被压住 */
 .content::-webkit-scrollbar{width:6px}
 .content::-webkit-scrollbar-thumb{background:#c0c4cc;border-radius:3px}
 .page{display:none}
@@ -211,6 +211,13 @@ tr:hover td{background:#fafbff}
   .chart-row{grid-template-columns:1fr}
   .profile-layout{grid-template-columns:1fr}
   .form-row{grid-template-columns:1fr}
+  /* 侧栏改屏外抽屉：原来固定 250px 在手机上占掉大半屏 */
+  .sidebar{position:fixed;left:-260px;top:0;bottom:0;z-index:1000;transition:left .2s ease;box-shadow:none}
+  .sidebar.mobile-open{left:0;box-shadow:4px 0 24px rgba(0,0,0,.25)}
+  /* 用户表 9 列、因子挖掘表 10 列，窄屏会直接撑破卡片且无法横向滚动。
+     给卡片内的表格一个可横滚的容器（表格本身设最小宽度以免被压成一团）。 */
+  .card{overflow-x:auto}
+  .card table{min-width:760px}
 }
 
 /* ===== EMPTY STATE ===== */

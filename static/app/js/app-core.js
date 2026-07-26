@@ -83,6 +83,9 @@ window.addEventListener('load', async ()=>{
   editor.on('change',()=>setEdSt('已修改（未保存）'))
   initPublicShell()
   initAuthenticatedShell()
+  // 兜底恢复 URL hash 指向的页面：initAuthenticatedShell 在未登录时会提前 return，
+  // 若只在那里调用，未登录（或登录态尚未就绪）时 F5 会退回监控中心。
+  _gotoHash()
 })
 
 function initPublicShell(){
@@ -100,6 +103,7 @@ function initAuthenticatedShell(){
   initBrokerConfig()
   initNotifyConfig()
   loadTradeMode()
+  _gotoHash()   // 登录初始化后，按 URL hash 恢复到刷新前的页面
 }
 
 function bridgeProcessErrorText(r, path=''){
@@ -133,6 +137,60 @@ function _renderCurrentModeBadge(id, mode, label){
   el.title = `${label}当前交易环境：${text}`
 }
 
+// ── 全局轻提示（此前 toast() 从未定义，导致启动/停止/实盘总闸切换全部静默）──
+// type: 'success' | 'error' | 'warn' | ''(信息)；兼容旧调用传布尔（true=错误）
+function toast(msg, type){
+  if(type === true) type = 'error'
+  else if(type === false || type == null) type = ''
+  let wrap = document.getElementById('_jwToastWrap')
+  if(!wrap){
+    wrap = document.createElement('div'); wrap.id = '_jwToastWrap'
+    wrap.style.cssText = 'position:fixed;top:74px;right:20px;z-index:100000;display:flex;flex-direction:column;gap:8px;pointer-events:none'
+    document.body.appendChild(wrap)
+  }
+  const palette = {
+    success: ['#E7F7EC', '#1E7E45', '#B6E4C6'],
+    error:   ['#FDEAEE', '#C1274B', '#F3C2CE'],
+    warn:    ['#FFF6E5', '#8A5D00', '#F2DCA6'],
+    '':      ['#FFFFFF', '#3A2E24', '#EADCC9'],
+  }
+  const [bg, fg, bd] = palette[type] || palette['']
+  const el = document.createElement('div')
+  el.textContent = String(msg == null ? '' : msg)
+  el.style.cssText = `pointer-events:auto;min-width:180px;max-width:340px;padding:10px 14px;border-radius:12px;background:${bg};color:${fg};border:1px solid ${bd};box-shadow:0 8px 24px rgba(120,90,60,.18);font-size:13px;font-weight:600;line-height:1.5;white-space:pre-line;opacity:0;transform:translateX(12px);transition:opacity .18s ease,transform .18s ease`
+  wrap.appendChild(el)
+  requestAnimationFrame(()=>{ el.style.opacity = '1'; el.style.transform = 'none' })
+  setTimeout(()=>{ el.style.opacity = '0'; el.style.transform = 'translateX(12px)'; setTimeout(()=>el.remove(), 220) }, type === 'error' ? 4200 : 3000)
+}
+window.toast = toast
+
+// ── 顶栏常驻「模拟 / 实盘」徽章：真钱平台最关键的状态，任何页面一眼可见 ──
+let _liveGateOn = null   // 实盘下单总闸状态（由 refreshLiveTradeBadge 写入）
+function _renderNavModeBadge(){
+  const el = document.getElementById('navModeBadge')
+  if(!el) return
+  const isLive = (typeof _tradeMode !== 'undefined' && _tradeMode === 'live')
+  if(isLive){
+    const gate = _liveGateOn === true ? '·闸开' : (_liveGateOn === false ? '·闸关' : '')
+    el.className = 'nav-mode-badge live'
+    el.textContent = '🔴 实盘' + gate
+    el.title = '当前为实盘模式' + (_liveGateOn === true ? '，下单总闸已开=会真扣钱真买卖' : (_liveGateOn === false ? '，下单总闸已关（暂不会真下单）' : '')) + '。点击打开交易执行台'
+    el.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:800;cursor:pointer;background:#FDE7ED;color:#C1274B;border:1px solid #F0A9BC'
+  } else if(_liveGateOn === true){
+    // 模拟盘 + 实盘总闸已开：现在不会真下单，但只要模式一切到实盘就立刻真成交，
+    // 属于"一步之遥"状态，必须在徽章上点出来，不能只显示一个安全的绿色模拟盘。
+    el.className = 'nav-mode-badge paper gate-open'
+    el.textContent = '🛡️ 模拟盘 · 闸已开'
+    el.title = '当前为模拟盘（不动真钱），但实盘下单总闸已开启——一旦切到实盘，信号会立即真实成交。点击打开交易执行台'
+    el.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:800;cursor:pointer;background:#FFF6E5;color:#8A5D00;border:1px solid #F2DCA6'
+  } else {
+    el.className = 'nav-mode-badge paper'
+    el.textContent = '🛡️ 模拟盘'
+    el.title = '当前为模拟盘模式（不动真钱）。点击打开交易执行台'
+    el.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:800;cursor:pointer;background:#E7F5EE;color:#2A7A50;border:1px solid #B6E0C8'
+  }
+}
+
 async function refreshBridgeProcessBadge(){
   const bridgeEl = document.getElementById('bridgeProcessBadge')
   const topEl = document.getElementById('mobileTradeBadge')
@@ -164,7 +222,7 @@ async function toggleBridgeProcess(){
     const r = await api(path, 'POST', {})
     if(el) el.classList.remove('busy')
     await refreshBridgeProcessBadge()
-    if(typeof toast === 'function') toast(r && r.ok ? (r.running ? '桥接器已后台运行' : '桥接器已关闭') : ('桥接器操作失败：' + bridgeProcessErrorText(r, '/api'+path)))
+    toast(r && r.ok ? (r.running ? '桥接器已后台运行' : '桥接器已关闭') : ('桥接器操作失败：' + bridgeProcessErrorText(r, '/api'+path)), r && r.ok ? 'success' : 'error')
   }
 
 function _setMobileChainStatus(text, ok=null){
@@ -248,13 +306,34 @@ function restartMobileBridge(){ return _mobilePost('/mobile_ths/restart_bridge',
 
 function setEdSt(s){ document.getElementById('edSt').textContent=s }
 
+const _NAV_PAGES = ['monitor','execution','strategy','paper','search','review','aitrader','risk','settings']
+const _PAGE_TITLES = {monitor:'📊 监控中心', execution:'⚡ 交易执行', strategy:'🧪 策略中心', paper:'💹 模拟盘',
+                      search:'🧬 产业链研报', review:'🔁 复盘', aitrader:'🤖 AI交易',
+                      risk:'🛡️ 风控中心', settings:'⚙ 系统设置'}
 function switchPage(name,el){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'))
   document.querySelectorAll('.ntab').forEach(t=>t.classList.remove('active'))
   document.getElementById('page-'+name).classList.add('active')
-  el.classList.add('active')
+  if(el && el.classList) el.classList.add('active')
+  else { const t=document.querySelector(`.ntab[data-page="${name}"]`); if(t) t.classList.add('active') }
+  const title = document.getElementById('navTitle')
+  if(title && _PAGE_TITLES[name]) title.textContent = _PAGE_TITLES[name]
+  // 写 URL hash：F5 刷新保持当前页 + 浏览器前进/后退可用（此前纯 class 切换，刷新永远回监控中心）
+  if(_NAV_PAGES.includes(name) && location.hash.slice(1) !== name){
+    location.hash = name
+  }
   if(name==='strategy'&&editor) setTimeout(()=>editor.refresh(),80)
 }
+// 按 URL hash 恢复页面：点对应页签（复用其 data-ui-click，连同 loadPaperPage/initReviewPage 等初始化一并触发）
+function _gotoHash(){
+  const name = (location.hash || '').replace(/^#/,'')
+  if(!_NAV_PAGES.includes(name)) return
+  const page = document.getElementById('page-'+name)
+  if(!page || page.classList.contains('active')) return   // 已在该页则不动，防循环
+  const tab = document.querySelector(`.ntab[data-page="${name}"]`)
+  if(tab) tab.click()
+}
+window.addEventListener('hashchange', _gotoHash)
 function switchRTab(name,el){
   document.querySelectorAll('.rpanel').forEach(p=>p.classList.remove('active'))
   document.querySelectorAll('.rtab').forEach(t=>t.classList.remove('active'))
@@ -345,12 +424,11 @@ async function fetchSt(force=false){
   // 同步账户设置框
   const ci=document.getElementById('cfgCapital')
   const ri=document.getElementById('cfgRatio')
-  const di=document.getElementById('cfgDailyLimit')
   const si=document.getElementById('cfgSingleCap')
   const mi=document.getElementById('cfgMaxPos')
   if(ci&&!ci.matches(':focus')) ci.value=d.capital||1000000
   if(ri&&!ri.matches(':focus')) ri.value=Math.round((d.position_ratio||0.2)*100)
-  if(di&&!di.matches(':focus')) di.value=d.max_daily_trades||3
+  // 日限不在这里回填：它是策略级 max_daily，由 refreshExecutionState 写入（只读展示）
   if(si&&!si.matches(':focus')) si.value=Math.round((d.single_position_max_ratio||0.2)*100)
   if(mi&&!mi.matches(':focus')) mi.value=d.max_positions||5
   const maxPosForTarget = +(d.max_positions||0)
@@ -433,8 +511,8 @@ async function fetchPositions(){
     renderPositions(Array.isArray(data)?data:[])
   }finally{ _pollInflight.positions = false }
 }
-async function mStart(){ const r=await api('/start','POST'); if(typeof toast==='function') toast((r&&(r.msg||r.error))||(r&&r.ok?'策略已启动':'策略启动失败')); fetchSt() }
-async function mStop() { const r=await api('/stop','POST');  if(typeof toast==='function') toast((r&&(r.msg||r.error))||(r&&r.ok?'策略已停止':'策略停止失败')); fetchSt() }
+async function mStart(){ const r=await api('/start','POST'); toast((r&&(r.msg||r.error))||(r&&r.ok?'策略已启动':'策略启动失败'), r&&r.ok?'success':'error'); fetchSt() }
+async function mStop() { const r=await api('/stop','POST');  toast((r&&(r.msg||r.error))||(r&&r.ok?'策略已停止':'策略停止失败'), r&&r.ok?'success':'error'); fetchSt() }
 async function clearQ(){
   if(!confirm('确认清空执行队列？')) return
   await api('/queue/clear','POST')
@@ -449,13 +527,18 @@ async function execQ(code,action){
 let _autoExec = false
 async function toggleAutoExec(){
   const want = !_autoExec
-  if(want && !confirm('⚠️ 开启自动执行后，打板信号出现将立即向同花顺下单，无需手动确认。\n\n模拟模式下只记录日志，不实际下单。\n\n确认开启？')){
+  const live = (typeof _tradeMode !== 'undefined' && _tradeMode === 'live')
+  const modeLine = live
+    ? '🔴 当前为实盘模式：信号出现将真实下单、动用真实资金！'
+    : '🛡️ 当前为模拟盘模式：只记录日志，不实际下单。'
+  if(want && !confirm(`⚠️ 开启自动执行后，打板信号出现将立即向同花顺下单，无需手动确认。\n\n${modeLine}\n\n确认开启？`)){
     return
   }
   const r = await api('/auto_execute','POST',{enabled: want})
-  if(!r?.ok) return
+  if(!r?.ok){ toast('自动执行切换失败', 'error'); return }
   _autoExec = want
   _renderAutoSwitch(_autoExec)
+  toast(want ? '已开启自动执行' : '已关闭自动执行', want ? 'warn' : 'success')
 }
 function _renderAutoSwitch(on){
   const sw   = document.getElementById('autoExecStatus')
@@ -524,26 +607,31 @@ function renderPositions(positions){
 }
 
 async function sellPos(code, price){
-  if(!confirm(`确认卖出 ${code} @ ${price}？\n模拟模式下仅记录日志。`)) return
+  const live = (typeof _tradeMode !== 'undefined' && _tradeMode === 'live')
+  const warn = live ? '🔴 实盘模式：将真实卖出、真实成交！' : '🛡️ 模拟盘模式：仅记录，不动真钱。'
+  if(!confirm(`确认卖出 ${code} @ ${price}？\n${warn}`)) return
   const r = await api('/positions/sell','POST',{code, price})
-  if(r?.ok){ fetchSt(); fetchPositions(); fetchFunds() }
-  else alert('卖出失败: '+(r?.msg||''))
+  if(r?.ok){ toast(`已提交卖出 ${code}`, 'success'); fetchSt(); fetchPositions(); fetchFunds() }
+  else toast('卖出失败: '+(r?.msg||''), 'error')
 }
 
 async function saveAccount(){
   const cap=parseFloat(document.getElementById('cfgCapital').value)||1000000
   const rat=parseFloat(document.getElementById('cfgRatio').value)||20
-  const dlm=parseInt(document.getElementById('cfgDailyLimit').value)||3
   const scap=parseFloat(document.getElementById('cfgSingleCap').value)||20
   const mpos=parseInt(document.getElementById('cfgMaxPos').value)||5
   // 前端兜底校验：单笔% 1~100，持仓 1~50
-  if(scap<1||scap>100){ alert('单笔上限须在 1~100% 之间'); return }
-  if(mpos<1||mpos>50){ alert('最多持仓数须在 1~50 之间'); return }
+  if(scap<1||scap>100){ toast('单笔上限须在 1~100% 之间','error'); return }
+  if(mpos<1||mpos>50){ toast('最多持仓数须在 1~50 之间','error'); return }
+  // 只发后端真正接收的 4 个字段（web/trade.py set_account）。
+  // 原来还发 max_daily_trades，但后端从不读取（config.py:83 已移除该配置），
+  // 徒增"日限已保存"的错觉；真实日限是策略级 position_config.max_daily。
   const r=await api('/account','POST',{
-    capital:cap, position_ratio:rat/100, max_daily_trades:dlm,
+    capital:cap, position_ratio:rat/100,
     single_position_max_ratio:scap/100, max_positions:mpos })
-  if(r&&r.ok===false){ alert('保存失败: '+(r.error||'')); return }
-  if(scap<rat) alert(`⚠️ 单笔上限 ${scap}% 低于仓位 ${rat}%，建仓时将按 ${scap}% 执行（护栏生效）`)
+  if(r&&r.ok===false){ toast('保存失败: '+(r.error||''),'error'); return }
+  toast('账户设置已保存','success')
+  if(scap<rat) toast(`⚠️ 单笔上限 ${scap}% 低于仓位 ${rat}%，建仓时将按 ${scap}% 执行（护栏生效）`,'warn')
   fetchSt()
 }
 
@@ -668,10 +756,12 @@ document.addEventListener('DOMContentLoaded', () => {
   try { switchLibTab(_libTab) } catch(e) { console.warn('libtab init', e) }
   // 把所有 Modal 提升到 body 直接子元素，避免被父 .page.hidden 隐藏
   // 修复 bug：实盘切换 Modal 等只在策略中心可见、切到其他页消失
+  // 注：page-execution 不是 modal，但同样写在 page-strategy 内部，
+  //     必须提升到 body 才能作为同级 .page 被 switchPage 正常切换。
   try {
     ['renameModal','vibeActivateModal','liveModeModal','vibeModal',
      'aiGenModal','aiFactorGenModal','klOverlay','vibeBacktestModal',
-     'todayOrdersModal','changelogModal'
+     'page-execution','page-settings','page-risk','changelogModal'
     ].forEach(id => {
       const el = document.getElementById(id)
       if(el && el.parentNode !== document.body){
@@ -868,6 +958,7 @@ async function loadTradeMode(){
 function _renderTradeModeBadge(){
   const el = document.getElementById('tradeModeBadge')
   _renderCurrentModeBadge('desktopCurrentModeBadge', _tradeMode, '电脑')
+  _renderNavModeBadge()
   if(!el) return
   el.removeAttribute('style')
   if(_tradeMode === 'live'){
@@ -956,9 +1047,148 @@ async function saveTradeSettingsPanel(){
 // ══════════════════════════════════════════════════
 //  查 xiadan 实盘账户（F4 截图：资金 + 持仓 + 当日委托）
 // ══════════════════════════════════════════════════
+// ══════════════════════════════════════════════════
+//  风控中心：统一查看四个作用域「当前生效」的护栏
+//  设计红线：四者对应不同后端 API / 不同作用域，绝不合并存储。
+//  本页只做：全局护栏就地编辑（复用 /account）+ 其余三处只读展示与跳转。
+// ══════════════════════════════════════════════════
+function _rkSet(id, text, cls){
+  const el = document.getElementById(id)
+  if(!el) return
+  el.textContent = text
+  if(cls !== undefined) el.className = cls || ''
+}
+
+async function initRiskCenter(){
+  // ① 全局护栏 + 运行时状态：直接读 /status（权威来源），不依赖监控页 DOM 是否已回填
+  const st = await api('/status').catch(()=>null)
+  const setVal = (id, v) => {
+    const el = document.getElementById(id)
+    if(el && !el.matches(':focus') && v != null) el.value = v
+  }
+  let maxPos = 0, dailyLimit = 3
+  if(st){
+    maxPos = +(st.max_positions || 0)
+    setVal('rkCapital', st.capital)
+    setVal('rkRatio',  Math.round((st.position_ratio ?? 0.2) * 100))
+    setVal('rkSingle', Math.round((st.single_position_max_ratio ?? 0.2) * 100))
+    setVal('rkMaxPos', st.max_positions)
+
+    const today = st.today_trades ?? 0
+    _rkSet('rkToday', `${today} / ${dailyLimit}`, today >= dailyLimit ? 'rk-warn' : '')
+    _rkSet('rkStrat', st.running ? '运行中' : '已停止', st.running ? 'rk-on' : '')
+    _rkSet('rkAuto', st.auto_execute ? '开启' : '关闭', st.auto_execute ? 'rk-warn' : '')
+    // positions 是 {code: {...}} 字典，不是数组
+    const posObj = st.positions || {}
+    const posCount = Array.isArray(posObj) ? posObj.length : Object.keys(posObj).length
+    _rkSet('rkPos', maxPos ? `${posCount} / ${maxPos}` : String(posCount),
+           (maxPos && posCount >= maxPos) ? 'rk-warn' : '')
+  }
+  // 策略级护栏（真正被 scan_service 强制执行的那一份，只读）
+  // 关键：每日开仓上限来自策略 position_config.max_daily，**不是**账户面板那个输入框——
+  // 后端 POST /api/account 根本不读 max_daily_trades（config.py:83 已移除该配置），
+  // 那个输入框是幽灵控件，填了不生效。这里显示真正生效的值。
+  const ex = await api('/execution/state').catch(()=>null)
+  const pp = ex && ex.ok ? (ex.position_policy || {}) : null
+  const stratName = ex && ex.ok ? (ex.strategy?.active_strategy || '未选择') : '—'
+  const skv = document.getElementById('rkStratKv')
+  if(skv){
+    if(pp){
+      const row = (k,v)=>`<div><span>${k}</span><b>${v ?? '—'}</b></div>`
+      const money = v => v == null ? null : '¥' + (+v).toLocaleString('zh-CN',{maximumFractionDigits:0})
+      dailyLimit = +(pp.max_daily || 0) || dailyLimit
+      skv.innerHTML = row('当前策略', stratName)
+        + row('每日开仓上限', pp.max_daily ? `${pp.max_daily} 笔` : '不限（沿用账户设置）')
+        + row('单笔目标金额', money(pp.target_amount))
+        + row('单笔金额上限', money(pp.max_order_amount))
+        + row('仓位模式', pp.mode || '—')
+      const todayEl = document.getElementById('rkToday')
+      if(todayEl && st){
+        const t = st.today_trades ?? 0
+        _rkSet('rkToday', `${t} / ${dailyLimit}`, t >= dailyLimit ? 'rk-warn' : '')
+      }
+    } else {
+      skv.innerHTML = '<span class="risk-loading">读取失败</span>'
+    }
+  }
+
+  const isLive = (typeof _tradeMode !== 'undefined' && _tradeMode === 'live')
+  _rkSet('rkMode', isLive ? '🔴 实盘' : '🛡️ 模拟盘', isLive ? 'rk-danger' : 'rk-on')
+  _rkSet('rkGate', _liveGateOn === true ? '已开启' : (_liveGateOn === false ? '已关闭' : '—'),
+         _liveGateOn === true ? 'rk-danger' : '')
+  const note = document.getElementById('rkNote')
+  if(note){
+    if(!isLive && _liveGateOn === true){
+      note.className = 'risk-note warn'
+      note.textContent = '⚠️ 当前是模拟盘，但实盘下单总闸已开启——一旦把模式切到实盘，信号会立即真实成交。若近期不打算跑实盘，建议到「交易执行」把总闸关掉。'
+    } else if(isLive && _liveGateOn === true){
+      note.className = 'risk-note danger'
+      note.textContent = '🔴 实盘模式 + 总闸开启：策略信号会真实下单、动用真实资金。'
+    } else {
+      note.className = 'risk-note ok'
+      note.textContent = '✅ 当前不会产生真实成交。'
+    }
+  }
+
+  // ② AI 交易风控（独立作用域）
+  const aitBox = document.getElementById('rkAitKv')
+  if(aitBox){
+    const r = await api('/ai_trader/settings').catch(()=>null)
+    const rk = r && r.ok && r.settings ? (r.settings.risk || {}) : null
+    if(rk){
+      const row = (k,v)=>`<div><span>${k}</span><b>${v ?? '—'}</b></div>`
+      const pct = v => (v == null ? null : Math.round(v * 100) + '%')
+      aitBox.innerHTML = row('最大持仓数', rk.max_positions)
+        + row('单笔占比', pct(rk.per_trade_ratio))
+        + row('单票上限', pct(rk.single_max_ratio))
+        + row('当日交易上限', rk.daily_trade_limit)
+        + row('当日亏损熔断', pct(rk.daily_max_loss_pct))
+        + row('共识票数门槛', rk.consensus_min_votes)
+    } else {
+      aitBox.innerHTML = '<span class="risk-loading">未配置或读取失败</span>'
+    }
+  }
+
+  // ④ 实盘会话
+  const liveBox = document.getElementById('rkLiveKv')
+  if(liveBox){
+    const ts = await api('/account/trade_settings').catch(()=>null)
+    const row = (k,v)=>`<div><span>${k}</span><b>${v ?? '—'}</b></div>`
+    liveBox.innerHTML = row('实盘下单总闸', _liveGateOn === true ? '开' : (_liveGateOn === false ? '关' : '—'))
+      + row('当前交易模式', isLive ? '实盘' : '模拟盘')
+      + row('下单确认', ts ? (ts.auto_confirm_order ? '全自动确认' : '人工确认') : '—')
+      + row('未成交自动撤单', ts ? (ts.auto_cancel_unfilled ? `开（${ts.auto_cancel_delay ?? '—'} 分钟）` : '关') : '—')
+  }
+}
+
+async function riskSaveGlobal(){
+  const hint = document.getElementById('rkSaveHint')
+  const cap = parseFloat(document.getElementById('rkCapital').value) || 1000000
+  const rat = parseFloat(document.getElementById('rkRatio').value) || 20
+  const scap= parseFloat(document.getElementById('rkSingle').value) || 20
+  const mpos= parseInt(document.getElementById('rkMaxPos').value) || 5
+  // 只提交后端真正接收的 4 个字段（web/trade.py:150 set_account）。
+  // 不再发 max_daily_trades —— 后端不读，发了会造成"已保存日限"的错觉。
+  const r = await api('/account','POST',{
+    capital: cap, position_ratio: rat/100,
+    single_position_max_ratio: scap/100, max_positions: mpos
+  })
+  if(r && r.ok !== false){
+    toast('全局护栏已保存', 'success')
+    if(hint){ hint.textContent = '已保存'; hint.style.color = 'var(--gl)'; setTimeout(()=>hint.textContent='', 2500) }
+    fetchSt(); setTimeout(initRiskCenter, 600)
+  } else {
+    toast('保存失败：' + ((r && (r.msg || r.error)) || '未知错误'), 'error')
+    if(hint){ hint.textContent = '保存失败'; hint.style.color = 'var(--rl)' }
+  }
+}
+
+// 「交易执行」已从弹窗升级为一级页面（#page-execution）。
+// openTodayOrders/closeTodayOrders 保留为兼容垫片：仍被顶栏 chip、模式徽章、
+// 手机链路徽章等多处 data-action 调用，直接删会让这些入口静默失效。
 function openTodayOrders(){
-  document.getElementById('todayOrdersModal').classList.add('open')
-  // 打开时不自动截图（实盘 F4 会抢焦点 2-3 秒，须用户主动点刷新）。
+  switchPage('execution')
+  // 进页不自动截图（实盘 F4 会抢焦点 2-3 秒，须用户主动点刷新）。
   // 清掉上次的「当日委托」残留，避免误读旧数据。
   const ob = document.getElementById('acctOrdersBody')
   if(ob) ob.innerHTML = ''
@@ -969,10 +1199,8 @@ function openTodayOrders(){
   refreshMobileProfileBadge()
   refreshExecutionState()
 }
-function closeTodayOrders(ev){
-  if(ev && ev.target !== document.getElementById('todayOrdersModal')) return
-  document.getElementById('todayOrdersModal').classList.remove('open')
-}
+// 页面化后没有"关闭"语义了；保留空实现兜住可能残留的调用点。
+function closeTodayOrders(){ /* 交易执行已是页面，无需关闭 */ }
 
 function openExecutionConsole(){
   openTodayOrders()
@@ -1144,6 +1372,9 @@ async function refreshExecutionState(){
   _setExecText('execDesktopLamp', ex.live_trade_enabled ? '开启' : '关闭', !!ex.live_trade_enabled)
   _renderCurrentModeBadge('mobileCurrentModeBadge', mobile.trade_mode || 'unknown', '手机')
   _renderCurrentModeBadge('desktopCurrentModeBadge', desktop.trade_mode || ex.broker_type || _tradeMode, '电脑')
+  // 监控页「日限」只读回填：真实生效值 = 策略级 position_config.max_daily
+  const dailyEl = document.getElementById('cfgDailyLimit')
+  if(dailyEl) dailyEl.textContent = pos.max_daily ? String(pos.max_daily) : '不限'
   const targetRatio = pos.target_ratio!=null ? `${(+pos.target_ratio*100).toFixed(0)}%` : '—'
   const targetAmount = pos.target_amount!=null ? '¥'+(+pos.target_amount).toLocaleString('zh-CN',{maximumFractionDigits:0}) : '—'
   _setExecText('execPositionLamp', `${targetRatio} / ${targetAmount}`, true)
@@ -2331,19 +2562,20 @@ async function addOneQ(r){
 // ── 监控中心 / 选股结果 行内"🛒 立即买入" — 跳过队列直接调模拟盘下单
 //    shares=0 让后端按 position_ratio 自动计算手数
 async function manualBuy(r){
-  if(!confirm(`立即按 ¥${(+r.price||0).toFixed(2)} 模拟买入 ${r.code} ${r.name||''} ？`)) return
+  const live = (typeof _tradeMode !== 'undefined' && _tradeMode === 'live')
+  const modeTxt = live ? '🔴 实盘买入（真实资金、真实成交）' : '🛡️ 模拟买入（不动真钱）'
+  if(!confirm(`${modeTxt}\n\n${r.code} ${r.name||''} @ ¥${(+r.price||0).toFixed(2)}\n确认下单？`)) return
   const res = await api('/paper/buy','POST',{
     code:r.code, name:r.name||r.code, price:r.price, shares:0
   })
   if(res?.ok){
     // 提示成功，刷新持仓 + 状态条
-    if(typeof showToast === 'function') showToast(res.msg || '✅ 已模拟买入', 'success')
-    else alert(res.msg || `✅ 已模拟买入 ${r.code}`)
+    toast(res.msg || `✅ 已${live?'实盘':'模拟'}买入 ${r.code}`, 'success')
     fetchSt()
     setTimeout(fetchPositions, 500)
     if(typeof loadPaperPage === 'function') setTimeout(loadPaperPage, 800)
   } else {
-    alert('❌ ' + (res?.msg || '模拟买入失败'))
+    toast('❌ ' + (res?.msg || (live?'实盘':'模拟')+'买入失败'), 'error')
   }
 }
 let _lastPool = []
@@ -3089,7 +3321,7 @@ function renderAIResult(r){
         常见原因：Base URL 填写错误（需填 API 端点而非文档页面 URL）、API Key 无效或余额不足、模型名称不存在。<br>
         点击「测试连接」可查看详细错误信息。
       </div>
-      <button class="btn btn-gray btn-sm" data-ui-click="switchRTab('aiset',document.querySelectorAll('.rtab')[4])">⚙ 前往AI设置 →</button>
+      <button class="btn btn-gray btn-sm" data-ui-click="switchPage('settings')">⚙ 前往AI设置 →</button>
     </div>`
   }
 
@@ -3107,7 +3339,7 @@ function renderAIResult(r){
         2. 小米MiMo：访问 <b>platform.xiaomimimo.com</b> 注册并获取 API Key<br>
         3. 点击下方「前往AI设置」选择提供商，填入 Key 并保存
       </div>
-      <button class="btn btn-orange btn-sm" data-ui-click="switchRTab('aiset',document.querySelectorAll('.rtab')[4])">⚙ 前往AI设置 →</button>
+      <button class="btn btn-orange btn-sm" data-ui-click="switchPage('settings')">⚙ 前往AI设置 →</button>
     </div>`
   }
 

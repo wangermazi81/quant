@@ -712,6 +712,42 @@ def set_points(user_id: int, new_value, description: str = "管理员修改积�
                 "username": row["username"]}
 
 
+def update_user_profile(user_id: int, username=None, email=None) -> dict:
+    """管理员编辑用户资料（用户名/邮箱）。只改传入的字段，带唯一性校验。
+
+    此前后台没有任何编辑入口：邮箱填错只能删号重建（连带积分/持仓/日志全清）。
+    """
+    with _lock, _conn() as c:
+        row = c.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone()
+        if not row:
+            return {"ok": False, "error": "用户不存在"}
+        sets, args = [], []
+        if username is not None:
+            username = str(username).strip()
+            if len(username) < 2:
+                return {"ok": False, "error": "用户名至少 2 个字符"}
+            dup = c.execute("SELECT id FROM users WHERE LOWER(username)=LOWER(?) AND id<>?",
+                            (username, user_id)).fetchone()
+            if dup:
+                return {"ok": False, "error": "用户名已被占用"}
+            sets.append("username=?"); args.append(username)
+        if email is not None:
+            email = str(email).strip()
+            if "@" not in email or "." not in email.split("@")[-1]:
+                return {"ok": False, "error": "邮箱格式不正确"}
+            dup = c.execute("SELECT id FROM users WHERE LOWER(email)=LOWER(?) AND id<>?",
+                            (email, user_id)).fetchone()
+            if dup:
+                return {"ok": False, "error": "邮箱已被占用"}
+            sets.append("email=?"); args.append(email)
+        if not sets:
+            return {"ok": False, "error": "没有要修改的字段"}
+        args.append(user_id)
+        c.execute(f"UPDATE users SET {','.join(sets)} WHERE id=?", args)
+        c.commit()
+        return {"ok": True}
+
+
 def delete_user(user_id: int) -> dict:
     """删除用户及其在 users.db 中的所有关联数据（动态扫描所有含 user_id 列的表）。"""
     with _lock, _conn() as c:

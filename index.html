@@ -14,7 +14,15 @@
 <script src="/static/lib/chart.min.js"></script>
 <script defer src="/static/lib/rb-effects.js"></script>
 <link rel="stylesheet" href="/static/app/css/app-base.css?v=20260726-sync-ui-polish">
+<!-- 三个页面级样式表原在 body 中部/尾部加载（晚于 theme-candy），同特异性下
+     反把糖果主题的修复压掉（深绿 toast/旧红绿/浅字徽章同屏打架）+ FOUC。
+     移入 head 并置于 theme-candy 之前，恢复「theme-candy 是最后覆盖层」的前提。 -->
+<link rel="stylesheet" href="/static/app/css/app-widgets.css">
+<link rel="stylesheet" href="/static/app/css/app-pages.css">
+<link rel="stylesheet" href="/static/app/css/app-feedback.css">
 <link rel="stylesheet" href="/static/lib/theme-candy.css">
+<!-- 导航外壳（分组侧边栏+精简顶栏）：必须最后加载以接管旧 .nav 样式 -->
+<link rel="stylesheet" href="/static/app/css/app-shell.css?v=20260726-sidebar">
 </head>
 <body>
 
@@ -134,6 +142,66 @@
 <!-- 积分不足浮动提示 -->
 <div class="points-warn" id="pointsWarn"></div>
 
+<!-- ══ 分组侧边栏（2026-07-26 导航改造）══ -->
+<aside class="side" role="navigation" aria-label="主导航">
+  <div class="side-brand" data-ui-click="switchPage('monitor',null)" title="见微 Alpha">
+    <svg viewBox="0 0 90 70" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="见微 Alpha">
+      <g transform="translate(8, 6)">
+        <polygon points="35,10 15,50 55,50" stroke="#6366F1" stroke-width="3.5" fill="none" stroke-linejoin="round"/>
+        <circle cx="10" cy="42" r="2.5" fill="#EF5B78"/>
+        <line x1="10" y1="42" x2="27" y2="35" stroke="#EF5B78" stroke-width="2" stroke-dasharray="1 2"/>
+        <path d="M35 28C40 38 48 46 54 44C58 42 61 36 65 30C69 24 74 22 78 21" stroke="#EF5B78" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="78" cy="21" r="3.5" fill="#EF5B78"/>
+      </g>
+    </svg>
+    <span class="side-brand-txt">见微 Alpha</span>
+  </div>
+
+  <div class="side-scroll">
+    <div class="side-group">
+      <div class="side-group-t">交易</div>
+      <div class="ntab active" tabindex="0" role="button" data-page="monitor" title="监控中心" data-ui-click="switchPage('monitor',this)"><span class="side-ico" aria-hidden="true">📊</span><span class="side-label">监控中心</span></div>
+      <div class="ntab" tabindex="0" role="button" data-page="paper" id="navPaperTab" title="模拟盘" data-ui-click="switchPage('paper',this);loadPaperPage()"><span class="side-ico" aria-hidden="true">💹</span><span class="side-label">模拟盘</span></div>
+      <div class="ntab" tabindex="0" role="button" data-page="execution" title="交易执行：实盘/模拟切换、手机桥接、资金委托" data-ui-click="switchPage('execution',this);refreshExecutionState()"><span class="side-ico" aria-hidden="true">⚡</span><span class="side-label">交易执行</span></div>
+    </div>
+
+    <div class="side-group">
+      <div class="side-group-t">研究</div>
+      <div class="ntab" tabindex="0" role="button" data-page="strategy" title="策略中心" data-ui-click="switchPage('strategy',this)"><span class="side-ico" aria-hidden="true">🧪</span><span class="side-label">策略中心</span></div>
+      <div class="ntab" tabindex="0" role="button" data-page="search" title="产业链研报" data-ui-click="switchPage('search',this);initSearchPage();rsInit()"><span class="side-ico" aria-hidden="true">🧬</span><span class="side-label">产业链研报</span></div>
+    </div>
+
+    <div class="side-group">
+      <div class="side-group-t">复盘</div>
+      <div class="ntab" tabindex="0" role="button" data-page="review" title="复盘" data-ui-click="switchPage('review',this);initReviewPage()"><span class="side-ico" aria-hidden="true">🔁</span><span class="side-label">复盘</span></div>
+    </div>
+
+    <div class="side-group">
+      <div class="side-group-t">AI</div>
+      <div class="ntab" tabindex="0" role="button" data-page="aitrader" title="AI交易" data-ui-click="switchPage('aitrader',this);initAiTrader()"><span class="side-ico" aria-hidden="true">🤖</span><span class="side-label">AI交易</span></div>
+    </div>
+
+    <div class="side-group">
+      <div class="side-group-t">系统</div>
+      <div class="ntab" tabindex="0" role="button" data-page="risk" title="风控中心：一屏看清四个作用域当前生效的护栏" data-ui-click="switchPage('risk',this);initRiskCenter()"><span class="side-ico" aria-hidden="true">🛡️</span><span class="side-label">风控中心</span></div>
+      <div class="ntab" id="sideSettingsTab" tabindex="0" role="button" data-page="settings" title="系统设置：AI接口 / 券商通道 / 消息推送" data-ui-click="switchPage('settings',this)" style="display:none"><span class="side-ico" aria-hidden="true">⚙</span><span class="side-label">系统设置</span></div>
+    </div>
+  </div>
+
+  <div class="side-foot" id="sideFoot">
+    <div class="side-user">
+      <div class="side-avatar" id="sideAvatar">·</div>
+      <div style="min-width:0">
+        <div class="side-uname" id="sideUname"></div>
+        <div class="side-points">⚡ <b id="sidePoints">—</b> 积分</div>
+      </div>
+    </div>
+    <div class="side-link" tabindex="0" role="button" id="sideAdminBtn" title="管理后台" data-ui-click="location.href='/admin'" style="display:none"><span class="side-ico" aria-hidden="true">⚙</span><span class="side-label">管理后台</span></div>
+    <div class="side-link" tabindex="0" role="button" title="更新日志" data-ui-click="openChangelog()"><span class="side-ico" aria-hidden="true">📝</span><span class="side-label">更新日志</span></div>
+    <div class="side-link" tabindex="0" role="button" title="退出登录" data-ui-click="doLogout()"><span class="side-ico" aria-hidden="true">🚪</span><span class="side-label">退出登录</span></div>
+  </div>
+</aside>
+
 <nav class="nav">
   <div class="nav-brand" title="见微 Alpha"><svg viewBox="0 0 290 90" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="见微 Alpha">
     <g transform="translate(15, 10)">
@@ -151,12 +219,7 @@
       <text x="2" y="48" fill="#EF5B78" font-family="'Montserrat'" font-weight="700" font-size="11" letter-spacing="5">J I A N W E I  A L P H A</text>
     </g>
   </svg></div>
-  <div class="ntab active" data-ui-click="switchPage('monitor',this)">📊 监控中心</div>
-  <div class="ntab" data-ui-click="switchPage('strategy',this)">🧪 策略中心</div>
-  <div class="ntab" id="navPaperTab" data-ui-click="switchPage('paper',this);loadPaperPage()">💹 模拟盘</div>
-  <div class="ntab" data-ui-click="switchPage('search',this);initSearchPage();rsInit()">🧬 产业链研报</div>
-  <div class="ntab" data-ui-click="switchPage('review',this);initReviewPage()">🔁 复盘</div>
-  <div class="ntab" data-ui-click="switchPage('aitrader',this);initAiTrader()">🤖 AI交易</div>
+  <div class="nav-title" id="navTitle">📊 监控中心</div>
   <div class="nav-r top-actions">
     <div class="top-group top-status-group strategy-status-pill" title="策略运行状态">
       <span id="runBadge" class="badge stop">已停止</span>
@@ -164,6 +227,10 @@
         <button class="btn btn-green top-btn" data-ui-click="mStart()">启动</button>
         <button class="btn btn-red top-btn" data-ui-click="mStop()">停止</button>
       </div>
+    </div>
+
+    <div class="top-group top-mode-group" data-action="open-execution-console">
+      <span id="navModeBadge" class="nav-mode-badge paper" style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:800;cursor:pointer;background:#E7F5EE;color:#2A7A50;border:1px solid #B6E0C8">🛡️ 模拟盘</span>
     </div>
 
     <div class="top-group top-console-group" title="交易执行控制台">
@@ -265,9 +332,8 @@
         <span style="font-size:11px;color:var(--t3)">仓位%</span>
         <input id="cfgRatio" type="number" step="5" min="5" max="50" placeholder="20"
           style="width:46px;padding:3px 6px;background:var(--inp);border:1px solid var(--b1);border-radius:4px;color:var(--t1);font-size:12px">
-        <span style="font-size:11px;color:var(--t3)">日限</span>
-        <input id="cfgDailyLimit" type="number" step="1" min="1" max="10" placeholder="3"
-          style="width:36px;padding:3px 6px;background:var(--inp);border:1px solid var(--b1);border-radius:4px;color:var(--t1);font-size:12px">
+        <span style="font-size:11px;color:var(--t3)" title="每日开仓上限由「当前策略」的 max_daily 决定（后端 /api/account 不接收该字段），此处只读显示真实生效值；到「🛡️ 风控中心」可查看完整来源。">日限</span>
+        <b id="cfgDailyLimit" style="font-size:12px;color:var(--t1);min-width:20px;display:inline-block" title="策略级每日开仓上限（只读）">—</b>
         <span style="font-size:11px;color:var(--t3)" title="护栏：单笔买入金额占总资金比例的硬上限。即使把仓位%调更高，单笔也不会超过这个值，防一次大面腰斩。">🛡单笔%</span>
         <input id="cfgSingleCap" type="number" step="5" min="1" max="100" placeholder="20"
           title="单笔买入金额上限（占总资金%）。会夹住上面的仓位%。"
@@ -630,7 +696,6 @@
 </div>
 
 <!-- ════════════ 🤖 AI 交易模块（本地，不同步云端）════════════ -->
-<link rel="stylesheet" href="/static/app/css/app-widgets.css">
 <div class="page" id="page-aitrader" style="flex-direction:column;overflow:hidden">
   <div class="ait-bar">
     <div class="ait-title">🤖 AI 交易团队 <span style="font-size:11px;font-weight:600;color:var(--t3)">本地 · 主Agent调度子Agent</span></div>
@@ -786,7 +851,7 @@
       </h4>
       <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:10px;font-size:12px;color:var(--t1);line-height:1.7;margin-bottom:14px">
         激活后按下方<b>扫描频率</b>（仅交易时段）自动：扫描 → 算分 → 取 top → 风险过滤 → 下单<br>
-        买卖路径由 <b>顶部「🛡️ 模拟 / 🔴 实盘」总开关</b>决定，开关在实盘时走桥接器真下单
+        买卖路径由<b>顶部「🛡️ 模拟 / 🔴 实盘」徽章</b>所示模式决定（切换在「交易执行」台内），实盘时走桥接器真下单
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
@@ -843,7 +908,7 @@
 
       <!-- 当前实盘开关提示 -->
       <div id="vactModeWarn" style="background:rgba(239,68,68,.1);border:1px solid #ef4444;border-radius:6px;padding:8px 10px;font-size:11px;color:#ef4444;margin-bottom:14px;display:none">
-        ⚠️ 当前顶部开关 = <b>🔴 实盘</b>，激活后下的单将<b>真扣钱真买卖</b>
+        ⚠️ 当前为 <b>🔴 实盘</b> 模式，激活后下的单将<b>真扣钱真买卖</b>
       </div>
 
       <div style="display:flex;justify-content:flex-end;gap:8px">
@@ -853,9 +918,10 @@
     </div>
   </div>
 
-  <!-- 交易执行控制台（手机链路 + 自动执行 + 账户/委托）Modal -->
-  <div class="rename-modal" id="todayOrdersModal" data-action="close-today-orders-backdrop">
-    <div class="rename-box" style="width:90vw;max-width:1400px;max-height:92vh;overflow:auto" data-stop-modal>
+  <!-- 交易执行（手机链路 + 自动执行 + 账户/委托）—— 已从弹窗升级为一级页面。
+       它仍写在这里，但会被 app-core.js DOMContentLoaded 的 hoist 逻辑移到 body 下成为同级 .page。 -->
+  <div class="page" id="page-execution">
+    <div class="exec-page-wrap">
       <div class="trade-console-head">
         <div>
           <h4>交易执行控制台</h4>
@@ -1030,9 +1096,6 @@
       <div class="trade-console-note">
         手机账户和电脑账户分开显示；策略信号进入交易执行控制台后，按当前手机/电脑、模拟/实盘开关执行。
       </div>
-      <div style="display:flex;justify-content:flex-end;margin-top:10px">
-        <button class="btn btn-gray btn-sm" data-action="close-today-orders">关闭</button>
-      </div>
     </div>
   </div>
 
@@ -1167,7 +1230,7 @@
           <input id="vibeAddTopN" type="number" min="1" max="200" value="20" style="width:60px;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:5px 8px;color:var(--t1);font-size:12px">
           <label style="font-size:11px;color:var(--t3)">名</label>
           <button class="btn btn-blue btn-sm" data-ui-click="vibeAddToScreenPool()">📋 加入选股池</button>
-          <button class="btn btn-orange btn-sm" data-ui-click="openVibeActivateModal()" title="激活后每 5 分钟自动扫描下单（受顶部实盘开关 + 风险护栏控制）">⚡ 激活到自动交易</button>
+          <button class="btn btn-orange btn-sm" data-ui-click="openVibeActivateModal()" title="激活后每 5 分钟自动扫描下单（受当前 模拟/实盘 模式 + 风险护栏控制）">⚡ 激活到自动交易</button>
         </div>
         <button class="btn btn-gray btn-sm" style="margin-left:auto" data-ui-click="closeVibeFactors()">关闭</button>
       </div>
@@ -1222,7 +1285,6 @@
       <div class="rtab active" data-ui-click="switchRTab('screen',this)">🔍 选股</div>
       <div class="rtab"        data-ui-click="switchRTab('bt',this)">📈 回测</div>
       <div class="rtab"        data-ui-click="switchRTab('ai',this)">🤖 AI分析</div>
-      <div class="rtab"        data-ui-click="switchRTab('aiset',this)">⚙ 设置</div>
     </div>
 
     <!-- 数据管理 -->
@@ -1328,7 +1390,86 @@
     </div>
 
     <!-- AI 设置 -->
-    <div class="rpanel" id="rp-aiset">
+    <!-- 风控中心：一屏看清四个作用域各自「当前生效」的护栏。
+         注意：四者对应不同后端 API 与不同作用域，不是同一份数据的副本，
+         故本页只做「统一查看 + 就地改全局护栏 + 跳转改其余三处」，不合并存储。 -->
+    <div class="page" id="page-risk">
+      <div class="risk-wrap">
+        <div class="risk-runtime" id="riskRuntime">
+          <div class="risk-rt-item"><small>交易模式</small><b id="rkMode">—</b></div>
+          <div class="risk-rt-item"><small>实盘总闸</small><b id="rkGate">—</b></div>
+          <div class="risk-rt-item"><small>策略</small><b id="rkStrat">—</b></div>
+          <div class="risk-rt-item"><small>自动执行</small><b id="rkAuto">—</b></div>
+          <div class="risk-rt-item"><small>今日开仓</small><b id="rkToday">—</b></div>
+          <div class="risk-rt-item"><small>当前持仓</small><b id="rkPos">—</b></div>
+        </div>
+        <div class="risk-note" id="rkNote"></div>
+
+        <div class="risk-grid">
+          <section class="risk-card risk-card-primary">
+            <div class="risk-card-hd">
+              <div><h4>① 全局账户护栏</h4><small>作用于：策略扫描下单 / 监控中心手动买入 / 执行队列</small></div>
+              <span class="risk-tag live">可直接编辑</span>
+            </div>
+            <div class="risk-fields">
+              <label>总资金 <input id="rkCapital" type="number" step="10000"></label>
+              <label>单笔仓位 % <input id="rkRatio" type="number" step="5" min="1" max="100"></label>
+              <label>单笔上限 % <input id="rkSingle" type="number" step="5" min="1" max="100"></label>
+              <label>最大持仓数 <input id="rkMaxPos" type="number" step="1" min="1" max="50"></label>
+            </div>
+            <div class="risk-actions">
+              <button class="btn btn-blue btn-sm" data-ui-click="riskSaveGlobal()">💾 保存全局护栏</button>
+              <span class="risk-hint" id="rkSaveHint"></span>
+            </div>
+            <div class="risk-sub">
+              <div class="risk-sub-t">由当前策略决定（只读）</div>
+              <div class="risk-kv" id="rkStratKv"><span class="risk-loading">读取中…</span></div>
+            </div>
+          </section>
+
+          <section class="risk-card">
+            <div class="risk-card-hd">
+              <div><h4>② AI 交易风控</h4><small>作用于：🤖 AI交易（独立模拟账户，与全局护栏互不影响）</small></div>
+              <span class="risk-tag">独立作用域</span>
+            </div>
+            <div class="risk-kv" id="rkAitKv"><span class="risk-loading">读取中…</span></div>
+            <div class="risk-actions">
+              <button class="btn btn-gray btn-sm" data-ui-click="switchPage('aitrader',document.querySelector('.ntab[data-page=&quot;aitrader&quot;]'));initAiTrader();setTimeout(aitOpenSettings,400)">前往修改 →</button>
+            </div>
+          </section>
+
+          <section class="risk-card">
+            <div class="risk-card-hd">
+              <div><h4>③ 因子激活参数</h4><small>作用于：Alpha 因子「⚡ 激活到自动交易」每次激活时单独设定</small></div>
+              <span class="risk-tag">每次激活时设定</span>
+            </div>
+            <div class="risk-kv">
+              <div><span>每日开仓上限</span><b>激活弹窗内设定</b></div>
+              <div><span>单只仓位 %</span><b>激活弹窗内设定</b></div>
+              <div><span>单日亏损熔断 %</span><b>激活弹窗内设定</b></div>
+            </div>
+            <div class="risk-actions">
+              <button class="btn btn-gray btn-sm" data-ui-click="switchPage('strategy',document.querySelector('.ntab[data-page=&quot;strategy&quot;]'))">前往策略中心 →</button>
+            </div>
+          </section>
+
+          <section class="risk-card">
+            <div class="risk-card-hd">
+              <div><h4>④ 实盘会话</h4><small>作用于：切到实盘时的可用余额与下单确认方式</small></div>
+              <span class="risk-tag danger">真金白银</span>
+            </div>
+            <div class="risk-kv" id="rkLiveKv"><span class="risk-loading">读取中…</span></div>
+            <div class="risk-actions">
+              <button class="btn btn-gray btn-sm" data-ui-click="switchPage('execution',document.querySelector('.ntab[data-page=&quot;execution&quot;]'));refreshExecutionState()">前往交易执行 →</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <!-- 系统设置：已从「策略中心→右栏第5个 rtab」抽出为一级页面。
+         仍写在这里，但会被 app-core.js 的 hoist 逻辑移到 body 下成为同级 .page。 -->
+    <div class="page" id="page-settings">
       <div class="ai-settings" id="aiSettings">
         <div class="set-sec">
           <div class="set-ttl">🔌 选择 AI 提供商</div>
@@ -1482,8 +1623,8 @@
 </div>
 </div>
 
-<link rel="stylesheet" href="/static/app/css/app-pages.css">
 
+<script src="/static/app/js/ui-handlers.gen.js"></script>
 <script src="/static/app/js/ui-events.js"></script>
 <script src="/static/app/js/app-core.js?v=20260726-sync-ui-polish"></script>
 <script src="/static/app/js/app-kline.js?v=20260726-kline-module"></script>
@@ -1582,7 +1723,6 @@
 
 <script src="/static/app/js/app-research.js"></script>
 <!-- ══════════ 问题反馈入口（自成一体，复用主题类）══════════ -->
-<link rel="stylesheet" href="/static/app/css/app-feedback.css">
 <button class="fb-fab" data-ui-click="openFeedback()" title="提交问题反馈 / 建议">💬 反馈</button>
 <div class="rename-modal" id="feedbackModal" data-ui-click="closeFeedback(event)">
   <div class="rename-box fb-box" data-ui-click="event.stopPropagation()">

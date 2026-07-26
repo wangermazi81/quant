@@ -16,11 +16,8 @@ let permissionTargetMode = 'save';
 let cfCallback = null;
 let aiTradeDecisionRefreshTimer = null;
 let aiTradeDecisionLoading = false;
-let notices = [
-  {title:'新用户注册', desc:'用户 testuser 刚刚注册', time:'刚刚'},
-  {title:'积分消耗预警', desc:'今日消耗积分超过 500 分', time:'1分钟前'},
-  {title:'系统消息', desc:'欢迎使用见微 Alpha 管理后台', time:'5分钟前'},
-];
+// 通知流尚未接入真实事件源 → 置空，不再显示写死的假通知（避免误导）
+let notices = [];
 let ALL_PERMS = [
   {key:'dashboard_view', label:'工作台查看', group:'基础权限', description:'后台首页、统计概览。'},
   {key:'user_manage', label:'用户管理', group:'系统管理', description:'查看用户、启停用户、重置密码。'},
@@ -38,24 +35,32 @@ let ALL_PERMS = [
 // ================================================================
 // MENU DEFINITION
 // ================================================================
+// 菜单按「使用频率」重排：日常运营置顶且默认展开；低频配置下沉、默认折叠。
+// 同一 group 的条目必须连续（侧栏按 group 首次出现顺序分组渲染）。
 const MENU = [
   {id:'dashboard', icon:'fas fa-tachometer-alt', label:'工作台', group:'主菜单'},
-  {id:'users',     icon:'fas fa-users',          label:'用户管理', group:'系统管理'},
-  {id:'roles',     icon:'fas fa-shield-alt',      label:'角色权限', group:'系统管理'},
-  {id:'points',    icon:'fas fa-coins',           label:'积分流水', group:'系统管理'},
-  {id:'point-costs', icon:'fas fa-sliders-h',     label:'积分设置', group:'系统管理'},
-  {id:'datasource-config', icon:'fas fa-database', label:'数据源配置', group:'系统管理'},
-  {id:'ai-config',  icon:'fas fa-robot',          label:'AI接口设置', group:'系统管理'},
-  {id:'invites',   icon:'fas fa-ticket-alt',      label:'邀请码',   group:'系统管理'},
-  {id:'reset-requests', icon:'fas fa-key',         label:'找回申请', group:'系统管理'},
-  {id:'notify-config', icon:'fas fa-bell',          label:'通知设置', group:'系统管理'},
-  {id:'stats',         icon:'fas fa-chart-bar',       label:'使用统计',  group:'数据分析'},
-  {id:'factor-mining', icon:'fas fa-microscope',      label:'AI因子挖掘', group:'数据分析'},
-  {id:'ai-trade-decision', icon:'fas fa-brain',       label:'AI交易决策', group:'数据分析'},
-  {id:'announcements', icon:'fas fa-bullhorn',         label:'公告管理',  group:'内容管理'},
-  {id:'changelog',     icon:'fas fa-history',          label:'更新日志',  group:'内容管理'},
-  {id:'feedback',      icon:'fas fa-comment-dots',     label:'问题反馈',  group:'内容管理'},
-  {id:'user-center',   icon:'fas fa-user-circle',     label:'个人中心',  group:'账户'},
+  // 日常运营（高频，默认展开）
+  {id:'users',     icon:'fas fa-users',          label:'用户管理', group:'日常运营'},
+  {id:'feedback',  icon:'fas fa-comment-dots',   label:'问题反馈', group:'日常运营'},
+  {id:'invites',   icon:'fas fa-ticket-alt',     label:'邀请码',   group:'日常运营'},
+  {id:'reset-requests', icon:'fas fa-key',        label:'找回申请', group:'日常运营'},
+  // 内容管理
+  {id:'announcements', icon:'fas fa-bullhorn',    label:'公告管理', group:'内容管理'},
+  {id:'changelog',     icon:'fas fa-history',     label:'更新日志', group:'内容管理'},
+  // 计费与积分（低频，默认折叠）
+  {id:'points',    icon:'fas fa-coins',          label:'积分流水', group:'计费与积分'},
+  {id:'point-costs', icon:'fas fa-sliders-h',    label:'积分设置', group:'计费与积分'},
+  // 平台配置（很低频，默认折叠）
+  {id:'datasource-config', icon:'fas fa-database', label:'数据源配置', group:'平台配置'},
+  {id:'ai-config',  icon:'fas fa-robot',         label:'AI接口设置', group:'平台配置'},
+  {id:'notify-config', icon:'fas fa-bell',       label:'通知设置',   group:'平台配置'},
+  {id:'roles',     icon:'fas fa-shield-alt',     label:'角色权限',   group:'平台配置'},
+  // 数据分析（默认折叠）
+  {id:'stats',         icon:'fas fa-chart-bar',   label:'使用统计',  group:'数据分析'},
+  {id:'factor-mining', icon:'fas fa-microscope',  label:'AI因子挖掘', group:'数据分析'},
+  {id:'ai-trade-decision', icon:'fas fa-brain',   label:'AI交易决策', group:'数据分析'},
+  // 账户
+  {id:'user-center',   icon:'fas fa-user-circle', label:'个人中心',  group:'账户'},
 ];
 const PAGE_PERMISSIONS = {
   dashboard: 'dashboard_view',
@@ -115,7 +120,7 @@ function defaultPage(){
 // 首次访问默认收起低频组；当前页所在组强制展开；侧栏图标模式(collapsed)下
 // 折叠自动失效（CSS 控制），保证条目永远可达。
 const MENU_FOLD_KEY = 'jw_admin_menu_fold';
-const MENU_FOLD_DEFAULT = {'数据分析': true, '内容管理': true, '账户': true};
+const MENU_FOLD_DEFAULT = {'计费与积分': true, '平台配置': true, '数据分析': true, '账户': true};
 
 function _menuFoldState(){
   try{
@@ -156,7 +161,10 @@ function renderMenu(){
 }
 
 function toggleSidebar(){
-  document.getElementById('sidebar').classList.toggle('collapsed');
+  const sb = document.getElementById('sidebar');
+  // 窄屏：侧栏是屏外抽屉，汉堡键开/关抽屉；宽屏：原折叠行为
+  if(window.innerWidth <= 900){ sb.classList.toggle('mobile-open'); return; }
+  sb.classList.toggle('collapsed');
 }
 
 // ================================================================
@@ -166,7 +174,7 @@ function renderTabs(){
   const bar = document.getElementById('tabsBar');
   if(!tabs.length){bar.innerHTML='';return;}
   bar.innerHTML = tabs.map((t,i)=>`
-    <div class="tab${t.id===currentPage?' active':''}" data-ui-click="navigate('${t.id}')" data-ui-contextmenu="tabCtxMenu(event,${i})">
+    <div class="tab${t.id===currentPage?' active':''}" data-ui-click="navigate('${t.id}')">
       ${PAGE_NAMES[t.id]||t.id}
       ${t.closable?`<span class="tab-close" data-ui-click="event.stopPropagation();closeTab('${t.id}')"><i class="fas fa-times"></i></span>`:''}
     </div>`).join('');
@@ -202,6 +210,8 @@ function navigate(id, addTabFlag=true){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   const pg = document.getElementById('page-'+id);
   if(!pg){navigate('404'); return;}
+  // 窄屏抽屉：选完菜单自动收起
+  if(window.innerWidth <= 900){ const sb=document.getElementById('sidebar'); if(sb) sb.classList.remove('mobile-open'); }
   pg.classList.add('active');
   currentPage = id;
   setAiTradeDecisionPolling(id === 'ai-trade-decision');
@@ -237,7 +247,18 @@ function navigate(id, addTabFlag=true){
   if(id==='ai-trade-decision') loadAiTradeDecision();
   if(id==='ai-config') loadAiConfig();
   if(id==='notifications') renderNotifications();
+
+  // URL hash 同步：F5 保持当前页、浏览器前进/后退可用（此前刷新永远回工作台）
+  if(location.hash.slice(1) !== id){
+    try{ location.hash = id; }catch(e){}
+  }
 }
+
+// hash → 页面（后退/前进/直达链接）
+window.addEventListener('hashchange', ()=>{
+  const id = location.hash.slice(1);
+  if(id && id !== currentPage && document.getElementById('page-'+id)) navigate(id);
+});
 
 // ================================================================
 // AUTH
@@ -261,7 +282,9 @@ async function checkAuth(){
     document.getElementById('hAvatar').textContent = currentUser.username[0].toUpperCase();
     document.getElementById('hUname').textContent = currentUser.username;
     document.getElementById('hRole').textContent = isRootAdmin() ? '最高账号 admin' : '管理员';
-    navigate(defaultPage());
+    // 按 URL hash 恢复页面（F5 不再永远回工作台）；无效 hash 走默认页
+    const hashPage = location.hash.slice(1);
+    navigate(hashPage && document.getElementById('page-'+hashPage) ? hashPage : defaultPage());
   }catch(e){location.href='/';}
 }
 
@@ -328,70 +351,27 @@ async function loadSystemStatus(){
   }
 }
 
-function renderLineChart(){
-  const el = document.getElementById('chartLine');
+// 统计图表尚未接入真实聚合接口：显示诚实占位，杜绝随机/写死数据误导运营判断
+function _adminStatPlaceholder(elId, label){
+  const el = document.getElementById(elId);
   if(!el) return;
-  const chart = echarts.init(el);
-  const days = [];
-  for(let i=6;i>=0;i--){
-    const d=new Date(); d.setDate(d.getDate()-i);
-    days.push(`${d.getMonth()+1}/${d.getDate()}`);
-  }
-  const vals = days.map(()=>Math.floor(Math.random()*200+50));
-  chart.setOption({
-    tooltip:{trigger:'axis'},
-    grid:{left:'3%',right:'4%',bottom:'3%',containLabel:true},
-    xAxis:{type:'category',data:days,axisLine:{lineStyle:{color:'#ddd'}}},
-    yAxis:{type:'value',axisLine:{show:false},splitLine:{lineStyle:{color:'#f0f0f0'}}},
-    series:[{
-      name:'积分消耗',type:'line',smooth:true,data:vals,
-      symbol:'circle',symbolSize:6,
-      lineStyle:{color:'#1abc9c',width:2},
-      itemStyle:{color:'#1abc9c'},
-      areaStyle:{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[
-        {offset:0,color:'rgba(26,188,156,.3)'},{offset:1,color:'rgba(26,188,156,.02)'}
-      ]}}
-    }]
-  });
-  window.addEventListener('resize',()=>chart.resize());
+  el._inited = true;
+  el.innerHTML = `<div style="height:100%;min-height:160px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:#9AA3AD;text-align:center;padding:16px">`
+    + `<div style="font-size:24px;opacity:.55">📊</div>`
+    + `<div style="font-size:13px;font-weight:600;color:#8A929B">${label}</div>`
+    + `<div style="font-size:11px;color:#B9C0C8">待接入真实统计接口（暂不显示示例数据）</div></div>`;
 }
 
-function renderPieChart(){
-  const el = document.getElementById('chartPie');
-  if(!el) return;
-  const chart = echarts.init(el);
-  chart.setOption({
-    tooltip:{trigger:'item',formatter:'{b}: {c} ({d}%)'},
-    legend:{orient:'vertical',right:10,top:'center',textStyle:{color:'#606266',fontSize:12}},
-    series:[{
-      type:'pie',radius:['40%','70%'],center:['40%','50%'],avoidLabelOverlap:false,
-      itemStyle:{borderRadius:6,borderColor:'#fff',borderWidth:2},
-      label:{show:false},
-      data:[
-        {value:45,name:'AI分析',itemStyle:{color:'#409eff'}},
-        {value:25,name:'策略回测',itemStyle:{color:'#67c23a'}},
-        {value:20,name:'全市场扫描',itemStyle:{color:'#e6a23c'}},
-        {value:10,name:'模拟交易',itemStyle:{color:'#9b59b6'}},
-      ]
-    }]
-  });
-  window.addEventListener('resize',()=>chart.resize());
-}
+function renderLineChart(){ _adminStatPlaceholder('chartLine', '近 7 日积分消耗趋势'); }
+
+function renderPieChart(){ _adminStatPlaceholder('chartPie', '功能使用分布'); }
 
 function renderActivity(){
   const list = document.getElementById('activityList');
-  const items = [
-    {text:'用户 admin 充值了 500 积分', time:'5分钟前'},
-    {text:'新用户注册：test001', time:'23分钟前'},
-    {text:'AI深度分析完成：600519', time:'1小时前'},
-    {text:'策略回测执行完成', time:'2小时前'},
-    {text:'全市场扫描完成，找到 47 只股票', time:'3小时前'},
-  ];
-  list.innerHTML = items.map(i=>`
-    <li class="tl-item">
-      <div class="tl-dot"></div>
-      <div class="tl-body"><div class="tl-title">${i.text}</div><div class="tl-time">${i.time}</div></div>
-    </li>`).join('');
+  if(!list) return;
+  list.innerHTML = `<li class="tl-item"><div class="tl-dot"></div>`
+    + `<div class="tl-body"><div class="tl-title" style="color:#8A929B">暂未接入真实活动流</div>`
+    + `<div class="tl-time">后续将展示真实的注册 / 充值 / 分析等事件</div></div></li>`;
 }
 
 // ================================================================
@@ -402,7 +382,7 @@ async function loadUsers(page){
   usersState.search = document.getElementById('userSearch').value.trim();
   const params = new URLSearchParams({page, per_page:15, search:usersState.search});
   const r = await fetch(`${API}/admin/users?${params}`,{credentials:'include'});
-  if(!r.ok) return;
+  if(!r.ok){ showToast(`用户列表加载失败（HTTP ${r.status}）`,'error'); return; }
   const d = await r.json();
   renderUsersTable(d.users);
   renderPager('usersPager', d.total, d.page, d.per_page, p=>loadUsers(p));
@@ -430,7 +410,7 @@ function permissionCatalogItems(perms=ALL_PERMS){
 }
 
 function adminUserActionAttrs(action, u){
-  return `data-admin-user-action="${action}" data-user-id="${Number(u.id)}" data-user-name="${encodeURIComponent(String(u.username || ''))}" data-user-points="${Number(u.points || 0)}" data-user-active="${u.is_active ? 1 : 0}" data-user-admin="${u.is_admin ? 1 : 0}"`;
+  return `data-admin-user-action="${action}" data-user-id="${Number(u.id)}" data-user-name="${encodeURIComponent(String(u.username || ''))}" data-user-email="${encodeURIComponent(String(u.email || ''))}" data-user-points="${Number(u.points || 0)}" data-user-active="${u.is_active ? 1 : 0}" data-user-admin="${u.is_admin ? 1 : 0}"`;
 }
 
 function renderUserActions(u){
@@ -439,6 +419,7 @@ function renderUserActions(u){
     actions.push(`<button class="btn btn-outline btn-sm" ${adminUserActionAttrs('points',u)}><i class="fas fa-coins"></i> 积分</button>`);
   }
   if(canPerm('user_manage') && !u.is_root_admin){
+    actions.push(`<button class="btn btn-outline btn-sm" ${adminUserActionAttrs('edit',u)} title="编辑用户名/邮箱"><i class="fas fa-edit"></i></button>`);
     actions.push(`<button class="btn btn-outline btn-sm" ${adminUserActionAttrs('reset-password',u)} title="重置密码"><i class="fas fa-key"></i></button>`);
     actions.push(`<button class="btn btn-outline btn-sm" ${adminUserActionAttrs('toggle-active',u)} title="${u.is_active?'禁用':'启用'}"><i class="fas fa-${u.is_active?'ban':'check'}"></i></button>`);
   }
@@ -475,18 +456,26 @@ function renderUsersTable(users){
     </tr>`).join('');
 }
 
-function openUserModal(uid){
+function openUserModal(uid, fill){
   editingUserId = uid||null;
   document.getElementById('modalUserTitle').textContent = uid?'编辑用户':'新建用户';
-  document.getElementById('u-username').value='';
-  document.getElementById('u-email').value='';
+  // 编辑模式回填当前值（此前编辑分支无入口且无条件清空字段，等于摆设）
+  document.getElementById('u-username').value = fill?.username || '';
+  document.getElementById('u-email').value = fill?.email || '';
   document.getElementById('u-password').value='';
   document.getElementById('u-points').value='100';
   document.getElementById('u-role').value='0';
   document.getElementById('u-active').value='1';
   document.getElementById('u-err').textContent='';
+  // 编辑模式只改 用户名/邮箱；密码走「重置密码」按钮、积分走「积分」按钮、
+  // 角色走「设为管理员」按钮 —— 禁用这三项防止误以为这里能改。
+  const lockEdit = !!uid;
+  ['u-password','u-points','u-role','u-active'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el){ el.disabled = lockEdit; el.title = lockEdit ? '编辑模式不改此项（用列表里的专用按钮）' : ''; }
+  });
   document.getElementById('u-pwd-req').style.display = uid?'none':'inline';
-  document.getElementById('u-pwd-hint').textContent = uid?'留空则不修改密码':'';
+  document.getElementById('u-pwd-hint').textContent = uid?'密码请用列表中的「重置密码」按钮':'';
   openModal('modalUser');
 }
 
@@ -506,13 +495,27 @@ async function submitUser(){
   const btn = document.getElementById('u-submit-btn');
   btn.disabled=true;btn.innerHTML='<span class="loading-spin"></span> 保存中';
   try{
-    const r = await fetch(`${API}/auth/register`,{
-      method:'POST',credentials:'include',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({username,email,password:password||'temp123456'})
-    });
-    const d = await r.json();
-    if(d.ok){closeModal('modalUser');loadUsers(usersState.page);}
+    let r, d;
+    if(editingUserId){
+      // 编辑：只提交 用户名/邮箱（PUT /api/admin/users/<id>）
+      r = await fetch(`${API}/admin/users/${editingUserId}`,{
+        method:'PUT',credentials:'include',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({username,email})
+      });
+    } else {
+      r = await fetch(`${API}/auth/register`,{
+        method:'POST',credentials:'include',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({username,email,password:password||'temp123456'})
+      });
+    }
+    d = await r.json();
+    if(d.ok){
+      closeModal('modalUser');
+      showToast(editingUserId?'用户资料已更新':'用户已创建','success');
+      loadUsers(usersState.page);
+    }
     else errEl.textContent = d.error||'操作失败';
   }finally{btn.disabled=false;btn.innerHTML='<i class="fas fa-save"></i> 保存';}
 }
@@ -554,29 +557,70 @@ async function toggleAdmin(uid, current, uname){
 // ================================================================
 // POINTS MODAL
 // ================================================================
+let pointsTargetCur = null;   // 当前积分，用于「设为此值」的变更预览
 function openPointsModal(uid, uname, cur){
   pointsTargetId = uid;
+  pointsTargetCur = (cur!=null && !isNaN(cur)) ? Number(cur) : null;
   document.getElementById('pts-uname').textContent = uname;
-  document.getElementById('pts-cur').textContent = (cur!=null && !isNaN(cur)) ? Number(cur).toLocaleString() : '—';
+  document.getElementById('pts-cur').textContent = pointsTargetCur!=null ? pointsTargetCur.toLocaleString() : '—';
   document.getElementById('pts-amount').value='';
   document.getElementById('pts-desc').value='';
   document.getElementById('pts-err').textContent='';
+  _ptsResetPreview();
   openModal('modalPoints');
 }
 
-async function submitPoints(mode){
+function _ptsResetPreview(){
+  const box = document.getElementById('pts-preview');
+  if(box){ box.style.display='none'; box.innerHTML=''; box.dataset.armed=''; }
+}
+
+// 「设为此值」是覆盖式操作：误点会把用户几千积分直接抹成输入值。
+// 因此第一次点击只展示「变更前 → 变更后」预览并要求再次确认，不直接提交。
+function _ptsArmSetConfirm(val){
+  const box = document.getElementById('pts-preview');
+  if(!box) return false;
+  const before = pointsTargetCur;
+  const delta  = (before!=null) ? val - before : null;
+  const deltaTxt = delta==null ? '' :
+    (delta>0 ? `<span style="color:var(--green)">+${delta.toLocaleString()}</span>`
+     : delta<0 ? `<span style="color:var(--red)">${delta.toLocaleString()}</span>`
+     : '<span style="color:var(--text3)">无变化</span>');
+  const danger = (delta!=null && delta < 0);
+  box.innerHTML = `<div class="alert ${danger?'alert-error':'alert-warn'}" style="margin-bottom:10px">
+      <div style="font-weight:700;margin-bottom:4px">${danger?'⚠️ 这会<u>扣减</u>该用户积分':'请确认积分变更'}</div>
+      <div style="font-size:13px;line-height:1.8">
+        变更前：<b>${before!=null?before.toLocaleString():'未知'}</b>
+        &nbsp;→&nbsp; 变更后：<b style="color:var(--orange)">${val.toLocaleString()}</b>
+        ${deltaTxt?`&nbsp;（${deltaTxt}）`:''}
+      </div>
+      <div style="margin-top:8px">
+        <button class="btn btn-danger btn-sm" data-ui-click="submitPoints('set',true)">确认覆盖为 ${val.toLocaleString()}</button>
+        <button class="btn btn-outline btn-sm" style="margin-left:6px" data-ui-click="_ptsResetPreview()">取消</button>
+      </div>
+    </div>`;
+  box.style.display='block';
+  box.dataset.armed='1';
+  return true;
+}
+
+async function submitPoints(mode, confirmed){
   const val  = parseInt(document.getElementById('pts-amount').value);
   const desc = document.getElementById('pts-desc').value.trim();
   const err  = document.getElementById('pts-err');
   err.textContent='';
   if(mode==='set'){
-    if(isNaN(val)||val<0){err.textContent='请输入有效的目标积分（≥0 的整数）';return;}
+    if(isNaN(val)||val<0){err.textContent='请输入有效的目标积分（≥0 的整数）';_ptsResetPreview();return;}
+    if(!confirmed){ _ptsArmSetConfirm(val); return; }   // 先预览再确认
     const r = await fetch(`${API}/admin/users/${pointsTargetId}/set_points`,{
       method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({value:val,description:desc||'管理员修改积分'})
     });
     const d = await r.json();
-    if(d.ok){closeModal('modalPoints');loadUsers(usersState.page);}
+    if(d.ok){
+      closeModal('modalPoints');_ptsResetPreview();loadUsers(usersState.page);
+      showToast(`已将积分设为 ${val.toLocaleString()}`,'success');
+    }
     else err.textContent = d.error||'修改失败';
   } else {
     if(!val||val<=0){err.textContent='充值数量必须为大于0的整数';return;}
@@ -585,7 +629,10 @@ async function submitPoints(mode){
       body:JSON.stringify({amount:val,description:desc||'管理员充值'})
     });
     const d = await r.json();
-    if(d.ok){closeModal('modalPoints');loadUsers(usersState.page);}
+    if(d.ok){
+      closeModal('modalPoints');_ptsResetPreview();loadUsers(usersState.page);
+      showToast(`已充值 +${val.toLocaleString()} 积分`,'success');
+    }
     else err.textContent = d.error||'充值失败';
   }
 }
@@ -637,7 +684,7 @@ async function submitResetPwd(){
 async function loadTransactions(page){
   txState.page = page;
   const r = await fetch(`${API}/admin/transactions?page=${page}&per_page=20`,{credentials:'include'});
-  if(!r.ok) return;
+  if(!r.ok){ showToast(`积分流水加载失败（HTTP ${r.status}）`,'error'); return; }
   const d = await r.json();
   const tbody = document.getElementById('txTbody');
   if(!d.records.length){tbody.innerHTML=`<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text3)">暂无记录</td></tr>`;return;}
@@ -676,66 +723,11 @@ function loadStats(){
   },100);
 }
 
-function renderBarChart(){
-  const el = document.getElementById('chartBar');
-  if(!el||el._inited) return; el._inited=true;
-  const chart = echarts.init(el);
-  chart.setOption({
-    tooltip:{trigger:'axis'},
-    legend:{data:['AI分析','策略回测','市场扫描','模拟交易']},
-    grid:{left:'3%',right:'4%',bottom:'3%',containLabel:true},
-    xAxis:{type:'category',data:['周一','周二','周三','周四','周五','周六','周日']},
-    yAxis:{type:'value'},
-    series:[
-      {name:'AI分析',type:'bar',stack:'total',data:[30,40,28,52,35,42,38],itemStyle:{color:'#409eff'}},
-      {name:'策略回测',type:'bar',stack:'total',data:[20,25,15,30,18,22,20],itemStyle:{color:'#67c23a'}},
-      {name:'市场扫描',type:'bar',stack:'total',data:[15,20,12,25,15,18,14],itemStyle:{color:'#e6a23c'}},
-      {name:'模拟交易',type:'bar',stack:'total',data:[8,12,6,15,9,10,8],itemStyle:{color:'#9b59b6'}},
-    ]
-  });
-  window.addEventListener('resize',()=>chart.resize());
-}
+function renderBarChart(){ _adminStatPlaceholder('chartBar', '功能调用统计'); }
 
-function renderGrowthChart(){
-  const el = document.getElementById('chartGrowth');
-  if(!el||el._inited) return; el._inited=true;
-  const chart = echarts.init(el);
-  chart.setOption({
-    tooltip:{trigger:'axis'},
-    grid:{left:'3%',right:'4%',bottom:'3%',containLabel:true},
-    xAxis:{type:'category',data:['1月','2月','3月','4月','5月','6月']},
-    yAxis:{type:'value'},
-    series:[{
-      name:'新增用户',type:'line',smooth:true,
-      data:[5,8,12,20,28,35],
-      lineStyle:{color:'#409eff'},itemStyle:{color:'#409eff'},
-      areaStyle:{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[
-        {offset:0,color:'rgba(64,158,255,.3)'},{offset:1,color:'rgba(64,158,255,.02)'}
-      ]}}
-    }]
-  });
-  window.addEventListener('resize',()=>chart.resize());
-}
+function renderGrowthChart(){ _adminStatPlaceholder('chartGrowth', '用户增长'); }
 
-function renderDistChart(){
-  const el = document.getElementById('chartDist');
-  if(!el||el._inited) return; el._inited=true;
-  const chart = echarts.init(el);
-  chart.setOption({
-    tooltip:{trigger:'item',formatter:'{b}: {d}%'},
-    legend:{bottom:0,textStyle:{fontSize:12}},
-    series:[{
-      type:'pie',radius:'60%',
-      data:[
-        {value:400,name:'注册赠送',itemStyle:{color:'#67c23a'}},
-        {value:300,name:'管理充值',itemStyle:{color:'#409eff'}},
-        {value:200,name:'功能消耗',itemStyle:{color:'#f56c6c'}},
-      ],
-      emphasis:{itemStyle:{shadowBlur:10,shadowOffsetX:0,shadowColor:'rgba(0,0,0,.3)'}}
-    }]
-  });
-  window.addEventListener('resize',()=>chart.resize());
-}
+function renderDistChart(){ _adminStatPlaceholder('chartDist', '积分分布'); }
 
 // ================================================================
 // ROLES
@@ -917,7 +909,8 @@ function renderNpList(){
       <div class="np-item-title">${n.title}</div>
       <div class="np-item-time">${n.time}</div>
     </div>`).join('') || '<div style="padding:20px;text-align:center;color:var(--text3)">暂无通知</div>';
-  document.getElementById('noticeBadge').textContent = notices.length;
+  const badge = document.getElementById('noticeBadge');
+  if(badge){ badge.textContent = notices.length; badge.style.display = notices.length ? '' : 'none'; }
 }
 
 function clearNotices(){
@@ -932,14 +925,18 @@ function clearNotices(){
 function renderPager(id, total, page, perPage, cb){
   const el = document.getElementById(id);
   const pages = Math.ceil(total/perPage)||1;
+  // 全部按钮走 addEventListener（不再用 data-ui-click）——此前 prev 内插匿名函数名为空、
+  // page/next 的 data-ui-click="void 0" 被 ui-events 捕获阶段 stopPropagation 吞掉，
+  // 导致三种翻页按钮全部失效、只能看第 1 页。
   let html = `<div class="page-info">共 ${total} 条</div>`;
-  html += `<button class="pg-btn" ${page<=1?'disabled':''} data-ui-click="${cb.name||''}(${page-1})">&#8249;</button>`;
+  html += `<button class="pg-btn" ${page<=1?'disabled':''} data-p="${page-1}">&#8249;</button>`;
   for(let i=Math.max(1,page-2);i<=Math.min(pages,page+2);i++){
-    html += `<button class="pg-btn${i===page?' active':''}" data-ui-click="void 0" data-p="${i}">${i}</button>`;
+    html += `<button class="pg-btn${i===page?' active':''}" data-p="${i}">${i}</button>`;
   }
-  html += `<button class="pg-btn" ${page>=pages?'disabled':''} data-ui-click="void 0" data-p="${page+1}">&#8250;</button>`;
+  html += `<button class="pg-btn" ${page>=pages?'disabled':''} data-p="${page+1}">&#8250;</button>`;
   el.innerHTML = html;
-  el.querySelectorAll('[data-p]').forEach(btn=>{
+  el.querySelectorAll('.pg-btn[data-p]').forEach(btn=>{
+    if(btn.disabled) return;
     btn.addEventListener('click',()=>cb(parseInt(btn.dataset.p)));
   });
 }
@@ -1078,7 +1075,9 @@ document.addEventListener('click',e=>{
     const points=Number(userAction.dataset.userPoints||0);
     const active=Number(userAction.dataset.userActive||0);
     const isAdmin=Number(userAction.dataset.userAdmin||0);
+    const email=decodeURIComponent(userAction.dataset.userEmail||'');
     const actions={
+      edit:()=>openUserModal(id,{username:name,email:email}),
       points:()=>openPointsModal(id,name,points),
       'reset-password':()=>openResetPwdModal(id,name),
       'toggle-active':()=>toggleActive(id,active,name),
@@ -1499,11 +1498,11 @@ async function fmLoadWatchlist(){
       <td>${esc(fmWatchPlanText(item))}</td>
       <td>${fmFactorExplainHtml(item, true)}</td>
       <td>
-        <select class="form-input" style="min-width:96px;padding:6px 8px" data-ui-change="fmUpdateWatchItem('${escJs(item.id)}',{status:this.value})">
+        <select class="form-input" style="min-width:96px;padding:6px 8px" data-ui-change="fmUpdateWatchStatus('${escJs(item.id)}',this)">
           ${['pending','ready','bought','skipped','watch'].map(s=>`<option value="${s}" ${item.status===s?'selected':''}>${fmWatchStatusText(s)}</option>`).join('')}
         </select>
       </td>
-      <td><input class="form-input" style="min-width:160px;padding:6px 8px" value="${esc(item.note || '')}" placeholder="竞价/消息/风控备注" data-ui-change="fmUpdateWatchItem('${escJs(item.id)}',{note:this.value})"></td>
+      <td><input class="form-input" style="min-width:160px;padding:6px 8px" value="${esc(item.note || '')}" placeholder="竞价/消息/风控备注" data-ui-change="fmUpdateWatchNote('${escJs(item.id)}',this)"></td>
       <td style="white-space:nowrap">
         <button class="btn btn-outline" style="padding:4px 8px;font-size:12px" data-ui-click="fmCopyCode('${escJs(item.code || item.ts_code || '')}')"><i class="fas fa-copy"></i></button>
         <button class="btn btn-outline" style="padding:4px 8px;font-size:12px" data-ui-click="fmDeleteWatchItem('${escJs(item.id)}')"><i class="fas fa-trash"></i></button>
@@ -1529,6 +1528,12 @@ async function fmImportWatchlist(){
     showToast((r && r.error) || '导入失败', 'error');
   }
 }
+
+// 下面两个薄包装：让 data-ui-change 只传「字面量 + this」，
+// 不再需要在属性里写对象字面量 {status:this.value} —— 那种形态无法被安全解析器处理，
+// 会逼着我们保留 CSP 的 unsafe-eval。
+function fmUpdateWatchStatus(id, el){ return fmUpdateWatchItem(id, {status: el.value}) }
+function fmUpdateWatchNote(id, el){ return fmUpdateWatchItem(id, {note: el.value}) }
 
 async function fmUpdateWatchItem(id, patch){
   const r = await _annFetch('PATCH', `/admin/factor-watchlist/${encodeURIComponent(id)}`, patch);
@@ -2295,22 +2300,60 @@ async function deleteChangelog(id){
     loadChangelogAdmin()
   }catch(e){ alert('删除失败') }
 }
+// 编辑改为「回填上方发布表单」（与公告 editAnn 同一套交互），
+// 取代原来看不到原文、改不了类型/版本、留空规则靠猜的连环 prompt()。
+let _clEditId = null
 async function editChangelog(id){
-  const title = prompt('新标题（留空不改）：')
-  if(title === null) return
-  const content = prompt('新内容（留空不改）：')
-  if(content === null) return
-  const body = {}
-  if(title) body.title = title
-  if(content) body.content = content
-  if(!Object.keys(body).length) return
+  let item = null
   try{
-    await fetch(`${API}/admin/changelog/${id}`, {
+    const r = await (await fetch(`${API}/admin/changelog`, {credentials:'include'})).json()
+    const list = r.items || []
+    item = list.find(c => String(c.id) === String(id)) || null
+  }catch(e){}
+  if(!item){ showToast('读取该条更新日志失败，无法回填','warning'); return }
+  _clEditId = id
+  document.getElementById('cl-title').value   = item.title || ''
+  document.getElementById('cl-version').value = item.version || ''
+  document.getElementById('cl-content').value = item.content || ''
+  const typeEl = document.getElementById('cl-type')
+  if(typeEl && item.change_type) typeEl.value = item.change_type
+  const btn = document.querySelector('[data-ui-click="createChangelog()"]')
+  if(btn){ btn.innerHTML = '<i class="fas fa-save"></i> 更新'; btn.setAttribute('data-ui-click','updateChangelog()') }
+  document.getElementById('cl-title').scrollIntoView({behavior:'smooth', block:'center'})
+  document.getElementById('cl-title').focus()
+  showToast('已载入到上方表单，修改后点「更新」','info')
+}
+
+function _clExitEditMode(){
+  _clEditId = null
+  document.getElementById('cl-title').value = ''
+  document.getElementById('cl-version').value = ''
+  document.getElementById('cl-content').value = ''
+  const btn = document.querySelector('[data-ui-click="updateChangelog()"]')
+  if(btn){ btn.innerHTML = '<i class="fas fa-plus"></i> 发布'; btn.setAttribute('data-ui-click','createChangelog()') }
+}
+
+async function updateChangelog(){
+  if(!_clEditId){ createChangelog(); return }
+  const title = document.getElementById('cl-title').value.trim()
+  if(!title){ showToast('标题不能为空','warning'); return }
+  const body = {
+    title,
+    version: document.getElementById('cl-version').value.trim(),
+    change_type: document.getElementById('cl-type').value,
+    content: document.getElementById('cl-content').value.trim(),
+  }
+  try{
+    const r = await (await fetch(`${API}/admin/changelog/${_clEditId}`, {
       method:'PUT', headers:{'Content-Type':'application/json'},
       credentials:'include', body:JSON.stringify(body)
-    })
-    loadChangelogAdmin()
-  }catch(e){ alert('更新失败') }
+    })).json()
+    if(r && r.ok !== false){
+      showToast('更新日志已更新','success')
+      _clExitEditMode()
+      loadChangelogAdmin()
+    } else { showToast((r&&r.error)||'更新失败','error') }
+  }catch(e){ showToast('更新失败','error') }
 }
 
 async function loadFeedback(){
@@ -2338,11 +2381,11 @@ function renderFbRow(f){
   const stColor = FB_STATUS_COLOR[f.status] || 'var(--text3)';
   const stLabel = (FB_STATUS_OPTS.find(o=>o[0]===f.status)||[,f.status])[1];
   const who  = f.username ? esc(f.username) : '匿名';
-  return `<div style="border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:12px;background:var(--card-bg)">
+  return `<div id="fb-row-${f.id}" style="border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:12px;background:var(--card-bg)">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--text2)">
       <b style="color:var(--text1)">#${f.id}</b>
       <span>${cat}</span>
-      <span style="color:${stColor};font-weight:600">● ${stLabel}</span>
+      <span id="fb-badge-${f.id}" style="color:${stColor};font-weight:600">● ${stLabel}</span>
       <span>· 👤 ${who}</span>
       <span>· 📄 ${f.page?esc(f.page):'-'}</span>
       <span>· 🕐 ${String(f.created_at||'').slice(0,16)}</span>
@@ -2370,7 +2413,24 @@ async function saveFeedback(id){
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({status, admin_note})
     })).json();
-    if(r && r.ok){ showToast('已保存','success'); loadFeedback(); }
+    if(r && r.ok){
+      showToast('已保存','success');
+      // 只更新该行的状态徽标，不再整表重载 —— 原来 loadFeedback() 会让滚动位置回到顶部，
+      // 连续处理多条反馈时每保存一条都要重新滚回原位。
+      const badge = document.getElementById('fb-badge-'+id);
+      if(badge){
+        const label = (FB_STATUS_OPTS.find(o=>o[0]===status)||[,status])[1];
+        badge.style.color = FB_STATUS_COLOR[status] || 'var(--text3)';
+        badge.textContent = '● ' + label;
+      }
+      const row = document.getElementById('fb-row-'+id);
+      if(row){   // 轻微高亮一下，明确"这条已保存"
+        row.style.transition = 'background .25s';
+        const bg = row.style.background;
+        row.style.background = 'rgba(103,194,58,.12)';
+        setTimeout(()=>{ row.style.background = bg; }, 700);
+      }
+    }
     else showToast('保存失败','warning');
   } catch(e){ showToast('保存失败：'+e.message,'warning'); }
 }

@@ -73,10 +73,25 @@
     if(!page||document.getElementById('masBanner'))return!!document.getElementById('masBanner');
     var mkt=document.getElementById('mktBannerMon');
     var el=document.createElement('div');el.id='masBanner';el.className='mas-banner';
+    // 文案改口：原「AI 实时风控核心已绑定」是硬编码装饰假状态（无任何真实风控绑定），
+    // 实盘平台上有误导性 → 改为如实的"盘面情绪播报"。
     el.innerHTML='<div class="mas-avatar" id="masAvatar"></div><div class="mas-body">'+
       '<div class="mas-tags"><span class="mas-pill" id="masPill"></span>'+
-      '<span class="mas-sub">见微 AI 实时风控核心已绑定 · 强度 <b id="masStrength">—</b>/100</span></div>'+
+      '<span class="mas-sub">盘面情绪播报 · 强度 <b id="masStrength">—</b>/100</span></div>'+
       '<p class="mas-msg" id="masMsg"></p></div>';
+    // 折叠按钮：横幅 ~124px 占首屏黄金位，笔记本上把执行队列挤到只剩 85px。
+    // 默认收起为一行摘要（行情条保留），localStorage 记忆用户选择。
+    var fbtn=document.createElement('button');fbtn.id='masFold';fbtn.type='button';
+    fbtn.title='收起 / 展开盘面播报';
+    fbtn.onclick=function(){
+      var f=el.classList.toggle('jw-fold');
+      try{localStorage.setItem('jw_mas_fold',f?'1':'0')}catch(e){}
+      fbtn.textContent=f?'+':'—';
+    };
+    el.appendChild(fbtn);
+    var _fold='1';
+    try{_fold=localStorage.getItem('jw_mas_fold')||'1'}catch(e){}
+    if(_fold==='1'){ el.classList.add('jw-fold'); fbtn.textContent='+'; } else { fbtn.textContent='—'; }
     // 把行情板块嵌到熊右边空位（复用现有 #mktBannerMon 的实时数据/刷新按钮）
     if(mkt&&mkt.parentNode===page){ page.insertBefore(el,mkt); el.appendChild(mkt); }
     else { page.insertBefore(el,page.firstChild); }
@@ -92,7 +107,8 @@
     var idx=Math.floor(Date.now()/300000)%st.msgs.length;
     var msg=st.msgs[idx];
     var sig=k+'|'+s+'|'+a+'|'+idx;if(sig===last)return;last=sig;
-    b.className='mas-banner '+st.cls;
+    // 保留用户的折叠态：整串重写 className 会把 jw-fold 抹掉（曾致 F5 后记忆失效）
+    b.className='mas-banner '+st.cls+(b.classList.contains('jw-fold')?' jw-fold':'');
     document.getElementById('masAvatar').innerHTML=st.svg;
     document.getElementById('masPill').textContent=st.tag;
     document.getElementById('masStrength').textContent=s;
