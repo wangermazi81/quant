@@ -14,6 +14,14 @@ function _coreActionAttrs(action, payload){
 }
 
 document.addEventListener('click', e=>{
+  const actionTarget = e.target.closest('[data-action]')
+  const stopTarget = e.target.closest('[data-stop-modal]')
+  if(stopTarget && (!actionTarget || !stopTarget.contains(actionTarget))){
+    e.stopPropagation()
+    return
+  }
+  if(actionTarget && handleUiAction(actionTarget, e)) return
+
   const target=e.target.closest('[data-core-action]')
   if(!target){
     if(e.target.closest('[data-core-stop]')) e.stopPropagation()
@@ -30,6 +38,33 @@ document.addEventListener('click', e=>{
   const action=actions[target.dataset.coreAction]
   if(action) action(payload)
 })
+
+function handleUiAction(target, e){
+  const action = target.dataset.action
+  const actions = {
+    'open-execution-console': () => openTodayOrders(),
+    'close-today-orders': () => closeTodayOrders(),
+    'close-today-orders-backdrop': () => closeTodayOrders(e),
+    'refresh-execution': () => refreshExecutionState(),
+    'mobile-mode': () => switchMobileMode(target.dataset.mode || 'simulation'),
+    'toggle-bridge-process': () => toggleBridgeProcess(),
+    'restart-mobile-bridge': () => restartMobileBridge(),
+    'mobile-connection': () => setMobileConnection(target.dataset.mode || 'usb'),
+    'open-mobile-ths': () => openMobileThs(),
+    'refresh-mobile-funds': async () => { await refreshMobileFunds(); refreshExecutionState() },
+    'toggle-trade-mode': () => toggleTradeMode(),
+    'toggle-live-trade': () => toggleLiveTrade(),
+    'save-trade-settings': () => saveTradeSettingsPanel(),
+    'refresh-account-snapshot': async () => { await refreshAccountSnapshot(); refreshExecutionState() },
+    'refresh-today-orders': () => refreshTodayOrders(),
+  }
+  const fn = actions[action]
+  if(!fn) return false
+  e.preventDefault()
+  e.stopPropagation()
+  fn()
+  return true
+}
 
 window.addEventListener('load', async ()=>{
   // 先检查登录状态，未登录则显示弹层
@@ -980,8 +1015,8 @@ function _renderExecFundsPanel(id, data, opts={}){
   if(!el) return
   const title = opts.title || (id === 'execMobileFundsPanel' ? '手机资金 / 仓位' : '电脑资金 / 仓位')
   const action = id === 'execMobileFundsPanel'
-    ? '<button class="btn btn-gray btn-xs" onclick="refreshMobileFunds();refreshExecutionState()" id="mobileFundsRefresh">查资金/仓位</button>'
-    : '<button class="btn btn-gray btn-xs" onclick="refreshAccountSnapshot();refreshExecutionState()" id="acctSnapRefresh" title="读取电脑账户资金和持仓">查资金/持仓</button>'
+    ? '<button class="btn btn-gray btn-xs" data-action="refresh-mobile-funds" id="mobileFundsRefresh">查资金/仓位</button>'
+    : '<button class="btn btn-gray btn-xs" data-action="refresh-account-snapshot" id="acctSnapRefresh" title="读取电脑账户资金和持仓">查资金/持仓</button>'
   const titleHtml = '<div class="exec-funds-title"><span>'+esc(title)+'</span>'+action+'</div>'
   if(opts.loading){
     el.innerHTML = titleHtml + '<div class="exec-funds-empty">'+esc(opts.loading)+'</div>'

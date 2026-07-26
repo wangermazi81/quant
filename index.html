@@ -166,7 +166,7 @@
     </div>
 
     <div class="top-group top-console-group" title="交易执行控制台">
-      <span class="top-chip exec-console-chip" onclick="openExecutionConsole()">交易执行</span>
+      <span class="top-chip exec-console-chip" data-action="open-execution-console">交易执行</span>
     </div>
 
     <!-- 用户信息区 -->
@@ -853,8 +853,8 @@
   </div>
 
   <!-- 交易执行控制台（手机链路 + 自动执行 + 账户/委托）Modal -->
-  <div class="rename-modal" id="todayOrdersModal" onclick="closeTodayOrders(event)">
-    <div class="rename-box" style="width:90vw;max-width:1400px;max-height:92vh;overflow:auto" onclick="event.stopPropagation()">
+  <div class="rename-modal" id="todayOrdersModal" data-action="close-today-orders-backdrop">
+    <div class="rename-box" style="width:90vw;max-width:1400px;max-height:92vh;overflow:auto" data-stop-modal>
       <div class="trade-console-head">
         <div>
           <h4>交易执行控制台</h4>
@@ -881,7 +881,7 @@
         </div>
         <div class="exec-control-row compact" style="margin-top:10px">
           <span id="execMobileBadge" class="bridge-switch checking"><i></i><b>手机桥接 读取中</b></span>
-          <button class="btn btn-gray btn-xs" onclick="refreshExecutionState()">刷新执行状态</button>
+          <button class="btn btn-gray btn-xs" data-action="refresh-execution">刷新执行状态</button>
         </div>
         <div id="execStateHint" class="mobile-muted exec-state-hint">等待状态刷新...</div>
       </section>
@@ -895,7 +895,7 @@
             </div>
             <div class="exec-head-badges">
               <span id="mobileCurrentModeBadge" class="exec-current-mode unknown"><i></i><b>手机当前：读取中</b></span>
-              <span id="mobileTradeBadge" class="bridge-switch checking" onclick="openTodayOrders()" title="手机交易链路状态"><i></i><b>检测中</b></span>
+              <span id="mobileTradeBadge" class="bridge-switch checking" data-action="open-execution-console" title="手机交易链路状态"><i></i><b>检测中</b></span>
             </div>
           </div>
 
@@ -906,7 +906,7 @@
                   <span class="exec-mode-kicker">手机</span>
                   <h6>模拟盘</h6>
                 </div>
-                <button class="btn btn-blue btn-sm" onclick="switchMobileMode('simulation')">切到模拟</button>
+                <button class="btn btn-blue btn-sm" data-action="mobile-mode" data-mode="simulation">切到模拟</button>
               </div>
               <div class="exec-hint">模拟/实盘共用同一套手机动作；账户、打开同花顺、重启桥接都放到下面操作区。</div>
             </article>
@@ -917,16 +917,16 @@
                   <span class="exec-mode-kicker">手机</span>
                   <h6>实盘</h6>
                 </div>
-                <button class="btn btn-red btn-sm" onclick="switchMobileMode('live')">切到实盘</button>
+                <button class="btn btn-red btn-sm" data-action="mobile-mode" data-mode="live">切到实盘</button>
               </div>
               <div class="exec-control-row">
-                <span id="bridgeProcessBadge" class="bridge-switch checking" onclick="toggleBridgeProcess()" title="后台启动/关闭桥接器，不弹 CMD 窗口"><i></i><b>桥接器 检测中</b></span>
-                <button class="btn btn-gray btn-xs" onclick="restartMobileBridge()">重启桥接器</button>
+                <span id="bridgeProcessBadge" class="bridge-switch checking" data-action="toggle-bridge-process" title="后台启动/关闭桥接器，不弹 CMD 窗口"><i></i><b>桥接器 检测中</b></span>
+                <button class="btn btn-gray btn-xs" data-action="restart-mobile-bridge">重启桥接器</button>
               </div>
               <div class="exec-control-row compact">
-                <button class="btn btn-gray btn-xs" onclick="setMobileConnection('usb')">USB</button>
-                <button class="btn btn-gray btn-xs" onclick="setMobileConnection('wifi')">WiFi</button>
-                <button class="btn btn-gray btn-xs" onclick="setMobileConnection('bluetooth')">蓝牙</button>
+                <button class="btn btn-gray btn-xs" data-action="mobile-connection" data-mode="usb">USB</button>
+                <button class="btn btn-gray btn-xs" data-action="mobile-connection" data-mode="wifi">WiFi</button>
+                <button class="btn btn-gray btn-xs" data-action="mobile-connection" data-mode="bluetooth">蓝牙</button>
                 <span id="mobileConnText" class="mobile-muted">连接：读取中</span>
               </div>
               <div class="exec-control-row compact">
@@ -941,7 +941,7 @@
             <section class="trade-console-card mobile-funds-card">
               <div class="trade-card-title">手机账户</div>
               <div class="exec-funds-panel" id="execMobileFundsPanel">
-                <div class="exec-funds-title"><span>资金 / 仓位</span><button class="btn btn-gray btn-xs" onclick="refreshMobileFunds();refreshExecutionState()" id="mobileFundsRefresh">查资金/仓位</button></div>
+                <div class="exec-funds-title"><span>资金 / 仓位</span><button class="btn btn-gray btn-xs" data-action="refresh-mobile-funds" id="mobileFundsRefresh">查资金/仓位</button></div>
                 <div class="exec-funds-empty">点“查资金/仓位”后显示手机侧可用资金、总资产、目标单仓和持仓。</div>
               </div>
               <div id="mobileFundsBody" class="mobile-funds-body exec-body-panel">
@@ -952,10 +952,10 @@
             <section class="trade-console-card exec-action-card mobile-action-card">
               <div class="trade-card-title">手机操作</div>
               <div class="exec-action-grid">
-                <button class="btn btn-gray btn-xs" onclick="openMobileThs()">打开同花顺</button>
-                <button class="btn btn-gray btn-xs" onclick="refreshMobileFunds();refreshExecutionState()">查资金/仓位</button>
-                <button class="btn btn-gray btn-xs" onclick="restartMobileBridge()">重启桥接器</button>
-                <button class="btn btn-blue btn-xs" onclick="refreshExecutionState()">刷新状态</button>
+                <button class="btn btn-gray btn-xs" data-action="open-mobile-ths">打开同花顺</button>
+                <button class="btn btn-gray btn-xs" data-action="refresh-mobile-funds">查资金/仓位</button>
+                <button class="btn btn-gray btn-xs" data-action="restart-mobile-bridge">重启桥接器</button>
+                <button class="btn btn-blue btn-xs" data-action="refresh-execution">刷新状态</button>
               </div>
               <div id="mobileChainStatus" class="exec-human-status"><i></i><span>手机状态读取中...</span></div>
             </section>
@@ -981,7 +981,7 @@
                   <span class="exec-mode-kicker">电脑</span>
                   <h6>模拟盘</h6>
                 </div>
-                <span id="tradeModeBadge" class="top-switch trade-switch off" onclick="toggleTradeMode()" title="点击切换实盘/模拟（实盘需二次确认）"><i></i><b>模拟</b></span>
+                <span id="tradeModeBadge" class="top-switch trade-switch off" data-action="toggle-trade-mode" title="点击切换实盘/模拟（实盘需二次确认）"><i></i><b>模拟</b></span>
               </div>
               <div class="exec-hint">策略总闸关闭时，信号先进本地模拟盘；仓位由见微账户参数控制。</div>
             </article>
@@ -992,7 +992,7 @@
                   <span class="exec-mode-kicker">电脑</span>
                   <h6>实盘</h6>
                 </div>
-                <span id="liveTradeBadge" class="top-switch live-switch off" onclick="toggleLiveTrade()" title="实盘下单总闸：关闭后桥接器收不到任何信号、彻底不下单到同花顺（其他功能照常）"><i></i><b>实盘下单 已关</b></span>
+                <span id="liveTradeBadge" class="top-switch live-switch off" data-action="toggle-live-trade" title="实盘下单总闸：关闭后桥接器收不到任何信号、彻底不下单到同花顺（其他功能照常）"><i></i><b>实盘下单 已关</b></span>
               </div>
               <div class="trade-settings-grid compact-settings">
                 <label class="mobile-toggle-option"><input type="radio" name="tsConfirm" value="auto"><span>下单自动确认</span></label>
@@ -1001,7 +1001,7 @@
                 <label class="mobile-toggle-option"><input type="radio" name="tsCancel" value="manual"><span>撤单手动处理</span></label>
               </div>
               <div class="exec-control-row compact">
-                <button class="btn btn-blue btn-sm" onclick="saveTradeSettingsPanel()">保存自动执行</button>
+                <button class="btn btn-blue btn-sm" data-action="save-trade-settings">保存自动执行</button>
                 <span id="tsSaveHint" class="mobile-muted"></span>
               </div>
             </article>
@@ -1011,7 +1011,7 @@
             <section class="trade-console-card desktop-account-card">
               <div class="trade-card-title">电脑账户</div>
               <div class="exec-funds-panel" id="execDesktopFundsPanel">
-                <div class="exec-funds-title"><span>资金 / 仓位</span><button class="btn btn-gray btn-xs" onclick="refreshAccountSnapshot();refreshExecutionState()" id="acctSnapRefresh" title="读取电脑账户资金和持仓">查资金/持仓</button></div>
+                <div class="exec-funds-title"><span>资金 / 仓位</span><button class="btn btn-gray btn-xs" data-action="refresh-account-snapshot" id="acctSnapRefresh" title="读取电脑账户资金和持仓">查资金/持仓</button></div>
                 <div class="exec-funds-empty">点“查资金/持仓”后显示电脑侧可用资金、总资产、目标单仓和持仓。</div>
               </div>
               <div id="acctSnapshotBody" class="exec-body-panel">
@@ -1019,7 +1019,7 @@
               </div>
             </section>
             <section class="trade-console-card desktop-orders-card">
-              <div class="exec-funds-title"><span>电脑当日委托</span><button class="btn btn-gray btn-xs" onclick="refreshTodayOrders()" id="todayOrdersRefresh" title="读取电脑当日委托">查当日委托</button></div>
+              <div class="exec-funds-title"><span>电脑当日委托</span><button class="btn btn-gray btn-xs" data-action="refresh-today-orders" id="todayOrdersRefresh" title="读取电脑当日委托">查当日委托</button></div>
               <div id="acctOrdersBody" style="padding:6px 0"></div>
             </section>
           </div>
@@ -1030,7 +1030,7 @@
         手机账户和电脑账户分开显示；策略信号进入交易执行控制台后，按当前手机/电脑、模拟/实盘开关执行。
       </div>
       <div style="display:flex;justify-content:flex-end;margin-top:10px">
-        <button class="btn btn-gray btn-sm" onclick="closeTodayOrders()">关闭</button>
+        <button class="btn btn-gray btn-sm" data-action="close-today-orders">关闭</button>
       </div>
     </div>
   </div>
