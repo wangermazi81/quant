@@ -261,6 +261,17 @@
   <span class="mkt-advice" id="mktAdviceMon" style="font-size:11px"></span>
   <button class="btn btn-gray btn-xs" data-ui-click="loadMarketContext(true)" style="flex-shrink:0;margin-left:auto" title="刷新大盘数据">⟳ 刷新</button>
 </div>
+<!-- 盘中关键指标条：审计发现「持仓总盈亏只是卡头12px小字，反而模拟盘页有大数字KPI」，
+     真钱页面的信息可读性低于模拟盘。这里把最该一眼看到的抬到首屏。 -->
+<div class="kpi-bar" id="monKpiBar">
+  <div class="kpi-item"><span class="kpi-label">净资产</span><b class="kpi-value" id="kpiNetAsset">—</b><span class="kpi-sub" id="kpiNetAssetSub">可用 + 持仓市值</span></div>
+  <div class="kpi-item"><span class="kpi-label">持仓浮动盈亏</span><b class="kpi-value" id="kpiPnl">—</b><span class="kpi-sub" id="kpiPnlSub">按最新价估算</span></div>
+  <div class="kpi-item"><span class="kpi-label">可用资金</span><b class="kpi-value" id="kpiAvail">—</b><span class="kpi-sub">下单可动用</span></div>
+  <div class="kpi-item"><span class="kpi-label">持仓</span><b class="kpi-value" id="kpiPosCount">—</b><span class="kpi-sub" id="kpiPosSub">只 / 上限</span></div>
+  <div class="kpi-item"><span class="kpi-label">今日开仓</span><b class="kpi-value" id="kpiToday">—</b><span class="kpi-sub" id="kpiTodaySub">笔 / 日限</span></div>
+  <div class="kpi-item"><span class="kpi-label">自动执行</span><b class="kpi-value" id="kpiAuto">—</b><span class="kpi-sub" id="kpiAutoSub">信号是否自动下单</span></div>
+</div>
+
 <div class="mon-grid" style="flex:1;min-height:0">
 
   <!-- 左：选股结果（撑满高度）-->

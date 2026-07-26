@@ -351,27 +351,110 @@ async function loadSystemStatus(){
   }
 }
 
-// 统计图表尚未接入真实聚合接口：显示诚实占位，杜绝随机/写死数据误导运营判断
-function _adminStatPlaceholder(elId, label){
-  const el = document.getElementById(elId);
-  if(!el) return;
-  el._inited = true;
-  el.innerHTML = `<div style="height:100%;min-height:160px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:#9AA3AD;text-align:center;padding:16px">`
-    + `<div style="font-size:24px;opacity:.55">📊</div>`
-    + `<div style="font-size:13px;font-weight:600;color:#8A929B">${label}</div>`
-    + `<div style="font-size:11px;color:#B9C0C8">待接入真实统计接口（暂不显示示例数据）</div></div>`;
+// ── 运营统计：全部来自 /api/admin/analytics 的真实数据 ─────────────
+// 用轻量内联 SVG 自绘，不引入 echarts（境外 CDN 已全部下线）。
+let _analyticsCache = null;
+async function loadAnalytics(force){
+  if(_analyticsCache && !force) return _analyticsCache;
+  try{
+    const r = await fetch(`${API}/admin/analytics`,{credentials:'include'});
+    if(!r.ok){ return null; }
+    const d = await r.json();
+    if(d && d.ok){ _analyticsCache = d; return d; }
+  }catch(e){}
+  return null;
 }
 
-function renderLineChart(){ _adminStatPlaceholder('chartLine', '近 7 日积分消耗趋势'); }
+function _statMsg(elId, text){
+  const el = document.getElementById(elId);
+  if(!el) return;
+  el.innerHTML = `<div style="height:100%;min-height:160px;display:flex;align-items:center;justify-content:center;color:#9AA3AD;font-size:12px">${text}</div>`;
+}
 
-function renderPieChart(){ _adminStatPlaceholder('chartPie', '功能使用分布'); }
+const _CHART_COLORS = ['#EF5B78','#5B8DEF','#4CAF89','#E8964A','#B580E8','#4FB3C7','#D9A441','#8A929B'];
 
-function renderActivity(){
+// 折线/面积图（多序列）
+function _svgLine(elId, labels, series, opt){
+  const el = document.getElementById(elId);
+  if(!el) return;
+  const W=720, H=200, PL=42, PR=12, PT=14, PB=26;
+  const all = series.flatMap(s=>s.data);
+  const max = Math.max(1, ...all);
+  const iw = W-PL-PR, ih = H-PT-PB;
+  const xs = i => PL + (labels.length<2 ? iw/2 : i*iw/(labels.length-1));
+  const ys = v => PT + ih - (v/max)*ih;
+  const grid = [0,.25,.5,.75,1].map(f=>{
+    const y = PT+ih-f*ih;
+    return `<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="#EFE3D2" stroke-width="1"/>`
+         + `<text x="${PL-6}" y="${y+4}" text-anchor="end" font-size="10" fill="#9AA3AD">${Math.round(max*f)}</text>`;
+  }).join('');
+  const paths = series.map((s,si)=>{
+    const c=_CHART_COLORS[si%_CHART_COLORS.length];
+    const pts=s.data.map((v,i)=>`${xs(i)},${ys(v)}`).join(' ');
+    const area=`${PL},${PT+ih} ${pts} ${xs(s.data.length-1)},${PT+ih}`;
+    return `<polygon points="${area}" fill="${c}" opacity=".10"/>`
+         + `<polyline points="${pts}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"/>`
+         + s.data.map((v,i)=>`<circle cx="${xs(i)}" cy="${ys(v)}" r="3" fill="${c}"><title>${labels[i]}：${v}</title></circle>`).join('');
+  }).join('');
+  const xlab = labels.map((l,i)=> (labels.length>10 && i%2) ? '' :
+    `<text x="${xs(i)}" y="${H-8}" text-anchor="middle" font-size="10" fill="#9AA3AD">${esc(String(l).slice(5))}</text>`).join('');
+  const legend = series.length>1 ? `<div style="display:flex;gap:14px;justify-content:center;margin-top:2px">`
+    + series.map((s,si)=>`<span style="font-size:11px;color:var(--text2)"><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${_CHART_COLORS[si%_CHART_COLORS.length]};margin-right:4px"></i>${esc(s.name)}</span>`).join('')
+    + `</div>` : '';
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${grid}${paths}${xlab}</svg>${legend}`;
+}
+
+// 横向条形图（替代饼图，小数据集更易读）
+function _svgBars(elId, items, unit){
+  const el = document.getElementById(elId);
+  if(!el) return;
+  if(!items.length){ _statMsg(elId,'暂无数据'); return; }
+  const max = Math.max(1, ...items.map(i=>i.value));
+  el.innerHTML = `<div style="display:flex;flex-direction:column;gap:9px;padding:6px 2px">`
+    + items.map((it,i)=>{
+        const pct = Math.round(it.value/max*100);
+        const c=_CHART_COLORS[i%_CHART_COLORS.length];
+        return `<div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+            <span style="color:var(--text1)">${esc(it.name)}</span>
+            <b style="color:${c}">${it.value.toLocaleString()}${unit||''}</b>
+          </div>
+          <div style="height:8px;background:#F3EDE4;border-radius:999px;overflow:hidden">
+            <div style="width:${pct}%;height:100%;background:${c};border-radius:999px"></div>
+          </div></div>`;
+      }).join('')
+    + `</div>`;
+}
+
+async function renderLineChart(){
+  const d = await loadAnalytics();
+  if(!d){ _statMsg('chartLine','统计数据加载失败'); return; }
+  const t = d.points_trend;
+  _svgLine('chartLine', t.days, [
+    {name:'消耗', data:t.spend},
+    {name:'充值', data:t.topup},
+  ]);
+}
+
+async function renderPieChart(){
+  const d = await loadAnalytics();
+  if(!d){ _statMsg('chartPie','统计数据加载失败'); return; }
+  _svgBars('chartPie', d.feature_usage.map(f=>({name:f.name, value:f.count})), ' 次');
+}
+
+async function renderActivity(){
   const list = document.getElementById('activityList');
   if(!list) return;
-  list.innerHTML = `<li class="tl-item"><div class="tl-dot"></div>`
-    + `<div class="tl-body"><div class="tl-title" style="color:#8A929B">暂未接入真实活动流</div>`
-    + `<div class="tl-time">后续将展示真实的注册 / 充值 / 分析等事件</div></div></li>`;
+  const d = await loadAnalytics();
+  if(!d || !d.recent.length){
+    list.innerHTML = `<li class="tl-item"><div class="tl-dot"></div><div class="tl-body"><div class="tl-title" style="color:#8A929B">暂无活动记录</div></div></li>`;
+    return;
+  }
+  list.innerHTML = d.recent.map(i=>`
+    <li class="tl-item">
+      <div class="tl-dot"></div>
+      <div class="tl-body"><div class="tl-title">${esc(i.text)}</div><div class="tl-time">${esc(String(i.time||'').slice(5,16))}</div></div>
+    </li>`).join('');
 }
 
 // ================================================================
@@ -723,11 +806,24 @@ function loadStats(){
   },100);
 }
 
-function renderBarChart(){ _adminStatPlaceholder('chartBar', '功能调用统计'); }
+async function renderBarChart(){
+  const d = await loadAnalytics();
+  if(!d){ _statMsg('chartBar','统计数据加载失败'); return; }
+  _svgBars('chartBar', d.feature_usage.map(f=>({name:f.name, value:f.points})), ' 分');
+}
 
-function renderGrowthChart(){ _adminStatPlaceholder('chartGrowth', '用户增长'); }
+async function renderGrowthChart(){
+  const d = await loadAnalytics();
+  if(!d){ _statMsg('chartGrowth','统计数据加载失败'); return; }
+  const g = d.user_growth;
+  _svgLine('chartGrowth', g.months, [{name:'新增用户', data:g.counts}]);
+}
 
-function renderDistChart(){ _adminStatPlaceholder('chartDist', '积分分布'); }
+async function renderDistChart(){
+  const d = await loadAnalytics();
+  if(!d){ _statMsg('chartDist','统计数据加载失败'); return; }
+  _svgBars('chartDist', d.points_dist, ' 分');
+}
 
 // ================================================================
 // ROLES

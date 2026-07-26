@@ -643,6 +643,21 @@ def admin_add_points(uid):
     return jsonify(r)
 
 
+@bp.route("/api/admin/analytics")
+@require_admin_perm("dashboard_view")
+def admin_analytics():
+    """运营统计聚合（真实数据）。前端工作台/使用统计页的图表数据源。"""
+    try:
+        days = max(1, min(31, int(request.args.get("days", 7))))
+    except (TypeError, ValueError):
+        days = 7
+    try:
+        months = max(1, min(24, int(request.args.get("months", 6))))
+    except (TypeError, ValueError):
+        months = 6
+    return jsonify(um.admin_analytics(days=days, months=months))
+
+
 @bp.route("/api/admin/users/<int:uid>", methods=["PUT"])
 @require_admin_perm("user_manage")
 def admin_update_user(uid):

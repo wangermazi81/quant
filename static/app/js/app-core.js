@@ -125,6 +125,47 @@ function _setSwitchBadge(el, cls, text, title){
   if(title) el.title = title
 }
 
+// ── 监控页 KPI 指标条 ──────────────────────────────────────────
+// 只用已有数据源：fetchSt(状态/护栏) + fetchPositions(持仓) + fetchFunds(可用资金)。
+// 拿不到的一律显示「—」，不编造数字。
+const _kpi = {avail:null, mktValue:null, pnl:null, posCount:null, maxPos:null,
+              today:null, maxDaily:null, auto:null}
+function _kpiMoney(v){
+  if(v==null || !isFinite(v)) return '—'
+  return '¥' + (+v).toLocaleString('zh-CN',{maximumFractionDigits:0})
+}
+function _renderKpiBar(){
+  const set = (id, text, cls) => {
+    const el = document.getElementById(id); if(!el) return
+    el.textContent = text
+    el.className = 'kpi-value' + (cls ? ' '+cls : '')
+  }
+  const setSub = (id, text) => { const el=document.getElementById(id); if(el && text!=null) el.textContent = text }
+
+  const net = (_kpi.avail!=null || _kpi.mktValue!=null)
+    ? (+(_kpi.avail||0) + +(_kpi.mktValue||0)) : null
+  set('kpiNetAsset', _kpiMoney(net))
+  setSub('kpiNetAssetSub', _kpi.mktValue!=null ? `可用 ${_kpiMoney(_kpi.avail)} + 市值 ${_kpiMoney(_kpi.mktValue)}` : '可用 + 持仓市值')
+
+  if(_kpi.pnl==null) set('kpiPnl','—')
+  else set('kpiPnl', (_kpi.pnl>=0?'+':'') + _kpiMoney(_kpi.pnl).replace('¥','¥'),
+           _kpi.pnl>0?'up':(_kpi.pnl<0?'down':''))
+
+  set('kpiAvail', _kpiMoney(_kpi.avail))
+
+  set('kpiPosCount', _kpi.posCount==null ? '—' : String(_kpi.posCount),
+      (_kpi.maxPos && _kpi.posCount>=_kpi.maxPos) ? 'warn' : '')
+  setSub('kpiPosSub', _kpi.maxPos ? `只 / 上限 ${_kpi.maxPos}` : '只')
+
+  set('kpiToday', _kpi.today==null ? '—' : String(_kpi.today),
+      (_kpi.maxDaily && _kpi.today>=_kpi.maxDaily) ? 'warn' : '')
+  setSub('kpiTodaySub', _kpi.maxDaily ? `笔 / 日限 ${_kpi.maxDaily}` : '笔')
+
+  if(_kpi.auto==null) set('kpiAuto','—')
+  else set('kpiAuto', _kpi.auto ? '开启' : '关闭', _kpi.auto ? 'warn' : '')
+  setSub('kpiAutoSub', _kpi.auto ? '信号将自动下单' : '需人工确认')
+}
+
 function _renderCurrentModeBadge(id, mode, label){
   const el = document.getElementById(id)
   if(!el) return
@@ -395,6 +436,9 @@ async function fetchFunds(){
           + `｜事件驱动：下单成功后自动更新${d.age_sec!=null?`（${d.age_sec}秒前）`:''}，也可点「📊 查实盘账户」手动刷新`
       capEl.parentElement?.setAttribute('title', tip)
     }
+    _kpi.avail = _availFunds
+    if(d.market_value!=null) _kpi.mktValue = +d.market_value
+    _renderKpiBar()
   }catch(e){}
   finally{ _pollInflight.funds = false }
 }
@@ -434,6 +478,11 @@ async function fetchSt(force=false){
   const maxPosForTarget = +(d.max_positions||0)
   const ratioForTarget = +(d.position_ratio||0)
   _targetPositionRatio = ratioForTarget>0 ? ratioForTarget : (maxPosForTarget>0 ? 1/maxPosForTarget : 0.2)
+  // KPI 条：护栏与当日计数（日限由 refreshExecutionState 写入策略级真值）
+  _kpi.maxPos = maxPosForTarget || null
+  _kpi.today  = d.today_trades!=null ? +d.today_trades : null
+  if(_availFunds==null && d.capital!=null) _kpi.avail = +d.capital
+  _renderKpiBar()
   const ss=document.getElementById('scanSt')
   ss.innerHTML=monitoring?`<span class="spin">⟳</span> ${d.vibe_active?'Alpha监控中':'监控中'}`:'已停止'
   ss.style.color=monitoring?'var(--gl)':'var(--t3)'
@@ -541,6 +590,8 @@ async function toggleAutoExec(){
   toast(want ? '已开启自动执行' : '已关闭自动执行', want ? 'warn' : 'success')
 }
 function _renderAutoSwitch(on){
+  _kpi.auto = !!on
+  _renderKpiBar()
   const sw   = document.getElementById('autoExecStatus')
   const dot  = document.getElementById('autoExecDot')
   const txt  = document.getElementById('autoExecText')
@@ -579,6 +630,12 @@ function renderPositions(positions){
   if(totEl) totEl.textContent=positions.length+'只'
   // 汇总盈亏
   const totalPnl = positions.reduce((s,p)=>s+(p.pnl_amount||0),0)
+  // 同步 KPI 条（持仓数 / 浮动盈亏 / 持仓市值）
+  _kpi.posCount = positions.length
+  _kpi.pnl = totalPnl
+  const mv = positions.reduce((s,p)=>s+(+p.market_value||0),0)
+  if(mv>0) _kpi.mktValue = mv
+  _renderKpiBar()
   if(pnlEl){
     const sign = totalPnl>=0?'+':''
     pnlEl.textContent = sign+'¥'+totalPnl.toLocaleString('zh-CN',{maximumFractionDigits:0})
@@ -1375,6 +1432,8 @@ async function refreshExecutionState(){
   // 监控页「日限」只读回填：真实生效值 = 策略级 position_config.max_daily
   const dailyEl = document.getElementById('cfgDailyLimit')
   if(dailyEl) dailyEl.textContent = pos.max_daily ? String(pos.max_daily) : '不限'
+  _kpi.maxDaily = pos.max_daily ? +pos.max_daily : null
+  _renderKpiBar()
   const targetRatio = pos.target_ratio!=null ? `${(+pos.target_ratio*100).toFixed(0)}%` : '—'
   const targetAmount = pos.target_amount!=null ? '¥'+(+pos.target_amount).toLocaleString('zh-CN',{maximumFractionDigits:0}) : '—'
   _setExecText('execPositionLamp', `${targetRatio} / ${targetAmount}`, true)

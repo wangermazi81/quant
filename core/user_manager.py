@@ -712,6 +712,103 @@ def set_points(user_id: int, new_value, description: str = "管理员修改积�
                 "username": row["username"]}
 
 
+def admin_analytics(days: int = 7, months: int = 6) -> dict:
+    """后台运营统计聚合（全部来自 users.db 真实数据，不再用占位/随机数）。
+
+    返回：
+      points_trend   近 days 日「消耗」与「充值」双序列（按日）
+      feature_usage  功能使用分布（按 point_transactions.type 计次）
+      user_growth    近 months 月新增用户
+      points_dist    积分来源/去向分布（注册赠送 / 管理充值 / 邀请奖励 / 功能消耗）
+      recent         最近 12 条真实活动（注册 + 积分变动）
+    """
+    from datetime import date, timedelta
+    TYPE_CN = {
+        "scan": "全市场扫描", "ai_analysis": "AI分析", "paper_trade": "模拟交易",
+        "chain_graph": "产业链图谱", "backtest": "策略回测", "review_generate": "AI复盘",
+        "ai_strategy": "AI写策略", "register": "注册赠送", "admin_add": "管理充值",
+        "admin_set": "管理调整", "invite_reward": "邀请奖励",
+    }
+    with _conn() as c:
+        today = date.today()
+        day_keys = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+        spend = {k: 0 for k in day_keys}
+        topup = {k: 0 for k in day_keys}
+        since = day_keys[0]
+        for r in c.execute(
+            "SELECT substr(created_at,1,10) d, amount FROM point_transactions"
+            " WHERE substr(created_at,1,10) >= ?", (since,)
+        ):
+            d, amt = r["d"], int(r["amount"] or 0)
+            if d not in spend:
+                continue
+            if amt < 0:
+                spend[d] += -amt
+            else:
+                topup[d] += amt
+
+        feature_usage = []
+        for r in c.execute(
+            "SELECT type, COUNT(*) n, COALESCE(SUM(-amount),0) cost FROM point_transactions"
+            " WHERE amount < 0 GROUP BY type ORDER BY n DESC LIMIT 8"
+        ):
+            feature_usage.append({"key": r["type"],
+                                  "name": TYPE_CN.get(r["type"], r["type"]),
+                                  "count": r["n"], "points": int(r["cost"] or 0)})
+
+        month_keys = []
+        y, m = today.year, today.month
+        for _ in range(months):
+            month_keys.append(f"{y:04d}-{m:02d}")
+            m -= 1
+            if m == 0:
+                y, m = y - 1, 12
+        month_keys.reverse()
+        growth = {k: 0 for k in month_keys}
+        for r in c.execute(
+            "SELECT substr(created_at,1,7) mo, COUNT(*) n FROM users"
+            " WHERE created_at IS NOT NULL GROUP BY mo"
+        ):
+            if r["mo"] in growth:
+                growth[r["mo"]] = r["n"]
+
+        dist = []
+        for r in c.execute(
+            "SELECT type, COALESCE(SUM(amount),0) s FROM point_transactions"
+            " WHERE amount > 0 GROUP BY type ORDER BY s DESC"
+        ):
+            dist.append({"name": TYPE_CN.get(r["type"], r["type"]), "value": int(r["s"] or 0)})
+        spent_total = c.execute(
+            "SELECT COALESCE(SUM(-amount),0) s FROM point_transactions WHERE amount < 0"
+        ).fetchone()["s"]
+        if spent_total:
+            dist.append({"name": "功能消耗", "value": int(spent_total)})
+
+        recent = []
+        for r in c.execute(
+            "SELECT t.created_at, t.amount, t.type, t.description, u.username"
+            " FROM point_transactions t LEFT JOIN users u ON u.id = t.user_id"
+            " ORDER BY t.id DESC LIMIT 12"
+        ):
+            amt = int(r["amount"] or 0)
+            recent.append({
+                "time": r["created_at"],
+                "text": f"{r['username'] or '未知用户'} {'获得' if amt > 0 else '消耗'} "
+                        f"{abs(amt)} 积分（{TYPE_CN.get(r['type'], r['type'])}）",
+            })
+
+        return {
+            "ok": True,
+            "points_trend": {"days": day_keys,
+                             "spend": [spend[k] for k in day_keys],
+                             "topup": [topup[k] for k in day_keys]},
+            "feature_usage": feature_usage,
+            "user_growth": {"months": month_keys, "counts": [growth[k] for k in month_keys]},
+            "points_dist": dist,
+            "recent": recent,
+        }
+
+
 def update_user_profile(user_id: int, username=None, email=None) -> dict:
     """管理员编辑用户资料（用户名/邮箱）。只改传入的字段，带唯一性校验。
 
