@@ -102,3 +102,57 @@ def test_save_is_atomic_and_leaves_no_temp_file(meta_file):
 def test_corrupt_file_falls_back_to_empty(meta_file):
     meta_file.write_text("{not json", encoding="utf-8")
     assert dm._load_meta() == {}
+
+
+# ── P-1 后半：本地缓存命中时不得回写 ─────────────────────────────
+def _fake_kline(rows=30):
+    import pandas as pd
+
+    dates = pd.bdate_range("2026-01-02", periods=rows)
+    return pd.DataFrame({
+        "date": dates,
+        "open": [10.0] * rows,
+        "close": [10.5] * rows,
+        "high": [10.8] * rows,
+        "low": [9.9] * rows,
+        "volume": [100000] * rows,
+    })
+
+
+def test_local_cache_hit_skips_merge_writeback(meta_file, monkeypatch):
+    """★数据原样来自本地 CSV 时必须跳过 merge_kline_cache。
+
+    否则每只股票都白做一次「读 CSV + concat + 重写 CSV + 更新元数据」——
+    一轮 5000 只的全市场扫描就是 5000 次无谓读写放大，全在 GIL 内串行。
+    """
+    merges = []
+    monkeypatch.setattr(dm, "merge_kline_cache",
+                        lambda code, df, **k: merges.append(code) or df)
+    monkeypatch.setattr(dm.datasource_config, "get_internal_config",
+                        lambda: {"provider": "current", "fallback_enabled": False,
+                                 "tushare_mode": "replay"})
+    monkeypatch.setattr(dm, "_fetch_current_kline",
+                        lambda code, days, min_rows, prefer_local=True:
+                        dm._mark_from_local(_fake_kline()))
+
+    r = dm.get_kline_by_config("000001", days=20, min_rows=10, update_cache=True)
+
+    assert r["ok"] is True
+    assert merges == [], "本地缓存命中却仍然回写了缓存"
+
+
+def test_fresh_remote_data_still_merges(meta_file, monkeypatch):
+    """未打标记（= 来自远程/TDX 的新数据）时照常回写，不能把正常缓存更新也跳掉。"""
+    merges = []
+    monkeypatch.setattr(dm, "merge_kline_cache",
+                        lambda code, df, **k: merges.append(code) or df)
+    monkeypatch.setattr(dm.datasource_config, "get_internal_config",
+                        lambda: {"provider": "current", "fallback_enabled": False,
+                                 "tushare_mode": "replay"})
+    monkeypatch.setattr(dm, "_fetch_current_kline",
+                        lambda code, days, min_rows, prefer_local=True: _fake_kline())
+
+    r = dm.get_kline_by_config("000001", days=20, min_rows=10, update_cache=True)
+
+    assert r["ok"] is True
+    assert merges == ["000001"]

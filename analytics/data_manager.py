@@ -431,11 +431,26 @@ def _fetch_tushare_kline_by_config(code: str, days: int, cfg: dict) -> pd.DataFr
     return _standardize_kline_for_cache(df)
 
 
+# 标记「这份数据原封不动来自本地 CSV 缓存」。用于让 get_kline_by_config 跳过
+# merge_kline_cache —— 把刚从 CSV 读出来的东西再原样写回去，等于每只股票白做
+# 一次「读 CSV + concat + 重写 CSV + 更新元数据」。一轮 5000 只的全市场扫描
+# 就是 5000 次无谓的读写放大，而且全在 GIL 内串行抢占唯一 worker 的 CPU。
+_FROM_LOCAL_CACHE = "_jw_from_local_cache"
+
+
+def _mark_from_local(df: pd.DataFrame) -> pd.DataFrame:
+    try:
+        df.attrs[_FROM_LOCAL_CACHE] = True
+    except Exception:
+        pass
+    return df
+
+
 def _fetch_current_kline(code: str, days: int, min_rows: int, prefer_local: bool = True) -> pd.DataFrame:
     if prefer_local:
         local = get_local(code)
         if local is not None and not local.empty and len(local) >= min_rows and not _kline_is_stale_for_live_use(local):
-            return local.tail(days).reset_index(drop=True)
+            return _mark_from_local(local.tail(days).reset_index(drop=True))
 
     try:
         from market import ths_quote as _tq
@@ -449,7 +464,7 @@ def _fetch_current_kline(code: str, days: int, min_rows: int, prefer_local: bool
 
     local = get_local(code)
     if local is not None and not local.empty and len(local) >= min_rows:
-        return local.tail(days).reset_index(drop=True)
+        return _mark_from_local(local.tail(days).reset_index(drop=True))
     return pd.DataFrame()
 
 
@@ -490,7 +505,14 @@ def get_kline_by_config(code: str, days: int = 60, min_rows: int = 10, update_ca
             errors.append(f"{source}: no data")
             continue
 
-        if update_cache:
+        # 数据原样来自本地 CSV 时无需回写：没有任何新增行，merge 只会白读白写一遍
+        _cached_hit = False
+        try:
+            _cached_hit = bool(df.attrs.get(_FROM_LOCAL_CACHE))
+        except Exception:
+            _cached_hit = False
+
+        if update_cache and not _cached_hit:
             try:
                 merged = merge_kline_cache(clean_code, df)
                 if merged is not None and not merged.empty and len(merged) >= min_rows:
