@@ -44,6 +44,10 @@
   "OPTIONS,POST"
  ],
  [
+  "/api/admin/analytics",
+  "GET,HEAD,OPTIONS"
+ ],
+ [
   "/api/admin/announcements",
   "GET,HEAD,OPTIONS"
  ],
@@ -194,6 +198,10 @@
  [
   "/api/admin/users/<int:uid>",
   "DELETE,OPTIONS"
+ ],
+ [
+  "/api/admin/users/<int:uid>",
+  "OPTIONS,PUT"
  ],
  [
   "/api/admin/users/<int:uid>/active",

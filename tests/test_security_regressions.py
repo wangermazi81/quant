@@ -152,17 +152,29 @@ def test_external_research_urls_are_protocol_filtered():
 
 
 def test_csp_separates_elements_from_legacy_inline_attributes():
+    """CSP 必须把「元素」与「遗留内联属性」分开控制，且不得放开 eval。
+
+    这里断言的是**安全性质**，不是某一份具体的外部主机白名单：
+    白名单只会越收越紧（2026-07-26 起全站资源已本地化，jsdelivr/Google Fonts/
+    cdnjs 全部从 CSP 移除），把主机名写死会让「变得更安全」反而把测试打红 ——
+    这条用例此前就是这么红的。
+    """
     source = (Path(__file__).parent.parent / "app_security.py").read_text(encoding="utf-8")
     csp = source[source.index("    csp = ("):source.index("    @app.before_request")]
 
+    # ① 绝不允许 eval：ui-events.js 已改为「安全调用解析器 + 预编译静态表」
     assert "'unsafe-eval'" not in csp
-    assert "script-src-elem 'self' https://cdn.jsdelivr.net" in csp
-    assert "script-src-attr 'unsafe-inline'" in csp
-    assert (
-        "style-src-elem 'self' https://fonts.googleapis.com https://cdnjs.cloudflare.com"
-        in csp
-    )
-    assert "style-src-attr 'unsafe-inline'" in csp
+    # ② 脚本/样式的**元素**必须与**属性**分开声明，属性放宽不得连带放宽元素
+    assert "script-src-elem" in csp and "script-src-attr 'unsafe-inline'" in csp
+    assert "style-src-elem" in csp and "style-src-attr 'unsafe-inline'" in csp
+    # ③ 元素级绝不允许内联脚本/样式（这才是 XSS 注入真正的落地点）
+    for directive in ("script-src-elem", "style-src-elem"):
+        line = next(ln for ln in csp.splitlines() if directive in ln)
+        assert "'unsafe-inline'" not in line, f"{directive} 不得放开内联：{line.strip()}"
+    # ④ 兜底指令不能缺
+    for must in ("default-src 'self'", "object-src 'none'", "base-uri 'self'",
+                 "frame-ancestors 'self'"):
+        assert must in csp, f"CSP 缺少 {must}"
 
 
 def test_expensive_public_routes_have_endpoint_rate_limits():
