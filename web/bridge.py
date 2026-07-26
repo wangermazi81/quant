@@ -979,9 +979,12 @@ def bridge_report_signal(signal_id):
     data = request.json or {}
     status = data.get("status")
     msg = data.get("msg", "")
+    # 桥接器若能从今日委托/成交页读到真实成交均价就一并回传，
+    # 台账据此记成本；读不到则回退信号价并在返回里标 price_source=signal。
+    exec_price = data.get("exec_price")
 
     # 校验并更新状态
-    res = um.report_trade_signal(signal_id, status, msg)
+    res = um.report_trade_signal(signal_id, status, msg, exec_price=exec_price)
     if not res.get("ok"):
         return jsonify(res)
 
@@ -1006,19 +1009,27 @@ def bridge_report_signal(signal_id):
         if res["action"] == "BUY":
             s["executed"] += 1
             s["today_trades"] = s.get("today_trades", 0) + 1
+            # 成本一律以**真实成交均价**为准；桥接器没回传时才退回信号价。
+            cost_px = float(res.get("exec_price") or res["price"])
             s["positions"][code] = {
                 "name": res["name"],
                 "shares": res["shares"],
-                "cost": res["price"],
+                "cost": cost_px,
+                "price_source": res.get("price_source", "signal"),
                 "date": datetime.now().strftime("%Y-%m-%d"),
             }
             # ── 实盘持仓台账（打板 Ride 自动卖出的数据源）──
             # 买入成交确认 → 记台账（带当前策略，da_ban 才会被 Ride 自动管理卖出）。
-            # OCR 读不到成本价，但这里是我们自己下的单，价/量/日精确。
             try:
                 stg = s.get("active_strategy") or ""
                 um.record_live_position(uid, code, res["name"] or "",
-                                        float(res["price"]), int(res["shares"]), strategy=stg)
+                                        cost_px, int(res["shares"]), strategy=stg)
+                if res.get("price_source") != "exec":
+                    # 止损/止盈/回落都基于这个成本价算，用信号价顶替时要留痕，
+                    # 否则事后无从判断风控基准是不是漂了。
+                    logger.warning(
+                        "[live台账 uid=%s] %s 未拿到成交价，成本按信号价 %.3f 记账"
+                        "（止损止盈基准可能偏离真实成交 1%%-3%%）", uid, code, cost_px)
             except Exception as _e:
                 logger.warning(f"[live台账 uid={uid}] 记录买入失败（不影响下单）: {_e}")
             # 同步执行队列状态：找到这条队列项，标记 executed（含旧版误标 done 的）

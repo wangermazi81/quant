@@ -249,11 +249,22 @@ class CloudLocalBridge:
             logger.error(f"拉取交易信号失败: {e}")
             return []
 
-    def report_result(self, signal_id: int, status: str, msg: str):
-        """上报成交或失败结果给云端"""
+    def report_result(self, signal_id: int, status: str, msg: str, exec_price=None):
+        """上报成交或失败结果给云端。
+
+        exec_price 是**真实成交均价**（执行器从今日委托/成交页读到）。云端台账据此
+        记成本；拿不到才回退信号价。打板/追高时两者可差 1%-3%，用信号价当成本会让
+        止损止盈基于错误基准（可能提前止盈、延迟止损）。
+        """
         url = f"{self.server_url}/api/bridge/signals/{signal_id}/report"
+        payload = {"status": status, "msg": msg}
         try:
-            resp = self.session.post(url, json={"status": status, "msg": msg}, timeout=5)
+            if exec_price is not None and float(exec_price) > 0:
+                payload["exec_price"] = float(exec_price)
+        except (TypeError, ValueError):
+            pass
+        try:
+            resp = self.session.post(url, json=payload, timeout=5)
             if resp.status_code == 200 and resp.json().get("ok"):
                 logger.info(f"✅ 信号 ID={signal_id} 执行结果成功上报至云端")
             else:
@@ -374,6 +385,8 @@ class CloudLocalBridge:
 
             status = result.get("status", "failed")
             msg    = result.get("msg", "未知")
+            # 执行器若读到了真实成交均价就带上（mobile_ths_operator 会给 exec_price）
+            exec_px = result.get("exec_price") or result.get("avg_price")
             # 富信息日志：让本地网页运行日志能看到对话框具体内容
             if result.get("dialog_title"):
                 msg = f"{msg} | 对话框=[{result['dialog_title']}] {result.get('dialog_body','')}"
@@ -394,11 +407,13 @@ class CloudLocalBridge:
                 if isinstance(reconcile, dict):
                     status = reconcile.get("status", status)
                     msg = reconcile.get("msg", msg)
+                    exec_px = reconcile.get("exec_price") or exec_px
                     logger.info(f"🔎 手机端回读对账: status={status} | source={reconcile.get('source', '')}")
 
             icon = {"executed": "??", "submitted": "??", "cancelled": "??", "failed": "?"}.get(status, "?")
-            logger.info(f"{icon} 实盘 {action} 结果: status={status} | {msg}")
-            self.report_result(sig_id, status, msg)
+            logger.info(f"{icon} 实盘 {action} 结果: status={status} | {msg}"
+                        + (f" | 成交均价={exec_px}" if exec_px else " | 未读到成交价(按信号价记账)"))
+            self.report_result(sig_id, status, msg, exec_price=exec_px)
             return {"status": status, "manual_confirm": manual_confirm, "signal_id": sig_id, "msg": msg}
         except Exception as e:
             logger.error(f"❌ 本地执行下单发生异常: {e}")

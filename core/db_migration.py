@@ -339,6 +339,10 @@ def migrate_users_db():
         # 但表无此列 + save 白名单漏了 → 一直存不进库，重启回退 config 默认（护栏被放松）。
         _safe_add_column(c, "user_settings", "max_positions", "INTEGER DEFAULT 5")
         _safe_add_column(c, "user_settings", "single_position_max_ratio", "REAL DEFAULT 0.20")
+        # 实盘真实成交均价：桥接器从今日委托/成交页读到后回传。此前台账一律按
+        # **信号价**记成本，打板/追高场景两者可差 1%-3%，止损止盈就是拿错误基准
+        # 算 pnl（可能提前止盈、延迟止损），加权均价还会随每笔偏差持续漂移。
+        _safe_add_column(c, "trade_signals", "exec_price", "REAL DEFAULT NULL")
         c.commit()
         logger.info("[users.db] 新表创建/迁移完成 ✓")
     finally:

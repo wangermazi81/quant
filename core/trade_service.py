@@ -114,8 +114,12 @@ def execute_buy(uid: int, code: str, name: str, price: float, shares: int,
             _today = datetime.now().strftime("%Y-%m-%d")
             s["today_date"] = _today
             _persist_state(uid, today_trades=s["today_trades"], today_date=_today)
+            # 必须回写**实际成交**股数：submit_buy 会把请求股数向下取整到整手
+            # （手动买 150 股实际只成交 100 股）。此前这里记的是请求值，
+            # 面板持仓/盈亏就按 150 股显示（虚增 50%），直到重启才从 DB 纠正。
+            filled = int(result.get("shares", shares) or 0)
             s["positions"][code] = {
-                "name": name, "shares": shares, "cost": result["exec_price"],
+                "name": name, "shares": filled, "cost": result["exec_price"],
                 "date": _today,
                 "strategy": buy_strategy,
             }
@@ -166,8 +170,22 @@ def execute_sell(uid: int, code: str, price: float, sell_reason: str = "手动�
         return result
     else:
         # ── 实盘逻辑：写入信号队列 ──
-        shares = pos["shares"] if pos else 0
-        name = pos["name"] if pos else ""
+        # 内存持仓视图是易失的：服务重启后 get_user_state 只从**模拟盘** DB 恢复，
+        # 实盘持仓不在里面 → 用户在面板点「卖出」一律得到「无持仓」，
+        # 行情急跌时人工止损通道被堵死。以 live_positions 台账为准兜底。
+        shares = int((pos or {}).get("shares") or 0)
+        name = (pos or {}).get("name") or ""
+        if shares <= 0:
+            try:
+                for lp in um.get_live_positions(uid):
+                    if str(lp.get("code")) == str(code):
+                        shares = int(lp.get("shares") or 0)
+                        name = lp.get("name") or name or code
+                        logger.info("[卖出] uid=%s %s 内存无持仓，改用 live_positions 台账 %s 股",
+                                    uid, code, shares)
+                        break
+            except Exception as e:
+                logger.warning(f"[卖出] 读 live_positions 台账失败 uid={uid} {code}: {e}")
         if shares <= 0:
             return {"ok": False, "msg": "无持仓"}
         signal_id = um.add_trade_signal(uid, code, name, "SELL", price, shares)

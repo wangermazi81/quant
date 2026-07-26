@@ -1430,16 +1430,39 @@ def get_trade_signal(signal_id: int) -> dict | None:
     return dict(row) if row else None
 
 
-def report_trade_signal(signal_id: int, status: str, msg: str = "") -> dict:
-    """本地交易机上报交易执行结果，更新信号状态与反馈消息"""
+def report_trade_signal(signal_id: int, status: str, msg: str = "",
+                        exec_price: float | None = None) -> dict:
+    """本地交易机上报交易执行结果，更新信号状态与反馈消息。
+
+    exec_price 是**真实成交均价**（桥接器从今日委托/成交页读到）。
+    打板/追高场景它与信号价可差 1%-3%，此前台账一律按信号价记成本，
+    止损止盈就是拿错误基准算 pnl（可能提前止盈、延迟止损），
+    且加权均价会随每笔偏差持续漂移。
+    """
+    px = None
+    if exec_price is not None:
+        try:
+            px = float(exec_price)
+            if px <= 0:
+                px = None
+        except (TypeError, ValueError):
+            px = None
+
     with _lock, _conn() as c:
         row = c.execute("SELECT * FROM trade_signals WHERE id=?", (signal_id,)).fetchone()
         if not row:
             return {"ok": False, "error": "信号不存在"}
-        c.execute(
-            "UPDATE trade_signals SET status=?, msg=?, updated_at=datetime('now','localtime') WHERE id=?",
-            (status, msg, signal_id),
-        )
+        if px is not None:
+            c.execute(
+                "UPDATE trade_signals SET status=?, msg=?, exec_price=?, "
+                "updated_at=datetime('now','localtime') WHERE id=?",
+                (status, msg, px, signal_id),
+            )
+        else:
+            c.execute(
+                "UPDATE trade_signals SET status=?, msg=?, updated_at=datetime('now','localtime') WHERE id=?",
+                (status, msg, signal_id),
+            )
         c.commit()
         return {
             "ok": True,
@@ -1449,6 +1472,9 @@ def report_trade_signal(signal_id: int, status: str, msg: str = "") -> dict:
             "action": row["action"],
             "price": row["price"],
             "shares": row["shares"],
+            # 成交价优先，取不到时回退信号价；price_source 供风控判断基准可信度
+            "exec_price": px if px is not None else row["price"],
+            "price_source": "exec" if px is not None else "signal",
         }
 
 

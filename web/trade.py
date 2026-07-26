@@ -298,13 +298,45 @@ def sell_position():
 @bp.route("/api/positions/close", methods=["POST"])
 @require_auth
 def close_position():
+    """从**内存持仓视图**里移除一条记录（不是真平仓）。
+
+    历史问题：这个接口只 `del s["positions"][code]`，但模拟盘 DB 里的仓位仍在 ——
+    风控照样会对它触发自动卖出，重启后又从 DB「复活」，用户对自身仓位的认知与事实脱节。
+    而且它叫「平仓」，极易被当成真的卖出。
+
+    现在收敛为「只清理与账本不符的残留内存项」：DB 里确实还有这只票的持仓时一律拒绝，
+    并指向真正的卖出接口。想真平仓请走 /api/positions/sell 或 /api/paper/sell。
+    （前端目前没有任何地方调用本接口。）
+    """
     uid  = session["user_id"]
     s    = get_user_state(uid)
-    code = request.json.get("code", "")
-    if code in s["positions"]:
-        del s["positions"][code]
-        _add_log(uid, f"🔻 平仓: {code}", "WARN")
-    return jsonify({"ok": True})
+    code = (request.json or {}).get("code", "")
+    if code not in s["positions"]:
+        return jsonify({"ok": True, "msg": "内存视图中无此持仓"})
+
+    still_held = False
+    try:
+        broker_cfg = um.get_user_broker_config(uid)
+        if DRY_RUN or broker_cfg.get("broker_type", "paper") == "paper":
+            still_held = any(str(p.get("code")) == str(code)
+                             for p in pb.get_broker(uid).get_positions())
+        else:
+            still_held = any(str(p.get("code")) == str(code)
+                             for p in um.get_live_positions(uid))
+    except Exception as e:
+        logger.warning(f"[平仓] 校验账本失败 uid={uid} {code}: {e}")
+        still_held = True          # 查不清就不许删，避免制造幽灵持仓
+
+    if still_held:
+        return jsonify({
+            "ok": False,
+            "msg": "账本中仍持有该股，不能只从视图移除（会变成幽灵持仓：风控仍会自动卖出、"
+                   "重启后又出现）。请用卖出功能真正平仓。",
+        }), 409
+
+    del s["positions"][code]
+    _add_log(uid, f"🧹 已清理残留持仓视图: {code}（账本中已无该持仓）", "WARN")
+    return jsonify({"ok": True, "msg": "已清理残留的内存持仓视图"})
 
 
 # ── 实盘资金/账户/交易设置（xiadan GUI 读取）─────────────────────
