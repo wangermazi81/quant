@@ -8,14 +8,38 @@
 ─────────────────────────────────────────────────────────
 """
 
+import os
 import threading
 import time
 import logging
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+# ── 行情锁等待上限（秒）────────────────────────────────────────
+# 逐批持锁后健康态单批 <0.3s；等超过这个时间说明撞上了重连
+# （_do_connect 最坏 5 台服务器 × 5s = 25s 持锁）或异常争用。
+# 此时宁可快速返回空、让上层走缓存兜底，也不要把 gunicorn 线程钉死十几秒
+# （生产 workers=1 + gthread，线程被占满就是全站假死）。
+_LOCK_WAIT_S = float(os.environ.get("TDX_LOCK_WAIT_S", "3") or 3)
+
+
+@contextmanager
+def _timed_lock(lock, timeout: float | None = None):
+    """限时获取锁：拿到 yield True，超时 yield False。
+
+    调用方拿到 False 必须直接返回空结果，且**绝不能**改写 _ok ——
+    锁等待超时不等于连接坏死，翻 _ok 会让全项目的 `client._ok` 判断集体绕开 TDX。
+    """
+    got = lock.acquire(timeout=_LOCK_WAIT_S if timeout is None else timeout)
+    try:
+        yield got
+    finally:
+        if got:
+            lock.release()
 
 # ── 股票名称缓存（从 stock_names.json 加载，避免每次查磁盘）──────
 _name_cache: Dict[str, str] = {}
@@ -156,12 +180,24 @@ class TDXQuoteClient:
         results = []
         BATCH = 80
         total = len(params)
-        _scan_prog.update({"running": True, "current": 0, "total": total})
+        # 只有真·多批次扫描才上报全局进度：否则 1 只票的持仓刷新会清掉
+        # 正在进行的全市场扫描进度条（_scan_prog 是模块级全局）。
+        report = total > BATCH
+        if report:
+            _scan_prog.update({"running": True, "current": 0, "total": total})
 
-        with self._lock:
-            aborted = False
-            for i in range(0, total, BATCH):
-                batch = params[i: i + BATCH]
+        # ★ 逐批持锁（原来是一把锁包死整个批次循环 = 全市场 5-15 秒独占连接）。
+        #   pytdx 自身的线程安全粒度就是「单次 call_api」（其 multithread 锁），
+        #   我们没有理由再套一层更粗的。拆开后其它线程最多等一个批次（约 0.2s）。
+        aborted = False
+        lock_timeout = False
+        for i in range(0, total, BATCH):
+            batch = params[i: i + BATCH]
+            with _timed_lock(self._lock) as got:
+                if not got:
+                    logger.warning(f"[TDX] 行情锁等待超时 {_LOCK_WAIT_S}s，放弃本次 {total} 只请求")
+                    lock_timeout = True
+                    break
                 for _attempt in range(2):     # 单批失败/空：重连后重试一次
                     try:
                         raw = self._api.get_security_quotes(batch)
@@ -179,8 +215,9 @@ class TDXQuoteClient:
                         if not self._do_connect():
                             aborted = True
                             break
-                if aborted:
-                    break
+            if aborted:
+                break
+            if report:
                 _scan_prog["current"] = min(i + BATCH, total)
 
         # 本轮拿到任何行情 → 连接健康，解除历史失败冷却；
@@ -189,10 +226,13 @@ class TDXQuoteClient:
         if results:
             self._ok = True
             type(self)._last_fail_ts = 0.0
-        elif codes:
+        elif codes and not lock_timeout:
+            # ★ 锁等待超时 ≠ 连接坏死：这里若也翻 _ok=False，
+            #   全项目的 `client._ok` 判断会集体绕开 TDX，等于自伤。
             self._ok = False
 
-        _scan_prog["running"] = False
+        if report:
+            _scan_prog["running"] = False
 
         quotes = [_parse_quote(r) for r in results if r]
         # 补充名称（pytdx get_security_quotes 不返回名称）
@@ -225,7 +265,10 @@ class TDXQuoteClient:
         if not self._ensure():
             return []
         codes = []
-        with self._lock:
+        with _timed_lock(self._lock) as _got:
+            if not _got:
+                logger.warning("[TDX] 股票列表锁等待超时，返回空")
+                return []
             for market in (_MARKET_SH, _MARKET_SZ):
                 offset = 0
                 while True:
@@ -267,7 +310,10 @@ class TDXQuoteClient:
             return []
         market = _market(code)
         count   = min(days, 800)
-        with self._lock:
+        with _timed_lock(self._lock) as _got:
+            if not _got:
+                logger.warning(f"[TDX] K线锁等待超时，跳过 {code}")
+                return []
             for _attempt in range(2):
                 try:
                     # pytdx category: 9 = 日K线
@@ -303,7 +349,10 @@ class TDXQuoteClient:
         if not self._ensure():
             return {}
         market = _market(code)
-        with self._lock:
+        with _timed_lock(self._lock) as _got:
+            if not _got:
+                logger.warning(f"[TDX] 财务信息锁等待超时，跳过 {code}")
+                return {}
             for _attempt in range(2):
                 try:
                     fi = self._api.get_finance_info(market, code)
@@ -326,7 +375,10 @@ class TDXQuoteClient:
         """
         if not index_pairs or not self._ensure():
             return []
-        with self._lock:
+        with _timed_lock(self._lock) as _got:
+            if not _got:
+                logger.warning("[TDX] 指数行情锁等待超时，返回空")
+                return []
             for _attempt in range(2):
                 try:
                     raw = self._api.get_security_quotes(index_pairs)
@@ -348,7 +400,10 @@ class TDXQuoteClient:
         if not self._ensure():
             return []
         count = min(days, 800)
-        with self._lock:
+        with _timed_lock(self._lock) as _got:
+            if not _got:
+                logger.warning(f"[TDX] 指数K线锁等待超时，跳过 {code}")
+                return []
             try:
                 bars = self._api.get_security_bars(9, market, code, 0, count)
                 if not bars:
@@ -511,10 +566,12 @@ def get_client() -> Optional[TDXQuoteClient]:
             now = time.time()
             if now - _last_heal_ts > _HEAL_INTERVAL:
                 _last_heal_ts = now
-                with _client._lock:
-                    if not _client._ok:          # 双检：拿到锁后确认仍不健康
+                # 自愈重连也必须限时：_do_connect 最坏 5 台服务器 × 5s = 25s，
+                # 不能让「顺手 get_client()」的请求线程卡在这里。
+                with _timed_lock(_client._lock) as _got:
+                    if _got and not _client._ok:  # 双检：拿到锁后确认仍不健康
                         logger.warning("[TDX] 检测到连接假死(_ok=False)，自愈重连...")
-                        _client._do_connect()    # 绕过冷却直接重连
+                        _client._do_connect()     # 绕过冷却直接重连
         return _client
     # 慢速路径：首次初始化加锁
     with _client_lock:

@@ -180,3 +180,6 @@ tools/bridge_config.json.codex-test-backup
 /search_manager.py
 /test_ai_api.py
 /test_mimo.py
+
+# 交易日历缓存（运行态，由 tools/refresh_trading_calendar.py 生成）
+data/trading_calendar.json

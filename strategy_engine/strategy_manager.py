@@ -455,6 +455,11 @@ _mkt_cache = {
     "ts": 0,
 }
 _MKT_CACHE_TTL = 300  # 5 分钟
+# 单飞锁：并发请求同时错过 TTL 时只让一个线程真去拉全市场。
+# 必须是 RLock —— _get_full_market_snapshot 的兜底分支会回调
+# _get_market_quotes_cached，普通 Lock 会自死锁。
+import threading as _threading
+_mkt_refresh_lock = _threading.RLock()
 # 磁盘兜底行情的最大可用陈旧度（小时）。超过即视为不可用——
 # 宁可选不出票，也不能拿隔夜/隔周的价量当「当前行情」去下单。
 _DISK_UNIVERSE_MAX_AGE_H = float(os.environ.get("SM_DISK_UNIVERSE_MAX_AGE_H", "12") or "12")
@@ -560,10 +565,21 @@ def _get_market_quotes_cached(force_refresh: bool = False) -> list:
         age = int(now - _mkt_cache["ts"])
         logger.info(f"[SM] 复用全市场行情缓存（{age}s前，{len(_mkt_cache['sorted_quotes'])}只）")
         return _mkt_cache["sorted_quotes"]
-    quotes = _refresh_market_cache()
-    # 拿到数据就顺手持久化一份，下次全挂时有兜底
-    _persist_universe_to_disk(quotes)
-    return quotes
+
+    # ★ 单飞：TTL 未命中时只让一个线程真去拉全市场，其余等它拉完复用结果。
+    #   此前「查 TTL → 未命中就刷」中间没有互斥，N 个并发请求同时错过 TTL 就会
+    #   发起 N 次全市场扫描，还都堵在同一把 TDX 锁上串行 —— 第 3 个用户要等 45 秒。
+    #   触发点不止后台扫描：/api/market 大盘接口也走这里，用户点一次「刷新」就可能拖出一次。
+    with _mkt_refresh_lock:
+        now = _time.time()
+        if not force_refresh and _mkt_cache["sorted_quotes"] and (now - _mkt_cache["ts"]) < _MKT_CACHE_TTL:
+            # 等锁期间已经被别的线程刷好了，直接复用
+            logger.info(f"[SM] 等待期间缓存已被刷新，直接复用（{len(_mkt_cache['sorted_quotes'])}只）")
+            return _mkt_cache["sorted_quotes"]
+        quotes = _refresh_market_cache()
+        # 拿到数据就顺手持久化一份，下次全挂时有兜底
+        _persist_universe_to_disk(quotes)
+        return quotes
 
 
 # ── 全市场【未过滤】快照：供涨跌家数 / 两市成交额等市场统计用 ──────────────
