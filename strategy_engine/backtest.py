@@ -449,6 +449,9 @@ class Cerebro:
         self._monthly  = MonthlyAnalyzer()
 
         self.data_feeds  = {}   # code -> pd.DataFrame
+        self._open_panel  = None    # date×code 宽表（P-5，懒构建）
+        self._close_panel = None
+        self._date_index  = {}      # code -> 已排序的 date 数组（二分用）
         self.scan_fn     = None
         self.logs        = []
         self.equity_curve= []
@@ -456,6 +459,55 @@ class Cerebro:
 
     def add_data(self, code: str, df: pd.DataFrame):
         self.data_feeds[code] = df.sort_values("date").reset_index(drop=True)
+        # 数据变了，之前建好的宽表/日期索引作废
+        self._open_panel = None
+        self._close_panel = None
+        self._date_index = {}
+
+    # ── P-5：价格查询从「逐日对每只股票做布尔掩码」改为宽表 + 二分 ──────
+    # 原实现里 _open_prices/_close_prices 每天都对**每只**股票做一次
+    # `df[df["date"] == day]`：250 交易日 × 4000 只 = 100 万次整列比较，
+    # 每次还分配一个布尔数组。单次全市场回测就这样白烧掉数分钟 CPU（GIL 内，
+    # 且与 Web 同进程）。改成一次性 pivot 出 date×code 宽表后按行标签 O(1) 取整日截面。
+    #
+    # ★语义必须保持：原来「当天没有这只票的数据就跳过」，宽表里对应的是 NaN，
+    #   必须继续跳过 —— 绝不能把 NaN 当成 0 价喂进撮合。
+    def _ensure_price_panels(self):
+        if self._open_panel is not None:
+            return
+        opens, closes = {}, {}
+        for code, df in self.data_feeds.items():
+            if df is None or df.empty:
+                continue
+            # 同一天重复行取第一条，与原 `row.iloc[0]` 的取法一致
+            s = df.drop_duplicates(subset="date", keep="first").set_index("date")
+            opens[code] = s["open"]
+            closes[code] = s["close"]
+        self._open_panel = pd.DataFrame(opens) if opens else pd.DataFrame()
+        self._close_panel = pd.DataFrame(closes) if closes else pd.DataFrame()
+
+    @staticmethod
+    def _row_to_prices(panel: pd.DataFrame, day) -> dict:
+        if panel is None or panel.empty:
+            return {}
+        try:
+            row = panel.loc[day]
+        except KeyError:
+            return {}          # 当天全市场都没有数据（非交易日等）
+        if isinstance(row, pd.DataFrame):   # 万一 index 仍有重复，取第一行
+            row = row.iloc[0]
+        return {code: float(v) for code, v in row.items() if pd.notna(v)}
+
+    def _rows_upto(self, code: str, day) -> int:
+        """该股 date <= day 的行数（二分，替代整列布尔掩码）。"""
+        df = self.data_feeds.get(code)
+        if df is None or df.empty:
+            return 0
+        arr = self._date_index.get(code)
+        if arr is None:
+            arr = df["date"].to_numpy()
+            self._date_index[code] = arr
+        return int(np.searchsorted(arr, np.datetime64(day), side="right"))
 
     def set_scan(self, fn):
         """设置 scan() 策略函数"""
@@ -463,26 +515,21 @@ class Cerebro:
 
     # ── 数据辅助 ──
     def _open_prices(self, day) -> dict:
-        prices = {}
-        for code, df in self.data_feeds.items():
-            row = df[df["date"] == day]
-            if not row.empty:
-                prices[code] = float(row.iloc[0]["open"])
-        return prices
+        self._ensure_price_panels()
+        return self._row_to_prices(self._open_panel, day)
 
     def _close_prices(self, day) -> dict:
-        prices = {}
-        for code, df in self.data_feeds.items():
-            row = df[df["date"] == day]
-            if not row.empty:
-                prices[code] = float(row.iloc[0]["close"])
-        return prices
+        self._ensure_price_panels()
+        return self._row_to_prices(self._close_panel, day)
 
     def _kline(self, code: str, n: int, day) -> pd.DataFrame:
         df = self.data_feeds.get(code)
         if df is None:
             return pd.DataFrame()
-        return df[df["date"] <= day].tail(n).reset_index(drop=True)
+        pos = self._rows_upto(code, day)
+        if pos <= 0:
+            return df.iloc[0:0].reset_index(drop=True)
+        return df.iloc[max(0, pos - n):pos].reset_index(drop=True)
 
     def _quotes(self, codes: list, day) -> pd.DataFrame:
         rows = []
@@ -490,14 +537,15 @@ class Cerebro:
             df = self.data_feeds.get(c)
             if df is None:
                 continue
-            sub = df[df["date"] <= day]
-            if not sub.empty:
-                last  = sub.iloc[-1]
+            # 同 _kline：二分定位替代整列布尔掩码（P-5）
+            pos = self._rows_upto(c, day)
+            if pos > 0:
+                last  = df.iloc[pos - 1]
                 close = float(last["close"])
                 # ★ 修复：K线 DataFrame 无 change_pct 列，旧代码 last.get("change_pct",0)
                 #   恒为 0 → 任何按「涨跌幅」过滤的策略(如 MACD动量 chg>=1%)信号恒 0、
                 #   回测永远 0 交易。改用前后两根收盘价实算涨跌幅，并补昨收/量比对齐实盘 quote。
-                prev_close = float(sub.iloc[-2]["close"]) if len(sub) >= 2 else close
+                prev_close = float(df.iloc[pos - 2]["close"]) if pos >= 2 else close
                 chg = round((close - prev_close) / prev_close * 100, 2) if prev_close else 0.0
                 rows.append({
                     "代码": c, "名称": "",
