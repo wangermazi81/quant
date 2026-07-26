@@ -19,7 +19,7 @@
 
 <!-- ===== SIDEBAR ===== -->
 <aside class="sidebar" id="sidebar">
-  <div class="sidebar-logo" onclick="navigate('dashboard')">
+  <div class="sidebar-logo" data-ui-click="navigate('dashboard')">
     <svg class="logo-icon" viewBox="0 4 82 50" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:30px;height:22px" role="img" aria-label="见微 Alpha">
       <polygon points="35,10 15,50 55,50" stroke="#6366F1" stroke-width="3.5" fill="none" stroke-linejoin="round"/>
       <polygon points="35,14 18,48 52,48" stroke="#6366F1" stroke-width="1" fill="none" opacity="0.3"/>
@@ -41,25 +41,25 @@
 <div class="main">
   <!-- HEADER -->
   <header class="header">
-    <div class="header-collapse" onclick="toggleSidebar()" title="折叠菜单">
+    <div class="header-collapse" data-ui-click="toggleSidebar()" title="折叠菜单">
       <i class="fas fa-bars"></i>
     </div>
     <div class="header-breadcrumb" id="headerBread">
       <span>管理后台</span> / <b>工作台</b>
     </div>
     <div class="header-actions">
-      <div class="hbtn" id="noticeBtn" onclick="toggleNotice()" title="通知">
+      <div class="hbtn" id="noticeBtn" data-ui-click="toggleNotice()" title="通知">
         <i class="fas fa-bell"></i>
         <span class="badge" id="noticeBadge">3</span>
       </div>
-      <div class="hbtn" onclick="toggleFullscreen()" title="全屏">
+      <div class="hbtn" data-ui-click="toggleFullscreen()" title="全屏">
         <i class="fas fa-expand" id="fsIcon"></i>
       </div>
-      <div class="hbtn" onclick="toggleThemePanel()" title="主题设置">
+      <div class="hbtn" data-ui-click="toggleThemePanel()" title="主题设置">
         <i class="fas fa-palette"></i>
       </div>
       <div class="header-divider"></div>
-      <div class="header-user" id="headerUser" onclick="toggleUserDropdown()">
+      <div class="header-user" id="headerUser" data-ui-click="toggleUserDropdown()">
         <div class="h-avatar" id="hAvatar">A</div>
         <div>
           <div class="h-uname" id="hUname">管理员</div>
@@ -67,10 +67,10 @@
         </div>
         <i class="fas fa-chevron-down" style="font-size:11px;color:rgba(255,255,255,.5);margin-left:4px"></i>
         <div class="user-dropdown" id="userDropdown">
-          <div class="ud-item" onclick="navigate('user-center');closeDropdown()"><i class="fas fa-user"></i> 个人中心</div>
-          <div class="ud-item" onclick="navigate('change-pwd');closeDropdown()"><i class="fas fa-key"></i> 修改密码</div>
+          <div class="ud-item" data-ui-click="navigate('user-center');closeDropdown()"><i class="fas fa-user"></i> 个人中心</div>
+          <div class="ud-item" data-ui-click="navigate('change-pwd');closeDropdown()"><i class="fas fa-key"></i> 修改密码</div>
           <div class="ud-divider"></div>
-          <div class="ud-item" onclick="doLogout()"><i class="fas fa-sign-out-alt"></i> 退出登录</div>
+          <div class="ud-item" data-ui-click="doLogout()"><i class="fas fa-sign-out-alt"></i> 退出登录</div>
         </div>
       </div>
     </div>
@@ -80,10 +80,10 @@
   <div class="notice-panel" id="noticePanel">
     <div class="np-header">
       <span>通知消息</span>
-      <span style="font-size:12px;color:var(--text3);cursor:pointer" onclick="clearNotices()">全部已读</span>
+      <span style="font-size:12px;color:var(--text3);cursor:pointer" data-ui-click="clearNotices()">全部已读</span>
     </div>
     <div class="np-list" id="npList"></div>
-    <div class="np-footer" onclick="navigate('notifications');closeNotice()">查看全部</div>
+    <div class="np-footer" data-ui-click="navigate('notifications');closeNotice()">查看全部</div>
   </div>
 
   <!-- TABS BAR -->
@@ -157,11 +157,11 @@
       <div class="card">
         <div class="toolbar">
           <div class="search-box">
-            <input type="text" id="userSearch" placeholder="搜索用户名 / 邮箱" onkeydown="if(event.key==='Enter')loadUsers(1)">
-            <button onclick="loadUsers(1)"><i class="fas fa-search"></i></button>
+            <input type="text" id="userSearch" placeholder="搜索用户名 / 邮箱" data-ui-keydown="if(event.key==='Enter')loadUsers(1)">
+            <button data-ui-click="loadUsers(1)"><i class="fas fa-search"></i></button>
           </div>
-          <button class="btn btn-primary" onclick="openUserModal()"><i class="fas fa-user-plus"></i> 新建用户</button>
-          <button class="btn btn-outline" onclick="loadUsers(usersState.page)" style="margin-left:auto"><i class="fas fa-sync-alt"></i> 刷新</button>
+          <button class="btn btn-primary" data-ui-click="openUserModal()"><i class="fas fa-user-plus"></i> 新建用户</button>
+          <button class="btn btn-outline" data-ui-click="loadUsers(usersState.page)" style="margin-left:auto"><i class="fas fa-sync-alt"></i> 刷新</button>
         </div>
         <table id="usersTable">
           <thead><tr>
@@ -180,7 +180,7 @@
         <div class="card-title"><i class="fas fa-shield-alt"></i> 管理员权限授权</div>
         <div class="toolbar">
           <span style="font-size:13px;color:var(--text2)">仅最高账号 admin 可为普通管理员勾选功能权限</span>
-          <button class="btn btn-outline" onclick="renderRoles()" style="margin-left:auto"><i class="fas fa-sync-alt"></i> 刷新</button>
+          <button class="btn btn-outline" data-ui-click="renderRoles()" style="margin-left:auto"><i class="fas fa-sync-alt"></i> 刷新</button>
         </div>
         <div class="role-grid" id="roleGrid"></div>
       </div>
@@ -191,7 +191,7 @@
       <div class="card">
         <div class="toolbar">
           <span style="font-size:13px;color:var(--text2)">积分流水记录（全平台）</span>
-          <button class="btn btn-outline" onclick="loadTransactions(txState.page)" style="margin-left:auto"><i class="fas fa-sync-alt"></i> 刷新</button>
+          <button class="btn btn-outline" data-ui-click="loadTransactions(txState.page)" style="margin-left:auto"><i class="fas fa-sync-alt"></i> 刷新</button>
         </div>
         <table>
           <thead><tr><th>ID</th><th>用户</th><th>操作</th><th>变化</th><th>余额</th><th>说明</th><th>时间</th></tr></thead>
@@ -252,8 +252,8 @@
               <input class="form-input" id="pc-pts-val" type="number" placeholder="充值=填增加量；设为=填目标值">
             </div>
             <div id="pc-pts-msg" class="form-err" style="min-height:0;margin-bottom:12px"></div>
-            <button class="btn btn-outline" onclick="selfPoints('set')"><i class="fas fa-pen"></i> 设为此值</button>
-            <button class="btn btn-primary" onclick="selfPoints('add')"><i class="fas fa-coins"></i> 充值(增加)</button>
+            <button class="btn btn-outline" data-ui-click="selfPoints('set')"><i class="fas fa-pen"></i> 设为此值</button>
+            <button class="btn btn-primary" data-ui-click="selfPoints('add')"><i class="fas fa-coins"></i> 充值(增加)</button>
           </div>
           <div class="card">
             <div class="card-title"><i class="fas fa-key"></i> 修改密码</div>
@@ -271,7 +271,7 @@
                 <input class="form-input" type="password" id="cpNew2" placeholder="再次输入新密码">
               </div>
               <div id="cp-msg" class="form-err" style="min-height:0;margin-bottom:12px"></div>
-              <button class="btn btn-primary" onclick="doChangePassword()"><i class="fas fa-save"></i> 保存密码</button>
+              <button class="btn btn-primary" data-ui-click="doChangePassword()"><i class="fas fa-save"></i> 保存密码</button>
             </div>
           </div>
         </div>
@@ -310,7 +310,7 @@
               <label class="form-label">过期时间（留空永久有效）</label>
               <input id="ann-expires" class="form-input" type="datetime-local">
             </div>
-            <button class="btn btn-primary" onclick="createAnnouncement()" style="padding:8px 24px;white-space:nowrap">
+            <button class="btn btn-primary" data-ui-click="createAnnouncement()" style="padding:8px 24px;white-space:nowrap">
               <i class="fas fa-paper-plane"></i> 发布公告
             </button>
           </div>
@@ -320,7 +320,7 @@
       <div class="card">
         <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
           <span><i class="fas fa-list"></i> 已发公告列表</span>
-          <button class="btn btn-outline" onclick="loadAnnouncements()" style="padding:4px 12px;font-size:12px">
+          <button class="btn btn-outline" data-ui-click="loadAnnouncements()" style="padding:4px 12px;font-size:12px">
             <i class="fas fa-sync-alt"></i> 刷新
           </button>
         </div>
@@ -357,7 +357,7 @@
             <label class="form-label">内容</label>
             <textarea id="cl-content" class="form-input" rows="3" placeholder="更新详情，支持换行" style="resize:vertical"></textarea>
           </div>
-          <button class="btn btn-primary" onclick="createChangelog()" style="height:38px">
+          <button class="btn btn-primary" data-ui-click="createChangelog()" style="height:38px">
             <i class="fas fa-plus"></i> 发布
           </button>
         </div>
@@ -365,7 +365,7 @@
       <div class="card">
         <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
           <span><i class="fas fa-list"></i> 更新日志列表</span>
-          <button class="btn btn-outline" onclick="loadChangelogAdmin()" style="padding:4px 12px;font-size:12px">
+          <button class="btn btn-outline" data-ui-click="loadChangelogAdmin()" style="padding:4px 12px;font-size:12px">
             <i class="fas fa-sync-alt"></i> 刷新
           </button>
         </div>
@@ -379,14 +379,14 @@
         <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
           <span><i class="fas fa-comment-dots"></i> 问题反馈</span>
           <div style="display:flex;gap:8px;align-items:center">
-            <select id="fb-filter" class="form-input" style="width:auto;padding:6px 10px" onchange="loadFeedback()">
+            <select id="fb-filter" class="form-input" style="width:auto;padding:6px 10px" data-ui-change="loadFeedback()">
               <option value="">全部</option>
               <option value="open">待处理</option>
               <option value="read">已读</option>
               <option value="in_progress">处理中</option>
               <option value="resolved">已解决</option>
             </select>
-            <button class="btn btn-outline" onclick="loadFeedback()" style="padding:6px 12px;font-size:12px">
+            <button class="btn btn-outline" data-ui-click="loadFeedback()" style="padding:6px 12px;font-size:12px">
               <i class="fas fa-sync-alt"></i> 刷新
             </button>
           </div>
@@ -413,7 +413,7 @@
             <label class="form-label">备注（可选）</label>
             <input id="inv-note" class="form-input" placeholder="如：朋友圈 / 某渠道" maxlength="60">
           </div>
-          <button class="btn btn-primary" onclick="createInvite()" style="padding:8px 24px;white-space:nowrap">
+          <button class="btn btn-primary" data-ui-click="createInvite()" style="padding:8px 24px;white-space:nowrap">
             <i class="fas fa-plus"></i> 生成
           </button>
         </div>
@@ -423,7 +423,7 @@
       <div class="card">
         <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
           <span><i class="fas fa-list"></i> 邀请码列表</span>
-          <button class="btn btn-outline" onclick="loadInvites()" style="padding:4px 12px;font-size:12px">
+          <button class="btn btn-outline" data-ui-click="loadInvites()" style="padding:4px 12px;font-size:12px">
             <i class="fas fa-sync-alt"></i> 刷新
           </button>
         </div>
@@ -444,7 +444,7 @@
       <div class="card">
         <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
           <span><i class="fas fa-key"></i> 待处理的找回密码申请</span>
-          <button class="btn btn-outline" onclick="loadResetRequests()" style="padding:4px 12px;font-size:12px">
+          <button class="btn btn-outline" data-ui-click="loadResetRequests()" style="padding:4px 12px;font-size:12px">
             <i class="fas fa-sync-alt"></i> 刷新
           </button>
         </div>
@@ -490,8 +490,8 @@
         </div>
 
         <div style="display:flex;gap:10px;margin-top:8px">
-          <button class="btn btn-primary" onclick="saveNotifyConfig()"><i class="fas fa-save"></i> 保存</button>
-          <button class="btn btn-outline" onclick="testNotify()"><i class="fas fa-paper-plane"></i> 发送测试</button>
+          <button class="btn btn-primary" data-ui-click="saveNotifyConfig()"><i class="fas fa-save"></i> 保存</button>
+          <button class="btn btn-outline" data-ui-click="testNotify()"><i class="fas fa-paper-plane"></i> 发送测试</button>
         </div>
         <div id="nc_msg" style="margin-top:12px;font-size:13px"></div>
 
@@ -512,7 +512,7 @@
           每次调用对应功能扣除的积分。<b>保存后即时生效（无需重启）</b>，设为 0 = 该功能免费。配置持久化在 data/point_costs.json。
         </div>
         <div id="pc-body" style="max-width:520px"><div class="empty" style="padding:30px">加载中…</div></div>
-        <button class="btn btn-primary" style="margin-top:16px" onclick="savePointCosts()">
+        <button class="btn btn-primary" style="margin-top:16px" data-ui-click="savePointCosts()">
           <i class="fas fa-save"></i> 保存并生效
         </button>
       </div>
@@ -527,7 +527,7 @@
         </div>
         <div class="form-group">
           <label class="form-label">第一数据源</label>
-          <select id="dsc-provider" class="form-input" onchange="dscProviderChanged()">
+          <select id="dsc-provider" class="form-input" data-ui-change="dscProviderChanged()">
             <option value="tushare">Tushare Pro</option>
             <option value="current">当前数据源（AkShare / 同花顺 / 东方财富等）</option>
           </select>
@@ -553,8 +553,8 @@
           </label>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
-          <button class="btn btn-primary" onclick="dscSave()"><i class="fas fa-save"></i> 保存并生效</button>
-          <button class="btn btn-outline" onclick="dscTest()"><i class="fas fa-plug"></i> 测试 Tushare</button>
+          <button class="btn btn-primary" data-ui-click="dscSave()"><i class="fas fa-save"></i> 保存并生效</button>
+          <button class="btn btn-outline" data-ui-click="dscTest()"><i class="fas fa-plug"></i> 测试 Tushare</button>
         </div>
         <div id="dsc-msg" style="margin-top:12px;font-size:13px;color:var(--text2)"></div>
       </div>
@@ -566,8 +566,8 @@
         <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <span><i class="fas fa-microscope"></i> AI 因子挖掘</span>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-outline" onclick="loadFactorMining()"><i class="fas fa-sync-alt"></i> 刷新</button>
-            <button class="btn btn-primary" id="fm-run-btn" onclick="runFactorMining()"><i class="fas fa-play"></i> 开始挖掘</button>
+            <button class="btn btn-outline" data-ui-click="loadFactorMining()"><i class="fas fa-sync-alt"></i> 刷新</button>
+            <button class="btn btn-primary" id="fm-run-btn" data-ui-click="runFactorMining()"><i class="fas fa-play"></i> 开始挖掘</button>
           </div>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
@@ -607,7 +607,7 @@
               <div style="font-weight:700;color:var(--text1)">挖掘条件与规则控制</div>
               <div style="font-size:12px;color:var(--text3);margin-top:3px">本次运行会保存实际生效的权重、风险阈值、分层阈值和过滤条件。</div>
             </div>
-            <button class="btn btn-outline" type="button" onclick="fmResetRules()"><i class="fas fa-undo"></i> 恢复默认</button>
+            <button class="btn btn-outline" type="button" data-ui-click="fmResetRules()"><i class="fas fa-undo"></i> 恢复默认</button>
           </div>
           <details open>
             <summary style="cursor:pointer;color:var(--text2);font-size:13px;margin-bottom:10px">展开 / 收起高级规则</summary>
@@ -655,7 +655,7 @@
       <div class="card" style="margin-bottom:16px">
         <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <span><i class="fas fa-list-ol"></i> 最新候选</span>
-          <button class="btn btn-outline" style="padding:6px 12px;font-size:12px" onclick="fmImportWatchlist()"><i class="fas fa-star"></i> 导入次日自选池</button>
+          <button class="btn btn-outline" style="padding:6px 12px;font-size:12px" data-ui-click="fmImportWatchlist()"><i class="fas fa-star"></i> 导入次日自选池</button>
         </div>
         <table>
           <thead><tr><th>日期</th><th>排名</th><th>代码</th><th>档位</th><th>分数</th><th>置信度</th><th>市场</th><th>计划</th><th>为什么选它</th><th>风险因素</th></tr></thead>
@@ -668,7 +668,7 @@
           <span><i class="fas fa-star"></i> 次日交易候选自选池</span>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <span id="fm-watch-updated" style="font-size:12px;color:var(--text3)">尚未加载</span>
-            <button class="btn btn-outline" style="padding:6px 12px;font-size:12px" onclick="fmLoadWatchlist()"><i class="fas fa-sync-alt"></i> 刷新</button>
+            <button class="btn btn-outline" style="padding:6px 12px;font-size:12px" data-ui-click="fmLoadWatchlist()"><i class="fas fa-sync-alt"></i> 刷新</button>
           </div>
         </div>
         <table>
@@ -693,8 +693,8 @@
         <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <span><i class="fas fa-brain"></i> AI交易决策</span>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-outline" onclick="loadAiTradeDecision()"><i class="fas fa-sync-alt"></i> 刷新</button>
-            <button class="btn btn-primary" id="atd-run-btn" onclick="runAiTradeDecision()"><i class="fas fa-play"></i> 竞价/开盘决策</button>
+            <button class="btn btn-outline" data-ui-click="loadAiTradeDecision()"><i class="fas fa-sync-alt"></i> 刷新</button>
+            <button class="btn btn-primary" id="atd-run-btn" data-ui-click="runAiTradeDecision()"><i class="fas fa-play"></i> 竞价/开盘决策</button>
           </div>
         </div>
         <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
@@ -716,10 +716,10 @@
         <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <span><i class="fas fa-clock"></i> 自动任务</span>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-outline" onclick="loadAiTradeAutoStatus()"><i class="fas fa-sync-alt"></i> 状态</button>
-            <button class="btn btn-outline" onclick="runAiTradeAutoJob('data_refresh')"><i class="fas fa-database"></i> 刷新数据</button>
-            <button class="btn btn-outline" onclick="runAiTradeAutoJob('factor_mining')"><i class="fas fa-microscope"></i> 自动挖掘</button>
-            <button class="btn btn-outline" onclick="runAiTradeAutoJob('ai_decision')"><i class="fas fa-brain"></i> AI决策</button>
+            <button class="btn btn-outline" data-ui-click="loadAiTradeAutoStatus()"><i class="fas fa-sync-alt"></i> 状态</button>
+            <button class="btn btn-outline" data-ui-click="runAiTradeAutoJob('data_refresh')"><i class="fas fa-database"></i> 刷新数据</button>
+            <button class="btn btn-outline" data-ui-click="runAiTradeAutoJob('factor_mining')"><i class="fas fa-microscope"></i> 自动挖掘</button>
+            <button class="btn btn-outline" data-ui-click="runAiTradeAutoJob('ai_decision')"><i class="fas fa-brain"></i> AI决策</button>
           </div>
         </div>
         <div id="atd-auto-status" style="font-size:13px;color:var(--text2);line-height:1.8">加载中...</div>
@@ -753,19 +753,19 @@
           <b>保存后立即对全部功能生效（无需重启）</b>。仅管理员可见和修改。
         </div>
         <div class="form-group"><label class="form-label">服务商</label>
-          <select id="aic-provider" class="form-input" onchange="aicPreset()"></select></div>
+          <select id="aic-provider" class="form-input" data-ui-change="aicPreset()"></select></div>
         <div class="form-group"><label class="form-label">Base URL（中转站填它的接口地址，一般以 /v1 结尾）</label>
           <input id="aic-base" class="form-input" placeholder="https://api.deepseek.com/v1 或 https://你的中转站.com/v1"></div>
         <div class="form-group"><label class="form-label">API Key（留空 = 保持不变；输入后自动识别服务商并拉取模型列表）</label>
-          <input id="aic-key" class="form-input" type="password" placeholder="sk-..." autocomplete="new-password" onchange="aicAutoDetect()"></div>
+          <input id="aic-key" class="form-input" type="password" placeholder="sk-..." autocomplete="new-password" data-ui-change="aicAutoDetect()"></div>
         <div class="form-group"><label class="form-label">模型（点「检测可用模型」后可下拉选择，也可手动输入）</label>
           <div style="display:flex;gap:8px">
             <input id="aic-model" class="form-input" list="aic-model-list" placeholder="deepseek-chat" style="flex:1">
             <datalist id="aic-model-list"></datalist>
-            <button class="btn btn-outline" style="white-space:nowrap" onclick="aicDetect()" title="调 /models 接口列出该 Key 可用的全部模型">🔍 检测可用模型</button>
+            <button class="btn btn-outline" style="white-space:nowrap" data-ui-click="aicDetect()" title="调 /models 接口列出该 Key 可用的全部模型">🔍 检测可用模型</button>
           </div>
           <select id="aic-model-sel" class="form-input" style="display:none;margin-top:8px" size="8"
-                  onchange="document.getElementById('aic-model').value=this.value"></select>
+                  data-ui-change="document.getElementById('aic-model').value=this.value"></select>
         </div>
         <div class="form-group" style="display:flex;align-items:center;gap:8px">
           <input id="aic-enabled" type="checkbox" style="width:auto">
@@ -773,8 +773,8 @@
           <span id="aic-cur" style="font-size:11px;color:var(--text3);margin-left:auto"></span>
         </div>
         <div style="display:flex;gap:10px;margin-top:16px;align-items:center">
-          <button class="btn btn-primary" onclick="aicSave()"><i class="fas fa-save"></i> 保存并生效</button>
-          <button class="btn btn-outline" onclick="aicTest()"><i class="fas fa-plug"></i> 测试连接</button>
+          <button class="btn btn-primary" data-ui-click="aicSave()"><i class="fas fa-save"></i> 保存并生效</button>
+          <button class="btn btn-outline" data-ui-click="aicTest()"><i class="fas fa-plug"></i> 测试连接</button>
           <span id="aic-msg" style="font-size:12px"></span>
         </div>
       </div>
@@ -794,7 +794,7 @@
         <i class="fas fa-lock" style="font-size:72px;opacity:.25;margin-bottom:20px;display:block"></i>
         <div style="font-size:32px;font-weight:700;color:#ddd;margin-bottom:12px">403</div>
         <p>您没有权限访问此页面</p>
-        <button class="btn btn-outline" style="margin-top:20px" onclick="navigate(defaultPage())">返回可用页面</button>
+        <button class="btn btn-outline" style="margin-top:20px" data-ui-click="navigate(defaultPage())">返回可用页面</button>
       </div>
     </div>
 
@@ -804,7 +804,7 @@
         <i class="fas fa-search" style="font-size:72px;opacity:.25;margin-bottom:20px;display:block"></i>
         <div style="font-size:32px;font-weight:700;color:#ddd;margin-bottom:12px">404</div>
         <p>页面不存在</p>
-        <button class="btn btn-outline" style="margin-top:20px" onclick="navigate('dashboard')">返回首页</button>
+        <button class="btn btn-outline" style="margin-top:20px" data-ui-click="navigate('dashboard')">返回首页</button>
       </div>
     </div>
 
@@ -813,7 +813,7 @@
 
 <!-- ===== THEME PANEL ===== -->
 <div class="theme-panel hidden" id="themePanel">
-  <div class="theme-toggle" onclick="toggleThemePanel()"><i class="fas fa-palette"></i></div>
+  <div class="theme-toggle" data-ui-click="toggleThemePanel()"><i class="fas fa-palette"></i></div>
   <div class="theme-label">主题色</div>
   <div class="theme-colors">
     <div class="theme-dot" data-color="#242f42" style="background:#242f42" title="深海蓝（默认）"></div>
@@ -831,7 +831,7 @@
   <div class="modal">
     <div class="modal-header">
       <div class="modal-title" id="modalUserTitle">新建用户</div>
-      <div class="modal-close" onclick="closeModal('modalUser')"><i class="fas fa-times"></i></div>
+      <div class="modal-close" data-ui-click="closeModal('modalUser')"><i class="fas fa-times"></i></div>
     </div>
     <div class="modal-body">
       <div class="form-row">
@@ -874,8 +874,8 @@
       <div class="form-err" id="u-err"></div>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal('modalUser')">取消</button>
-      <button class="btn btn-primary" id="u-submit-btn" onclick="submitUser()"><i class="fas fa-save"></i> 保存</button>
+      <button class="btn btn-outline" data-ui-click="closeModal('modalUser')">取消</button>
+      <button class="btn btn-primary" id="u-submit-btn" data-ui-click="submitUser()"><i class="fas fa-save"></i> 保存</button>
     </div>
   </div>
 </div>
@@ -885,7 +885,7 @@
   <div class="modal">
     <div class="modal-header">
       <div class="modal-title">积分管理</div>
-      <div class="modal-close" onclick="closeModal('modalPoints')"><i class="fas fa-times"></i></div>
+      <div class="modal-close" data-ui-click="closeModal('modalPoints')"><i class="fas fa-times"></i></div>
     </div>
     <div class="modal-body">
       <div class="alert alert-warn"><i class="fas fa-info-circle"></i> 用户 <b id="pts-uname">—</b> 当前积分：<b id="pts-cur" style="color:var(--orange)">—</b></div>
@@ -900,9 +900,9 @@
       <div class="form-err" id="pts-err"></div>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal('modalPoints')">取消</button>
-      <button class="btn btn-outline" onclick="submitPoints('set')" title="把积分直接设为输入的值（可增可减）"><i class="fas fa-pen"></i> 设为此值</button>
-      <button class="btn btn-primary" onclick="submitPoints('add')"><i class="fas fa-coins"></i> 充值(增加)</button>
+      <button class="btn btn-outline" data-ui-click="closeModal('modalPoints')">取消</button>
+      <button class="btn btn-outline" data-ui-click="submitPoints('set')" title="把积分直接设为输入的值（可增可减）"><i class="fas fa-pen"></i> 设为此值</button>
+      <button class="btn btn-primary" data-ui-click="submitPoints('add')"><i class="fas fa-coins"></i> 充值(增加)</button>
     </div>
   </div>
 </div>
@@ -912,7 +912,7 @@
   <div class="modal">
     <div class="modal-header">
       <div class="modal-title">重置密码</div>
-      <div class="modal-close" onclick="closeModal('modalResetPwd')"><i class="fas fa-times"></i></div>
+      <div class="modal-close" data-ui-click="closeModal('modalResetPwd')"><i class="fas fa-times"></i></div>
     </div>
     <div class="modal-body">
       <div class="alert alert-warn"><i class="fas fa-exclamation-triangle"></i> 重置用户 <b id="rp-uname">—</b> 的密码</div>
@@ -927,8 +927,8 @@
       <div class="form-err" id="rp-err"></div>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal('modalResetPwd')">取消</button>
-      <button class="btn btn-danger" onclick="submitResetPwd()"><i class="fas fa-key"></i> 重置密码</button>
+      <button class="btn btn-outline" data-ui-click="closeModal('modalResetPwd')">取消</button>
+      <button class="btn btn-danger" data-ui-click="submitResetPwd()"><i class="fas fa-key"></i> 重置密码</button>
     </div>
   </div>
 </div>
@@ -938,7 +938,7 @@
   <div class="modal modal-lg">
     <div class="modal-header">
       <div class="modal-title" id="modalRoleTitle">管理员权限</div>
-      <div class="modal-close" onclick="closeModal('modalRole')"><i class="fas fa-times"></i></div>
+      <div class="modal-close" data-ui-click="closeModal('modalRole')"><i class="fas fa-times"></i></div>
     </div>
     <div class="modal-body">
       <div class="form-group">
@@ -955,8 +955,8 @@
       </div>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal('modalRole')">取消</button>
-      <button class="btn btn-primary" onclick="submitRole()"><i class="fas fa-save"></i> 保存权限</button>
+      <button class="btn btn-outline" data-ui-click="closeModal('modalRole')">取消</button>
+      <button class="btn btn-primary" data-ui-click="submitRole()"><i class="fas fa-save"></i> 保存权限</button>
     </div>
   </div>
 </div>
@@ -966,18 +966,19 @@
   <div class="modal" style="width:380px">
     <div class="modal-header">
       <div class="modal-title" id="cfTitle">确认操作</div>
-      <div class="modal-close" onclick="closeModal('modalConfirm')"><i class="fas fa-times"></i></div>
+      <div class="modal-close" data-ui-click="closeModal('modalConfirm')"><i class="fas fa-times"></i></div>
     </div>
     <div class="modal-body">
       <p id="cfMsg" style="font-size:14px;color:var(--text1);line-height:1.6"></p>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal('modalConfirm')">取消</button>
-      <button class="btn" id="cfOkBtn" onclick="cfCallback && cfCallback()">确认</button>
+      <button class="btn btn-outline" data-ui-click="closeModal('modalConfirm')">取消</button>
+      <button class="btn" id="cfOkBtn" data-ui-click="cfCallback && cfCallback()">确认</button>
     </div>
   </div>
 </div>
 
+<script src="/static/app/js/ui-events.js"></script>
 <script src="/static/app/js/admin-app.js"></script>
 
 <!-- ICP / 公安联网备案（合规脚注，与主站一致） -->

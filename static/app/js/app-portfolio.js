@@ -10,7 +10,7 @@ let _optMode = 'equal_weight'
 function renderOptModeGrid(){
   const box = document.getElementById('optModeGrid')
   box.innerHTML = Object.entries(OPT_MODES).map(([k,v])=>`
-    <div onclick="selectOptMode('${k}')" style="
+    <div data-ui-click="selectOptMode('${k}')" style="
       padding:9px 10px;border-radius:8px;cursor:pointer;border:1px solid ${k===_optMode?'var(--blue)':'var(--b1)'};
       background:${k===_optMode?'rgba(31,111,235,.12)':'var(--card)'};transition:.15s">
       <div style="font-size:13px;margin-bottom:2px">${v.icon} <b style="color:${k===_optMode?'var(--bl)':'var(--t1)'}">${v.label}</b></div>

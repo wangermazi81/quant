@@ -82,7 +82,7 @@ function _renderSrchList(results){
   el.innerHTML = results.map((r,i)=>{
     const fromCls = r.from?.includes('tavily')?'tavily':r.from?.includes('serpapi')?'serpapi':'direct'
     const fromLbl = r.from?.includes('tavily')?'Tavily':r.from?.includes('serpapi')?'SerpAPI':'直抓'
-    return `<div class="srch-result-item" onclick="_selectSrchItem(${i})" id="sri_${i}">
+    return `<div class="srch-result-item" data-ui-click="_selectSrchItem(${i})" id="sri_${i}">
       <div style="font-size:13px;font-weight:600;color:var(--t1);margin-bottom:4px;line-height:1.4">${esc(r.title||'')}</div>
       <div style="display:flex;gap:8px;align-items:center">
         <span style="font-size:11px;color:var(--t4)">${esc(r.source||r.from||'')}</span>
@@ -212,7 +212,7 @@ function _renderSrchServiceBadges(stats){
     const totalLim = accs.reduce((s,a)=>s+a.limit,0)
     const pct = totalLim>0?Math.round(totalRem/totalLim*100):0
     const cls = pct>30?'ok':pct>5?'warn':'off'
-    return `<span class="svc-badge ${cls}" title="${totalRem}/${totalLim} 剩余" onclick="_showStatsPanel()">${svc.label} ${totalRem}</span>`
+    return `<span class="svc-badge ${cls}" title="${totalRem}/${totalLim} 剩余" data-ui-click="_showStatsPanel()">${svc.label} ${totalRem}</span>`
   }).join('')
 }
 

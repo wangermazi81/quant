@@ -142,11 +142,11 @@ function renderMenu(){
   let html='';
   Object.entries(groups).forEach(([g,items])=>{
     const folded = !!fold[g] && !items.some(m=>m.id===currentPage);
-    html+=`<div class="menu-group-title menu-group-toggle" onclick="toggleMenuGroup('${g}')" title="点击${folded?'展开':'折叠'}分组">
+    html+=`<div class="menu-group-title menu-group-toggle" data-ui-click="toggleMenuGroup('${g}')" title="点击${folded?'展开':'折叠'}分组">
       <span>${g}</span><i class="fas fa-chevron-${folded?'right':'down'} mg-caret"></i>
     </div>`;
     items.forEach(m=>{
-      html+=`<div class="menu-item${currentPage===m.id?' active':''}${folded?' folded':''}" onclick="navigate('${m.id}')" data-id="${m.id}">
+      html+=`<div class="menu-item${currentPage===m.id?' active':''}${folded?' folded':''}" data-ui-click="navigate('${m.id}')" data-id="${m.id}">
         <i class="${m.icon} mi-icon"></i>
         <span class="mi-label">${m.label}</span>
       </div>`;
@@ -166,9 +166,9 @@ function renderTabs(){
   const bar = document.getElementById('tabsBar');
   if(!tabs.length){bar.innerHTML='';return;}
   bar.innerHTML = tabs.map((t,i)=>`
-    <div class="tab${t.id===currentPage?' active':''}" onclick="navigate('${t.id}')" oncontextmenu="tabCtxMenu(event,${i})">
+    <div class="tab${t.id===currentPage?' active':''}" data-ui-click="navigate('${t.id}')" data-ui-contextmenu="tabCtxMenu(event,${i})">
       ${PAGE_NAMES[t.id]||t.id}
-      ${t.closable?`<span class="tab-close" onclick="event.stopPropagation();closeTab('${t.id}')"><i class="fas fa-times"></i></span>`:''}
+      ${t.closable?`<span class="tab-close" data-ui-click="event.stopPropagation();closeTab('${t.id}')"><i class="fas fa-times"></i></span>`:''}
     </div>`).join('');
 }
 
@@ -789,7 +789,7 @@ async function openAdminPermissions(uid, uname, makeAdmin=false){
   document.getElementById('role-desc').value = makeAdmin ? '保存后该用户成为普通管理员' : '仅勾选允许查看/操作的功能';
   const permGrid = document.getElementById('permGrid');
   permGrid.innerHTML = ALL_PERMS.filter(p=>p.key !== 'admin_grant').map(p=>`
-    <div class="perm-item${currentPerms.includes(p.key)?' checked':''}" onclick="this.classList.toggle('checked')" data-key="${p.key}">
+    <div class="perm-item${currentPerms.includes(p.key)?' checked':''}" data-ui-click="this.classList.toggle('checked')" data-key="${p.key}">
       <div class="perm-check"></div>
       <div>
         <div class="perm-name">${esc(p.label)} <span class="perm-group">${esc(p.group || '未分组')}</span></div>
@@ -933,11 +933,11 @@ function renderPager(id, total, page, perPage, cb){
   const el = document.getElementById(id);
   const pages = Math.ceil(total/perPage)||1;
   let html = `<div class="page-info">共 ${total} 条</div>`;
-  html += `<button class="pg-btn" ${page<=1?'disabled':''} onclick="${cb.name||''}(${page-1})">&#8249;</button>`;
+  html += `<button class="pg-btn" ${page<=1?'disabled':''} data-ui-click="${cb.name||''}(${page-1})">&#8249;</button>`;
   for(let i=Math.max(1,page-2);i<=Math.min(pages,page+2);i++){
-    html += `<button class="pg-btn${i===page?' active':''}" onclick="void 0" data-p="${i}">${i}</button>`;
+    html += `<button class="pg-btn${i===page?' active':''}" data-ui-click="void 0" data-p="${i}">${i}</button>`;
   }
-  html += `<button class="pg-btn" ${page>=pages?'disabled':''} onclick="void 0" data-p="${page+1}">&#8250;</button>`;
+  html += `<button class="pg-btn" ${page>=pages?'disabled':''} data-ui-click="void 0" data-p="${page+1}">&#8250;</button>`;
   el.innerHTML = html;
   el.querySelectorAll('[data-p]').forEach(btn=>{
     btn.addEventListener('click',()=>cb(parseInt(btn.dataset.p)));
@@ -1499,14 +1499,14 @@ async function fmLoadWatchlist(){
       <td>${esc(fmWatchPlanText(item))}</td>
       <td>${fmFactorExplainHtml(item, true)}</td>
       <td>
-        <select class="form-input" style="min-width:96px;padding:6px 8px" onchange="fmUpdateWatchItem('${escJs(item.id)}',{status:this.value})">
+        <select class="form-input" style="min-width:96px;padding:6px 8px" data-ui-change="fmUpdateWatchItem('${escJs(item.id)}',{status:this.value})">
           ${['pending','ready','bought','skipped','watch'].map(s=>`<option value="${s}" ${item.status===s?'selected':''}>${fmWatchStatusText(s)}</option>`).join('')}
         </select>
       </td>
-      <td><input class="form-input" style="min-width:160px;padding:6px 8px" value="${esc(item.note || '')}" placeholder="竞价/消息/风控备注" onchange="fmUpdateWatchItem('${escJs(item.id)}',{note:this.value})"></td>
+      <td><input class="form-input" style="min-width:160px;padding:6px 8px" value="${esc(item.note || '')}" placeholder="竞价/消息/风控备注" data-ui-change="fmUpdateWatchItem('${escJs(item.id)}',{note:this.value})"></td>
       <td style="white-space:nowrap">
-        <button class="btn btn-outline" style="padding:4px 8px;font-size:12px" onclick="fmCopyCode('${escJs(item.code || item.ts_code || '')}')"><i class="fas fa-copy"></i></button>
-        <button class="btn btn-outline" style="padding:4px 8px;font-size:12px" onclick="fmDeleteWatchItem('${escJs(item.id)}')"><i class="fas fa-trash"></i></button>
+        <button class="btn btn-outline" style="padding:4px 8px;font-size:12px" data-ui-click="fmCopyCode('${escJs(item.code || item.ts_code || '')}')"><i class="fas fa-copy"></i></button>
+        <button class="btn btn-outline" style="padding:4px 8px;font-size:12px" data-ui-click="fmDeleteWatchItem('${escJs(item.id)}')"><i class="fas fa-trash"></i></button>
       </td>
     </tr>`).join('');
 }
@@ -2076,9 +2076,9 @@ async function loadInvites(){
       const st = !active ? '<span style="color:var(--red)">已作废</span>'
                : full     ? '<span style="color:var(--orange)">已用完</span>'
                :            '<span style="color:var(--green)">可用</span>';
-      const act = active ? `<button class="btn btn-danger" style="padding:3px 10px;font-size:12px" onclick="revokeInvite(${c.id})">作废</button>` : '—';
+      const act = active ? `<button class="btn btn-danger" style="padding:3px 10px;font-size:12px" data-ui-click="revokeInvite(${c.id})">作废</button>` : '—';
       return `<tr>
-        <td><b style="font-family:monospace;letter-spacing:1px;cursor:pointer" title="点击复制" onclick="_copyInv('${c.code}')">${c.code}</b></td>
+        <td><b style="font-family:monospace;letter-spacing:1px;cursor:pointer" title="点击复制" data-ui-click="_copyInv('${c.code}')">${c.code}</b></td>
         <td>${c.creator_name||('#'+c.created_by)}</td>
         <td>${c.used_count}/${c.max_uses}</td>
         <td>${c.reward}分</td>
@@ -2099,7 +2099,7 @@ async function createInvite(){
     showToast('邀请码已生成：'+r.code,'success');
     document.getElementById('inv-new').innerHTML =
       `<div style="padding:10px 14px;background:var(--green);color:#fff;border-radius:6px;font-size:14px">
-        新邀请码 <b style="font-family:monospace;letter-spacing:2px;font-size:18px;cursor:pointer" title="点击复制" onclick="_copyInv('${r.code}')">${r.code}</b>
+        新邀请码 <b style="font-family:monospace;letter-spacing:2px;font-size:18px;cursor:pointer" title="点击复制" data-ui-click="_copyInv('${r.code}')">${r.code}</b>
         · 名额 ${r.max_uses} · 每邀请奖励 ${r.reward} 分　<span style="opacity:.85">(点码复制，发给被邀请人)</span>
       </div>`;
     document.getElementById('inv-note').value='';
@@ -2147,7 +2147,7 @@ async function loadResetRequests(){
       <td>${q.is_active===0 ? '<span style="color:var(--red)">已禁用</span>' : '正常'}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-primary" style="padding:4px 10px;font-size:12px" data-reset-request data-reset-id="${esc(q.id)}" data-reset-name="${esc(q.username)}">重置并生成临时密码</button>
-        <button class="btn btn-outline" style="padding:4px 10px;font-size:12px" onclick="rejectResetReq(${q.id})">驳回</button>
+        <button class="btn btn-outline" style="padding:4px 10px;font-size:12px" data-ui-click="rejectResetReq(${q.id})">驳回</button>
       </td></tr>`).join('');
     tb.querySelectorAll('[data-reset-request]').forEach(btn=>{
       btn.addEventListener('click', ()=>resolveResetReq(Number(btn.dataset.resetId), btn.dataset.resetName));
@@ -2184,7 +2184,7 @@ function showResetResult(uname, pw){
     <i class="fas fa-check-circle" style="color:var(--green);font-size:20px"></i>
     <span>已重置 <b>${esc(uname)}</b> 的密码，临时密码（请通过 QQ/微信告知该用户，并让其登录后立即改密）：</span>
     <span id="tempPwVal" style="font-family:monospace;font-size:18px;font-weight:700;letter-spacing:1px;background:var(--theme-light,#eee);color:#222;padding:4px 12px;border-radius:6px">${esc(pw)}</span>
-    <button class="btn btn-outline" style="padding:4px 12px;font-size:12px" onclick="copyTempPw('${esc(pw)}')"><i class="fas fa-copy"></i> 复制</button>
+    <button class="btn btn-outline" style="padding:4px 12px;font-size:12px" data-ui-click="copyTempPw('${esc(pw)}')"><i class="fas fa-copy"></i> 复制</button>
   </div>`;
 }
 
@@ -2256,8 +2256,8 @@ async function loadChangelogAdmin(){
         <td>${pub}</td>
         <td style="font-size:12px;color:var(--text3)">${c.created_at||''}</td>
         <td>
-          <button class="btn btn-outline btn-sm" onclick="editChangelog(${c.id})" title="编辑"><i class="fas fa-edit"></i></button>
-          <button class="btn btn-danger btn-sm" onclick="deleteChangelog(${c.id})" title="删除"><i class="fas fa-trash"></i></button>
+          <button class="btn btn-outline btn-sm" data-ui-click="editChangelog(${c.id})" title="编辑"><i class="fas fa-edit"></i></button>
+          <button class="btn btn-danger btn-sm" data-ui-click="deleteChangelog(${c.id})" title="删除"><i class="fas fa-trash"></i></button>
         </td>
       </tr>`
     })
@@ -2353,7 +2353,7 @@ function renderFbRow(f){
       <select id="fb-st-${f.id}" class="form-input" style="width:auto;padding:6px 10px;font-size:12px">${opts}</select>
       <input id="fb-note-${f.id}" class="form-input" style="flex:1;min-width:180px;padding:6px 10px;font-size:12px"
              placeholder="处理备注 / 回复用户（用户在前端可见）" value="${esc(f.admin_note)}">
-      <button class="btn btn-primary btn-sm" onclick="saveFeedback(${f.id})" style="padding:6px 16px">
+      <button class="btn btn-primary btn-sm" data-ui-click="saveFeedback(${f.id})" style="padding:6px 16px">
         <i class="fas fa-save"></i> 保存
       </button>
     </div>
@@ -2403,13 +2403,13 @@ async function loadAnnouncements(){
           <div class="ann-meta">ID：${a.id} · 创建：${String(a.created_at||'').slice(0,16)} ${expires} ${creator}</div>
         </div>
         <div class="ann-actions">
-          <button class="btn btn-outline btn-sm" onclick="toggleAnn(${a.id},${active?0:1})" title="${active?'隐藏':'显示'}">
+          <button class="btn btn-outline btn-sm" data-ui-click="toggleAnn(${a.id},${active?0:1})" title="${active?'隐藏':'显示'}">
             <i class="fas fa-${active?'eye-slash':'eye'}"></i>
           </button>
-          <button class="btn btn-outline btn-sm" onclick="editAnn(${a.id})" title="编辑">
+          <button class="btn btn-outline btn-sm" data-ui-click="editAnn(${a.id})" title="编辑">
             <i class="fas fa-edit"></i>
           </button>
-          <button class="btn btn-danger btn-sm" onclick="deleteAnn(${a.id})" title="删除">
+          <button class="btn btn-danger btn-sm" data-ui-click="deleteAnn(${a.id})" title="删除">
             <i class="fas fa-trash"></i>
           </button>
         </div>
@@ -2463,8 +2463,8 @@ function editAnn(id){
   document.getElementById('ann-title').value         = title;
   document.getElementById('ann-content').value       = content;
   document.getElementById('ann-title').dataset.editId = id;
-  const btn = document.querySelector('[onclick="createAnnouncement()"]');
-  if(btn){ btn.innerHTML='<i class="fas fa-save"></i> 更新公告'; btn.setAttribute('onclick','updateAnnouncement()'); }
+  const btn = document.querySelector('[data-ui-click="createAnnouncement()"]');
+  if(btn){ btn.innerHTML='<i class="fas fa-save"></i> 更新公告'; btn.setAttribute('data-ui-click','updateAnnouncement()'); }
   document.getElementById('ann-title').scrollIntoView({behavior:'smooth'});
 }
 
@@ -2486,8 +2486,8 @@ async function updateAnnouncement(){
     titleEl.value = ''; titleEl.dataset.editId = '';
     document.getElementById('ann-content').value = '';
     document.getElementById('ann-expires').value = '';
-    const btn = document.querySelector('[onclick="updateAnnouncement()"]');
-    if(btn){ btn.innerHTML='<i class="fas fa-paper-plane"></i> 发布公告'; btn.setAttribute('onclick','createAnnouncement()'); }
+    const btn = document.querySelector('[data-ui-click="updateAnnouncement()"]');
+    if(btn){ btn.innerHTML='<i class="fas fa-paper-plane"></i> 发布公告'; btn.setAttribute('data-ui-click','createAnnouncement()'); }
     loadAnnouncements();
   } else {
     showToast((r&&r.error)||'更新失败','error');

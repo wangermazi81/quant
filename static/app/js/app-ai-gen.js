@@ -70,7 +70,7 @@ function _renderTplCategories(){
   const el = document.getElementById('aiTplCategoryBtns')
   if(!el) return
   el.innerHTML = cats.map(c=>
-    `<button class="tpl-cat-btn ${c==='all'?'active':''}" onclick="_filterTpl('${c}',this)">${c==='all'?'全部':c}</button>`
+    `<button class="tpl-cat-btn ${c==='all'?'active':''}" data-ui-click="_filterTpl('${c}',this)">${c==='all'?'全部':c}</button>`
   ).join('')
 }
 
@@ -86,7 +86,7 @@ function _renderTplGrid(cat){
   if(!grid) return
   const list = cat==='all' ? _stratTemplates : _stratTemplates.filter(t=>t.category===cat)
   grid.innerHTML = list.map(t=>`
-    <div class="tpl-card ${t.id===_selTplId?'active':''}" onclick="_selectTpl('${t.id}',\`${t.prompt.replace(/`/g,'\\`')}\`)">
+    <div class="tpl-card ${t.id===_selTplId?'active':''}" data-ui-click="_selectTpl('${t.id}',\`${t.prompt.replace(/`/g,'\\`')}\`)">
       <div class="tpl-name">${esc(t.name)}</div>
       <span class="tpl-tag">${esc(t.category)}</span>
       <div style="font-size:10px;color:var(--t4);margin-top:3px;line-height:1.3">${esc(t.desc.substring(0,30))}...</div>
@@ -325,10 +325,10 @@ function showAnnouncements(list){
       </div>
     </div>`
   document.body.appendChild(ov)
-  document.getElementById('annOkBtn').onclick = async ()=>{
+  document.getElementById('annOkBtn').addEventListener('click', async ()=>{
     for(const a of list){ try{ await api('/announcements/'+a.id+'/read','POST',{}) }catch(e){} }
     ov.remove()
-  }
+  })
 }
 
 function showAuthOverlay(){
@@ -443,7 +443,7 @@ async function showResetForm(token){
   } else {
     document.getElementById('authResetForm').innerHTML =
       '<div class="auth-msg err" style="text-align:center">重置链接无效或已过期，请重新申请。</div>'+
-      '<div style="text-align:center;margin-top:12px"><span onclick="clearResetUrl();backToLogin()" style="font-size:12px;color:var(--t3,#888);cursor:pointer">← 返回登录</span></div>'
+      '<div style="text-align:center;margin-top:12px"><span data-ui-click="clearResetUrl();backToLogin()" style="font-size:12px;color:var(--t3,#888);cursor:pointer">← 返回登录</span></div>'
   }
 }
 async function doReset(){

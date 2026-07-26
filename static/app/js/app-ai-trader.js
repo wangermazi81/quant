@@ -1,4 +1,4 @@
-/* ══════════════ 🤖 AI 交易模块（本地）前端驱动 ══════════════ */
+﻿/* ══════════════ 🤖 AI 交易模块（本地）前端驱动 ══════════════ */
 const aitS = { roles:[], agents:{}, decisions:[], execs:[], pending:{}, providers:{}, strategyCatalog:[], settings:null, config:null, tokenUsage:null, candidateTrace:null, es:null, inited:false, loading:false, curStock:'', lastError:'' };
 
 function _aiActionAttrs(action, value){
@@ -46,7 +46,7 @@ async function initAiTrader(){
     aitS.inited = false;
     aitS.lastError = e && e.message ? e.message : String(e||'初始化失败');
     aitSetHealth('error','AI 交易加载失败', aitS.lastError);
-    aitRenderAgents('<div class="ait-empty ait-error">'+esc(aitS.lastError)+'<br><button class="btn btn-blue btn-sm" onclick="initAiTrader()">重新连接</button></div>');
+    aitRenderAgents('<div class="ait-empty ait-error">'+esc(aitS.lastError)+'<br><button class="btn btn-blue btn-sm" data-ui-click="initAiTrader()">重新连接</button></div>');
     fbToast(aitS.lastError, true);
   }finally{
     aitS.loading = false;
@@ -211,7 +211,7 @@ function aitShowDec(id){
     +(d.blocked?'<div class="ait-dec-block">🛡️ 风控拦截：'+esc(d.blocked)+'</div>':'')
     +'<div class="ait-sec-hd" style="margin-top:12px">👥 团队各角色对该票的建议</div>'
     +(aitAgentsHtml(d.agents)||'<div class="ait-empty">无角色留痕</div>')
-    +'<div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn btn-gray btn-sm" onclick="document.getElementById(\'aitDecModal\').classList.remove(\'show\')">关闭</button></div>';
+    +'<div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn btn-gray btn-sm" data-ui-click="document.getElementById(\'aitDecModal\').classList.remove(\'show\')">关闭</button></div>';
   document.getElementById('aitDecModal').classList.add('show');
 }
 function aitRenderExecs(){

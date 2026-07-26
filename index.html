@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -40,8 +40,8 @@
       <div class="auth-sub">登录后使用完整功能</div>
     </div>
     <div class="auth-tabs" style="margin-top:16px">
-      <div class="auth-tab active" onclick="switchAuthTab('login',this)">登录</div>
-      <div class="auth-tab" onclick="switchAuthTab('register',this)">注册</div>
+      <div class="auth-tab active" data-ui-click="switchAuthTab('login',this)">登录</div>
+      <div class="auth-tab" data-ui-click="switchAuthTab('register',this)">注册</div>
     </div>
     <div class="auth-body">
       <!-- 登录表单 -->
@@ -54,14 +54,14 @@
           <label class="auth-label">密码</label>
           <div class="pwd-wrap">
             <input class="auth-inp" id="loginPass" type="password" placeholder="请输入密码" autocomplete="current-password"
-                   onkeydown="if(event.key==='Enter')doLogin()">
-            <span class="pwd-eye" onclick="togglePwd('loginPass',this)" title="显示/隐藏密码">👁</span>
+                   data-ui-keydown="if(event.key==='Enter')doLogin()">
+            <span class="pwd-eye" data-ui-click="togglePwd('loginPass',this)" title="显示/隐藏密码">👁</span>
           </div>
         </div>
-        <button class="auth-btn" onclick="doLogin()" id="loginBtn">登录</button>
+        <button class="auth-btn" data-ui-click="doLogin()" id="loginBtn">登录</button>
         <div class="auth-msg" id="loginMsg"></div>
         <div style="text-align:right;margin-top:10px">
-          <span onclick="showForgot()" style="font-size:12px;color:var(--rl,#E0536C);cursor:pointer">忘记密码？</span>
+          <span data-ui-click="showForgot()" style="font-size:12px;color:var(--rl,#E0536C);cursor:pointer">忘记密码？</span>
         </div>
       </div>
       <!-- 注册表单 -->
@@ -69,7 +69,7 @@
         <div class="auth-row">
           <label class="auth-label">邀请码</label>
           <input class="auth-inp" id="regInvite" placeholder="请输入邀请码（必填）"
-                 onkeydown="if(event.key==='Enter')doRegister()">
+                 data-ui-keydown="if(event.key==='Enter')doRegister()">
         </div>
         <div class="auth-row">
           <label class="auth-label">用户名</label>
@@ -83,11 +83,11 @@
           <label class="auth-label">密码</label>
           <div class="pwd-wrap">
             <input class="auth-inp" id="regPass" type="password" placeholder="至少6位"
-                   onkeydown="if(event.key==='Enter')doRegister()">
-            <span class="pwd-eye" onclick="togglePwd('regPass',this)" title="显示/隐藏密码">👁</span>
+                   data-ui-keydown="if(event.key==='Enter')doRegister()">
+            <span class="pwd-eye" data-ui-click="togglePwd('regPass',this)" title="显示/隐藏密码">👁</span>
           </div>
         </div>
-        <button class="auth-btn" onclick="doRegister()" id="regBtn">注册账号</button>
+        <button class="auth-btn" data-ui-click="doRegister()" id="regBtn">注册账号</button>
         <div class="auth-hint">需要邀请码才能注册。联系管理员或已有用户获取邀请码。</div>
         <div class="auth-msg" id="regMsg"></div>
       </div>
@@ -96,13 +96,13 @@
         <div class="auth-row">
           <label class="auth-label">注册邮箱 / 用户名</label>
           <input class="auth-inp" id="forgotIdent" placeholder="输入注册邮箱或用户名"
-                 onkeydown="if(event.key==='Enter')doForgot()">
+                 data-ui-keydown="if(event.key==='Enter')doForgot()">
         </div>
-        <button class="auth-btn" onclick="doForgot()" id="forgotBtn">提交找回申请</button>
+        <button class="auth-btn" data-ui-click="doForgot()" id="forgotBtn">提交找回申请</button>
         <div class="auth-hint">提交后由管理员核实身份并重置，临时密码会通过你与管理员的原渠道（QQ/微信等）告知；登录后请及时改密。</div>
         <div class="auth-msg" id="forgotMsg"></div>
         <div style="text-align:center;margin-top:10px">
-          <span onclick="backToLogin()" style="font-size:12px;color:var(--t3,#888);cursor:pointer">← 返回登录</span>
+          <span data-ui-click="backToLogin()" style="font-size:12px;color:var(--t3,#888);cursor:pointer">← 返回登录</span>
         </div>
       </div>
       <!-- 重置密码表单（打开 ?pwreset=TOKEN 链接时显示）-->
@@ -112,18 +112,18 @@
           <label class="auth-label">新密码</label>
           <div class="pwd-wrap">
             <input class="auth-inp" id="resetPass" type="password" placeholder="至少6位" autocomplete="new-password">
-            <span class="pwd-eye" onclick="togglePwd('resetPass',this)" title="显示/隐藏密码">👁</span>
+            <span class="pwd-eye" data-ui-click="togglePwd('resetPass',this)" title="显示/隐藏密码">👁</span>
           </div>
         </div>
         <div class="auth-row">
           <label class="auth-label">确认新密码</label>
           <input class="auth-inp" id="resetPass2" type="password" placeholder="再次输入新密码" autocomplete="new-password"
-                 onkeydown="if(event.key==='Enter')doReset()">
+                 data-ui-keydown="if(event.key==='Enter')doReset()">
         </div>
-        <button class="auth-btn" onclick="doReset()" id="resetBtn">设置新密码</button>
+        <button class="auth-btn" data-ui-click="doReset()" id="resetBtn">设置新密码</button>
         <div class="auth-msg" id="resetMsg"></div>
         <div style="text-align:center;margin-top:10px">
-          <span onclick="clearResetUrl();backToLogin()" style="font-size:12px;color:var(--t3,#888);cursor:pointer">← 返回登录</span>
+          <span data-ui-click="clearResetUrl();backToLogin()" style="font-size:12px;color:var(--t3,#888);cursor:pointer">← 返回登录</span>
         </div>
       </div>
     </div>
@@ -150,18 +150,18 @@
       <text x="2" y="48" fill="#EF5B78" font-family="'Montserrat'" font-weight="700" font-size="11" letter-spacing="5">J I A N W E I  A L P H A</text>
     </g>
   </svg></div>
-  <div class="ntab active" onclick="switchPage('monitor',this)">📊 监控中心</div>
-  <div class="ntab" onclick="switchPage('strategy',this)">🧪 策略中心</div>
-  <div class="ntab" id="navPaperTab" onclick="switchPage('paper',this);loadPaperPage()">💹 模拟盘</div>
-  <div class="ntab" onclick="switchPage('search',this);initSearchPage();rsInit()">🧬 产业链研报</div>
-  <div class="ntab" onclick="switchPage('review',this);initReviewPage()">🔁 复盘</div>
-  <div class="ntab" onclick="switchPage('aitrader',this);initAiTrader()">🤖 AI交易</div>
+  <div class="ntab active" data-ui-click="switchPage('monitor',this)">📊 监控中心</div>
+  <div class="ntab" data-ui-click="switchPage('strategy',this)">🧪 策略中心</div>
+  <div class="ntab" id="navPaperTab" data-ui-click="switchPage('paper',this);loadPaperPage()">💹 模拟盘</div>
+  <div class="ntab" data-ui-click="switchPage('search',this);initSearchPage();rsInit()">🧬 产业链研报</div>
+  <div class="ntab" data-ui-click="switchPage('review',this);initReviewPage()">🔁 复盘</div>
+  <div class="ntab" data-ui-click="switchPage('aitrader',this);initAiTrader()">🤖 AI交易</div>
   <div class="nav-r top-actions">
     <div class="top-group top-status-group strategy-status-pill" title="策略运行状态">
       <span id="runBadge" class="badge stop">已停止</span>
       <div class="top-duo">
-        <button class="btn btn-green top-btn" onclick="mStart()">启动</button>
-        <button class="btn btn-red top-btn" onclick="mStop()">停止</button>
+        <button class="btn btn-green top-btn" data-ui-click="mStart()">启动</button>
+        <button class="btn btn-red top-btn" data-ui-click="mStop()">停止</button>
       </div>
     </div>
 
@@ -173,9 +173,9 @@
     <div id="navUser" class="top-group top-user-group" style="display:none">
       <span class="pill" title="剩余积分">⚡ <b id="navPoints">—</b></span>
       <span class="top-user-name" id="navUsername"></span>
-      <button class="btn btn-gray btn-sm" id="navAdminBtn" onclick="location.href='/admin'" style="display:none">⚙ 管理后台</button>
-      <button class="btn btn-gray btn-sm" onclick="doLogout()">退出</button>
-      <span class="top-chip log-chip" onclick="openChangelog()" title="查看更新日志">📝 更新日志</span>
+      <button class="btn btn-gray btn-sm" id="navAdminBtn" data-ui-click="location.href='/admin'" style="display:none">⚙ 管理后台</button>
+      <button class="btn btn-gray btn-sm" data-ui-click="doLogout()">退出</button>
+      <span class="top-chip log-chip" data-ui-click="openChangelog()" title="查看更新日志">📝 更新日志</span>
     </div>
   </div>
 </nav>
@@ -191,7 +191,7 @@
   </span>
   <span id="mktIndicesMon" style="display:flex;gap:8px;flex-wrap:wrap;font-size:11px;font-family:monospace"></span>
   <span class="mkt-advice" id="mktAdviceMon" style="font-size:11px"></span>
-  <button class="btn btn-gray btn-xs" onclick="loadMarketContext(true)" style="flex-shrink:0;margin-left:auto" title="刷新大盘数据">⟳ 刷新</button>
+  <button class="btn btn-gray btn-xs" data-ui-click="loadMarketContext(true)" style="flex-shrink:0;margin-left:auto" title="刷新大盘数据">⟳ 刷新</button>
 </div>
 <div class="mon-grid" style="flex:1;min-height:0">
 
@@ -246,15 +246,15 @@
         <h2>🎯 执行队列</h2>
         <span id="qLen" style="font-size:12px;color:var(--t3)">0只</span>
         <!-- 自动执行开关 -->
-        <div id="autoExecLabel" style="display:flex;align-items:center;gap:5px;cursor:pointer;margin-left:auto;margin-right:4px;font-size:12px" title="开启后：打板信号触发立即自动下单">
+        <div id="autoExecLabel" data-ui-click="toggleAutoExec()" style="display:flex;align-items:center;gap:5px;cursor:pointer;margin-left:auto;margin-right:4px;font-size:12px" title="开启后：打板信号触发立即自动下单">
           <span style="color:#f59e0b">⚡</span>
           <span id="autoExecText" style="color:var(--t3)">自动执行</span>
           <span id="autoExecStatus" style="width:32px;height:17px;border-radius:9px;background:#374151;display:inline-block;position:relative;transition:background .2s;vertical-align:middle">
             <span id="autoExecDot" style="position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fff;transition:left .2s"></span>
           </span>
         </div>
-        <button class="btn btn-gray btn-sm" id="acctBarBtn" onclick="toggleAcctBar()" title="资金 / 仓位 / 护栏设置（低频配置，默认收起）">⚙ 设置</button>
-        <button class="btn btn-gray btn-sm" onclick="clearQ()">清除</button>
+        <button class="btn btn-gray btn-sm" id="acctBarBtn" data-ui-click="toggleAcctBar()" title="资金 / 仓位 / 护栏设置（低频配置，默认收起）">⚙ 设置</button>
+        <button class="btn btn-gray btn-sm" data-ui-click="clearQ()">清除</button>
       </div>
       <!-- 账户设置条（低频配置，默认折叠，点 ⚙ 设置展开；选择记忆在 localStorage） -->
       <div id="acctBar" style="padding:4px 12px;display:flex;gap:7px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--b1);flex-shrink:0">
@@ -275,7 +275,7 @@
         <input id="cfgMaxPos" type="number" step="1" min="1" max="50" placeholder="5"
           title="同时最多持仓只数（含待成交队列）"
           style="width:40px;padding:3px 6px;background:var(--inp);border:1px solid var(--b1);border-radius:4px;color:var(--t1);font-size:12px">
-        <button class="btn btn-gray btn-xs" onclick="saveAccount()">保存</button>
+        <button class="btn btn-gray btn-xs" data-ui-click="saveAccount()">保存</button>
       </div>
       <div class="card-bd" id="qBody"><div class="empty">无待处理</div></div>
     </div>
@@ -284,7 +284,7 @@
     <div class="card" style="flex:1;min-height:0">
       <div class="card-hd">
         <h2>📋 运行日志</h2>
-        <button class="btn btn-gray btn-sm" onclick="document.getElementById('logBody').innerHTML='<div class=empty>已清空</div>'">清空</button>
+        <button class="btn btn-gray btn-sm" data-ui-click="document.getElementById('logBody').innerHTML='<div class=empty>已清空</div>'">清空</button>
       </div>
       <div class="card-bd" id="logBody"><div class="empty">日志显示在此</div></div>
     </div>
@@ -323,9 +323,9 @@
       <div class="ps-label">最大回撤</div>
       <div class="ps-val" id="ps-dd" style="color:var(--rl)">—</div>
       <div class="ps-sub" style="display:flex;gap:4px;flex-wrap:wrap">
-        <button class="btn btn-green btn-xs" onclick="openPaperBuy()" title="手动模拟买入">＋ 买入</button>
-        <button class="btn btn-gray btn-xs" onclick="resetPaper()" title="重置模拟盘">🔄 重置</button>
-        <button class="btn btn-gray btn-xs" onclick="loadPaperPage()" title="刷新数据">⟳</button>
+        <button class="btn btn-green btn-xs" data-ui-click="openPaperBuy()" title="手动模拟买入">＋ 买入</button>
+        <button class="btn btn-gray btn-xs" data-ui-click="resetPaper()" title="重置模拟盘">🔄 重置</button>
+        <button class="btn btn-gray btn-xs" data-ui-click="loadPaperPage()" title="刷新数据">⟳</button>
       </div>
     </div>
   </div>
@@ -364,8 +364,8 @@
           <h2>📋 记录</h2>
         </div>
         <div class="paper-tabs">
-          <div class="ptab active" onclick="switchPTab('trades',this)">成交记录</div>
-          <div class="ptab" onclick="switchPTab('orders',this)">委托记录</div>
+          <div class="ptab active" data-ui-click="switchPTab('trades',this)">成交记录</div>
+          <div class="ptab" data-ui-click="switchPTab('orders',this)">委托记录</div>
         </div>
         <div class="card-bd" id="paperTradesBody"><div class="empty">暂无成交</div></div>
         <div class="card-bd" id="paperOrdersBody" style="display:none"><div class="empty">暂无委托</div></div>
@@ -377,18 +377,18 @@
 </div>
 
 <!-- 模拟盘手动买入弹窗 -->
-<div class="kl-overlay" id="paperBuyOverlay" onclick="if(event.target===this)closePaperBuy()" style="z-index:2200">
+<div class="kl-overlay" id="paperBuyOverlay" data-ui-click="if(event.target===this)closePaperBuy()" style="z-index:2200">
   <div class="kl-box" style="width:380px;max-width:96vw">
     <div class="kl-hd">
       <span class="kl-title">💹 模拟盘手动买入</span>
-      <button class="kl-close" onclick="closePaperBuy()">✕</button>
+      <button class="kl-close" data-ui-click="closePaperBuy()">✕</button>
     </div>
     <div style="padding:18px;background:#FCFAF7;display:flex;flex-direction:column;gap:12px">
       <div style="font-size:12px;color:var(--t3)">按当前仓位比例（20%）自动计算股数，也可手动填写。</div>
       <div style="display:flex;gap:8px;align-items:center">
         <label style="font-size:13px;color:var(--t2);width:60px;flex-shrink:0">股票代码</label>
         <input id="pbCode" class="inp" placeholder="如 000001" style="flex:1"
-               oninput="pbAutoFill()" maxlength="6">
+               data-ui-input="pbAutoFill()" maxlength="6">
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <label style="font-size:13px;color:var(--t2);width:60px;flex-shrink:0">股票名称</label>
@@ -397,7 +397,7 @@
       <div style="display:flex;gap:8px;align-items:center">
         <label style="font-size:13px;color:var(--t2);width:60px;flex-shrink:0">买入价格</label>
         <input id="pbPrice" class="inp" placeholder="留空则获取实时价" type="number" step="0.01" min="0" style="flex:1"
-               oninput="pbCalcShares()">
+               data-ui-input="pbCalcShares()">
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <label style="font-size:13px;color:var(--t2);width:60px;flex-shrink:0">买入股数</label>
@@ -406,8 +406,8 @@
       </div>
       <div id="pbPreview" style="font-size:12px;color:var(--t3);min-height:18px"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button class="btn btn-gray" onclick="closePaperBuy()">取消</button>
-        <button class="btn btn-green" onclick="doPaperBuy()" id="pbSubmitBtn">✓ 确认买入</button>
+        <button class="btn btn-gray" data-ui-click="closePaperBuy()">取消</button>
+        <button class="btn btn-green" data-ui-click="doPaperBuy()" id="pbSubmitBtn">✓ 确认买入</button>
       </div>
     </div>
   </div>
@@ -418,9 +418,9 @@
 <div class="page" id="page-search" style="flex-direction:column;overflow:hidden">
   <!-- 顶部子页签 -->
   <div style="display:flex;gap:4px;padding:8px 16px 0;border-bottom:1px solid var(--b1);flex-shrink:0">
-    <div class="rs-tab active" id="rsTab-chain" onclick="rsSwitch('chain')">🧬 产业链</div>
-    <div class="rs-tab" id="rsTab-report" onclick="rsSwitch('report')">📑 研报中心</div>
-    <div class="rs-tab" id="rsTab-search" onclick="rsSwitch('search')">🔍 智能搜索</div>
+    <div class="rs-tab active" id="rsTab-chain" data-ui-click="rsSwitch('chain')">🧬 产业链</div>
+    <div class="rs-tab" id="rsTab-report" data-ui-click="rsSwitch('report')">📑 研报中心</div>
+    <div class="rs-tab" id="rsTab-search" data-ui-click="rsSwitch('search')">🔍 智能搜索</div>
   </div>
 
   <!-- ① 产业链视图 -->
@@ -429,8 +429,8 @@
       <div style="padding:12px 14px;border-bottom:1px solid var(--b1)">
         <div style="display:flex;gap:6px">
           <input id="chainQ" class="set-fi" placeholder="搜概念：低空经济 / 固态电池…" style="flex:1"
-                 onkeydown="if(event.key==='Enter')chainSearch(this.value)">
-          <button class="btn btn-blue btn-sm" onclick="chainSearch(document.getElementById('chainQ').value)">搜索</button>
+                 data-ui-keydown="if(event.key==='Enter')chainSearch(this.value)">
+          <button class="btn btn-blue btn-sm" data-ui-click="chainSearch(document.getElementById('chainQ').value)">搜索</button>
         </div>
         <div id="chainListHint" style="font-size:11px;color:var(--t3);margin-top:6px">加载中…</div>
       </div>
@@ -440,7 +440,7 @@
       <div style="padding:12px 18px;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:10px">
         <b id="chainTitle" style="font-size:15px">🧬 产业链</b>
         <span id="chainMeta" style="font-size:11px;color:var(--t3)"></span>
-        <button class="btn btn-blue btn-sm" id="chainGraphBtn" style="margin-left:auto;display:none" onclick="genChainGraph()">🧬 AI生成产业链图谱</button>
+        <button class="btn btn-blue btn-sm" id="chainGraphBtn" style="margin-left:auto;display:none" data-ui-click="genChainGraph()">🧬 AI生成产业链图谱</button>
       </div>
       <div id="chainDetail" style="flex:1;overflow-y:auto;padding:16px 18px">
         <div class="empty-hint">在左侧选择或搜索一个概念板块，查看成分股、相关度与产业链图谱</div>
@@ -451,15 +451,15 @@
   <!-- ② 研报中心视图 -->
   <div id="rsView-report" style="flex:1;display:none;flex-direction:column;overflow:hidden">
     <div style="padding:12px 18px;border-bottom:1px solid var(--b1);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <select id="repType" class="set-fi" style="width:120px" onchange="loadReports()">
+      <select id="repType" class="set-fi" style="width:120px" data-ui-change="loadReports()">
         <option value="0">📈 个股研报</option>
         <option value="1">🏭 行业研报</option>
         <option value="3">📊 策略报告</option>
       </select>
       <input id="repQ" class="set-fi" placeholder="筛选：股票代码 / 名称 / 行业 / 关键词，回车查询" style="flex:1;min-width:220px"
-             onkeydown="if(event.key==='Enter')loadReports()">
-      <button class="btn btn-blue btn-sm" onclick="loadReports()">查询</button>
-      <button class="btn btn-gray btn-sm" onclick="document.getElementById('repQ').value='';loadReports()">最新全部</button>
+             data-ui-keydown="if(event.key==='Enter')loadReports()">
+      <button class="btn btn-blue btn-sm" data-ui-click="loadReports()">查询</button>
+      <button class="btn btn-gray btn-sm" data-ui-click="document.getElementById('repQ').value='';loadReports()">最新全部</button>
       <span id="repHint" style="font-size:11px;color:var(--t3)"></span>
     </div>
     <div id="repBody" style="flex:1;overflow-y:auto;padding:14px 18px">
@@ -477,24 +477,24 @@
         <div style="font-size:16px;font-weight:700;color:var(--t1);margin-bottom:12px">🔍 智能搜索</div>
         <div style="display:flex;gap:8px;margin-bottom:10px">
           <input id="srchInput" class="set-fi" placeholder="输入股票代码/名称/关键词..."
-            style="flex:1" onkeydown="if(event.key==='Enter')doSearch()">
-          <button class="btn btn-blue" onclick="doSearch()">搜索</button>
+            style="flex:1" data-ui-keydown="if(event.key==='Enter')doSearch()">
+          <button class="btn btn-blue" data-ui-click="doSearch()">搜索</button>
         </div>
         <!-- 搜索模式 -->
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
           <span style="font-size:11px;color:var(--t4);line-height:26px">模式：</span>
-          <button class="srch-mode-btn active" data-mode="news" onclick="setSrchMode('news',this)">📰 新闻</button>
-          <button class="srch-mode-btn" data-mode="general" onclick="setSrchMode('general',this)">🌐 网页</button>
-          <button class="srch-mode-btn" data-mode="stock" onclick="setSrchMode('stock',this)">📈 行情</button>
-          <button class="srch-mode-btn" data-mode="research" onclick="setSrchMode('research',this)">🔬 研究</button>
+          <button class="srch-mode-btn active" data-mode="news" data-ui-click="setSrchMode('news',this)">📰 新闻</button>
+          <button class="srch-mode-btn" data-mode="general" data-ui-click="setSrchMode('general',this)">🌐 网页</button>
+          <button class="srch-mode-btn" data-mode="stock" data-ui-click="setSrchMode('stock',this)">📈 行情</button>
+          <button class="srch-mode-btn" data-mode="research" data-ui-click="setSrchMode('research',this)">🔬 研究</button>
         </div>
         <!-- 快捷搜索 -->
         <div style="display:flex;gap:4px;flex-wrap:wrap">
           <span style="font-size:11px;color:var(--t4)">快捷：</span>
-          <button class="btn btn-gray btn-xs" onclick="quickSearch('A股市场 今日行情 涨停 热点')">今日热点</button>
-          <button class="btn btn-gray btn-xs" onclick="quickSearch('宏观经济 政策 利好')">政策动向</button>
-          <button class="btn btn-gray btn-xs" onclick="quickSearch('人工智能 概念股 A股')">AI概念</button>
-          <button class="btn btn-gray btn-xs" onclick="quickSearch('新能源 锂电池 光伏 A股')">新能源</button>
+          <button class="btn btn-gray btn-xs" data-ui-click="quickSearch('A股市场 今日行情 涨停 热点')">今日热点</button>
+          <button class="btn btn-gray btn-xs" data-ui-click="quickSearch('宏观经济 政策 利好')">政策动向</button>
+          <button class="btn btn-gray btn-xs" data-ui-click="quickSearch('人工智能 概念股 A股')">AI概念</button>
+          <button class="btn btn-gray btn-xs" data-ui-click="quickSearch('新能源 锂电池 光伏 A股')">新能源</button>
         </div>
         <div id="srchStatus" style="font-size:11px;color:var(--t3);margin-top:8px"></div>
       </div>
@@ -505,7 +505,7 @@
           <span style="font-size:11px;color:var(--t4)">搜索引擎：</span>
           <div id="srchServiceBadges" style="display:flex;gap:6px;flex-wrap:wrap"></div>
           <div style="flex:1"></div>
-          <button class="btn btn-gray btn-xs" onclick="refreshSrchStats()">刷新额度</button>
+          <button class="btn btn-gray btn-xs" data-ui-click="refreshSrchStats()">刷新额度</button>
         </div>
       </div>
 
@@ -524,8 +524,8 @@
         <span id="srchDetailTitle" style="font-size:15px;font-weight:700;color:var(--t1)">搜索结果详情</span>
         <span id="srchDetailMeta" style="font-size:11px;color:var(--t4)"></span>
         <div style="flex:1"></div>
-        <button class="btn btn-gray btn-xs" id="srchAnalyzeBtn" onclick="analyzeFromSearch()" style="display:none">🤖 AI分析此股</button>
-        <button class="btn btn-gray btn-xs" id="srchAddQueueBtn" onclick="addSearchToQueue()" style="display:none">📌 加入队列</button>
+        <button class="btn btn-gray btn-xs" id="srchAnalyzeBtn" data-ui-click="analyzeFromSearch()" style="display:none">🤖 AI分析此股</button>
+        <button class="btn btn-gray btn-xs" id="srchAddQueueBtn" data-ui-click="addSearchToQueue()" style="display:none">📌 加入队列</button>
       </div>
 
       <!-- 详情内容 -->
@@ -558,7 +558,7 @@
     <div style="width:330px;min-width:300px;border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
       <div style="padding:12px 16px;border-bottom:1px solid var(--b1);display:flex;align-items:center;justify-content:space-between">
         <b style="font-size:15px">🌡️ 市场情绪</b>
-        <button class="btn" style="padding:3px 10px;font-size:12px" onclick="loadReview(true)">刷新</button>
+        <button class="btn" style="padding:3px 10px;font-size:12px" data-ui-click="loadReview(true)">刷新</button>
       </div>
       <div id="rv-left" style="flex:1;overflow-y:auto;padding:14px">
         <div class="empty-hint">加载中…</div>
@@ -569,24 +569,24 @@
     <div style="flex:1;min-width:420px;display:flex;flex-direction:column;overflow:hidden">
       <!-- 顶部 Tab 栏 -->
       <div style="display:flex;border-bottom:1px solid var(--b1);flex-shrink:0">
-        <div id="rv-main-tab" class="rs-tab active" onclick="rvSwitchTab('review')" style="padding:10px 16px 9px">📝 复盘</div>
-        <div id="rv-lhb-tab"  class="rs-tab" onclick="rvSwitchTab('lhb')"    style="padding:10px 16px 9px">🔥 龙虎榜</div>
+        <div id="rv-main-tab" class="rs-tab active" data-ui-click="rvSwitchTab('review')" style="padding:10px 16px 9px">📝 复盘</div>
+        <div id="rv-lhb-tab"  class="rs-tab" data-ui-click="rvSwitchTab('lhb')"    style="padding:10px 16px 9px">🔥 龙虎榜</div>
       </div>
       <!-- 复盘操作栏 -->
       <div id="rv-review-ctrl" style="padding:8px 16px;border-bottom:1px solid var(--b1);display:flex;gap:10px;align-items:center;flex-wrap:wrap;flex-shrink:0">
-        <select id="rv-date" onchange="loadReview()" style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:4px 8px;color:var(--t1);font-size:12px"></select>
+        <select id="rv-date" data-ui-change="loadReview()" style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:4px 8px;color:var(--t1);font-size:12px"></select>
         <span id="rv-phase" style="font-size:11px;color:var(--t3)"></span>
-        <button class="btn btn-blue" id="rv-gen-btn" style="margin-left:auto;padding:4px 14px;font-size:12px" onclick="generateReview()" title="采集最新数据并调用 AI 生成复盘总结与明日预案（约1-2分钟）">⚡ 生成AI复盘</button>
+        <button class="btn btn-blue" id="rv-gen-btn" style="margin-left:auto;padding:4px 14px;font-size:12px" data-ui-click="generateReview()" title="采集最新数据并调用 AI 生成复盘总结与明日预案（约1-2分钟）">⚡ 生成AI复盘</button>
       </div>
       <!-- 龙虎榜操作栏 -->
       <div id="rv-lhb-ctrl" style="display:none;padding:8px 12px;border-bottom:1px solid var(--b1);flex-shrink:0;align-items:center;gap:8px">
-        <select id="lhb-date" onchange="loadLhb()" style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:4px 8px;color:var(--t1);font-size:12px"></select>
+        <select id="lhb-date" data-ui-change="loadLhb()" style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:4px 8px;color:var(--t1);font-size:12px"></select>
         <div class="lhb-sub-tabs" style="flex:1">
-          <div class="lhb-sub-tab active" id="lhb-sub-graph" onclick="lhbSubTab('graph')">游资图谱</div>
-          <div class="lhb-sub-tab" id="lhb-sub-list"  onclick="lhbSubTab('list')">龙虎榜单</div>
+          <div class="lhb-sub-tab active" id="lhb-sub-graph" data-ui-click="lhbSubTab('graph')">游资图谱</div>
+          <div class="lhb-sub-tab" id="lhb-sub-list"  data-ui-click="lhbSubTab('list')">龙虎榜单</div>
         </div>
         <span id="lhb-status" style="font-size:11px;color:var(--t3);white-space:nowrap"></span>
-        <button class="btn" onclick="loadLhb(true)" style="padding:3px 10px;font-size:12px;margin-left:auto">刷新</button>
+        <button class="btn" data-ui-click="loadLhb(true)" style="padding:3px 10px;font-size:12px;margin-left:auto">刷新</button>
       </div>
       <!-- 复盘内容 -->
       <div id="rv-main" style="flex:1;overflow-y:auto;padding:14px">
@@ -610,14 +610,14 @@
           <b style="font-size:15px">📰 财经快讯</b>
           <span id="rv-news-count" style="font-size:11px;color:var(--t3)"></span>
           <label style="margin-left:auto;font-size:11px;color:var(--t2);display:flex;gap:4px;align-items:center;cursor:pointer">
-            <input type="checkbox" id="rv-news-imp" onchange="loadNews()">只看重要
+            <input type="checkbox" id="rv-news-imp" data-ui-change="loadNews()">只看重要
           </label>
         </div>
         <div style="display:flex;gap:6px">
-          <select id="rv-news-src" onchange="loadNews()" style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:4px 6px;color:var(--t1);font-size:12px;max-width:130px">
+          <select id="rv-news-src" data-ui-change="loadNews()" style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:4px 6px;color:var(--t1);font-size:12px;max-width:130px">
             <option value="">全部来源</option>
           </select>
-          <input id="rv-news-q" placeholder="关键词，回车过滤" onkeydown="if(event.key==='Enter')loadNews()"
+          <input id="rv-news-q" placeholder="关键词，回车过滤" data-ui-keydown="if(event.key==='Enter')loadNews()"
             style="flex:1;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:4px 8px;color:var(--t1);font-size:12px">
         </div>
       </div>
@@ -639,13 +639,13 @@
     <span id="aitToken" class="ait-badge token">Token 估算 0</span>
     <span id="aitStrategyBadge" class="ait-badge strategy">策略：默认候选链</span>
     <div class="ait-spacer"></div>
-    <button class="btn btn-green btn-sm" id="aitBtnStart" onclick="aitStart()">▶ 启动</button>
-    <button class="btn btn-gray btn-sm" id="aitBtnStop" onclick="aitStop()">⏸ 停止</button>
-    <button class="btn btn-red btn-sm" onclick="aitEmergency()">🛑 急停</button>
-    <button class="btn btn-gray btn-sm" id="aitBtnRunOnce" onclick="aitRunOnce()">🔄 单轮测试</button>
-    <button class="btn btn-red btn-sm" id="aitBtnStopOnce" onclick="aitStopOnce()" style="display:none">⏹ 停止单轮</button>
-    <button class="btn btn-gray btn-sm" onclick="aitOpenSettings()">⚙️ 风控/候选</button>
-    <button class="btn btn-gray btn-sm" onclick="aitOpenConfig()">🧠 模型</button>
+    <button class="btn btn-green btn-sm" id="aitBtnStart" data-ui-click="aitStart()">▶ 启动</button>
+    <button class="btn btn-gray btn-sm" id="aitBtnStop" data-ui-click="aitStop()">⏸ 停止</button>
+    <button class="btn btn-red btn-sm" data-ui-click="aitEmergency()">🛑 急停</button>
+    <button class="btn btn-gray btn-sm" id="aitBtnRunOnce" data-ui-click="aitRunOnce()">🔄 单轮测试</button>
+    <button class="btn btn-red btn-sm" id="aitBtnStopOnce" data-ui-click="aitStopOnce()" style="display:none">⏹ 停止单轮</button>
+    <button class="btn btn-gray btn-sm" data-ui-click="aitOpenSettings()">⚙️ 风控/候选</button>
+    <button class="btn btn-gray btn-sm" data-ui-click="aitOpenConfig()">🧠 模型</button>
   </div>
   <div class="ait-health" id="aitHealth">
     <div class="ait-health-card idle"><span>模型</span><b>待检测</b><em>打开页面后自动读取</em></div>
@@ -668,7 +668,7 @@
         <div id="aitPending"></div>
         <div class="ait-sec-hd">🎯 策略来源 / 候选轨迹</div>
         <div id="aitCandidateTrace" class="ait-trace"><div class="ait-empty">等待下一轮候选扫描</div></div>
-        <div class="ait-sec-hd">💰 AI 独立模拟账户<button class="btn btn-gray btn-xs" style="margin-left:auto" onclick="aitResetAccount()">重置</button></div>
+        <div class="ait-sec-hd">💰 AI 独立模拟账户<button class="btn btn-gray btn-xs" style="margin-left:auto" data-ui-click="aitResetAccount()">重置</button></div>
         <div id="aitAccount" class="ait-acct"><div class="ait-empty">加载中…</div></div>
         <div class="ait-sec-hd">📦 AI 持仓</div>
         <div id="aitPositions"><div class="ait-empty">暂无持仓</div></div>
@@ -678,30 +678,30 @@
     </div>
   </div>
 </div>
-<div class="ait-modal" id="aitDecModal" onclick="if(event.target===this)this.classList.remove('show')">
+<div class="ait-modal" id="aitDecModal" data-ui-click="if(event.target===this)this.classList.remove('show')">
   <div class="ait-modal-box" id="aitDecModalBox"></div>
 </div>
-<div class="ait-modal" id="aitConfigModal" onclick="if(event.target===this)this.classList.remove('show')">
+<div class="ait-modal" id="aitConfigModal" data-ui-click="if(event.target===this)this.classList.remove('show')">
   <div class="ait-modal-box">
     <h3>🧠 AI 交易模型（与分析模块独立配置）</h3>
-    <div class="ait-field"><label>服务商</label><select id="aitCfgProvider" onchange="aitProviderChange()"></select></div>
+    <div class="ait-field"><label>服务商</label><select id="aitCfgProvider" data-ui-change="aitProviderChange()"></select></div>
     <div class="ait-field"><label>Base URL</label><input id="aitCfgBase" placeholder="https://...（中转站需手填）"></div>
     <div class="ait-field"><label>API Key（留空=不修改；填入后自动识别服务商并拉取模型）</label>
-      <input id="aitCfgKey" type="password" placeholder="sk-..." onblur="aitAutoDetect()" onkeydown="if(event.key==='Enter')aitDetectModels()"></div>
-    <div class="ait-field"><label>模型 <button type="button" class="btn btn-gray btn-xs" style="margin-left:6px" onclick="aitDetectModels()">🔍 检测可用模型</button></label>
-      <select id="aitCfgModelSel" style="display:none;margin-bottom:6px" onchange="if(this.value)document.getElementById('aitCfgModel').value=this.value"></select>
+      <input id="aitCfgKey" type="password" placeholder="sk-..." data-ui-blur="aitAutoDetect()" data-ui-keydown="if(event.key==='Enter')aitDetectModels()"></div>
+    <div class="ait-field"><label>模型 <button type="button" class="btn btn-gray btn-xs" style="margin-left:6px" data-ui-click="aitDetectModels()">🔍 检测可用模型</button></label>
+      <select id="aitCfgModelSel" style="display:none;margin-bottom:6px" data-ui-change="if(this.value)document.getElementById('aitCfgModel').value=this.value"></select>
       <input id="aitCfgModel" list="aitCfgModelList" placeholder="模型名（可手填，或从上方下拉选择）">
       <datalist id="aitCfgModelList"></datalist>
     </div>
     <div class="ait-field"><label><input type="checkbox" id="aitCfgEnabled" style="width:auto;margin-right:6px">启用 AI 交易模型</label></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
       <span id="aitCfgMsg" style="flex:1;font-size:12px;color:var(--t3);align-self:center"></span>
-      <button class="btn btn-gray btn-sm" onclick="aitTestConfig()">测试连接</button>
-      <button class="btn btn-green btn-sm" onclick="aitSaveConfig()">保存</button>
+      <button class="btn btn-gray btn-sm" data-ui-click="aitTestConfig()">测试连接</button>
+      <button class="btn btn-green btn-sm" data-ui-click="aitSaveConfig()">保存</button>
     </div>
   </div>
 </div>
-<div class="ait-modal" id="aitSettingsModal" onclick="if(event.target===this)this.classList.remove('show')">
+<div class="ait-modal" id="aitSettingsModal" data-ui-click="if(event.target===this)this.classList.remove('show')">
   <div class="ait-modal-box">
     <h3>⚙️ 候选池 / 节奏 / 风控</h3>
     <div class="ait-field"><label><input type="checkbox" id="aitSetStrategyCandidates" style="width:auto;margin-right:6px">🎯 使用策略库生成 AI 候选</label></div>
@@ -716,7 +716,7 @@
       <div class="ait-field"><label>初筛入选(top N)</label><input id="aitSetPreTop" type="number"></div>
     </div>
     <div class="ait-field"><label>自选买入候选（输入6位代码回车添加，与初筛合并）</label>
-      <input id="aitWlInput" placeholder="如 600519" onkeydown="if(event.key==='Enter')aitAddWatch()">
+      <input id="aitWlInput" placeholder="如 600519" data-ui-keydown="if(event.key==='Enter')aitAddWatch()">
       <div class="ait-wl" id="aitWlTags"></div>
     </div>
     <div class="ait-row2">
@@ -733,7 +733,7 @@
       <div class="ait-field"><label>当日回撤熔断(0~1)</label><input id="aitSetMaxLoss" type="number" step="0.01"></div>
     </div>
     <div class="ait-field"><label><input type="checkbox" id="aitSetIgnoreTime" style="width:auto;margin-right:6px">忽略交易时间（盘后测试用）</label></div>
-    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-green btn-sm" onclick="aitSaveSettings()">保存</button></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-green btn-sm" data-ui-click="aitSaveSettings()">保存</button></div>
   </div>
 </div>
 
@@ -744,19 +744,19 @@
   <div class="sl">
     <!-- 顶部 Tab 切换 -->
     <div class="sl-tabs">
-      <div class="sl-tab active" id="sltab-strat" onclick="switchLibTab('strat')">策略库</div>
-      <div class="sl-tab" id="sltab-factor" onclick="switchLibTab('factor')">因子库</div>
+      <div class="sl-tab active" id="sltab-strat" data-ui-click="switchLibTab('strat')">策略库</div>
+      <div class="sl-tab" id="sltab-factor" data-ui-click="switchLibTab('factor')">因子库</div>
     </div>
     <!-- 策略库操作栏 -->
     <div class="sl-hd" id="sl-hd-strat">
       <span style="font-size:11px;color:var(--t3)">自定义策略</span>
-      <button class="btn btn-blue btn-sm" style="margin-left:auto" onclick="newStrat()">+ 新建</button>
+      <button class="btn btn-blue btn-sm" style="margin-left:auto" data-ui-click="newStrat()">+ 新建</button>
     </div>
     <!-- 因子库操作栏：仅"列表管理"按钮（新建空文件 + 浏览 Vibe 因子库） -->
     <div class="sl-hd hidden" id="sl-hd-factor">
       <span style="font-size:11px;color:var(--t3)">因子库</span>
-      <button class="btn btn-blue btn-sm" style="margin-left:auto" onclick="newFactor()" title="新建一个空白因子文件">+ 新建</button>
-      <button class="btn btn-sm" onclick="openVibeFactors()" style="background:linear-gradient(135deg,#0ea5e9,#06b6d4);color:#fff;white-space:nowrap" title="见微 Alpha 内置因子库 - 量价/反转/动量/波动多主题">📚 Alpha</button>
+      <button class="btn btn-blue btn-sm" style="margin-left:auto" data-ui-click="newFactor()" title="新建一个空白因子文件">+ 新建</button>
+      <button class="btn btn-sm" data-ui-click="openVibeFactors()" style="background:linear-gradient(135deg,#0ea5e9,#06b6d4);color:#fff;white-space:nowrap" title="见微 Alpha 内置因子库 - 量价/反转/动量/波动多主题">📚 Alpha</button>
     </div>
     <!-- 策略列表 -->
     <div class="sl-body" id="stratList"><div class="empty">加载中...</div></div>
@@ -765,20 +765,20 @@
   </div>
 
   <!-- 重命名 Modal -->
-  <div class="rename-modal" id="renameModal" onclick="closeRename(event)">
+  <div class="rename-modal" id="renameModal" data-ui-click="closeRename(event)">
     <div class="rename-box">
       <h4>✏️ 重命名策略</h4>
-      <input id="renameInput" placeholder="新文件名（字母/数字/下划线）" onkeydown="if(event.key==='Enter')doRename()">
+      <input id="renameInput" placeholder="新文件名（字母/数字/下划线）" data-ui-keydown="if(event.key==='Enter')doRename()">
       <div class="rename-btns">
-        <button class="btn btn-gray btn-sm" onclick="closeRename()">取消</button>
-        <button class="btn btn-blue btn-sm" onclick="doRename()">✓ 确认</button>
+        <button class="btn btn-gray btn-sm" data-ui-click="closeRename()">取消</button>
+        <button class="btn btn-blue btn-sm" data-ui-click="doRename()">✓ 确认</button>
       </div>
     </div>
   </div>
 
   <!-- Vibe 因子激活配置 Modal -->
-  <div class="rename-modal" id="vibeActivateModal" onclick="closeVibeActivate(event)">
-    <div class="rename-box" style="width:520px;max-height:88vh;overflow-y:auto" onclick="event.stopPropagation()">
+  <div class="rename-modal" id="vibeActivateModal" data-ui-click="closeVibeActivate(event)">
+    <div class="rename-box" style="width:520px;max-height:88vh;overflow-y:auto" data-ui-click="event.stopPropagation()">
       <h4 style="display:flex;align-items:center;gap:8px">
         ⚡ 激活 Alpha 因子到自动交易
         <span id="vibeActFactorIdLabel" style="font-size:11px;color:#f59e0b;font-family:monospace"></span>
@@ -846,8 +846,8 @@
       </div>
 
       <div style="display:flex;justify-content:flex-end;gap:8px">
-        <button class="btn btn-gray btn-sm" onclick="closeVibeActivate()">取消</button>
-        <button class="btn btn-orange btn-sm" onclick="confirmVibeActivate()">⚡ 确认激活</button>
+        <button class="btn btn-gray btn-sm" data-ui-click="closeVibeActivate()">取消</button>
+        <button class="btn btn-orange btn-sm" data-ui-click="confirmVibeActivate()">⚡ 确认激活</button>
       </div>
     </div>
   </div>
@@ -1036,21 +1036,21 @@
   </div>
 
   <!-- 更新日志 Modal -->
-  <div class="rename-modal" id="changelogModal" onclick="closeChangelog(event)">
-    <div class="rename-box" style="width:700px;max-width:90vw;max-height:80vh;overflow:auto" onclick="event.stopPropagation()">
+  <div class="rename-modal" id="changelogModal" data-ui-click="closeChangelog(event)">
+    <div class="rename-box" style="width:700px;max-width:90vw;max-height:80vh;overflow:auto" data-ui-click="event.stopPropagation()">
       <h4>📝 更新日志</h4>
       <div id="changelogBody" style="padding:10px 0;min-height:100px">
         <div style="color:var(--t3);text-align:center;padding:20px">加载中...</div>
       </div>
       <div style="display:flex;justify-content:flex-end;margin-top:10px">
-        <button class="btn btn-gray btn-sm" onclick="closeChangelog()">关闭</button>
+        <button class="btn btn-gray btn-sm" data-ui-click="closeChangelog()">关闭</button>
       </div>
     </div>
   </div>
 
   <!-- 实盘总开关 二次确认 Modal -->
-  <div class="rename-modal" id="liveModeModal" onclick="closeLiveModeModal(event)">
-    <div class="rename-box" style="width:520px;border:2px solid #ef4444" onclick="event.stopPropagation()">
+  <div class="rename-modal" id="liveModeModal" data-ui-click="closeLiveModeModal(event)">
+    <div class="rename-box" style="width:520px;border:2px solid #ef4444" data-ui-click="event.stopPropagation()">
       <h4 style="color:#ef4444">⚠️ 切换到实盘交易模式</h4>
       <div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:10px;font-size:12px;color:var(--t1);line-height:1.7;margin-bottom:12px">
         切换到 <b style="color:#ef4444">实盘</b> 后：<br>
@@ -1093,15 +1093,15 @@
       </div>
 
       <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button class="btn btn-gray btn-sm" onclick="closeLiveModeModal()">取消（保持模拟）</button>
-        <button class="btn btn-sm" onclick="confirmSwitchToLive()" style="background:#ef4444;color:#fff">⚠️ 我已确认 → 切到实盘</button>
+        <button class="btn btn-gray btn-sm" data-ui-click="closeLiveModeModal()">取消（保持模拟）</button>
+        <button class="btn btn-sm" data-ui-click="confirmSwitchToLive()" style="background:#ef4444;color:#fff">⚠️ 我已确认 → 切到实盘</button>
       </div>
     </div>
   </div>
 
   <!-- Vibe Alpha 因子库 Modal -->
-  <div class="rename-modal" id="vibeModal" onclick="closeVibeFactors(event)">
-    <div class="rename-box" style="width:760px;max-width:92vw;max-height:88vh;overflow-y:auto" onclick="event.stopPropagation()">
+  <div class="rename-modal" id="vibeModal" data-ui-click="closeVibeFactors(event)">
+    <div class="rename-box" style="width:760px;max-width:92vw;max-height:88vh;overflow-y:auto" data-ui-click="event.stopPropagation()">
       <h4 style="display:flex;align-items:center;gap:8px">
         📚 见微 Alpha 因子库
         <span style="font-size:10px;color:var(--t3);font-weight:400">见微 Alpha 内置因子库 · 量价 / 反转 / 动量 / 波动 多主题</span>
@@ -1110,7 +1110,7 @@
       <!-- 因子选择 + 元数据 -->
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
         <label style="font-size:11px;color:var(--t3);white-space:nowrap">选择因子</label>
-        <select id="vibeFactorSel" style="flex:1;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:6px 8px;color:var(--t1);font-size:13px" onchange="renderVibeFactorMeta()">
+        <select id="vibeFactorSel" style="flex:1;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:6px 8px;color:var(--t1);font-size:13px" data-ui-change="renderVibeFactorMeta()">
           <option value="">加载中...</option>
         </select>
         <span id="vibeFactorCount" style="font-size:10px;color:var(--t3)"></span>
@@ -1123,8 +1123,8 @@
 
       <!-- 股票池选择 -->
       <div style="display:flex;gap:6px;margin-bottom:8px">
-        <button class="btn btn-sm" id="vibeModeManual" onclick="setVibeMode('manual')" style="flex:1">✏️ 手动输入</button>
-        <button class="btn btn-sm" id="vibeModeMarket" onclick="setVibeMode('market_top')" style="flex:1">🌐 全市场活跃</button>
+        <button class="btn btn-sm" id="vibeModeManual" data-ui-click="setVibeMode('manual')" style="flex:1">✏️ 手动输入</button>
+        <button class="btn btn-sm" id="vibeModeMarket" data-ui-click="setVibeMode('market_top')" style="flex:1">🌐 全市场活跃</button>
       </div>
 
       <!-- 手动输入 -->
@@ -1139,9 +1139,9 @@
         <label style="font-size:11px;color:var(--t3)">活跃前 N 只（0 = 整个市场 ~5000+ 只）</label>
         <div style="display:flex;gap:6px;margin-top:4px">
           <input id="vibeMaxCodes" type="number" min="0" max="10000" step="100" value="500" style="flex:1;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:7px 10px;color:var(--t1);font-size:13px">
-          <button class="btn btn-sm" onclick="document.getElementById('vibeMaxCodes').value=100">100</button>
-          <button class="btn btn-sm" onclick="document.getElementById('vibeMaxCodes').value=500">500</button>
-          <button class="btn btn-sm" onclick="document.getElementById('vibeMaxCodes').value=0" title="0 = 整个市场">全市场</button>
+          <button class="btn btn-sm" data-ui-click="document.getElementById('vibeMaxCodes').value=100">100</button>
+          <button class="btn btn-sm" data-ui-click="document.getElementById('vibeMaxCodes').value=500">500</button>
+          <button class="btn btn-sm" data-ui-click="document.getElementById('vibeMaxCodes').value=0" title="0 = 整个市场">全市场</button>
         </div>
         <div style="font-size:10px;color:var(--t3);margin-top:4px">📊 100 只 ~1 分钟 / 500 只 ~3 分钟 / 全市场 ~15-25 分钟 (TDX 池+本地缓存)</div>
       </div>
@@ -1150,8 +1150,8 @@
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
         <label style="font-size:11px;color:var(--t3)">回看天数</label>
         <input id="vibeDays" type="number" min="30" max="250" value="60" style="width:80px;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:6px 8px;color:var(--t1);font-size:13px">
-        <button class="btn btn-blue btn-sm" onclick="runVibeFactor()" id="vibeRunBtn" style="margin-left:auto">▶ 计算分数</button>
-        <button class="btn btn-purple btn-sm" onclick="runVibeBacktest()" id="vibeBtBtn" title="对当前因子做历史回测">📈 回测</button>
+        <button class="btn btn-blue btn-sm" data-ui-click="runVibeFactor()" id="vibeRunBtn" style="margin-left:auto">▶ 计算分数</button>
+        <button class="btn btn-purple btn-sm" data-ui-click="runVibeBacktest()" id="vibeBtBtn" title="对当前因子做历史回测">📈 回测</button>
       </div>
 
       <!-- 结果区 -->
@@ -1165,10 +1165,10 @@
           <label style="font-size:11px;color:var(--t3)">取前</label>
           <input id="vibeAddTopN" type="number" min="1" max="200" value="20" style="width:60px;background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:5px 8px;color:var(--t1);font-size:12px">
           <label style="font-size:11px;color:var(--t3)">名</label>
-          <button class="btn btn-blue btn-sm" onclick="vibeAddToScreenPool()">📋 加入选股池</button>
-          <button class="btn btn-orange btn-sm" onclick="openVibeActivateModal()" title="激活后每 5 分钟自动扫描下单（受顶部实盘开关 + 风险护栏控制）">⚡ 激活到自动交易</button>
+          <button class="btn btn-blue btn-sm" data-ui-click="vibeAddToScreenPool()">📋 加入选股池</button>
+          <button class="btn btn-orange btn-sm" data-ui-click="openVibeActivateModal()" title="激活后每 5 分钟自动扫描下单（受顶部实盘开关 + 风险护栏控制）">⚡ 激活到自动交易</button>
         </div>
-        <button class="btn btn-gray btn-sm" style="margin-left:auto" onclick="closeVibeFactors()">关闭</button>
+        <button class="btn btn-gray btn-sm" style="margin-left:auto" data-ui-click="closeVibeFactors()">关闭</button>
       </div>
 
       <!-- 当前激活状态展示（modal 打开时拉取）-->
@@ -1182,21 +1182,21 @@
       <input id="sfn" class="fn-input" placeholder="strategy_name">
       <div class="se-acts">
         <!-- 共用按钮 -->
-        <button class="btn btn-gray btn-sm" onclick="saveStrat()" data-mode="both">💾 保存</button>
+        <button class="btn btn-gray btn-sm" data-ui-click="saveStrat()" data-mode="both">💾 保存</button>
 
         <!-- 策略库专属按钮 -->
-        <button class="btn btn-blue btn-sm"   onclick="runScreen(600)" data-mode="strat" title="按成交量取前 600 只活跃股扫描，约 15 秒">🔍 快扫</button>
-        <button class="btn btn-blue btn-sm"   onclick="runScreen(0)"   data-mode="strat" title="扫描全市场约 5000 只票，约 2-3 分钟">🌐 全市场</button>
-        <button class="btn btn-purple btn-sm" onclick="goBacktest()"   data-mode="strat">📈 回测</button>
-        <button class="btn btn-orange btn-sm" onclick="activateStrat()" id="actBtn" data-mode="strat" title="激活此策略为自动交易策略：激活后系统定时扫描并将信号自动加入执行队列">⚡ 激活</button>
-        <button class="btn btn-sm" onclick="openAiGen()" id="aiGenBtn" data-mode="strat" style="background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff" title="用AI自动生成选股策略代码">✨ AI写策略</button>
+        <button class="btn btn-blue btn-sm"   data-ui-click="runScreen(600)" data-mode="strat" title="按成交量取前 600 只活跃股扫描，约 15 秒">🔍 快扫</button>
+        <button class="btn btn-blue btn-sm"   data-ui-click="runScreen(0)"   data-mode="strat" title="扫描全市场约 5000 只票，约 2-3 分钟">🌐 全市场</button>
+        <button class="btn btn-purple btn-sm" data-ui-click="goBacktest()"   data-mode="strat">📈 回测</button>
+        <button class="btn btn-orange btn-sm" data-ui-click="activateStrat()" id="actBtn" data-mode="strat" title="激活此策略为自动交易策略：激活后系统定时扫描并将信号自动加入执行队列">⚡ 激活</button>
+        <button class="btn btn-sm" data-ui-click="openAiGen()" id="aiGenBtn" data-mode="strat" style="background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff" title="用AI自动生成选股策略代码">✨ AI写策略</button>
 
         <!-- 因子库专属按钮（对当前编辑器中的因子文件操作）-->
-        <button class="btn btn-blue btn-sm" onclick="runScreen(600)" data-mode="factor" title="按当前因子代码扫描活跃前 600 只">🔍 扫描</button>
-        <button class="btn btn-sm" onclick="openAiFactorGen()" data-mode="factor" style="background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff" title="用AI自动生成因子代码">✨ AI写因子</button>
+        <button class="btn btn-blue btn-sm" data-ui-click="runScreen(600)" data-mode="factor" title="按当前因子代码扫描活跃前 600 只">🔍 扫描</button>
+        <button class="btn btn-sm" data-ui-click="openAiFactorGen()" data-mode="factor" style="background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff" title="用AI自动生成因子代码">✨ AI写因子</button>
 
         <!-- 共用删除按钮 -->
-        <button class="btn btn-red btn-xs" onclick="delStrat()" data-mode="both">🗑</button>
+        <button class="btn btn-red btn-xs" data-ui-click="delStrat()" data-mode="both">🗑</button>
       </div>
     </div>
     <div class="se-wrap"><textarea id="codeArea"></textarea></div>
@@ -1214,14 +1214,14 @@
       <!-- 实时三大指数行情 -->
       <span id="mktIndices" style="display:flex;gap:8px;flex-wrap:wrap;font-size:11px;font-family:monospace"></span>
       <span class="mkt-advice" id="mktAdvice" style="font-size:11px"></span>
-      <button class="btn btn-gray btn-xs" onclick="loadMarketContext(true)" style="flex-shrink:0" title="刷新大盘数据">⟳</button>
+      <button class="btn btn-gray btn-xs" data-ui-click="loadMarketContext(true)" style="flex-shrink:0" title="刷新大盘数据">⟳</button>
     </div>
     <div class="rtabs">
-      <div class="rtab"        onclick="switchRTab('data',this)">📦 数据</div>
-      <div class="rtab active" onclick="switchRTab('screen',this)">🔍 选股</div>
-      <div class="rtab"        onclick="switchRTab('bt',this)">📈 回测</div>
-      <div class="rtab"        onclick="switchRTab('ai',this)">🤖 AI分析</div>
-      <div class="rtab"        onclick="switchRTab('aiset',this)">⚙ 设置</div>
+      <div class="rtab"        data-ui-click="switchRTab('data',this)">📦 数据</div>
+      <div class="rtab active" data-ui-click="switchRTab('screen',this)">🔍 选股</div>
+      <div class="rtab"        data-ui-click="switchRTab('bt',this)">📈 回测</div>
+      <div class="rtab"        data-ui-click="switchRTab('ai',this)">🤖 AI分析</div>
+      <div class="rtab"        data-ui-click="switchRTab('aiset',this)">⚙ 设置</div>
     </div>
 
     <!-- 数据管理 -->
@@ -1231,7 +1231,7 @@
         <div class="dm-row">
           <div class="fc" style="flex:2"><label>股票代码（逗号分隔）</label><input id="dlCodes" class="fi" placeholder="000001,600519,300750"></div>
           <div class="fc" style="flex:1;min-width:100px"><label>起始日期</label><input id="dlStart" class="fi" type="date" value="2020-01-01"></div>
-          <button class="btn btn-blue btn-sm" id="dlBtn" onclick="startDownload()" style="flex-shrink:0;align-self:flex-end">⬇ 下载</button>
+          <button class="btn btn-blue btn-sm" id="dlBtn" data-ui-click="startDownload()" style="flex-shrink:0;align-self:flex-end">⬇ 下载</button>
         </div>
         <div class="dl-bar-wrap"><div class="dl-bar" id="dlBar"></div></div>
         <div class="dl-info" id="dlInfo">输入代码后点击下载</div>
@@ -1240,8 +1240,8 @@
         <div style="display:flex;align-items:center;gap:8px">
           <div class="dm-ttl" style="margin:0">本地数据库</div>
           <span id="dbCount" style="font-size:11px;color:var(--t3)"></span>
-          <button class="btn btn-gray btn-xs" onclick="loadDbList()" style="margin-left:auto">⟳ 刷新</button>
-          <button class="btn btn-gray btn-xs" onclick="refreshNames()" title="刷新全市场股票名称">📋 更新名称</button>
+          <button class="btn btn-gray btn-xs" data-ui-click="loadDbList()" style="margin-left:auto">⟳ 刷新</button>
+          <button class="btn btn-gray btn-xs" data-ui-click="refreshNames()" title="刷新全市场股票名称">📋 更新名称</button>
         </div>
       </div>
       <div class="sk-list" id="dbList"><div class="empty">暂无本地数据</div></div>
@@ -1251,8 +1251,8 @@
     <div class="rpanel active" id="rp-screen">
       <div class="sc-hd">
         <span style="font-size:13px;color:var(--t3)" id="scInfo">点击「选股」开始</span>
-        <button class="btn btn-purple btn-sm" id="addAllBtn" style="display:none" onclick="addAllQ()">全部入队</button>
-        <button class="btn btn-sm" id="optBtn" style="display:none;background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff" onclick="openPortfolioOpt()" title="对选股结果进行投资组合优化（等权/最大夏普/最小波动/风险平价）">⚖ 组合优化</button>
+        <button class="btn btn-purple btn-sm" id="addAllBtn" style="display:none" data-ui-click="addAllQ()">全部入队</button>
+        <button class="btn btn-sm" id="optBtn" style="display:none;background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff" data-ui-click="openPortfolioOpt()" title="对选股结果进行投资组合优化（等权/最大夏普/最小波动/风险平价）">⚖ 组合优化</button>
       </div>
       <div class="scan-prog" id="scProgWrap" style="display:none">
         <div class="scan-prog-bar pulse" id="scProgBar"></div>
@@ -1275,8 +1275,8 @@
             <div class="fc"><label>止盈 (%)</label><input type="number" id="btTP" class="fi" value="10" step="0.5"></div>
           </div>
           <div class="cfg-run">
-            <button class="btn btn-purple" id="btBtn" onclick="runBt()">▶ 运行回测</button>
-            <button class="btn btn-red btn-sm" id="btCancelBtn" onclick="cancelBt()" style="display:none">⏹ 终止回测</button>
+            <button class="btn btn-purple" id="btBtn" data-ui-click="runBt()">▶ 运行回测</button>
+            <button class="btn btn-red btn-sm" id="btCancelBtn" data-ui-click="cancelBt()" style="display:none">⏹ 终止回测</button>
             <span class="cfg-st" id="btSt">选择策略后点击运行</span>
             <span id="dsSt" style="font-size:11px;color:var(--t4)"></span>
           </div>
@@ -1299,8 +1299,8 @@
               <label class="cfg-lbl">股票代码</label>
               <input id="aiCode" class="fi" placeholder="如 000001" style="text-transform:uppercase">
             </div>
-            <button class="btn btn-purple" id="aiBtn" onclick="runAI()">🤖 开始分析</button>
-            <button class="btn btn-gray btn-sm" onclick="fillAiFromEditor()" title="从选股结果/监控池/回测代码栏自动填入股票代码">↑ 填入代码</button>
+            <button class="btn btn-purple" id="aiBtn" data-ui-click="runAI()">🤖 开始分析</button>
+            <button class="btn btn-gray btn-sm" data-ui-click="fillAiFromEditor()" title="从选股结果/监控池/回测代码栏自动填入股票代码">↑ 填入代码</button>
           </div>
           <div style="margin-top:7px;font-size:11px;color:var(--t3)" id="aiStatusLine">选择股票后点击分析（需配置AI设置）</div>
         </div>
@@ -1356,15 +1356,15 @@
           <div class="set-ttl">⚡ 启用状态</div>
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
             <label class="tog-wrap">
-              <input type="checkbox" id="aiEnabled" onchange="toggleAiEnabled(this)">
+              <input type="checkbox" id="aiEnabled" data-ui-change="toggleAiEnabled(this)">
               <span class="tog-sl"></span>
             </label>
             <span id="aiEnabledLbl" style="font-size:13px;color:var(--t2)">已禁用</span>
           </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-blue" onclick="saveAiConfig()">💾 保存配置</button>
-          <button class="btn btn-gray btn-sm" onclick="testAiConn()">🔗 测试连接</button>
+          <button class="btn btn-blue" data-ui-click="saveAiConfig()">💾 保存配置</button>
+          <button class="btn btn-gray btn-sm" data-ui-click="testAiConn()">🔗 测试连接</button>
         </div>
         <div id="aiSetMsg" style="margin-top:10px;font-size:12px;color:var(--gl)"></div>
         <div style="margin-top:16px;padding:12px;background:var(--card);border-radius:8px;font-size:11px;color:var(--t3);line-height:1.7">
@@ -1393,7 +1393,7 @@
           <div id="brokerFieldsBox"></div>
 
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
-            <button class="btn btn-blue" onclick="saveBrokerConfig()">💾 保存券商配置</button>
+            <button class="btn btn-blue" data-ui-click="saveBrokerConfig()">💾 保存券商配置</button>
           </div>
           <div id="brokerSetMsg" style="margin-top:10px;font-size:12px"></div>
 
@@ -1418,7 +1418,7 @@
           <!-- 企业微信 -->
           <div class="notify-ch-card" id="ntWeCom">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-              <label class="tog-wrap"><input type="checkbox" id="ntWeComEn" onchange="notifyChannelToggle('wecom',this)"><span class="tog-sl"></span></label>
+              <label class="tog-wrap"><input type="checkbox" id="ntWeComEn" data-ui-change="notifyChannelToggle('wecom',this)"><span class="tog-sl"></span></label>
               <span style="font-size:13px;font-weight:600;color:var(--t1)">💼 企业微信</span>
             </div>
             <div id="ntWeComFields" style="display:none">
@@ -1430,7 +1430,7 @@
           <!-- 飞书 -->
           <div class="notify-ch-card" id="ntFeiShu">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-              <label class="tog-wrap"><input type="checkbox" id="ntFeiShuEn" onchange="notifyChannelToggle('feishu',this)"><span class="tog-sl"></span></label>
+              <label class="tog-wrap"><input type="checkbox" id="ntFeiShuEn" data-ui-change="notifyChannelToggle('feishu',this)"><span class="tog-sl"></span></label>
               <span style="font-size:13px;font-weight:600;color:var(--t1)">🐦 飞书</span>
             </div>
             <div id="ntFeiShuFields" style="display:none">
@@ -1442,7 +1442,7 @@
           <!-- 钉钉 -->
           <div class="notify-ch-card" id="ntDingTalk">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-              <label class="tog-wrap"><input type="checkbox" id="ntDingTalkEn" onchange="notifyChannelToggle('dingtalk',this)"><span class="tog-sl"></span></label>
+              <label class="tog-wrap"><input type="checkbox" id="ntDingTalkEn" data-ui-change="notifyChannelToggle('dingtalk',this)"><span class="tog-sl"></span></label>
               <span style="font-size:13px;font-weight:600;color:var(--t1)">📌 钉钉</span>
             </div>
             <div id="ntDingTalkFields" style="display:none">
@@ -1456,7 +1456,7 @@
           <!-- Telegram -->
           <div class="notify-ch-card" id="ntTelegram">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-              <label class="tog-wrap"><input type="checkbox" id="ntTelegramEn" onchange="notifyChannelToggle('telegram',this)"><span class="tog-sl"></span></label>
+              <label class="tog-wrap"><input type="checkbox" id="ntTelegramEn" data-ui-change="notifyChannelToggle('telegram',this)"><span class="tog-sl"></span></label>
               <span style="font-size:13px;font-weight:600;color:var(--t1)">✈ Telegram</span>
             </div>
             <div id="ntTelegramFields" style="display:none">
@@ -1468,8 +1468,8 @@
           </div>
 
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
-            <button class="btn btn-blue" onclick="saveNotifyConfig()">💾 保存推送配置</button>
-            <button class="btn btn-gray btn-sm" onclick="testNotify()">🔔 测试推送</button>
+            <button class="btn btn-blue" data-ui-click="saveNotifyConfig()">💾 保存推送配置</button>
+            <button class="btn btn-gray btn-sm" data-ui-click="testNotify()">🔔 测试推送</button>
           </div>
           <div id="ntSetMsg" style="margin-top:10px;font-size:12px"></div>
         </div>
@@ -1483,15 +1483,16 @@
 
 <link rel="stylesheet" href="/static/app/css/app-pages.css">
 
+<script src="/static/app/js/ui-events.js"></script>
 <script src="/static/app/js/app-core.js?v=20260726-sync-ui-polish"></script>
 
 <!-- AI 写策略弹窗 -->
-<div class="kl-overlay" id="aiGenOverlay" onclick="if(event.target===this)closeAiGen()" style="z-index:2100">
+<div class="kl-overlay" id="aiGenOverlay" data-ui-click="if(event.target===this)closeAiGen()" style="z-index:2100">
   <div class="kl-box" style="width:640px;max-width:96vw">
     <div class="kl-hd">
       <span class="kl-title">✨ AI 写选股策略</span>
       <span class="kl-src" id="aiGenSrc" style="background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff;border:none">Beta</span>
-      <button class="kl-close" onclick="closeAiGen()">✕</button>
+      <button class="kl-close" data-ui-click="closeAiGen()">✕</button>
     </div>
     <div style="padding:16px;background:#FCFAF7">
       <div style="font-size:12px;color:var(--t3);margin-bottom:10px;line-height:1.6">
@@ -1515,9 +1516,9 @@
       <div id="aiGenErr" style="font-size:12px;color:var(--rl);margin-top:8px;display:none"></div>
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--b1);display:flex;gap:8px;align-items:center;background:var(--panel)">
-      <button class="btn btn-sm" id="aiGenBtn2" onclick="doAiGen()" style="background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff;min-width:100px">✨ 生成策略</button>
+      <button class="btn btn-sm" id="aiGenBtn2" data-ui-click="doAiGen()" style="background:linear-gradient(135deg,#FF7B93,#B580E8);color:#fff;min-width:100px">✨ 生成策略</button>
       <span id="aiGenSt" style="font-size:12px;color:var(--t3);flex:1"></span>
-      <button class="btn btn-gray btn-sm" onclick="closeAiGen()">取消</button>
+      <button class="btn btn-gray btn-sm" data-ui-click="closeAiGen()">取消</button>
     </div>
   </div>
 </div>
@@ -1525,17 +1526,17 @@
 <script src="/static/app/js/app-ai-gen.js"></script>
 
 <!-- K线弹窗 -->
-<div class="kl-overlay" id="klOverlay" onclick="if(event.target===this)closeKL()">
+<div class="kl-overlay" id="klOverlay" data-ui-click="if(event.target===this)closeKL()">
   <div class="kl-box">
     <div class="kl-hd">
       <span class="kl-title" id="klTitle">股票走势</span>
       <div class="kl-tabs" role="tablist" aria-label="图表类型">
-        <button class="kl-tab active" id="klTabSecond" type="button" role="tab" onclick="switchKLineMode('second')">秒级</button>
-        <button class="kl-tab" id="klTabMinute" type="button" role="tab" onclick="switchKLineMode('minute')">分时</button>
-        <button class="kl-tab" id="klTabDaily" type="button" role="tab" onclick="switchKLineMode('daily')">日K</button>
+        <button class="kl-tab active" id="klTabSecond" type="button" role="tab" data-ui-click="switchKLineMode('second')">秒级</button>
+        <button class="kl-tab" id="klTabMinute" type="button" role="tab" data-ui-click="switchKLineMode('minute')">分时</button>
+        <button class="kl-tab" id="klTabDaily" type="button" role="tab" data-ui-click="switchKLineMode('daily')">日K</button>
       </div>
       <span class="kl-src" id="klSrc"></span>
-      <button class="kl-close" onclick="closeKL()">✕</button>
+      <button class="kl-close" data-ui-click="closeKL()">✕</button>
     </div>
     <div class="kl-body">
       <div class="kl-chart-wrap"><canvas id="klCanvas" style="width:100%;height:380px;display:block"></canvas></div>
@@ -1546,12 +1547,12 @@
 </div>
 
 <!-- ══ 组合优化弹窗 ════════════════════════════════════════════ -->
-<div class="kl-overlay" id="optOverlay" onclick="if(event.target===this)closeOpt()" style="z-index:2200">
+<div class="kl-overlay" id="optOverlay" data-ui-click="if(event.target===this)closeOpt()" style="z-index:2200">
   <div class="kl-box" style="width:680px;max-width:96vw">
     <div class="kl-hd">
       <span class="kl-title">⚖ 投资组合优化</span>
       <span class="kl-src" style="background:#0ea5e9;color:#fff;border:none">Markowitz</span>
-      <button class="kl-close" onclick="closeOpt()">✕</button>
+      <button class="kl-close" data-ui-click="closeOpt()">✕</button>
     </div>
     <div style="padding:16px">
       <!-- 优化模式 -->
@@ -1562,7 +1563,7 @@
           <label style="font-size:11px;color:var(--t3)">总资金（元）</label>
           <input id="optCapital" class="set-fi" type="number" value="100000" min="10000" step="10000">
         </div>
-        <button class="btn btn-blue" onclick="runPortfolioOpt()" style="flex-shrink:0">⚖ 开始优化</button>
+        <button class="btn btn-blue" data-ui-click="runPortfolioOpt()" style="flex-shrink:0">⚖ 开始优化</button>
       </div>
       <div id="optStatus" style="font-size:12px;color:var(--bl);margin-bottom:8px"></div>
       <!-- 结果 -->
@@ -1578,19 +1579,19 @@
 <script src="/static/app/js/app-research.js"></script>
 <!-- ══════════ 问题反馈入口（自成一体，复用主题类）══════════ -->
 <link rel="stylesheet" href="/static/app/css/app-feedback.css">
-<button class="fb-fab" onclick="openFeedback()" title="提交问题反馈 / 建议">💬 反馈</button>
-<div class="rename-modal" id="feedbackModal" onclick="closeFeedback(event)">
-  <div class="rename-box fb-box" onclick="event.stopPropagation()">
+<button class="fb-fab" data-ui-click="openFeedback()" title="提交问题反馈 / 建议">💬 反馈</button>
+<div class="rename-modal" id="feedbackModal" data-ui-click="closeFeedback(event)">
+  <div class="rename-box fb-box" data-ui-click="event.stopPropagation()">
     <h4>💬 问题反馈</h4>
     <div style="font-size:11px;color:var(--t3);line-height:1.6;margin-bottom:6px">
       发现 Bug、有改进建议或数据异常，都欢迎反馈。我们会在后台跟进处理。
     </div>
     <label>类型</label>
     <div class="fb-cat" id="fbCat">
-      <div class="fb-chip on" data-cat="bug"        onclick="fbPickCat(this)">🐞 功能异常</div>
-      <div class="fb-chip"    data-cat="suggestion" onclick="fbPickCat(this)">💡 功能建议</div>
-      <div class="fb-chip"    data-cat="data"       onclick="fbPickCat(this)">📊 数据问题</div>
-      <div class="fb-chip"    data-cat="other"      onclick="fbPickCat(this)">💬 其他</div>
+      <div class="fb-chip on" data-cat="bug"        data-ui-click="fbPickCat(this)">🐞 功能异常</div>
+      <div class="fb-chip"    data-cat="suggestion" data-ui-click="fbPickCat(this)">💡 功能建议</div>
+      <div class="fb-chip"    data-cat="data"       data-ui-click="fbPickCat(this)">📊 数据问题</div>
+      <div class="fb-chip"    data-cat="other"      data-ui-click="fbPickCat(this)">💬 其他</div>
     </div>
     <label>所在页面</label>
     <input id="fbPage" readonly>
@@ -1599,10 +1600,10 @@
     <label>联系方式（选填，便于回复）</label>
     <input id="fbContact" maxlength="120" placeholder="微信 / 邮箱 / 手机，留空亦可">
     <div class="rename-btns" style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:14px">
-      <button class="btn btn-gray btn-sm" onclick="toggleMyFeedback()" id="fbMineBtn">📋 我的反馈</button>
+      <button class="btn btn-gray btn-sm" data-ui-click="toggleMyFeedback()" id="fbMineBtn">📋 我的反馈</button>
       <span style="flex:1"></span>
-      <button class="btn btn-gray btn-sm" onclick="closeFeedback()">取消</button>
-      <button class="btn btn-blue btn-sm" onclick="submitFeedback()" id="fbSubmitBtn">提交</button>
+      <button class="btn btn-gray btn-sm" data-ui-click="closeFeedback()">取消</button>
+      <button class="btn btn-blue btn-sm" data-ui-click="submitFeedback()" id="fbSubmitBtn">提交</button>
     </div>
     <div class="fb-mine" id="fbMine" style="display:none"></div>
   </div>

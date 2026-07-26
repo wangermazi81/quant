@@ -1,4 +1,4 @@
-// ── 全局错误捕获，确保能看到JS错误 ──
+﻿// ── 全局错误捕获，确保能看到JS错误 ──
 window.onerror = function(msg, src, line, col, err){
   const el = document.getElementById('btResult')
   if(el) el.innerHTML = `<div style="padding:16px"><div style="background:#2d1a1e;border:1px solid #6e1c24;border-radius:8px;padding:14px;color:#f85149;font-size:13px"><b>⚠ JavaScript 错误（请截图报告）</b><pre style="margin-top:8px;font-size:11px;white-space:pre-wrap">${msg}\n第${line}行</pre></div></div>`
@@ -466,7 +466,6 @@ function _renderAutoSwitch(on){
   dot.style.left       = on ? '17px' : '2px'
   if(txt) { txt.textContent = on ? '自动执行 开' : '自动执行'; txt.style.color = on ? '#f59e0b' : 'var(--t3)' }
 }
-document.getElementById('autoExecLabel').onclick = toggleAutoExec
 
 // 持仓渲染
 function _positionWeightBase(positions, account){
@@ -509,7 +508,7 @@ function renderPositions(positions){
     const sign = pUp?'+':''
     const pColor = pUp?'var(--rl)':'var(--gl)'
     const nm = (p.name||p.code).replace(/'/g,"\\'")
-    return `<tr style="cursor:pointer" onclick="showKLine('${p.code}','${nm}')">
+    return `<tr style="cursor:pointer" data-ui-click="showKLine('${p.code}','${nm}')">
       <td style="padding:5px 10px;font-weight:700;font-size:13px">${p.code}</td>
       <td style="padding:5px 10px;color:var(--t2);max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.name||p.code}</td>
       <td style="padding:5px 10px;text-align:right;color:var(--t3);font-size:11px">${p.shares}股</td>
@@ -517,8 +516,8 @@ function renderPositions(positions){
       <td style="padding:5px 10px;text-align:right;font-weight:700">${(+p.cur_price).toFixed(2)}</td>
       <td style="padding:5px 10px;text-align:right;font-weight:700;color:${pColor}">${sign}${p.pnl_pct.toFixed(2)}%</td>
       <td style="padding:5px 10px;text-align:right;color:var(--t3);font-size:11px">¥${(+(p.market_value||0)).toLocaleString('zh-CN',{maximumFractionDigits:0})}${_positionWeightHtml(+(p.market_value||0), weightBase)}</td>
-      <td style="padding:5px 8px;text-align:right" onclick="event.stopPropagation()">
-        <button class="btn btn-red btn-xs" onclick="sellPos('${p.code}',${p.cur_price})">卖出</button>
+      <td style="padding:5px 8px;text-align:right" data-ui-click="event.stopPropagation()">
+        <button class="btn btn-red btn-xs" data-ui-click="sellPos('${p.code}',${p.cur_price})">卖出</button>
       </td>
     </tr>`
   }).join('')
@@ -624,13 +623,13 @@ function renderQueue(q){
   el.innerHTML=q.map(it=>{
     const nm=(it.name||it.code).replace(/'/g,"\\'")
     const failMsg = it.fail_msg ? `<div style="font-size:10px;color:#ef4444;padding-left:2px">⚠️ ${(it.fail_msg||'').substring(0,80)}</div>` : ''
-    return `<div class="q-item" style="flex-direction:column;gap:4px;padding:8px 10px;cursor:pointer" onclick="showKLine('${it.code}','${nm}')">
+    return `<div class="q-item" style="flex-direction:column;gap:4px;padding:8px 10px;cursor:pointer" data-ui-click="showKLine('${it.code}','${nm}')">
     <div style="display:flex;align-items:center;gap:6px">
       <span style="font-weight:700;width:60px">${it.code}</span>
       <span style="color:var(--t2);flex:1">${it.name}</span>
       <span style="color:#f59e0b;font-size:12px">¥${(+it.price||0).toFixed(2)}</span>
-      <span onclick="event.stopPropagation()">${it.status==='pending'
-        ?`<button class="btn btn-green btn-sm" onclick="execQ('${it.code}','buy')">买入</button><button class="btn btn-gray btn-sm" onclick="execQ('${it.code}','skip')">跳过</button>`
+      <span data-ui-click="event.stopPropagation()">${it.status==='pending'
+        ?`<button class="btn btn-green btn-sm" data-ui-click="execQ('${it.code}','buy')">买入</button><button class="btn btn-gray btn-sm" data-ui-click="execQ('${it.code}','skip')">跳过</button>`
         :sm_[it.status]||`<span class="sbadge s-pending">${it.status||''}</span>`}</span>
     </div>
     ${it.shares?`<div style="font-size:11px;color:var(--t3);padding-left:2px">
@@ -688,11 +687,11 @@ async function loadStratList(){
   const el=document.getElementById('stratList')
   if(!list.length){el.innerHTML='<div class="empty">暂无策略</div>';return}
   el.innerHTML=list.map(s=>`
-    <div class="si ${curStrat===s.file?'active':''}" onclick="loadStrat('${s.file}')">
+    <div class="si ${curStrat===s.file?'active':''}" data-ui-click="loadStrat('${s.file}')">
       <div class="si-name">
         ${esc(s.name)}
         ${s.builtin?'<span class="si-bi">内置</span>':''}
-        ${!s.builtin?`<span class="si-rename" onclick="event.stopPropagation();openRename('${s.file}')">✏ 改名</span>`:''}
+        ${!s.builtin?`<span class="si-rename" data-ui-click="event.stopPropagation();openRename('${s.file}')">✏ 改名</span>`:''}
       </div>
       <div class="si-desc">${esc(s.desc||'暂无描述')}</div>
     </div>`).join('')
@@ -707,11 +706,11 @@ async function loadFactorList(){
   const el   = document.getElementById('factorList')
   if(!list.length){el.innerHTML='<div class="empty">暂无因子</div>';return}
   el.innerHTML = list.map(f=>`
-    <div class="fi-item ${curFactor===f.file?'active':''}" onclick="loadFactor('${f.file}')">
+    <div class="fi-item ${curFactor===f.file?'active':''}" data-ui-click="loadFactor('${f.file}')">
       <div class="fi-name" style="display:flex;align-items:center;gap:4px">
         <span>${esc(f.name)}</span>
         <span class="fi-cat" style="background:${f.color}">${esc(f.category)}</span>
-        ${!f.builtin?`<button class="btn btn-red btn-xs" style="margin-left:auto;padding:1px 6px;font-size:10px" onclick="event.stopPropagation();delFactor('${f.file}')">🗑</button>`:''}
+        ${!f.builtin?`<button class="btn btn-red btn-xs" style="margin-left:auto;padding:1px 6px;font-size:10px" data-ui-click="event.stopPropagation();delFactor('${f.file}')">🗑</button>`:''}
       </div>
       <div class="fi-desc">${esc(f.desc||'')}</div>
       <div class="fi-period">参考周期 ${f.period||'-'} 日 · ${f.builtin?'AlphaLens 内置':'用户自建'}</div>
@@ -1697,7 +1696,7 @@ async function runVibeFactor(){
       // 操作列：买入按钮（无价或分数为 null 时禁用）
       const canBuy = (row.price && row.price > 0) && (row.score !== null)
       const btnHtml = canBuy
-        ? `<button class="btn btn-xs" style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;padding:2px 8px;font-size:11px" onclick="vibeQuickBuy(${i})" title="按顶部「模拟/实盘」总开关下单">🛒 买入</button>`
+        ? `<button class="btn btn-xs" style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;padding:2px 8px;font-size:11px" data-ui-click="vibeQuickBuy(${i})" title="按顶部「模拟/实盘」总开关下单">🛒 买入</button>`
         : `<button class="btn btn-xs btn-gray" style="padding:2px 8px;font-size:11px" disabled title="无现价 / 分数无效">—</button>`
       html += `<tr style="border-bottom:1px solid var(--b1)">
         <td style="padding:5px 8px">${medal}</td>
@@ -2074,7 +2073,7 @@ async function renderVibeActivationCard(){
   box.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
       <b>⚡ 当前已激活: ${a.factor_id}</b>
-      <button class="btn btn-red btn-xs" onclick="deactivateVibe()">停用</button>
+      <button class="btn btn-red btn-xs" data-ui-click="deactivateVibe()">停用</button>
     </div>
     <div style="color:var(--t2);line-height:1.6">
       状态: ${halted} · 今日 ${a.daily_count}/${a.daily_limit} 笔 · 浮盈 ${(a.daily_pnl_pct*100).toFixed(2)}%<br>
@@ -2370,13 +2369,13 @@ async function loadDbList(){
   if(!list.length){el.innerHTML='<div class="empty">暂无本地数据</div>';return}
   el.innerHTML=list.map(s=>{
     const nm=(s.name||s.code).replace(/'/g,"\\'")
-    return `<div class="sk-row" style="cursor:pointer" onclick="showKLine('${s.code}','${nm}')">
+    return `<div class="sk-row" style="cursor:pointer" data-ui-click="showKLine('${s.code}','${nm}')">
     <span class="sk-code">${s.code}</span>
     <span class="sk-name" title="${s.name||s.code}">${s.name||'—'}</span>
     <span class="sk-range" style="font-size:10px">${s.start||''}~${s.end||''}</span>
     <span class="sk-rows">${s.rows||0}条</span>
     <span style="font-size:10px;color:var(--t4);margin-right:4px">📈</span>
-    <button class="btn btn-red btn-xs" onclick="event.stopPropagation();delStock('${s.code}')">删</button>
+    <button class="btn btn-red btn-xs" data-ui-click="event.stopPropagation();delStock('${s.code}')">删</button>
   </div>`
   }).join('')
 }
@@ -2450,7 +2449,7 @@ function renderProvGrid(){
   const labels  = {deepseek:'DeepSeek',openai:'OpenAI',anthropic:'Claude',nvidia:'NVIDIA',qwen:'通义千问',zhipu:'智谱GLM',xiaomimimo:'小米MiMo',custom:'自定义'}
   const el = document.getElementById('provGrid')
   el.innerHTML = Object.keys(labels).map(k=>`
-    <div class="prov-btn ${k===cur?'active':''}" onclick="selectProv('${k}')">
+    <div class="prov-btn ${k===cur?'active':''}" data-ui-click="selectProv('${k}')">
       ${labels[k]}
     </div>`).join('')
 }
@@ -2569,7 +2568,7 @@ function renderBrokerTypeGrid(){
   const cur = _brokerCfg.broker_type
   const box = document.getElementById('brokerTypeGrid')
   box.innerHTML = Object.entries(BROKER_LABELS).map(([k,v])=>`
-    <div onclick="selectBrokerType('${k}')" style="
+    <div data-ui-click="selectBrokerType('${k}')" style="
       padding:10px 12px;border-radius:8px;cursor:pointer;border:1px solid ${k===cur?'var(--blue)':'var(--b1)'};
       background:${k===cur?'rgba(31,111,235,.12)':'var(--card)'};transition:.15s">
       <div style="font-size:15px;margin-bottom:3px">${v.icon} <b style="font-size:13px;color:${k===cur?'var(--bl)':'var(--t1)'}">${v.name}</b></div>
@@ -2680,7 +2679,7 @@ let _mktRefreshTimer = null
 async function loadMarketContext(force=false){
   // 用户点 ⟳ 时给可见反馈
   if(force){
-    document.querySelectorAll('[onclick*="loadMarketContext(true)"]').forEach(b=>{
+    document.querySelectorAll('[data-ui-click*="loadMarketContext(true)"]').forEach(b=>{
       b.dataset._oldText = b.innerHTML
       b.innerHTML = '刷新中...'
       b.disabled = true
@@ -2734,7 +2733,7 @@ async function loadMarketContext(force=false){
   }catch(e){ console.warn('市场环境加载失败:',e) }
   finally{
     if(force){
-      document.querySelectorAll('[onclick*="loadMarketContext(true)"]').forEach(b=>{
+      document.querySelectorAll('[data-ui-click*="loadMarketContext(true)"]').forEach(b=>{
         if(b.dataset._oldText){ b.innerHTML = b.dataset._oldText; delete b.dataset._oldText }
         b.disabled = false
       })
@@ -3069,7 +3068,7 @@ function renderAIResult(r){
     const txt = r[ag.key] || ''
     if(!txt) return
     html += `<div class="agent-step">
-      <div class="agent-step-hd" onclick="toggleAgent(this)">
+      <div class="agent-step-hd" data-ui-click="toggleAgent(this)">
         <span class="agent-icon">${ag.icon}</span>
         <span class="agent-name">${ag.name}</span>
         <span class="agent-status ast-done">完成</span>
@@ -3090,7 +3089,7 @@ function renderAIResult(r){
         常见原因：Base URL 填写错误（需填 API 端点而非文档页面 URL）、API Key 无效或余额不足、模型名称不存在。<br>
         点击「测试连接」可查看详细错误信息。
       </div>
-      <button class="btn btn-gray btn-sm" onclick="switchRTab('aiset',document.querySelectorAll('.rtab')[4])">⚙ 前往AI设置 →</button>
+      <button class="btn btn-gray btn-sm" data-ui-click="switchRTab('aiset',document.querySelectorAll('.rtab')[4])">⚙ 前往AI设置 →</button>
     </div>`
   }
 
@@ -3108,7 +3107,7 @@ function renderAIResult(r){
         2. 小米MiMo：访问 <b>platform.xiaomimimo.com</b> 注册并获取 API Key<br>
         3. 点击下方「前往AI设置」选择提供商，填入 Key 并保存
       </div>
-      <button class="btn btn-orange btn-sm" onclick="switchRTab('aiset',document.querySelectorAll('.rtab')[4])">⚙ 前往AI设置 →</button>
+      <button class="btn btn-orange btn-sm" data-ui-click="switchRTab('aiset',document.querySelectorAll('.rtab')[4])">⚙ 前往AI设置 →</button>
     </div>`
   }
 
@@ -3401,7 +3400,7 @@ function renderBtResults(d, capital){
     <div class="log-wrap">
       <div class="sec-hd">Cerebro 运行日志</div>
       <div class="log-card">
-        <div class="log-hd" onclick="toggleLog(this)">
+        <div class="log-hd" data-ui-click="toggleLog(this)">
           <span>共 ${logs.length} 条 — Backtrader 架构逐日模拟</span><span id="logToggle">▼ 展开</span>
         </div>
         <div id="btLogBody" style="display:none">${logBoxHtml(logs)}</div>
@@ -4428,7 +4427,7 @@ async function loadPaperPositions(){
         const up = r.pnl_pct>=0
         const nm = (r.name||r.code).replace(/'/g,"\\'")
         // 整行可点击查看 K 线图（除操作列）
-        return `<tr style="cursor:pointer" onclick="showKLine('${r.code}','${nm}')">
+        return `<tr style="cursor:pointer" data-ui-click="showKLine('${r.code}','${nm}')">
           <td><b>${r.code}</b></td>
           <td style="color:var(--t2)">${r.name||r.code}</td>
           <td>${r.shares}</td>
@@ -4436,7 +4435,7 @@ async function loadPaperPositions(){
           <td><b>${(+r.cur_price).toFixed(2)}</b></td>
           <td style="color:${up?'var(--rl)':'var(--gl)'};font-weight:700">${up?'+':''}${(+r.pnl_pct).toFixed(2)}%</td>
           <td style="color:var(--t3)">${r.hold_days||0}天</td>
-          <td onclick="event.stopPropagation()"><button class="btn btn-red btn-xs" onclick="paperSell('${r.code}','${nm}',${r.cur_price})">卖出</button></td>
+          <td data-ui-click="event.stopPropagation()"><button class="btn btn-red btn-xs" data-ui-click="paperSell('${r.code}','${nm}',${r.cur_price})">卖出</button></td>
         </tr>`}).join('')}
       </tbody>
     </table>`

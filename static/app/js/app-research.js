@@ -235,7 +235,7 @@ async function loadReports(){
         : _rvEsc(x.title)
       html += `<div class="srch-news-card" style="cursor:${safeUrl?'pointer':'default'}" ${safeUrl?`data-rv-url="${_rvAttr(safeUrl)}"`:''}>
         <div class="nc-title">${title}</div>
-        <div class="nc-meta" onclick="event.stopPropagation()">${x.date} · ${_rvEsc(x.org)}${x.rating ? ` · <b style="color:${rc}">${x.rating}</b>` : ''} ${tag}</div>
+        <div class="nc-meta" data-ui-click="event.stopPropagation()">${x.date} · ${_rvEsc(x.org)}${x.rating ? ` · <b style="color:${rc}">${x.rating}</b>` : ''} ${tag}</div>
       </div>`
     })
     box.innerHTML = html || '<div class="empty-hint">暂无研报（源站可能限流，稍后重试）</div>'
@@ -462,7 +462,7 @@ function renderYouzaiGraph(data, container){
     const tags = (s.youzai||[]).slice(0,2).map(y=>`<span class="lhb-yz-badge" style="font-size:9px;padding:1px 5px">${_lhbEsc(y)}</span>`).join('')
     const sectors = _lhbSectorBadges(s, true)
     col2 += `<div class="lhb-s-item" data-code="${s.code}" style="top:${s._y}px;border-left:3px solid ${border}"
-      onclick="showKLine('${s.code}','${_lhbJs(s.name||s.code)}')" title="${_lhbAttr(s.reason||'点击查看K线')}">
+      data-ui-click="showKLine('${s.code}','${_lhbJs(s.name||s.code)}')" title="${_lhbAttr(s.reason||'点击查看K线')}">
       <div style="display:flex;align-items:center;gap:4px">
         <span class="lhb-s-name">${_lhbEsc(s.name)}</span>
         <span class="${cls}" style="font-size:11px">${chg}</span>
@@ -558,13 +558,13 @@ function renderLhbList(data, container){
       </div>`
     }).join('') || '<div style="font-size:11px;color:var(--t3)">暂无席位明细</div>'
     const moreSeats = (s.branches||[]).length > visibleSeats
-      ? `<button type="button" class="lhb-seat-toggle" data-seat-toggle="${seatId}" onclick="toggleLhbSeats('${seatId}')">展开全部席位</button>`
+      ? `<button type="button" class="lhb-seat-toggle" data-seat-toggle="${seatId}" data-ui-click="toggleLhbSeats('${seatId}')">展开全部席位</button>`
       : ''
     const sectors = _lhbSectorBadges(s, false)
     html+=`<tr>
       <td>
         <div class="lhb-stock-head">
-          <a class="lhb-code-link" onclick="showKLine('${_lhbJs(s.code)}','${_lhbJs(s.name||s.code)}')" title="点击查看K线">
+          <a class="lhb-code-link" data-ui-click="showKLine('${_lhbJs(s.code)}','${_lhbJs(s.name||s.code)}')" title="点击查看K线">
             <b>${_lhbEsc(s.name||'')}</b> <span style="font-size:10px;color:var(--t3)">${_lhbEsc(s.code)}</span>
           </a>${sectors}
         </div>
