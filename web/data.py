@@ -192,6 +192,7 @@ def api_refresh_names():
 
 
 @bp.route("/api/data/sector/<code>")
+@require_auth
 @limit_heavy("data_sector", limit=4,
              busy_msg="板块信息查询繁忙，请稍后再试")
 def api_stock_sector(code):
