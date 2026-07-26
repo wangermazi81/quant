@@ -1376,6 +1376,23 @@ def count_today_open_codes(user_id: int) -> int:
         return int(row[0]) if row else 0
 
 
+def count_today_buy_signals(user_id: int, code: str) -> int:
+    """该股今天已产生的活跃买入信号条数（含 executed）。
+
+    加仓层数判定用：层数此前只存在进程内存里，服务一重启就归零，
+    于是「已加过仓」的事实丢失 → 若持仓涨幅仍 ≥9%，会再生成一笔追板买入。
+    以台账条数还原：1 条 = 只建过仓（可加），≥2 条 = 已加过（不再加）。"""
+    with _lock, _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) FROM trade_signals "
+            "WHERE user_id=? AND code=? AND action='BUY' "
+            "AND status IN ('pending','sent','submitted','executed') "
+            "AND date(created_at) = date('now','localtime')",
+            (user_id, code),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+
 def has_pending_signal(user_id: int, code: str, action: str) -> bool:
     """检查该股当天是否已有未完成的同方向信号（去重用）"""
     with _lock, _conn() as c:

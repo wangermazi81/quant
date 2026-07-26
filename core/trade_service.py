@@ -179,9 +179,18 @@ def execute_sell(uid: int, code: str, price: float, sell_reason: str = "手动�
 _ADD_POSITION_LAYERS: dict = {}  # (uid, code) -> 已加仓层数
 
 def _check_add_position(uid: int, s: dict, broker_type: str, base_cash: float):
-    """检查持仓票是否涨到9%，触发加仓。每次扫描时调用。"""
+    """检查持仓票是否涨到9%，触发加仓。每次扫描时调用。
+
+    仅实盘生效：模拟盘 paper_broker.submit_buy 对已有持仓一律返回
+    「已持有 xxx，不重复买入」，所以加仓在模拟盘只会稳定失败。与其每轮扫描
+    都去撞一次这个拒绝（日志刷屏、看起来像功能坏了），不如在入口显式跳过。
+    真要让模拟盘支持累加持仓，得先定义清楚加仓后的成本均价与 T+1 可卖数量
+    （今日加的那部分当日不可卖），属于独立工单。
+    """
     positions = s.get("positions", {})
     if not positions:
+        return
+    if DRY_RUN or broker_type not in ("live", "real"):
         return
     try:
         from market import ths_quote as tq
@@ -204,9 +213,19 @@ def _check_add_position(uid: int, s: dict, broker_type: str, base_cash: float):
                 # 涨幅到9%触发加仓
                 if change_pct < 9.0:
                     continue
-                # 检查已加仓层数（最多2.5层）
+                # 检查已加仓层数（最多3层=25%）
+                # 内存态重启即丢，必须能从台账还原，否则重启后会对同一只票重复加仓
                 key = (uid, code)
-                current_layers = _ADD_POSITION_LAYERS.get(key, 1.0)  # 初始1层
+                current_layers = _ADD_POSITION_LAYERS.get(key)
+                if current_layers is None:
+                    try:
+                        _buys_today = um.count_today_buy_signals(uid, code)
+                    except Exception as _qe:
+                        logger.warning(f"[加仓] 查当日买入信号失败，保守视为已加过 {code}: {_qe}")
+                        _buys_today = 2
+                    # 1 条 = 只建过仓（可加）；≥2 条 = 建仓 + 已加过（不再加）
+                    current_layers = 3.0 if _buys_today >= 2 else 1.0
+                    _ADD_POSITION_LAYERS[key] = current_layers
                 if current_layers >= 3.0:
                     continue
                 # 计算加仓金额（从当前层加到3层=25%）
@@ -214,8 +233,12 @@ def _check_add_position(uid: int, s: dict, broker_type: str, base_cash: float):
                 current_ratio = current_layers * 0.08
                 add_ratio = target_ratio - current_ratio
                 add_amount = base_cash * add_ratio
-                add_shares = max(int(add_amount / limit_up / 100) * 100, 100)
+                # 不能用 max(..., 100) 兜底：预算算出来不足 1 手时那是「钱不够」，
+                # 强行凑 1 手等于绕过仓位预算去下单。
+                add_shares = int(add_amount / limit_up / 100) * 100
                 if add_shares <= 0:
+                    _add_log(uid, f"加仓跳过: {code} 预算¥{add_amount:,.0f} 不足 1 手"
+                                  f"（涨停价{limit_up:.2f}）", "info")
                     continue
                 # 以涨停价挂单
                 _add_log(uid, f"?? 加仓触发: {code} 涨幅{change_pct:.1f}% ≥ 9%，以涨停价{limit_up:.2f}追板，加仓至25%", "buy")
