@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 import json
 import sys
 import builtins
@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from analytics import ai_analyst
+from analytics import llm_client
 
 
 class _FakeResp:
@@ -29,7 +30,9 @@ def test_call_llm_can_return_content_with_openai_usage(monkeypatch):
         "usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
     }
 
-    monkeypatch.setattr(ai_analyst, "_urlopen_smart", lambda *args, **kwargs: _FakeResp(payload))
+    # A-6：_call_llm 的实现已搬到 analytics/llm_client，内部查找的是那边的
+    # _urlopen_smart，所以打桩要打到 llm_client 上（打 ai_analyst 已经拦不住）。
+    monkeypatch.setattr(llm_client, "_urlopen_smart", lambda *args, **kwargs: _FakeResp(payload))
 
     result = ai_analyst._call_llm(
         {"provider": "deepseek", "base_url": "https://example.test/v1", "api_key": "sk-test", "model": "deepseek-chat"},
@@ -52,7 +55,9 @@ def test_call_llm_keeps_text_return_by_default(monkeypatch):
         "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
     }
 
-    monkeypatch.setattr(ai_analyst, "_urlopen_smart", lambda *args, **kwargs: _FakeResp(payload))
+    # A-6：_call_llm 的实现已搬到 analytics/llm_client，内部查找的是那边的
+    # _urlopen_smart，所以打桩要打到 llm_client 上（打 ai_analyst 已经拦不住）。
+    monkeypatch.setattr(llm_client, "_urlopen_smart", lambda *args, **kwargs: _FakeResp(payload))
 
     result = ai_analyst._call_llm(
         {"provider": "deepseek", "base_url": "https://example.test/v1", "api_key": "sk-test", "model": "deepseek-chat"},
