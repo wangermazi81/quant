@@ -43,3 +43,45 @@ jobs:
         run: |
           python tools/gen_api_doc.py
           git diff --exit-code docs/API.md
+
+      - name: Guard against side-effecting scripts under tests/
+        run: |
+          # tests/ 下曾放过 test_mimo.py：会用真实 api_key 发网络请求，缺配置时
+          # 模块级 sys.exit 直接打断 pytest 收集 → 整个 tests job 失败，
+          # 后面的路由基线/API 文档守卫全部不执行，CI 防护体系整体失效。
+          if grep -rlnE '^[[:space:]]*sys\.exit\(' tests/ --include='test_*.py'; then
+            echo "::error::tests/ 下的 test_*.py 不允许模块级 sys.exit（会打断 pytest 收集）"
+            exit 1
+          fi
+
+  # 生产有一半跑在 Windows 本机（实盘 GUI 桥接）。这些平台专属代码路径
+  # 此前从未被 CI 验证过，import 错误/API 差异只能在生产机首次运行时暴露。
+  windows-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Import smoke (Windows 侧实盘桥接模块可导入)
+        env:
+          QUANT_TEST_IMPORT: "1"
+          THS_NO_SCHEDULER: "1"
+        run: |
+          python -c "import main; print('main ok', len(list(main.app.url_map.iter_rules())), 'routes')"
+          python -c "import broker.ths_operator as o; print('ths_operator ok')"
+          python -c "import broker.mobile_ths_operator as m; print('mobile_ths_operator ok')"
+
+      - name: Run test suite on Windows
+        env:
+          QUANT_TEST_IMPORT: "1"
+          THS_NO_SCHEDULER: "1"
+        run: python -m pytest tests -q
