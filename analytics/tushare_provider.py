@@ -456,6 +456,18 @@ def fetch_trade_calendar(
     out = []
     for row in rows or []:
         raw = str(row.get("cal_date") or row.get("trade_date") or "").strip()
+        # ★ 必须在本地按 is_open 字段过滤，不能信任请求参数：
+        #   replay 端点**无视 is_open=1**，会把区间内全部日历日返回（实测 2026 年
+        #   返回 365 条、含 104 个周末），只是每行带了正确的 is_open 标记。
+        #   若照单全收，「开市日」里就包含了周末与法定假日 → 反推出的休市日为 0 条，
+        #   写出一份「零休市日」的日历。那比没有日历更糟：has_calendar() 变成 True，
+        #   「缺日历」的告警被抑制，而节假日一天都拦不住。
+        if "is_open" in row:
+            try:
+                if int(row.get("is_open") or 0) != 1:
+                    continue
+            except (TypeError, ValueError):
+                continue
         if len(raw) == 8 and raw.isdigit():
             out.append(f"{raw[:4]}-{raw[4:6]}-{raw[6:]}")
         elif len(raw) == 10:

@@ -122,6 +122,17 @@ def refresh_from_tushare(year: int | None = None) -> dict:
             closed.append(cur.isoformat())
         cur = date.fromordinal(cur.toordinal() + 1)
 
+    # ★ 合理性校验：宁可不落盘，也不要写一份「看着有效实则无用」的日历。
+    #   A 股一年约 242 个交易日、周中法定休市日约 10-17 天。
+    #   若算出 0 天，几乎一定是上游把周末也当成了开市日（实测 replay 端点
+    #   会无视 is_open=1 返回全部 365 天）—— 这种日历一旦落盘，has_calendar()
+    #   变 True、"缺日历"告警被抑制，而节假日一天都拦不住，比没有日历更危险。
+    if not (5 <= len(closed) <= 40):
+        msg = (f"休市日数 {len(closed)} 不在合理区间[5,40]，判定为上游数据异常"
+               f"（开市日 {len(open_set)} 条，正常应约 242），拒绝写入日历")
+        logger.error("[calendar] %s", msg)
+        return {"ok": False, "year": target, "closed": len(closed), "msg": msg}
+
     data = load().copy()
     days = dict(data.get("closed_days") or {})
     days[str(target)] = closed

@@ -102,6 +102,93 @@ def test_is_trading_time_rejects_holiday(tmp_path, monkeypatch):
     assert market_data.is_trading_time() is True
 
 
+class TestRefreshSanity:
+    """★线上实测踩到的坑：replay 端点无视 is_open=1，返回区间内全部日历日。
+
+    若照单全收，「开市日」里就包含周末与法定假日 → 反推出的休市日为 0 条，
+    落盘一份「零休市日」的日历。那比没有日历更糟：has_calendar() 变 True、
+    「缺日历」告警被抑制，而节假日一天都拦不住。
+    """
+
+    def _patch_provider(self, monkeypatch, open_days):
+        import types
+        from analytics import tushare_provider as tp
+        monkeypatch.setattr(tp, "fetch_trade_calendar",
+                            lambda s, e, **k: list(open_days))
+        return types.SimpleNamespace()
+
+    def test_rejects_calendar_with_zero_holidays(self, tmp_path, monkeypatch):
+        """上游把每一天都当开市日 → 算出 0 个休市日 → 必须拒绝落盘。"""
+        f = tmp_path / "trading_calendar.json"
+        monkeypatch.setattr(trading_calendar, "CALENDAR_FILE", f)
+        monkeypatch.setattr(trading_calendar, "_cache", None, raising=False)
+        monkeypatch.setattr(trading_calendar, "_cache_sig", None, raising=False)
+
+        year = 2026
+        every_day = []
+        d = date(year, 1, 1)
+        while d <= date(year, 12, 31):
+            every_day.append(d.isoformat())
+            d = date.fromordinal(d.toordinal() + 1)
+        self._patch_provider(monkeypatch, every_day)
+
+        r = trading_calendar.refresh_from_tushare(year)
+        assert r["ok"] is False
+        assert "拒绝写入" in r["msg"]
+        assert not f.exists(), "异常数据绝不能落盘"
+
+    def test_accepts_plausible_calendar(self, tmp_path, monkeypatch):
+        """正常数据（工作日去掉十几个假日）→ 正常落盘。"""
+        f = tmp_path / "trading_calendar.json"
+        monkeypatch.setattr(trading_calendar, "CALENDAR_FILE", f)
+        monkeypatch.setattr(trading_calendar, "_cache", None, raising=False)
+        monkeypatch.setattr(trading_calendar, "_cache_sig", None, raising=False)
+
+        year = 2026
+        holidays = set()
+        d = date(year, 10, 1)
+        while len(holidays) < 12:
+            if d.weekday() < 5:
+                holidays.add(d.isoformat())
+            d = date.fromordinal(d.toordinal() + 1)
+
+        opens = []
+        d = date(year, 1, 1)
+        while d <= date(year, 12, 31):
+            if d.weekday() < 5 and d.isoformat() not in holidays:
+                opens.append(d.isoformat())
+            d = date.fromordinal(d.toordinal() + 1)
+        self._patch_provider(monkeypatch, opens)
+
+        r = trading_calendar.refresh_from_tushare(year)
+        assert r["ok"] is True
+        assert r["closed"] == 12
+        assert f.exists()
+        for h in holidays:
+            assert trading_calendar.is_trading_day(date.fromisoformat(h)) is False
+
+
+def test_fetch_trade_calendar_filters_by_is_open(monkeypatch):
+    """★fetch_trade_calendar 必须按行里的 is_open 字段本地过滤。
+
+    replay 端点会把 is_open=0 的行（周末/假日）一起返回，只是带了正确标记；
+    信任请求参数就会把假日当成开市日。
+    """
+    from analytics import tushare_provider as tp
+
+    rows = [
+        {"cal_date": "20261001", "is_open": 0},   # 国庆，休市
+        {"cal_date": "20261008", "is_open": 1},   # 节后首个交易日
+        {"cal_date": "20261009", "is_open": 1},
+        {"cal_date": "20261010", "is_open": 0},   # 周末
+    ]
+    monkeypatch.setattr(tp, "_replay_get", lambda *a, **k: rows)
+    monkeypatch.setattr(tp.datasource_config, "resolve_tushare_token", lambda **k: "tok")
+
+    got = tp.fetch_trade_calendar("20261001", "20261010")
+    assert got == ["2026-10-08", "2026-10-09"], f"未按 is_open 过滤：{got}"
+
+
 def test_now_uses_shanghai_wall_clock():
     """_now() 必须返回上海挂钟时间且为 naive（下游全是裸 datetime 比较）"""
     now = market_data._now()
