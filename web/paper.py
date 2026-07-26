@@ -10,6 +10,7 @@ buy|sell|stream 共 12 条路由。路由路径与行为与 main.py 原实现逐
 import json
 import logging
 import queue as _queue
+import time
 
 from flask import Blueprint, Response, jsonify, request, session
 
@@ -21,6 +22,7 @@ from core import user_manager as um
 from core.trade_service import execute_buy, execute_sell, _paper_live_prices
 from broker import paper_broker as pb
 from web._params import _bounded_int_arg, _positive_float_value, _int_value
+from web._concurrency import sse_slot, sse_deadline
 
 logger = logging.getLogger(__name__)
 bp = Blueprint("paper", __name__)
@@ -250,24 +252,37 @@ def paper_stream():
     uid = session["user_id"]
 
     def event_stream():
-        q = _queue.Queue(maxsize=200)
-        with _sse_lock:
-            _sse_subscribers.setdefault(uid, []).append(q)
-        try:
-            # 首次连接推送当前状态快照
-            s = get_user_state(uid)
-            yield f"event: snapshot\ndata: {json.dumps({'running': s['running'], 'logs': s['logs'][:20]})}\n\n"
-            while True:
-                try:
-                    msg = q.get(timeout=30)
-                    yield f"event: {msg['event']}\ndata: {json.dumps(msg['data'])}\n\n"
-                except _queue.Empty:
-                    yield ": heartbeat\n\n"
-        finally:
+        # gthread 模型下每个 SSE 连接永久占住一个 worker 线程（threads 有限），
+        # 必须限额 + 限时，否则几个标签页就能把线程池吃干（见 web/_concurrency.py）。
+        with sse_slot("paper", uid) as granted:
+            if not granted:
+                yield ("event: rejected\ndata: "
+                       + json.dumps({"msg": "实时推送连接数已达上限，请关闭多余页面后重试"})
+                       + "\n\n")
+                return
+            deadline = sse_deadline()
+            q = _queue.Queue(maxsize=200)
             with _sse_lock:
-                subs = _sse_subscribers.get(uid, [])
-                if q in subs:
-                    subs.remove(q)
+                _sse_subscribers.setdefault(uid, []).append(q)
+            try:
+                # 首次连接推送当前状态快照（重连后也靠它重新对齐状态）
+                s = get_user_state(uid)
+                yield f"event: snapshot\ndata: {json.dumps({'running': s['running'], 'logs': s['logs'][:20]})}\n\n"
+                while True:
+                    if time.time() >= deadline:
+                        # 到期主动收摊，把线程还回池子；浏览器 EventSource 会自动重连
+                        yield ": reconnect\n\n"
+                        return
+                    try:
+                        msg = q.get(timeout=30)
+                        yield f"event: {msg['event']}\ndata: {json.dumps(msg['data'])}\n\n"
+                    except _queue.Empty:
+                        yield ": heartbeat\n\n"
+            finally:
+                with _sse_lock:
+                    subs = _sse_subscribers.get(uid, [])
+                    if q in subs:
+                        subs.remove(q)
 
     return Response(event_stream(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

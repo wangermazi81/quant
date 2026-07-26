@@ -17,6 +17,7 @@ from app_state import (
     _add_log, _deduct, is_root_admin_session, current_admin_permissions,
 )
 from strategy_engine import strategy_manager as sm
+from web._concurrency import limit_heavy
 
 logger = logging.getLogger(__name__)
 bp = Blueprint("strategies", __name__)
@@ -153,6 +154,9 @@ def api_delete():
 
 @bp.route("/api/strategies/run", methods=["POST"])
 @require_auth
+@limit_heavy("strategy_run",
+             busy_msg="已有选股任务在运行（同步接口一次只允许一个），"
+                      "请稍后再试或改用异步选股")
 def api_run():
     uid = session["user_id"]
     d   = request.get_json(silent=True) or {}

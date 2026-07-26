@@ -13,6 +13,7 @@ from flask import Blueprint, Response, jsonify, request, session
 
 from app_state import require_auth
 from analytics import ai_trader as engine
+from web._concurrency import sse_slot, sse_deadline
 
 try:
     from analytics import ai_research_store as research_store
@@ -266,19 +267,30 @@ def stream():
     uid = _uid()
 
     def gen():
-        q = engine.subscribe(uid)
-        try:
-            snap = engine.get_engine(uid).snapshot()
-            yield f"event: snapshot\ndata: {json.dumps(snap, ensure_ascii=False)}\n\n"
-            while True:
-                try:
-                    msg = q.get(timeout=30)
-                    yield (f"event: {msg['event']}\n"
-                           f"data: {json.dumps(msg['data'], ensure_ascii=False)}\n\n")
-                except Exception:
-                    yield ": heartbeat\n\n"
-        finally:
-            engine.unsubscribe(uid, q)
+        # 同 /api/paper/stream：SSE 在 gthread 下永久占线程，必须限额 + 限时
+        with sse_slot("ai_trader", uid) as granted:
+            if not granted:
+                yield ("event: rejected\ndata: "
+                       + json.dumps({"msg": "实时推送连接数已达上限，请关闭多余页面后重试"},
+                                    ensure_ascii=False) + "\n\n")
+                return
+            deadline = sse_deadline()
+            q = engine.subscribe(uid)
+            try:
+                snap = engine.get_engine(uid).snapshot()
+                yield f"event: snapshot\ndata: {json.dumps(snap, ensure_ascii=False)}\n\n"
+                while True:
+                    if time.time() >= deadline:
+                        yield ": reconnect\n\n"
+                        return
+                    try:
+                        msg = q.get(timeout=30)
+                        yield (f"event: {msg['event']}\n"
+                               f"data: {json.dumps(msg['data'], ensure_ascii=False)}\n\n")
+                    except Exception:
+                        yield ": heartbeat\n\n"
+            finally:
+                engine.unsubscribe(uid, q)
 
     return Response(gen(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

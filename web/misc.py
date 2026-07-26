@@ -16,18 +16,32 @@ from strategy_engine import strategy_manager as sm
 from web._params import (
     _positive_float_value, _float_value, _int_value,
 )
+from web._concurrency import heavy_slot, HeavyBusy
 
 logger = logging.getLogger(__name__)
 bp = Blueprint("misc", __name__)
 
+# 同步回测允许的最大股票数；超过则自动转异步（避免在 HTTP 请求里跑分钟级任务）
+MAX_SYNC_BACKTEST_CODES = 50
+
 
 @bp.route("/api/health")
 def api_health():
+    # 带上 SSE 占用：线程池被长连接吃干是历史事故的直接原因，
+    # 出问题时这一眼就能看出「是不是又被 SSE 占满了」，不必去猜。
+    # 注意只暴露计数与上限，不含任何用户数据（test_health_api 有防泄漏断言）。
+    try:
+        from web._concurrency import sse_stats
+        _sse = sse_stats()
+        sse_info = {"active": _sse["total"], "limit": _sse["global_limit"]}
+    except Exception:
+        sse_info = None
     return jsonify({
         "ok": True,
         "status": "healthy",
         "service": "jwalpha",
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "sse": sse_info,
     })
 
 
@@ -142,22 +156,35 @@ def api_backtest():
     if err:
         return jsonify(err), 402
 
-    if full_market:
+    # 同步分支原本对 codes 长度没有任何上限，传 3000 个代码进来就是在 HTTP 请求里
+    # 跑分钟级回测，直接占死一个 gthread（threads 有限，几个这种请求就能拖死全站）。
+    # 超过阈值就改走已有的异步分支——返回体与全市场分支同形，前端本来就会处理。
+    if full_market or len(codes) > MAX_SYNC_BACKTEST_CODES:
         from strategy_engine.backtest import start_backtest_async
         task_id = start_backtest_async(**bt_kwargs, uid=uid)
-        _add_log(uid, f"全市场回测已启动 [{fn}] {d.get('start_date')}~{d.get('end_date')} task={task_id}")
+        _scope = "全市场" if full_market else f"{len(codes)}只(超过{MAX_SYNC_BACKTEST_CODES}转异步)"
+        _add_log(uid, f"{_scope}回测已启动 [{fn}] {d.get('start_date')}~{d.get('end_date')} task={task_id}")
         return jsonify({"ok": True, "async": True, "task_id": task_id})
+
+    from strategy_engine.backtest import run_backtest
+    try:
+        with heavy_slot("backtest_sync"):
+            _add_log(uid, f"回测: [{fn}] {d.get('start_date')}~{d.get('end_date')} {mode_label}")
+            result = run_backtest(**bt_kwargs)
+    except HeavyBusy:
+        # 占不到名额时不排队（排队就是占着线程等），直接转异步
+        from strategy_engine.backtest import start_backtest_async
+        task_id = start_backtest_async(**bt_kwargs, uid=uid)
+        _add_log(uid, f"同步回测名额已满，转异步 [{fn}] task={task_id}")
+        return jsonify({"ok": True, "async": True, "task_id": task_id})
+
+    if result.get("ok"):
+        m = result["metrics"]
+        _add_log(uid, f"回测完成 收益={m['total_return']}% 回撤={m['max_drawdown']}% "
+                 f"胜率={m['win_rate']}% Sharpe={m['sharpe']}")
     else:
-        from strategy_engine.backtest import run_backtest
-        _add_log(uid, f"回测: [{fn}] {d.get('start_date')}~{d.get('end_date')} {mode_label}")
-        result = run_backtest(**bt_kwargs)
-        if result.get("ok"):
-            m = result["metrics"]
-            _add_log(uid, f"回测完成 收益={m['total_return']}% 回撤={m['max_drawdown']}% "
-                     f"胜率={m['win_rate']}% Sharpe={m['sharpe']}")
-        else:
-            _add_log(uid, f"回测失败: {result.get('error','')}", "error")
-        return jsonify(result)
+        _add_log(uid, f"回测失败: {result.get('error','')}", "error")
+    return jsonify(result)
 
 
 @bp.route("/api/backtest/task/<task_id>")

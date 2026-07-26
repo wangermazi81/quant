@@ -13,6 +13,7 @@ from analytics import data_manager as dm
 from market import market_data as md
 from app_state import require_auth, require_admin, _add_log
 from app_security import rate_limit
+from web._concurrency import limit_heavy
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +192,11 @@ def api_refresh_names():
 
 
 @bp.route("/api/data/sector/<code>")
+@limit_heavy("data_sector", limit=4,
+             busy_msg="板块信息查询繁忙，请稍后再试")
 def api_stock_sector(code):
+    # 冷缓存时这里会在请求内串行抓最多 12 个概念板块成分表 + baostock 登录兜底，
+    # 单次可阻塞 8-15 秒。并发打进来就是线程池耗尽的又一触发源，故限并发。
     r         = dm.get_stock_sector(code)
     r["name"] = dm.get_stock_name(code)
     return jsonify(r)

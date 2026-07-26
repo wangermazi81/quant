@@ -21,6 +21,7 @@ from strategy_engine import strategy_manager as sm
 from web._params import (
     _int_value,
 )
+from web._concurrency import limit_heavy
 from web.strategies import _can_view_protected_source  # 内置因子源码保护（与策略同一套判定）
 
 logger = logging.getLogger(__name__)
@@ -208,6 +209,9 @@ def api_factors_zoo_list():
 
 @bp.route("/api/factors_zoo/compute", methods=["POST"])
 @require_root_admin
+@limit_heavy("factors_zoo_compute",
+             busy_msg="已有因子计算在运行（同步接口一次只允许一个），"
+                      "请稍后再试或改用 /api/factors_zoo/compute_async")
 def api_factors_zoo_compute():
     """对一组股票算指定 alpha 的分数
 
