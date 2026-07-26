@@ -105,31 +105,11 @@ def _read_meta(path: Path) -> dict:
     return meta
 
 
-def list_strategies() -> list:
-    result = []
-    for f in sorted(STRATEGIES_DIR.glob("*.py")):
-        if f.name.startswith("_"):
-            continue
-        meta = _read_meta(f)
-        result.append({"file": f.stem, **meta})
-    return result
-
-
-def get_code(filename: str) -> str:
-    path = STRATEGIES_DIR / f"{filename}.py"
-    if path.exists():
-        return path.read_text(encoding="utf-8")
-    return TEMPLATE
-
-
-def get_meta(filename: str) -> dict:
-    """读取策略 META（含 builtin 标记），供路由层判断是否对非 admin 隐藏代码。
-    文件不存在返回默认（非内置）。"""
-    path = STRATEGIES_DIR / f"{filename}.py"
-    if path.exists():
-        return _read_meta(path)
-    return {"name": filename, "desc": "", "author": "用户", "builtin": False}
-
+# 注：list_strategies / get_code / get_meta / get_position_config / save / delete / rename
+# 的**用户维度**实现在本文件后半段（所有权迁移后的版本，走 resolve_strategy_path 做
+# per-user 隔离）。迁移时旧版没删，同名函数在模块级被后定义者整体遮蔽 —— 即死代码，
+# 且是危险的死代码：旧版直接操作共享 STRATEGIES_DIR、没有任何用户隔离，一旦有人调整
+# 定义顺序就会静默生效。已删除（ruff F811 也一直在报）。
 
 # ── 策略仓位规则（仓位规定写在策略 META 的 "position" 字段，下单链路据此执行）──
 DEFAULT_POSITION_CONFIG = {
@@ -138,18 +118,6 @@ DEFAULT_POSITION_CONFIG = {
     "sizing":    "equal",  # equal = 平均仓位（每仓 = 可用资金 / max_daily）
     "add_on":    False,    # 是否允许涨9%加仓追板；默认禁止（只有策略显式声明才开）
 }
-
-
-def get_position_config(filename: str) -> dict:
-    """读取策略的仓位规则。示例 META：
-    # META: {"name":"打板策略", ..., "position": {"max_daily":5,"max_hold":5,"sizing":"equal","add_on":false}}
-    未声明 position 的策略返回默认值（不限额、不加仓，沿用账户面板设置）。"""
-    cfg = dict(DEFAULT_POSITION_CONFIG)
-    if filename:
-        pc = get_meta(filename).get("position")
-        if isinstance(pc, dict):
-            cfg.update(pc)
-    return cfg
 
 
 _AST_BANNED_IMPORTS = {
@@ -250,47 +218,6 @@ def ast_check(code: str) -> dict:
 
     return {"ok": True}
 
-
-def save(filename: str, code: str) -> dict:
-    safe = "".join(c for c in filename if c.isalnum() or c in "_-")
-    if not safe:
-        return {"ok": False, "msg": "文件名不合法"}
-    # AST 安全检查
-    chk = ast_check(code)
-    if not chk["ok"]:
-        return {"ok": False, "msg": f"代码安全检查未通过: {chk['msg']}"}
-    path = STRATEGIES_DIR / f"{safe}.py"
-    path.write_text(code, encoding="utf-8")
-    return {"ok": True, "file": safe}
-
-
-def delete(filename: str) -> dict:
-    path = STRATEGIES_DIR / f"{filename}.py"
-    meta = _read_meta(path) if path.exists() else {}
-    if meta.get("builtin"):
-        return {"ok": False, "msg": "内置策略不可删除"}
-    if path.exists():
-        path.unlink()
-        return {"ok": True}
-    return {"ok": False, "msg": "文件不存在"}
-
-
-def rename(old_filename: str, new_filename: str) -> dict:
-    """重命名策略文件（不可重命名内置策略）"""
-    old_path = STRATEGIES_DIR / f"{old_filename}.py"
-    if not old_path.exists():
-        return {"ok": False, "msg": "原文件不存在"}
-    meta = _read_meta(old_path)
-    if meta.get("builtin"):
-        return {"ok": False, "msg": "内置策略不可重命名"}
-    safe = "".join(c for c in new_filename if c.isalnum() or c in "_-")
-    if not safe:
-        return {"ok": False, "msg": "新名称不合法"}
-    new_path = STRATEGIES_DIR / f"{safe}.py"
-    if new_path.exists():
-        return {"ok": False, "msg": f"名称 '{safe}' 已存在"}
-    old_path.rename(new_path)
-    return {"ok": True, "file": safe}
 
 def _safe_strategy_name(filename: str) -> str | None:
     """Normalize an API strategy identifier without accepting a filesystem path."""

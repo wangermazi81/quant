@@ -17,7 +17,6 @@ TradingAgents 的市场环境注入机制。
 
 import logging
 import time
-import pandas as pd
 
 from analytics import data_gateway as dg
 
