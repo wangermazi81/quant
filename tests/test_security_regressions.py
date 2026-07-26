@@ -109,6 +109,40 @@ def test_dynamic_user_data_is_not_embedded_in_inline_handlers():
     assert "data-admin-user-action" in admin_js
 
 
+
+def test_app_shell_uses_delegated_ui_events_instead_of_inline_handlers():
+    root = Path(__file__).parent.parent
+    files = [
+        root / "index.html",
+        root / "admin.html",
+        *sorted((root / "static/app/js").glob("*.js")),
+    ]
+    forbidden = (
+        "onclick=",
+        "onchange=",
+        "oninput=",
+        "onkeydown=",
+        "onkeyup=",
+        "onblur=",
+        "onfocus=",
+        "onsubmit=",
+        "oncontextmenu=",
+        ".onclick =",
+        ".onchange =",
+    )
+
+    offenders = []
+    for path in files:
+        source = path.read_text(encoding="utf-8")
+        lowered = source.lower()
+        for token in forbidden:
+            if token in lowered:
+                offenders.append(f"{path.relative_to(root)} contains {token}")
+
+    assert offenders == []
+    assert (root / "static/app/js/ui-events.js").exists()
+
+
 def test_external_research_urls_are_protocol_filtered():
     source = (Path(__file__).parent.parent / "static/app/js/app-research.js").read_text(encoding="utf-8")
 
