@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Root-admin auto research scheduler for factor mining and AI trade decisions.
 
 The scheduler runs inside the existing web service process. It never exposes
@@ -314,7 +314,8 @@ def _run_data_refresh(date_text: str) -> dict:
 
 
 def _run_factor_mining(date_text: str) -> dict:
-    from web import admin as admin_api
+    # 直连领域模块，不再反向 import web 层（A-2）
+    from core import factor_watchlist as admin_api
 
     cfg = get_config().get("mining", {})
     run_id = datetime.now().strftime("auto-%Y%m%d-%H%M%S")
@@ -331,7 +332,7 @@ def _run_factor_mining(date_text: str) -> dict:
         include_market_signals=True,
     )
     candidates = report.get("latest_candidates", []) if isinstance(report, dict) else []
-    watchlist = admin_api._import_factor_candidates_to_watchlist(
+    watchlist = admin_api.import_factor_candidates_to_watchlist(
         candidates,
         run_id=run_id,
         strategy_name="AI自动因子挖掘候选",
@@ -348,14 +349,14 @@ def _run_factor_mining(date_text: str) -> dict:
 
 
 def _run_ai_decision(date_text: str) -> dict:
-    from web import admin as admin_api
+    from core import factor_watchlist as admin_api
 
     uid = _root_admin_uid()
     if not uid:
         return {"ok": False, "error": "root admin user not found"}
     cfg = get_config()
     max_candidates = int(cfg.get("max_candidates", 6) or 6)
-    candidates = admin_api._factor_watchlist_candidates(max_candidates=max_candidates, latest_only=True)
+    candidates = admin_api.factor_watchlist_candidates(max_candidates=max_candidates, latest_only=True)
     if not candidates:
         return {"ok": False, "error": "no factor watchlist candidates"}
     result = ai_trader_engine.get_engine(uid).decide_watchlist_candidates(
@@ -366,8 +367,8 @@ def _run_ai_decision(date_text: str) -> dict:
     if not result.get("ok"):
         return result
     payload = {**result, "candidate_source": "factor_watchlist", "latest_only": True, "auto": True}
-    admin_api._save_ai_trade_decision(payload)
-    admin_api._apply_ai_trade_decision_to_watchlist(payload)
+    admin_api.save_ai_trade_decision(payload)
+    admin_api.apply_ai_trade_decision_to_watchlist(payload)
     return {
         "ok": True,
         "selected_count": result.get("selected_count", 0),

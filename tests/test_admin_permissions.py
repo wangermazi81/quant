@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import json
 import threading
@@ -195,6 +195,8 @@ def test_factor_mining_latest_is_root_only_and_returns_report(isolated_app, monk
     from analytics import data_manager as dm
 
     monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
+    import app_state as _app_state
+    monkeypatch.setattr(_app_state, "BASE_DIR", tmp_path)  # 观察池存储已下沉 core/factor_watchlist，按真正的源头打桩
     monkeypatch.setattr(dm, "get_stock_name", lambda code: "平安银行")
     run_dir = tmp_path / "data" / "research" / "relay_factor" / "20260709-101500"
     run_dir.mkdir(parents=True)
@@ -271,6 +273,8 @@ def test_factor_mining_run_is_root_only_and_invokes_research(isolated_app, monke
             return False
 
     monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
+    import app_state as _app_state
+    monkeypatch.setattr(_app_state, "BASE_DIR", tmp_path)  # 观察池存储已下沉 core/factor_watchlist，按真正的源头打桩
     monkeypatch.setattr(admin_api.relay_factor_mining, "run_relay_research", fake_run_relay_research, raising=False)
     monkeypatch.setattr(admin_api.auto_factor_scheduler, "_file_lock", lambda: AcquiredLock())
     with admin_api._factor_mining_jobs_lock:
@@ -358,6 +362,8 @@ def test_factor_watchlist_import_update_delete_is_root_only(isolated_app, monkey
     from analytics import data_manager as dm
 
     monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
+    import app_state as _app_state
+    monkeypatch.setattr(_app_state, "BASE_DIR", tmp_path)  # 观察池存储已下沉 core/factor_watchlist，按真正的源头打桩
     monkeypatch.setattr(dm, "get_stock_name", lambda code: "平安银行")
     client = app.test_client()
     _login_session(client, ops_uid, "ops")
@@ -429,6 +435,8 @@ def test_ai_trade_decision_is_root_only_and_updates_watchlist(isolated_app, monk
     import web.admin as admin_api
 
     monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
+    import app_state as _app_state
+    monkeypatch.setattr(_app_state, "BASE_DIR", tmp_path)  # 观察池存储已下沉 core/factor_watchlist，按真正的源头打桩
     client = app.test_client()
 
     _login_session(client, ops_uid, "ops")
