@@ -62,12 +62,37 @@ def _normalize(raw: dict | None) -> dict:
     return cfg
 
 
+# 按 mtime+size 判定的进程内缓存：get_internal_config() 在全市场扫描热路径上
+# 每只股票都会被调用一次（data_manager.get_kline_by_config 内），5000 只即 5000 次
+# 磁盘读 + json.loads。配置文件几乎不变，用 stat 指纹判断即可安全复用。
+_RAW_CACHE: dict | None = None
+_RAW_CACHE_SIG: tuple | None = None
+
+
+def _config_signature() -> tuple:
+    try:
+        st = CONFIG_FILE.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (0, -1)          # 文件不存在也是一种确定状态，可缓存
+
+
 def _read_raw() -> dict:
+    global _RAW_CACHE, _RAW_CACHE_SIG
+
+    sig = _config_signature()
+    if _RAW_CACHE is not None and _RAW_CACHE_SIG == sig:
+        return _RAW_CACHE.copy()
+
     if not CONFIG_FILE.exists():
-        return DEFAULT_CONFIG.copy()
+        cfg = DEFAULT_CONFIG.copy()
+        _RAW_CACHE, _RAW_CACHE_SIG = cfg.copy(), sig
+        return cfg
     try:
         data = json.loads(CONFIG_FILE.read_text(encoding="utf-8")) or {}
-        return _normalize(data)
+        cfg = _normalize(data)
+        _RAW_CACHE, _RAW_CACHE_SIG = cfg.copy(), sig
+        return cfg.copy()
     except ValueError:
         raise
     except Exception as e:
@@ -110,6 +135,15 @@ def save_config(patch: dict | None) -> dict:
     merged = _normalize(merged)
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 显式失效读缓存：不能只依赖 mtime 指纹（同一时钟刻度内改写可能撞上同一签名）。
+    # 数据源切换要立刻生效，否则用户在页面上改了 provider 却发现还在走旧源。
+    global _RAW_CACHE, _RAW_CACHE_SIG
+    _RAW_CACHE, _RAW_CACHE_SIG = None, None
+    try:
+        from analytics import tushare_provider as _tp
+        _tp.clear_kline_cache()      # 换数据源/token 后旧日线缓存必须作废
+    except Exception:
+        pass
     return _public(merged)
 
 

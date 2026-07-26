@@ -286,22 +286,36 @@ class PaperBroker:
             logger.warning(f"[PB uid={self._uid}] 净值快照失败: {e}")
 
     # ── 费用计算 ─────────────────────────────────────
-    def _calc_buy_cost(self, signal_price: float, shares: int):
+    def _calc_buy_cost(self, signal_price: float, shares: int, price_cap: float | None = None):
+        """买入成交价与费用。price_cap 给定时把成交价夹到该价以内（涨停价）。
+
+        A 股不可能以高于涨停价成交。封板「试排板」路径会把 signal_price 设成涨停价，
+        若再叠加滑点，成交价就越出了合法价带 —— 打板策略每笔成本被系统性高估。
+        """
         slip = self._cfg("slippage_bps") or DEFAULT_SLIPPAGE_BPS
         comm = self._cfg("commission_rate") or DEFAULT_COMMISSION_RATE
         minc = self._cfg("min_commission") or DEFAULT_MIN_COMMISSION
         exec_price    = round(signal_price * (1 + slip / 10000), 4)
+        if price_cap and price_cap > 0:
+            exec_price = min(exec_price, round(float(price_cap), 4))
         amount        = round(exec_price * shares, 2)
         commission    = round(max(amount * comm, minc), 2)
         slippage_cost = round((exec_price - signal_price) * shares, 2)
         return exec_price, amount, commission, slippage_cost
 
-    def _calc_sell_income(self, signal_price: float, shares: int):
+    def _calc_sell_income(self, signal_price: float, shares: int, price_floor: float | None = None):
+        """卖出成交价与费用。price_floor 给定时把成交价夹到该价以上（跌停价）。
+
+        与买入侧对称：弱跌停路径按跌停价成交，再减滑点就跌破了合法价带，
+        导致卖出收入被系统性低估。
+        """
         slip = self._cfg("slippage_bps") or DEFAULT_SLIPPAGE_BPS
         comm = self._cfg("commission_rate") or DEFAULT_COMMISSION_RATE
         minc = self._cfg("min_commission") or DEFAULT_MIN_COMMISSION
         tax  = self._cfg("tax_rate") or DEFAULT_TAX_RATE
         exec_price = round(signal_price * (1 - slip / 10000), 4)
+        if price_floor and price_floor > 0:
+            exec_price = max(exec_price, round(float(price_floor), 4))
         amount     = round(exec_price * shares, 2)
         commission = round(max(amount * comm, minc), 2)
         tax_amt    = round(amount * tax, 2)
@@ -327,6 +341,9 @@ class PaperBroker:
                     name = names.get(code, name) or code
             except Exception:
                 name = name or code
+
+        # 涨停价上限：封板路径把成交价定在涨停价，后续不得再被滑点顶出合法价带
+        _price_cap = None
 
         # ── 封板成交检查（综合强弱评分）─────────────────────────
         # 现实规则：能不能排板买到，要看封单金额 + 趋势 + 开板次数 + 连板 + 封板时间，
@@ -372,6 +389,7 @@ class PaperBroker:
                             # 通过：若当前封板，成交价 = 涨停价（扫货式）
                             if is_sealed:
                                 signal_price = _lu
+                                _price_cap   = _lu
                                 logger.info(
                                     f"[PB] {code} 强度评分 {score}≤{threshold}，按涨停 {_lu:.2f} 试排板成交"
                                     f"（开板{status.get('open_count',0)}次、封单¥{seal_amount/10000:,.0f}万）"
@@ -385,10 +403,12 @@ class PaperBroker:
                                     return {"ok": False,
                                             "msg": f"封板拒买（回退）: {code} 封单¥{seal_amount/10000:,.0f}万 ≥ ¥{fallback/10000:,.0f}万"}
                                 signal_price = _lu
+                                _price_cap   = _lu
         except Exception as _e:
             logger.debug(f"[PB] 封板检查异常（跳过）: {_e}")
 
-        exec_price, amount, commission, slippage_cost = self._calc_buy_cost(signal_price, shares)
+        exec_price, amount, commission, slippage_cost = self._calc_buy_cost(
+            signal_price, shares, price_cap=_price_cap)
         total_cost = amount + commission
 
         with self._lock:
@@ -478,6 +498,9 @@ class PaperBroker:
                 # 但这等于绕过一条风控 —— 必须是 WARNING 而不是 debug，否则静默失效无人知晓。
                 logger.warning(f"[PB] T+1 检查无法判定，本次放行: buy_time={pos['buy_time']!r} err={_e}")
 
+            # 跌停价下限：弱跌停路径按跌停价成交，后续不得再被滑点压穿合法价带
+            _price_floor = None
+
             # ── 跌停封单检查（已跌停时，看卖出封单是否砸得出去）──
             # 卖出封单金额 = ask1 卖盘手数 × 100 × 跌停价
             #   封单 ≥ 阈值（默认 5000 万）：跌停封死，砸不出去，拒卖
@@ -508,6 +531,7 @@ class PaperBroker:
                                 }
                             else:
                                 signal_price = _ld   # 实际成交价 = 跌停价
+                                _price_floor = _ld   # 不得再被滑点压到跌停价之下
                                 logger.info(
                                     f"[PB] 弱跌停成交 {code} 卖出封单¥{seal_amount/10000:,.0f}万 "
                                     f"< 阈值¥{threshold/10000:,.0f}万，按跌停 {_ld:.2f} 成交"
@@ -517,7 +541,8 @@ class PaperBroker:
 
             shares = pos["shares"]
             name   = pos["name"]
-            exec_price, net_income, commission, tax = self._calc_sell_income(signal_price, shares)
+            exec_price, net_income, commission, tax = self._calc_sell_income(
+                signal_price, shares, price_floor=_price_floor)
 
             cash_row = con.execute(
                 "SELECT value FROM paper_config WHERE user_id=? AND key='cash'",

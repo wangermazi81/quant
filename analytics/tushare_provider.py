@@ -6,6 +6,8 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -322,6 +324,47 @@ def _fetch_replay_kline_qfq(code: str, start: str, end: str, token: str) -> pd.D
     return _normalize_daily_frame(daily)
 
 
+# ── 日线进程内 TTL 缓存 ───────────────────────────────────────────────
+# 本模块此前**完全没有缓存**：默认配置就是 provider=tushare/mode=replay，
+# 于是一轮 5000 只的全市场扫描 = 5000+ 次外网 HTTP（replay 分支每只还要
+# daily + adj_factor 两次），代理降级时单只最坏 3 个域名 × 25s = 75s，
+# 扫描线程可挂起数小时，对方限流时选股功能间歇性「返回 0」。
+# 日线是收盘后就不再变的数据，按 (code, start, end, mode) 缓存完全安全。
+_KLINE_CACHE: dict[tuple, tuple[float, Any]] = {}
+_KLINE_CACHE_LOCK = threading.Lock()
+_KLINE_CACHE_TTL = float(os.environ.get("TUSHARE_KLINE_CACHE_TTL", "900") or "900")
+_KLINE_CACHE_MAX = int(os.environ.get("TUSHARE_KLINE_CACHE_MAX", "6000") or "6000")
+
+
+def clear_kline_cache() -> None:
+    """清空日线缓存（测试与「强制刷新」入口用）。"""
+    with _KLINE_CACHE_LOCK:
+        _KLINE_CACHE.clear()
+
+
+def _kline_cache_get(key: tuple):
+    with _KLINE_CACHE_LOCK:
+        hit = _KLINE_CACHE.get(key)
+        if not hit:
+            return None
+        ts, value = hit
+        if time.time() - ts > _KLINE_CACHE_TTL:
+            _KLINE_CACHE.pop(key, None)
+            return None
+        # 必须回拷副本：调用方拿到 DataFrame 后普遍会原地改列/排序，
+        # 直接共享同一对象会让缓存内容被下游污染。
+        return value.copy() if hasattr(value, "copy") else value
+
+
+def _kline_cache_put(key: tuple, value) -> None:
+    with _KLINE_CACHE_LOCK:
+        if len(_KLINE_CACHE) >= _KLINE_CACHE_MAX:
+            # 简单容量控制：按写入时间淘汰最旧的一批，避免无界增长
+            for stale in sorted(_KLINE_CACHE, key=lambda k: _KLINE_CACHE[k][0])[:_KLINE_CACHE_MAX // 4]:
+                _KLINE_CACHE.pop(stale, None)
+        _KLINE_CACHE[key] = (time.time(), value.copy() if hasattr(value, "copy") else value)
+
+
 def fetch_kline_qfq(
     code: str,
     start: str,
@@ -333,8 +376,19 @@ def fetch_kline_qfq(
     token = token or datasource_config.resolve_tushare_token(mode=resolved_mode)
     if not token:
         return None
+
+    cache_key = (str(code), _date_text(start), _date_text(end), resolved_mode)
+    cached = _kline_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     if resolved_mode == "replay":
-        return _fetch_replay_kline_qfq(code, start, end, token)
+        result = _fetch_replay_kline_qfq(code, start, end, token)
+        # 只缓存有效结果：None/空表往往是限流或代理抖动，缓存下来会把
+        # 一次偶发失败放大成 15 分钟内持续选不出票。
+        if result is not None and not result.empty:
+            _kline_cache_put(cache_key, result)
+        return result
 
     ts = _load_tushare()
     api = ts.pro_api(token)
@@ -347,7 +401,10 @@ def fetch_kline_qfq(
         freq="D",
         asset="E",
     )
-    return _normalize_daily_frame(df)
+    result = _normalize_daily_frame(df)
+    if result is not None and not result.empty:
+        _kline_cache_put(cache_key, result)
+    return result
 
 
 def _normalize_full_market_daily_frame(df: pd.DataFrame | None) -> pd.DataFrame:

@@ -61,6 +61,29 @@ def raw_broker(tmp_path, monkeypatch):
     return pb.PaperBroker(user_id=998)
 
 
+class TestLimitPriceBand:
+    """A 股不可能以高于涨停价、低于跌停价成交——成交价必须夹在合法价带内。"""
+
+    def test_buy_exec_price_never_exceeds_limit_up(self, broker):
+        limit_up = 11.0
+        exec_price, _amount, _comm, _slip = broker._calc_buy_cost(
+            limit_up, 100, price_cap=limit_up)
+        assert exec_price == limit_up, "封板按涨停价成交后再叠加滑点会越出合法价带"
+
+    def test_sell_exec_price_never_below_limit_down(self, broker):
+        limit_down = 9.0
+        exec_price, _net, _comm, _tax = broker._calc_sell_income(
+            limit_down, 100, price_floor=limit_down)
+        assert exec_price == limit_down, "弱跌停按跌停价成交后再减滑点会跌穿合法价带"
+
+    def test_normal_price_still_gets_slippage(self, broker):
+        """不给价带时滑点照常生效——夹取不能把正常路径的滑点也吃掉。"""
+        buy_price, _a, _c, _s = broker._calc_buy_cost(10.0, 100)
+        sell_price, _n, _c2, _t = broker._calc_sell_income(10.0, 100)
+        assert buy_price > 10.0
+        assert sell_price < 10.0
+
+
 class TestT1Rule:
     def test_same_day_sell_is_rejected(self, raw_broker):
         """★A 股 T+1：当天买入当天不可卖出"""
