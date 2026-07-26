@@ -29,6 +29,41 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 
+# ── 环境变量访问器（A-12）──────────────────────────────────────
+# 为什么要有这一层：`.env` 只在 **import config** 时被加载。任何新入口
+# （独立脚本、调度进程、工具）若直接读 os.environ 而没有先 import config，
+# .env 里的开关就静默读不到，落到各调用点自己的默认值 —— 对
+# QUANT_LIVE_TRADING 这类资金开关来说，这是「以为关着其实开着」或反之。
+# 业务模块一律用这些访问器，别自己碰 os.environ。
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    v = _os.environ.get(name)
+    if v is None or str(v).strip() == "":
+        return default
+    return str(v).strip().lower() in _TRUTHY
+
+
+def env_str(name: str, default: str = "") -> str:
+    v = _os.environ.get(name)
+    return default if v is None else str(v).strip()
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(str(_os.environ.get(name, "")).strip() or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(str(_os.environ.get(name, "")).strip() or default)
+    except (TypeError, ValueError):
+        return default
+
+
 def _resolve_trading_flags(env) -> tuple[bool, bool, bool]:
     """从环境解析 (实盘, 自动确认委托, 自动撤未成交)。
 
