@@ -438,26 +438,11 @@ def _fetch_pages_concurrently(fetch_page, page_numbers: Iterable[int], max_worke
 
 
 def _eastmoney_get_json(urls: Iterable[str], params: dict, timeout: int = 20) -> dict:
-    import requests
-    try:
-        from research_center import no_proxy
-    except Exception:
-        from contextlib import nullcontext as no_proxy
+    # A-7：传输层（请求头/镜像重试/代理规避）已收敛到 market/eastmoney_client，
+    # 本函数保留原名与原语义（全失败抛 RuntimeError），只是不再自己写一遍。
+    from market.eastmoney_client import get_json as _em_get_json
 
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
-    errors = []
-    for url in urls:
-        try:
-            with no_proxy():
-                response = requests.get(url, params=params, headers=headers, timeout=timeout)
-            response.raise_for_status()
-            payload = response.json()
-            if isinstance(payload, dict):
-                return payload
-            raise ValueError("non-dict eastmoney payload")
-        except Exception as exc:
-            errors.append(f"{url}: {exc}")
-    raise RuntimeError("; ".join(errors))
+    return _em_get_json(urls, params, timeout=timeout)
 
 
 def _eastmoney_get_klines(params: dict, timeout: int = 20) -> list[str]:

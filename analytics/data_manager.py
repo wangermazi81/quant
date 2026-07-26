@@ -107,12 +107,10 @@ def get_stock_sectors_bulk_current(codes: list[str]) -> dict[str, dict]:
         return {}
 
     result: dict[str, dict] = {}
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+    # A-7：请求头与镜像主机列表统一由 market/eastmoney_client 维护，
+    # 东财换域名/加校验头时只改那一处。本函数的分批与部分成功语义保持原样。
+    from market.eastmoney_client import EM_HEADERS as headers, UUST_URLS as urls
     fields = "f12,f100,f103"
-    urls = (
-        "https://push2.eastmoney.com/api/qt/ulist.np/get",
-        "https://48.push2.eastmoney.com/api/qt/ulist.np/get",
-    )
     for i in range(0, len(clean_codes), 80):
         batch = clean_codes[i:i + 80]
         secids = ",".join(_eastmoney_secid(c) for c in batch)
