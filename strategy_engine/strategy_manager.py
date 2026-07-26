@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import ast
 import importlib.util
+import os
 import traceback
 import logging
 from pathlib import Path
@@ -454,6 +455,9 @@ _mkt_cache = {
     "ts": 0,
 }
 _MKT_CACHE_TTL = 300  # 5 分钟
+# 磁盘兜底行情的最大可用陈旧度（小时）。超过即视为不可用——
+# 宁可选不出票，也不能拿隔夜/隔周的价量当「当前行情」去下单。
+_DISK_UNIVERSE_MAX_AGE_H = float(os.environ.get("SM_DISK_UNIVERSE_MAX_AGE_H", "12") or "12")
 
 
 def _refresh_market_cache() -> list:
@@ -490,6 +494,20 @@ def _refresh_market_cache() -> list:
             active = data.get("quotes", [])
             saved_ts = data.get("ts", 0)
             age_h = (_time.time() - saved_ts) / 3600
+            # 兜底数据必须过同一套价量过滤：此前磁盘分支直接整份返回，
+            # 把「只有代码没有价量」的占位行情喂给策略扫描，绕过了上面 463-466 行的门槛。
+            active = [q for q in active
+                      if q.get("price", 0) > 3
+                      and q.get("vol", 0) > 100
+                      and q.get("last_close", 0) > 0]
+            active.sort(key=lambda q: q.get("vol", 0), reverse=True)
+            # 陈旧度上限：此前算了 age_h 却只打日志不设限，任意陈旧的快照都会被
+            # 当作「当前行情」返回，策略据此选股 = 拿几天前的价量做今天的决策。
+            if active and age_h > _DISK_UNIVERSE_MAX_AGE_H:
+                logger.error(
+                    "[SM] 磁盘兜底行情已过期 %.1fh（上限 %.0fh），拒绝用于策略扫描",
+                    age_h, _DISK_UNIVERSE_MAX_AGE_H)
+                active = []
             if active:
                 logger.warning(f"[SM] unified gateway unavailable; using disk universe fallback ({age_h:.1f}h old, {len(active)} stocks)")
                 _mkt_cache["sorted_quotes"] = active

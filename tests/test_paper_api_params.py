@@ -1,5 +1,6 @@
 from tests._module_stubs import stub_project_module
 import os
+import re
 import sys
 import types
 from pathlib import Path
@@ -103,12 +104,28 @@ def test_paper_reset_defaults_to_one_million(monkeypatch):
 
 
 def test_paper_reset_ui_prompt_defaults_to_one_million():
-    # 工单7 拆分后：模拟盘重置逻辑在 static/app/js/app-core.js
-    html = Path(__file__).resolve().parents[1].joinpath(
-        "static", "app", "js", "app-core.js").read_text(encoding="utf-8")
+    """前端「重置模拟盘」的初始资金默认值必须是 100 万。
 
-    assert "prompt('重置模拟盘——输入初始资金（元）：','1000000')" in html
-    assert "prompt('重置模拟盘——输入初始资金（元）：','500000')" not in html
+    与后端保持一致：config.INITIAL_CAPITAL / paper_broker.DEFAULT_INITIAL_CAPITAL == 1_000_000。
+
+    不锁定具体文件名：这段逻辑被拆过两次（index.html → app-core.js → app-paper.js），
+    每拆一次这条断言就假红一次。只要 resetPaper() 还在 static/app/js 下的某个模块里就行。
+    正则也容忍单双引号与逗号旁空白，格式化不会误伤。
+    """
+    js_dir = Path(__file__).resolve().parents[1] / "static" / "app" / "js"
+    sources = {p: p.read_text(encoding="utf-8") for p in sorted(js_dir.glob("*.js"))}
+
+    owners = [p for p, s in sources.items() if "function resetPaper" in s]
+    assert owners, "static/app/js 下找不到 resetPaper() 定义（前端是不是又拆文件了？）"
+
+    pattern = re.compile(
+        r"prompt\(\s*['\"]重置模拟盘——输入初始资金（元）：['\"]\s*,\s*['\"](\d+)['\"]\s*\)"
+    )
+    defaults = [m.group(1) for p in owners for m in pattern.finditer(sources[p])]
+    assert defaults, f"{[p.name for p in owners]} 里没找到重置模拟盘的 prompt 默认值"
+    assert set(defaults) == {"1000000"}, (
+        f"重置模拟盘默认初始资金应为 1000000（与后端 INITIAL_CAPITAL 一致），实际 {defaults}"
+    )
 
 
 def test_paper_buy_rejects_invalid_price_before_deducting(monkeypatch):

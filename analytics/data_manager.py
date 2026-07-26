@@ -1465,9 +1465,33 @@ def _download_one(code: str, start_date: str) -> dict:
 
 
 # ── 批量后台下载 ──────────────────────────────────
+_PROGRESS_MAX     = 20        # 最多保留多少个已结束任务
+_PROGRESS_TTL_SEC = 3600.0    # 已结束任务保留多久
+
+
+def _prune_progress():
+    """淘汰已结束的下载任务记录（调用方必须已持有 _lock）。
+
+    _progress 此前只增不删：每个条目带 results 全量列表（200 只股票的
+    逐只结果），云端 worker 常驻数周 → 稳定泄漏。运行中的任务永不淘汰。
+    """
+    finished = [(v.get("finished_at", 0.0), k) for k, v in _progress.items()
+                if v.get("status") != "running"]
+    if not finished:
+        return
+    now = time.time()
+    stale = {k for ts, k in finished if ts and now - ts > _PROGRESS_TTL_SEC}
+    keep = sorted((t for t in finished if t[1] not in stale), reverse=True)
+    for _ts, k in keep[_PROGRESS_MAX:]:
+        stale.add(k)
+    for k in stale:
+        _progress.pop(k, None)
+
+
 def start_download(codes: list, start_date: str, task_id: str):
     _ensure_name_cache()          # 顺便触发名称缓存加载
     with _lock:
+        _prune_progress()         # 新任务入表前先清理已结束的旧任务
         _progress[task_id] = {
             "status": "running", "total": len(codes),
             "done": 0, "current": "", "errors": [], "results": [],
@@ -1487,6 +1511,7 @@ def start_download(codes: list, start_date: str, task_id: str):
         with _lock:
             _progress[task_id]["status"]  = "done"
             _progress[task_id]["current"] = ""
+            _progress[task_id]["finished_at"] = time.time()
         ok_cnt = sum(1 for r in _progress[task_id]["results"] if r["ok"])
         logger.info(f"批量下载完成 task={task_id} 成功={ok_cnt} 失败={len(_progress[task_id]['errors'])}")
 

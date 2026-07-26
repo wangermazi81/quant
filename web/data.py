@@ -151,6 +151,11 @@ def api_data_download():
     if any(not re.fullmatch(r"[A-Za-z0-9._-]{1,16}", code) for code in codes):
         return jsonify({"ok": False, "msg": "股票代码格式错误"}), 400
     task_id = uuid.uuid4().hex
+    # 与 data_manager._progress 的淘汰保持同步：那边已经清掉的任务，
+    # 这里的属主映射也要跟着清，否则本表只增不删（每次下载 +1，永不回收）。
+    for _stale in [t for t in _DOWNLOAD_OWNERS
+                   if dm.get_progress(t).get("status") == "not_found"]:
+        _DOWNLOAD_OWNERS.pop(_stale, None)
     _DOWNLOAD_OWNERS[task_id] = uid
     _add_log(uid, f"开始下载 {len(codes)} 只股票历史数据...")
     dm.start_download(codes, start_date, task_id)

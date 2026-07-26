@@ -136,7 +136,9 @@ def test_label_frame_marks_live_execution_risks_and_cost_adjusted_return():
     first = labels[labels["trade_date"] == "2026-01-02"].iloc[0]
 
     assert first["entry_gap_pct"] == 10.0
-    assert first["execution_blocked"] is True
+    # 从 DataFrame 取回的布尔标量是 numpy.bool_，`is True` 对它恒为 False。
+    # 用 bool() 归一化后再比 is True，仍保留「必须是真布尔、不能靠 1/非空串蒙混」的严格度。
+    assert bool(first["execution_blocked"]) is True
     assert "entry_near_limit_up" in first["execution_flags"]
     assert first["live_adjusted_return_pct"] < first["forward_return_pct"]
 

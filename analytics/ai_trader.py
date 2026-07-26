@@ -1277,8 +1277,12 @@ class _Engine:
                 if paper:
                     res = self._ai_broker().submit_buy(code, name, price, shares, reason=reason)
                 else:
-                    import main  # 延迟导入，避免循环依赖
-                    res = main.execute_buy(self.uid, code, name, price, shares, reason=reason)
+                    # 直取 core.trade_service（与 core/schedulers.py 同做法）。
+                    # 曾写成 `import main`，形成 main→web.ai_trader→analytics.ai_trader→main
+                    # 的环；更要命的是在非 Web 进程（独立调度进程/脚本）走到实盘分支时，
+                    # import main 会触发整个 Flask app 组装 + 建表 + 模块级调度线程启动。
+                    from core.trade_service import execute_buy as _execute_buy
+                    res = _execute_buy(self.uid, code, name, price, shares, reason=reason)
                 if res.get("ok") and d.get("stop_loss"):
                     self.targets[code] = {"stop": d.get("stop_loss"),
                                           "target": d.get("take_profit")}
@@ -1286,8 +1290,8 @@ class _Engine:
                 if paper:
                     res = self._ai_broker().submit_sell(code, price, sell_reason=reason)
                 else:
-                    import main
-                    res = main.execute_sell(self.uid, code, price, sell_reason=reason)
+                    from core.trade_service import execute_sell as _execute_sell
+                    res = _execute_sell(self.uid, code, price, sell_reason=reason)
                 self.targets.pop(code, None)
             if res.get("ok"):
                 self._bump_trades()

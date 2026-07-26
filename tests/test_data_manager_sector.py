@@ -7,6 +7,10 @@ import pytest
 
 import analytics.data_manager as dm
 
+# 网关路由版函数对象，必须在下面的 autouse fixture 把这个名字替换掉**之前**抓住。
+# 需要验证「先走 data_gateway」的用例用它还原，否则本文件的 autouse 会把被测路径整个架空。
+_GATEWAY_BULK = dm.get_stock_sectors_bulk
+
 
 @pytest.fixture(autouse=True)
 def _use_current_sector_source(monkeypatch):
@@ -102,6 +106,10 @@ def test_get_stock_sectors_bulk_reads_industry_and_concepts(monkeypatch):
 def test_get_stock_sectors_bulk_respects_tushare_only_when_gateway_fails(monkeypatch):
     from analytics import data_gateway as dg
 
+    # 本例测的就是 data_manager 那层网关包装器自身的降级逻辑，必须撤销 autouse 的替换。
+    # 否则 dm.get_stock_sectors_bulk 已被绑成 current 版，跑的根本不是被测对象——
+    # 此前它是「假绿」：靠真·东财实现取数失败恰好返回 {} 才通过。
+    monkeypatch.setattr(dm, "get_stock_sectors_bulk", _GATEWAY_BULK)
     monkeypatch.setattr(dg, "get_source_order", lambda: ["tushare"])
     monkeypatch.setattr(dg, "get_stock_sectors_bulk", lambda codes: (_ for _ in ()).throw(RuntimeError("gateway down")))
     monkeypatch.setattr(
@@ -117,6 +125,9 @@ def test_get_stock_sector_uses_gateway_before_legacy_sector_scan(monkeypatch, tm
     from analytics import data_gateway as dg
 
     legacy_calls = []
+    # 本例要验「先走网关」，撤销 autouse 的 current 替换——否则打桩 dg 完全不生效，
+    # 执行流会绕过网关直奔 legacy 扫描，用例自落地起就没绿过。
+    monkeypatch.setattr(dm, "get_stock_sectors_bulk", _GATEWAY_BULK)
     monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
     monkeypatch.setattr(dg, "get_stock_sectors_bulk", lambda codes: {"000001": {"industry": "bank", "concepts": ["finance"]}})
     monkeypatch.setattr(
