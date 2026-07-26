@@ -61,13 +61,21 @@ def _assert_root_admin_required(response):
 
 
 def _assert_indistinguishable_not_found(foreign_response, unknown_response):
-    expected = {"ok": False, "error": "not found"}
-    assert foreign_response.status_code == 404
-    assert unknown_response.status_code == 404
+    """越权访问他人资源，必须与访问「根本不存在的资源」完全无法区分。
+
+    这里断言的是**性质**而不是某个固定状态码：只要两个响应逐字节一致、且都是
+    拒绝，就没有泄漏「该 id 是否存在」。不同路由的拒绝层次不同——例如
+    /api/bridge/signals/<id>/report 挂的是 @require_bridge_token，会话用户在
+    走到属主校验之前就被 403 挡下，两种情况同样返回 403，性质依然满足。
+    （此前写死 404，装饰器换成 bridge token 后测试就一直是红的。）
+    """
     assert foreign_response.is_json
     assert unknown_response.is_json
-    assert foreign_response.get_json() == expected
-    assert unknown_response.get_json() == expected
+    assert foreign_response.status_code in (403, 404)
+    # 状态码与响应体都必须一致，否则可据此判断资源是否存在
+    assert foreign_response.status_code == unknown_response.status_code
+    assert foreign_response.get_json() == unknown_response.get_json()
+    assert foreign_response.get_json()["ok"] is False
 
 
 def _assert_response_hides_owner_data(response):
@@ -314,6 +322,11 @@ def test_bridge_token_can_fetch_and_report_configured_user_signal(isolated_app, 
     cfg_path = tmp_path / "bridge_config.json"
     cfg_path.write_text('{"bridge_token":"token-123","bridge_user_id":%d}' % owner_id, encoding="utf-8")
     monkeypatch.setattr(bridge, "THS_BRIDGE_CONFIG", cfg_path)
+
+    # 实盘下单总闸缺省为「关」（安全默认，见 core/bridge_state._live_enabled）：
+    # 桥接器照常轮询但拿不到单。要取到信号必须先显式开闸。
+    from core import bridge_state
+    monkeypatch.setitem(bridge_state._live_trade_enabled, owner_id, True)
 
     client = app.test_client()
     headers = {"X-Bridge-Token": "token-123"}

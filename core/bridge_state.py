@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _BRIDGE_FLAGS_FILE = _BASE_DIR / "data" / "bridge_flags.json"
-_live_trade_enabled = {}   # uid -> bool（缺省视为 True=开）
+_live_trade_enabled = {}   # uid -> bool（缺省 False=关，必须显式开闸）
 
 
 def _load_bridge_flags():
@@ -24,7 +24,9 @@ def _load_bridge_flags():
             _live_trade_enabled = {int(k): bool(v) for k, v in
                                    json.loads(_BRIDGE_FLAGS_FILE.read_text(encoding="utf-8")).items()}
     except Exception as e:
-        logger.warning(f"[bridge闸门] 加载失败: {e}")
+        # 加载失败必须整表清空：残留半截状态会让部分 uid 沿用上一次的开闸值
+        _live_trade_enabled = {}
+        logger.warning(f"[bridge闸门] 加载失败，已全部按「关」处理: {e}")
 
 
 def _save_bridge_flags():
@@ -36,7 +38,12 @@ def _save_bridge_flags():
 
 
 def _live_enabled(uid) -> bool:
-    return _live_trade_enabled.get(uid, True)
+    """实盘下单总闸。缺省 **False**：与 config 的「实盘必须显式打开」同向。
+
+    此前缺省为 True，而 data/bridge_flags.json 是运行态文件（gitignore，全新部署
+    必然不存在）→ 新用户/重装后无需任何操作即具备下单能力，方向与安全默认相反。
+    """
+    return _live_trade_enabled.get(uid, False)
 
 
 def set_live_enabled(uid: int, enabled: bool) -> None:

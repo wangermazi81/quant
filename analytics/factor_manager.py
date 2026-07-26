@@ -152,13 +152,14 @@ def save(filename: str, code: str) -> dict:
     if not safe:
         return {"ok": False, "msg": "文件名不合法"}
     # 复用 strategy_manager 的 AST 安全检查
+    # 安全检查必须 fail-closed：检查本身出错时拒绝保存，而不是静默放行后 exec。
     try:
         from strategy_engine import strategy_manager as _sm
         chk = _sm.ast_check(code)
-        if not chk["ok"]:
-            return {"ok": False, "msg": f"代码安全检查未通过: {chk['msg']}"}
-    except Exception:
-        pass
+    except Exception as e:
+        return {"ok": False, "msg": f"代码安全检查不可用，已拒绝保存: {e}"}
+    if not chk["ok"]:
+        return {"ok": False, "msg": f"代码安全检查未通过: {chk['msg']}"}
     path = FACTORS_DIR / f"{safe}.py"
     path.write_text(code, encoding="utf-8")
     meta = _read_meta(path)

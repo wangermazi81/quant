@@ -87,7 +87,12 @@ if [ ! -f .env ]; then
     SK=$(python3 -c "import secrets; print(secrets.token_hex(32))")
     sed -i "s|^SECRET_KEY=.*|SECRET_KEY=$SK|" .env
     sed -i 's|^AI_API_KEY=|# AI_API_KEY=|; s|^AI_BASE_URL=|# AI_BASE_URL=|; s|^AI_MODEL=|# AI_MODEL=|' .env
+    # 云端一律走 HTTPS：强制开 Secure Cookie + HSTS。
+    # .env.example 里默认是 0（照顾本机 http://127.0.0.1 开发），直接 cp 过来会让
+    # 线上 session cookie 明文可截、且 HSTS 不下发 —— 这里必须覆盖成 1。
+    sed -i "s|^SESSION_COOKIE_SECURE=.*|SESSION_COOKIE_SECURE=1|" .env
     echo "Generated random SECRET_KEY."
+    echo "Forced SESSION_COOKIE_SECURE=1 (server is HTTPS-only)."
     echo "Commented AI_* placeholders; use web settings or synced private config."
 else
     echo ".env already exists; skip."

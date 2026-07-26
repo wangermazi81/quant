@@ -148,9 +148,27 @@ def paper_manual_buy():
         return jsonify({"ok": False, "msg": "请输入股票代码"})
     if price is None:
         return jsonify({"ok": False, "msg": "价格必须大于0"})
-    # 非交易时段提示但仍允许（方便用户测试 + 复盘）
     if shares is None:
         return jsonify({"ok": False, "msg": "invalid shares"})
+
+    # ── 成交价以服务端行情为准（与 /api/paper/sell 同口径）────────────
+    # 此前完全信任前端传入的 price：用户可用 API 以 ¥0.01「买入」再按市价卖出，
+    # 凭空刷出模拟盘利润，污染收益统计、排行与积分体系。
+    _server_price = 0.0
+    try:
+        from analytics import data_gateway as dg
+        q = dg.get_realtime_quote(code)
+        if q:
+            _server_price = float(q.get("price") or q.get("now") or 0)
+    except Exception as _e:
+        logger.warning("[paper.buy] 取 %s 实时价失败，回退前端价: %s", code, _e)
+    if _server_price > 0:
+        # 允许偏离 ±20%（覆盖涨跌停与盘中波动），超出即视为伪造价格拒单
+        if abs(price - _server_price) / _server_price > 0.20:
+            return jsonify({"ok": False, "msg":
+                            f"价格 {price:.2f} 偏离实时价 {_server_price:.2f} 超过 20%，已拒单"})
+        price = _server_price
+    # 非交易时段提示但仍允许（方便用户测试 + 复盘）
     try:
         from market.market_data import is_trading_time
         if not is_trading_time():

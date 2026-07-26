@@ -791,7 +791,20 @@ def _load_data(codes: list, start_date: str, end_date: str, logs: list) -> dict:
     return all_data
 
 
-def _load_strategy(code_str: str):
+def _load_strategy(code_str: str, is_builtin: bool = False):
+    """把策略源码落临时文件后 exec。
+
+    这里必须自己跑一遍 ast_check：此前本路径一次都不检查，只靠「存盘时查过一次」
+    的间接信任（TOCTOU）——策略文件被旁路改动、或将来新增导入/上传入口，
+    都会在回测时被无差别执行。strategy_manager.run() 一直是查过的，两条执行路径
+    的检查口径必须一致（含内置豁免：内置策略用 sys.path 做兼容导入）。
+    """
+    if not is_builtin:
+        from strategy_engine.strategy_manager import ast_check
+        chk = ast_check(code_str)
+        if not chk["ok"]:
+            raise ValueError(f"策略代码安全检查未通过: {chk['msg']}")
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py",
                                      encoding="utf-8", delete=False) as f:
         f.write(code_str)
@@ -820,6 +833,10 @@ def run_backtest(strategy_code: str, codes: list,
     Backtrader 风格回测入口。
     codes=[] → 全市场模式（本地CSV + TDX活跃前800只）
     _progress_fn(current, total, stage) → 供异步轮询使用
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
     """
     logs = []
     Order._id_seq = 0   # 每次回测重置 ID 计数器
@@ -831,13 +848,14 @@ def run_backtest(strategy_code: str, codes: list,
     try:
         # 编译策略
         try:
-            mod = _load_strategy(strategy_code)
+            mod = _load_strategy(strategy_code, is_builtin=is_builtin)
         except Exception as e:
             return {"ok": False, "error": f"策略编译失败: {e}", "logs": logs}
         if not hasattr(mod, "scan"):
             return {"ok": False, "error": "策略必须包含 scan() 函数", "logs": logs}
 
         full_market = not codes   # codes=[] → 全市场模式
+                 is_builtin: bool = False,
         logs.append({"level": "INFO",
                       "msg": f"策略加载成功，{'全市场' if full_market else f'{len(codes)}只'}回测模式，开始数据加载..."})
 
@@ -967,6 +985,7 @@ def start_backtest_async(strategy_code: str, codes: list,
             result = run_backtest(
                 strategy_code   = strategy_code,
                 codes           = codes,
+                          is_builtin: bool = False,
                 start_date      = start_date,
                 end_date        = end_date,
                 initial_capital = initial_capital,
@@ -998,6 +1017,7 @@ def start_backtest_async(strategy_code: str, codes: list,
 
     _bt_threading.Thread(target=_worker, daemon=True).start()
     return task_id
+                is_builtin      = is_builtin,
 
 
 def cancel_backtest_task(task_id: str) -> dict:

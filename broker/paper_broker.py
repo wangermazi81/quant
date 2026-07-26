@@ -27,6 +27,10 @@ DEFAULT_STOP_LOSS       = -0.05
 DEFAULT_TAKE_PROFIT     = 0.10
 DEFAULT_MAX_HOLD_DAYS   = 10
 DEFAULT_INITIAL_CAPITAL = 1_000_000.0
+# /api/paper/reset 允许的本金区间。不设限时用户可 reset 成极小本金，
+# 配合 pnl 归一化机制把每笔盈亏放大数十上百倍（详见 reset 内注释）。
+MIN_RESET_CAPITAL = 10_000.0
+MAX_RESET_CAPITAL = 10_000_000.0
 # 封板/跌停封单金额阈值（元）：仅在 SealTracker 不可用时作回退兜底使用。
 # 主路径走综合强弱评分（见 analytics/seal_tracker.py）。
 DEFAULT_SEAL_BAN_THRESHOLD = 50_000_000.0
@@ -828,12 +832,23 @@ class PaperBroker:
         }
 
     def reset(self, initial_capital: Optional[float] = None) -> dict:
+        """重置模拟盘。
+
+        pnl_base_capital 固定写 DEFAULT_INITIAL_CAPITAL（=> _pnl_scale() 恒为 1）：
+        缩放机制只服务于「老账户一次性迁移」（见 _ensure_user_config 中把 500k 老账户
+        提到 100 万本金、同时把 pnl 按 2 倍归一化，使其收益率口径不变）。
+        重置出来的是全新账户，没有需要归一化的历史；若这里仍把 base 写成用户指定的
+        cap，用户 reset 成 1 万本金就得到 100 倍盈亏放大 —— 可凭空刷出天文收益率，
+        污染收益排行与积分体系。
+        """
         with self._lock:
-            cap = initial_capital or self._cfg("initial_capital") or DEFAULT_INITIAL_CAPITAL
+            cap = float(initial_capital or self._cfg("initial_capital") or DEFAULT_INITIAL_CAPITAL)
+            cap = round(min(max(cap, MIN_RESET_CAPITAL), MAX_RESET_CAPITAL), 2)
             con = self._conn()
             for tbl in ("paper_orders", "paper_trades", "paper_positions", "paper_equity"):
                 con.execute(f"DELETE FROM {tbl} WHERE user_id=?", (self._uid,))
-            for k, v in [("cash", cap), ("initial_capital", cap), ("pnl_base_capital", cap), ("peak_equity", cap)]:
+            for k, v in [("cash", cap), ("initial_capital", cap),
+                         ("pnl_base_capital", DEFAULT_INITIAL_CAPITAL), ("peak_equity", cap)]:
                 con.execute(
                     "INSERT OR REPLACE INTO paper_config(user_id,key,value) VALUES(?,?,?)",
                     (self._uid, k, str(v)),

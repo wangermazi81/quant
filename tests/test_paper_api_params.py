@@ -130,6 +130,57 @@ def test_paper_buy_rejects_invalid_price_before_deducting(monkeypatch):
     assert calls == []
 
 
+def _stub_realtime_quote(monkeypatch, price):
+    """把 web.paper 里 `from analytics import data_gateway as dg` 的实时价打桩。"""
+    from analytics import data_gateway as dg
+    monkeypatch.setattr(dg, "get_realtime_quote", lambda code: {"price": price})
+
+
+def test_paper_buy_rejects_price_far_from_server_quote(monkeypatch):
+    """★安全回归：不得用伪造的低价买入再按市价卖出刷模拟盘利润。
+
+    此前买入完全信任前端传入的 price，用户可用 API 以 ¥0.01「买入」，
+    随后按真实市价卖出，凭空刷出收益，污染收益排行与积分体系。
+    """
+    calls = []
+    _stub_realtime_quote(monkeypatch, 11.0)
+    monkeypatch.setattr(paper_web, "_deduct", lambda *a, **k: calls.append(("deduct", a)) or None)
+    monkeypatch.setattr(paper_web, "execute_buy", lambda *a, **k: calls.append(("execute", a)) or {"ok": True})
+
+    client = main.app.test_client()
+    _login(client)
+    response = client.post(
+        "/api/paper/buy",
+        json={"code": "000001", "name": "Ping An", "price": 0.01, "shares": 100},
+    )
+    data = response.get_json()
+
+    assert data["ok"] is False
+    assert "偏离" in data["msg"]
+    assert calls == []          # 既没扣积分也没下单
+
+
+def test_paper_buy_uses_server_price_not_client_price(monkeypatch):
+    """价格在合理区间内时，成交价仍以服务端行情为准（前端价只作参考）"""
+    captured = []
+    _stub_realtime_quote(monkeypatch, 11.0)
+    monkeypatch.setattr(paper_web, "_deduct", lambda *a, **k: None)
+    monkeypatch.setattr(
+        paper_web, "execute_buy",
+        lambda uid, code, name, price, shares, reason="": captured.append(price) or {"ok": True},
+    )
+
+    client = main.app.test_client()
+    _login(client)
+    response = client.post(
+        "/api/paper/buy",
+        json={"code": "000001", "name": "Ping An", "price": 10.5, "shares": 100},
+    )
+
+    assert response.get_json()["ok"] is True
+    assert captured == [11.0]   # 用的是服务端价，不是前端传的 10.5
+
+
 def test_paper_buy_rejects_missing_live_cash_before_deducting(monkeypatch):
     calls = []
     monkeypatch.setattr(paper_web, "DRY_RUN", False)

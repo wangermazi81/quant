@@ -193,7 +193,15 @@ def do_scan(uid: int):
 
     for r in buy_candidates:
         code  = r["code"]
-        price = r["price"] or 1
+        # 报价缺失绝不能用 ¥1 兜底：那会把 20 万预算算成 20 万股，
+        # 模拟盘按 ≈¥1 成交后成本严重失真，实盘则发出 ¥1 限价单白占开仓名额与额度。
+        try:
+            price = float(r["price"] or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price <= 0:
+            _add_log(uid, f"⚠️ {code} 无有效报价（price={r.get('price')!r}），本轮跳过不入队", "error")
+            continue
         if code in _occupied:
             continue   # 已持有 / 已在队列 → 不重复开仓
         # ★ 数据库去重：

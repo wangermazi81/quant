@@ -853,7 +853,10 @@ def bridge_mobile_mode_switch():
 def bridge_get_signals():
     uid = _bridge_request_uid()
     # ★ 实盘下单总闸：关闭时不给桥接器任何信号（桥接器照常轮询但拿不到单 → 不下单）
+    # 缺省为「关」（安全默认）：新用户/重装后必须在面板显式开闸。这里记一条日志，
+    # 免得出现「桥接器在跑却一直不下单」时无从判断是没开闸还是真没信号。
     if not _live_enabled(uid):
+        logger.info("[bridge] uid=%s 实盘总闸未开启，本次不下发信号（面板可一键开启）", uid)
         return jsonify({"ok": True, "signals": [], "live_disabled": True})
     cfg = _load_bridge_config()
     limit = 1 if str(cfg.get('confirm_mode', 'manual')).lower() == 'manual' else None

@@ -36,17 +36,26 @@ _vibe_last_run: dict = {}  # uid -> ts
 
 
 def _vibe_get_paper_cash(uid: int) -> float:
-    """给 activator 用的 paper 可用资金回调"""
+    """给 activator 用的 paper 可用资金回调。
+
+    注意：PaperBroker 没有 `cash` 属性，可用资金要走 `_cash()`。曾误写成
+    `broker.cash` → 每次都抛 AttributeError 被吞掉并返回 0.0，Vibe 自动交易
+    因此长期以 no_cash 收场、一单不下且无任何报错。
+    """
     try:
         broker = pb.get_broker(uid)
-        return float(broker.cash) if broker else 0.0
-    except Exception:
+        return float(broker._cash()) if broker else 0.0
+    except Exception as e:
+        logger.warning(f"[vibe] 取 uid={uid} 模拟盘可用资金失败: {e}")
         return 0.0
 
 
 def _vibe_compute_daily_pnl(uid: int) -> float | None:
-    """计算用户当日浮动盈亏比例（持仓 mtm 比初始资金）
-    返回 None 表示无法计算
+    """计算用户当日浮动盈亏比例（持仓 mtm 比总资产）。返回 None 表示无法计算。
+
+    注意：get_positions() 返回的是 **list[dict]**（字段见 paper_broker.get_positions），
+    曾按 dict 写成 positions.items() → AttributeError 被吞掉恒返回 None，
+    导致 activator.update_daily_pnl 从不被调用、用户配置的单日亏损熔断形同虚设。
     """
     try:
         broker = pb.get_broker(uid)
@@ -56,23 +65,22 @@ def _vibe_compute_daily_pnl(uid: int) -> float | None:
         if not positions:
             return 0.0
         total_pnl = 0.0
-        for code, pos in positions.items():
+        market_value = 0.0
+        for pos in positions:
             if not isinstance(pos, dict):
                 continue
-            cost = float(pos.get("cost") or 0)
+            cost = float(pos.get("cost_price") or 0)
             shares = int(pos.get("shares") or 0)
             cur = float(pos.get("cur_price") or cost)
             total_pnl += (cur - cost) * shares
-        # 用 paper_config.cash + 持仓市值 还原总资产 →  pnl / 总资产
-        total_value = broker.cash + sum(
-            float(p.get("cur_price") or p.get("cost") or 0) * int(p.get("shares") or 0)
-            for p in positions.values() if isinstance(p, dict)
-        )
+            market_value += cur * shares
+        # 总资产 = 可用现金 + 持仓市值 → pnl / 总资产
+        total_value = float(broker._cash()) + market_value
         if total_value <= 0:
             return None
         return total_pnl / total_value
     except Exception as e:
-        logger.debug(f"_vibe_compute_daily_pnl uid={uid} 失败: {e}")
+        logger.warning(f"[vibe] 计算 uid={uid} 当日盈亏失败（熔断本轮不生效）: {e}")
         return None
 
 

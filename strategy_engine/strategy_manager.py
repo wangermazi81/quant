@@ -152,16 +152,60 @@ def get_position_config(filename: str) -> dict:
     return cfg
 
 
-_AST_BANNED_IMPORTS = {"os", "sys", "subprocess", "shutil", "socket", "requests",
-                        "urllib", "http", "ftplib", "smtplib", "paramiko"}
-_AST_BANNED_CALLS   = {"eval", "exec", "open", "compile", "__import__",
-                        "breakpoint", "input", "getattr", "setattr", "delattr"}
+_AST_BANNED_IMPORTS = {
+    # ── 原有 ──
+    "os", "sys", "subprocess", "shutil", "socket", "requests",
+    "urllib", "http", "ftplib", "smtplib", "paramiko",
+    # ── 补齐：可直接绕过原黑名单的执行入口 ──
+    # `import importlib` + `importlib.import_module("os").system(...)` 曾能原样通过：
+    # 模块名不在名单里，调用名 import_module 也不在名单里。
+    "importlib", "imp", "runpy", "builtins", "ctypes", "cffi",
+    # ── 序列化/反序列化即任意代码执行 ──
+    "pickle", "cPickle", "dill", "shelve", "marshal",
+    # ── 文件系统入口（open 被禁但这些等价）──
+    "pathlib", "tempfile", "glob", "fileinput", "io", "codecs",
+    "sqlite3", "dbm", "zipfile", "tarfile", "gzip", "bz2", "lzma",
+    # ── 并发/资源滥用 ──
+    "multiprocessing", "threading", "asyncio", "concurrent", "signal", "atexit",
+    # ── 反射与运行时内省（可绕过属性检查）──
+    "inspect", "types", "gc", "site", "operator",
+    # ── 其它网络/系统入口 ──
+    "ssl", "selectors", "mmap", "platform", "getpass", "webbrowser",
+    "xmlrpc", "telnetlib", "poplib", "imaplib", "pty", "fcntl", "resource",
+    "pwd", "grp",
+}
+_AST_BANNED_CALLS = {"eval", "exec", "open", "compile", "__import__",
+                     "breakpoint", "input", "getattr", "setattr", "delattr",
+                     # globals()/vars() 可直接摸到模块命名空间里的已导入对象
+                     "globals", "locals", "vars", "memoryview"}
+# 危险名字即使作为**属性**出现也拒绝：允许的模块本身可能持有它们，
+# 例如 `import data_manager as dm` 后 `dm.os.system(...)` —— 模块名与调用名
+# 都不触发上面两条规则。这里对确定不会在策略里合法出现的名字兜底。
+_AST_BANNED_ATTRS = {"os", "sys", "subprocess", "shutil", "socket", "importlib",
+                     "ctypes", "pickle", "marshal", "builtins", "runpy", "imp",
+                     "multiprocessing", "pty", "tempfile", "popen", "system"}
+_AST_BANNED_NAMES = {"__import__", "__builtins__", "__loader__", "__spec__"}
+# 只禁「可用于逃逸」的 dunder，不能一刀切禁所有 dunder——策略基类子类要写
+# `super().__init__(...)`，那也是一个 Attribute 节点，禁光会误杀正常 OOP 策略。
+_AST_BANNED_DUNDERS = {
+    "__class__", "__bases__", "__base__", "__subclasses__", "__mro__",
+    "__globals__", "__builtins__", "__code__", "__func__", "__self__",
+    "__dict__", "__getattribute__", "__getattr__", "__setattr__", "__delattr__",
+    "__reduce__", "__reduce_ex__", "__closure__", "__loader__", "__spec__",
+    "__import__", "__wrapped__", "__objclass__",
+}
 
 
 def ast_check(code: str) -> dict:
-    """
-    对用户提交的策略/因子代码进行 AST 安全扫描。
-    返回 {"ok": True} 或 {"ok": False, "msg": "..."}
+    """对用户提交的策略/因子代码进行 AST 安全扫描。
+
+    返回 {"ok": True} 或 {"ok": False, "msg": "..."}。
+
+    ⚠️ 这是**纵深防御的第一层，不是沙箱**：代码最终仍以 exec_module 在 Web 进程内
+    同权限执行（见 run()）。真正的隔离需要独立子进程 + 资源/权限限制，属后续工单。
+    本函数的目标是挡掉已知的直接逃逸路径（importlib/pathlib 等替代入口、
+    `__class__`/`__globals__`/`__subclasses__` 之类的 dunder 遍历、经允许模块
+    中转访问危险模块），而不是穷举所有可能。
     """
     try:
         tree = ast.parse(code)
@@ -169,21 +213,19 @@ def ast_check(code: str) -> dict:
         return {"ok": False, "msg": f"语法错误: {e}"}
 
     for node in ast.walk(tree):
-        # 检查 import xxx / from xxx import
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            module = ""
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    module = alias.name.split(".")[0]
-                    if module in _AST_BANNED_IMPORTS:
-                        return {"ok": False, "msg": f"禁止导入模块: {module}"}
-            else:
-                module = (node.module or "").split(".")[0]
+        # ① import xxx / from xxx import
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                module = alias.name.split(".")[0]
                 if module in _AST_BANNED_IMPORTS:
                     return {"ok": False, "msg": f"禁止导入模块: {module}"}
+        elif isinstance(node, ast.ImportFrom):
+            module = (node.module or "").split(".")[0]
+            if module in _AST_BANNED_IMPORTS:
+                return {"ok": False, "msg": f"禁止导入模块: {module}"}
 
-        # 检查函数调用
-        if isinstance(node, ast.Call):
+        # ② 函数调用
+        elif isinstance(node, ast.Call):
             func = node.func
             name = ""
             if isinstance(func, ast.Name):
@@ -192,6 +234,19 @@ def ast_check(code: str) -> dict:
                 name = func.attr
             if name in _AST_BANNED_CALLS:
                 return {"ok": False, "msg": f"禁止调用函数: {name}()"}
+
+        # ③ 属性访问：dunder 遍历是经典逃逸链
+        #    ().__class__.__bases__[0].__subclasses__() → 拿到任意类 → 执行任意代码
+        elif isinstance(node, ast.Attribute):
+            if node.attr in _AST_BANNED_DUNDERS:
+                return {"ok": False, "msg": f"禁止访问内部属性: {node.attr}"}
+            if node.attr.lower() in _AST_BANNED_ATTRS:
+                return {"ok": False, "msg": f"禁止访问属性: {node.attr}"}
+
+        # ④ 直接引用危险内置名
+        elif isinstance(node, ast.Name):
+            if node.id in _AST_BANNED_NAMES:
+                return {"ok": False, "msg": f"禁止使用: {node.id}"}
 
     return {"ok": True}
 

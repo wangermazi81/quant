@@ -243,6 +243,40 @@ class TestReset:
         assert acct["cash"] == 200_000.0
         assert acct["initial_capital"] == 200_000.0
 
+    def test_reset_clamps_capital_to_allowed_range(self, broker):
+        """本金越界被夹回区间，防止极端值配合 pnl 归一化放大盈亏"""
+        from broker.paper_broker import MIN_RESET_CAPITAL, MAX_RESET_CAPITAL
+
+        assert broker.reset(initial_capital=1.0)["initial_capital"] == MIN_RESET_CAPITAL
+        assert broker.reset(initial_capital=10**12)["initial_capital"] == MAX_RESET_CAPITAL
+
+    def test_reset_never_scales_pnl_even_with_small_capital(self, broker):
+        """★安全回归：reset 成小额本金不得放大盈亏。
+
+        曾经 reset 把 pnl_base_capital 写成用户指定的 cap，_pnl_scale() = 100万/本金，
+        于是 reset 成 1 万后每笔盈亏 ×100 计入现金 —— 可凭空刷出天文收益率。
+        """
+        broker.reset(initial_capital=10_000)
+        # 核心断言：小额本金也不得产生放大系数（曾经是 100万/1万 = 100 倍）
+        assert broker._pnl_scale() == 1.0
+
+        assert broker.submit_buy("000001", "A", 10.0, 100)["ok"] is True
+        con = broker._conn()
+        buy_amount = float(con.execute(
+            "SELECT buy_amount FROM paper_positions WHERE user_id=? AND code=?",
+            (broker._uid, "000001"),
+        ).fetchone()["buy_amount"])
+        con.close()
+
+        _, net_income, _, _ = broker._calc_sell_income(11.0, 100)
+        raw_pnl = round(net_income - buy_amount, 2)
+        cash_before = broker._cash()
+        result = broker.submit_sell("000001", 11.0)
+        assert result["ok"] is True
+        # 记入现金与成交记录的都必须是真实盈亏，不是被放大的
+        assert result["pnl"] == raw_pnl
+        assert result["cash_after"] == round(cash_before + buy_amount + raw_pnl, 2)
+
     def test_legacy_half_million_position_pnl_scales_to_one_million(self, broker):
         con = broker._conn()
         for key, value in {
@@ -342,6 +376,80 @@ def scan(codes, get_kline, get_quotes):
     def test_exec_blocked(self):
         result = self._check("exec('import os')")
         assert result["ok"] is False
+
+    # ── 逃逸回归：以下写法此前全部能通过检查并在 Web 进程内执行 ──────────
+    # 攻击链：任意受邀用户 /api/strategies/save 存盘 → 点激活 → 调度器周期性
+    # exec_module → 读 data/.secret_key 伪造 admin session、偷 users.db 与 .env。
+
+    def test_importlib_escape_blocked(self):
+        """import importlib 再 import_module('os') —— 原黑名单两层都不命中"""
+        result = self._check(
+            "import importlib\n"
+            "importlib.import_module('os').system('whoami')"
+        )
+        assert result["ok"] is False
+
+    def test_pathlib_secret_read_blocked(self):
+        """pathlib 读密钥文件（open 被禁但 Path.read_text 等价）"""
+        result = self._check(
+            "import pathlib\n"
+            "k = pathlib.Path('data/.secret_key').read_text()"
+        )
+        assert result["ok"] is False
+
+    def test_dunder_class_traversal_blocked(self):
+        """().__class__.__bases__[0].__subclasses__() 经典逃逸链"""
+        result = self._check("x = ().__class__.__bases__[0].__subclasses__()")
+        assert result["ok"] is False
+
+    def test_builtins_access_blocked(self):
+        result = self._check("__builtins__['eval']('1')")
+        assert result["ok"] is False
+
+    def test_ctypes_blocked(self):
+        result = self._check("import ctypes")
+        assert result["ok"] is False
+
+    def test_pickle_blocked(self):
+        result = self._check("import pickle\npickle.loads(b'')")
+        assert result["ok"] is False
+
+    def test_module_hop_to_os_blocked(self):
+        """经允许的模块中转访问 os：模块名与调用名都不在原名单里"""
+        result = self._check(
+            "import data_manager as dm\n"
+            "dm.os.system('whoami')"
+        )
+        assert result["ok"] is False
+
+    def test_threading_blocked(self):
+        result = self._check("import threading\nthreading.Thread(target=print).start()")
+        assert result["ok"] is False
+
+    def test_legit_strategy_imports_still_allowed(self):
+        """加固不得误伤正常策略：常用数据/数学库与项目内扁平别名必须仍可用"""
+        code = (
+            "from __future__ import annotations\n"
+            "import pandas as pd\n"
+            "import numpy as np\n"
+            "import math\n"
+            "from datetime import datetime\n"
+            "from collections import Counter\n"
+            "from decimal import Decimal\n"
+            "from indicators import sma, macd, cross_up\n"
+            "from base import BaseStrategy, Signal\n"
+            "\n"
+            "def scan(codes, get_kline, get_quotes):\n"
+            "    out = []\n"
+            "    for c in codes:\n"
+            "        df = get_kline(c, 60)\n"
+            "        if df.empty:\n"
+            "            continue\n"
+            "        if sma(df['close'], 5).iloc[-1] > sma(df['close'], 20).iloc[-1]:\n"
+            "            out.append({'code': c, 'score': math.log(2), 'name': str(datetime.now())})\n"
+            "    return sorted(out, key=lambda r: r['score'], reverse=True)\n"
+        )
+        assert self._check(code)["ok"] is True
 
     def test_open_blocked(self):
         result = self._check("f = open('/etc/passwd','r')")

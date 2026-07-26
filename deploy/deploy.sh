@@ -26,7 +26,10 @@ pip install -r requirements.txt
 echo "=== 5. 配置环境变量 ==="
 if [ ! -f .env ]; then
     cp .env.example .env
+    # 云端 HTTPS：Secure Cookie 必须开（.env.example 默认 0 是给本机 http 开发用的）
+    sed -i "s|^SESSION_COOKIE_SECURE=.*|SESSION_COOKIE_SECURE=1|" .env
     echo "  ⚠️  请编辑 $APP_DIR/.env 填入真实的 API Key 和 SECRET_KEY"
+    echo "  ✓ 已强制 SESSION_COOKIE_SECURE=1"
 fi
 
 echo "=== 6. 配置 systemd 服务 ==="

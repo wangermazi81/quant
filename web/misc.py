@@ -125,8 +125,11 @@ def api_backtest():
     if take_profit is None:
         return jsonify({"ok": False, "error": "invalid take_profit"}), 400
 
+    # 内置策略靠 sys.path 做兼容导入，豁免 AST 检查（与 strategy_manager.run 同口径）
+    is_builtin = bool((sm.get_meta(fn, user_id=uid) or {}).get("builtin"))
     bt_kwargs   = dict(
         strategy_code   = code_str,
+        is_builtin      = is_builtin,
         codes           = codes,
         start_date      = d.get("start_date", "2024-01-01"),
         end_date        = d.get("end_date",   "2024-12-31"),
