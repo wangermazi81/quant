@@ -81,8 +81,24 @@ def _empty_minute_kline() -> dict:
     return {"datetime": [], "open": [], "high": [], "low": [], "close": [], "volume": [], "amount": [], "is_complete": []}
 
 
+try:
+    from zoneinfo import ZoneInfo
+    _CN_TZ = ZoneInfo("Asia/Shanghai")
+except Exception:                       # pragma: no cover - 缺 tzdata 时退回本机时区
+    _CN_TZ = None
+
+
 def _now() -> datetime:
-    return datetime.now()
+    """当前的**上海挂钟时间**（naive，便于与既有裸 datetime 比较）。
+
+    原实现是裸 datetime.now()：一旦服务器时区不是 Asia/Shanghai（云端 ECS 默认
+    可能是 UTC），交易窗口判断、15:00 收盘终止、隔日信号过期会整体平移数小时——
+    实盘信号可能在错误时段生成或漏清。这里显式换算到上海时间再去掉 tzinfo，
+    下游所有 naive 比较逻辑不用改。
+    """
+    if _CN_TZ is None:
+        return datetime.now()
+    return datetime.now(_CN_TZ).replace(tzinfo=None)
 
 
 def _target_is_live_intraday(date: str | None = None) -> bool:
@@ -459,9 +475,20 @@ def get_order_book(code: str) -> dict:
 
 
 def is_trading_time() -> bool:
-    """判断是否在 A 股交易时间"""
+    """判断是否在 A 股交易时间（含法定休市日判断）。
+
+    此前只看「周中 + 时间段」，落在工作日的法定休市日照常被当成交易日：
+    调度器继续派发扫描 → 策略基于最后一个交易日的陈旧行情产生信号 →
+    模拟盘按陈旧价「成交」，today_trades / hold_days 全按错误口径累计。
+    """
     now = _now()
     if now.weekday() >= 5:
         return False
+    try:
+        from market import trading_calendar
+        if not trading_calendar.is_trading_day(now):
+            return False
+    except Exception as e:                  # 日历模块异常绝不能把交易全停掉
+        logger.debug(f"[market] 交易日历判断失败，按周中处理: {e}")
     t = now.hour * 100 + now.minute
     return (930 <= t <= 1130) or (1300 <= t <= 1500)

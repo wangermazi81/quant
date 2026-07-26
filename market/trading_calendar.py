@@ -1,0 +1,151 @@
+# -*- coding: utf-8 -*-
+"""A 股交易日历。
+
+为什么需要它：`is_trading_time()` 原来只判「周一到周五 + 时间段」，于是**落在
+工作日的法定休市日（国庆、春节、清明…）照常被当成交易日**：调度器继续派发扫描，
+策略基于最后一个交易日的陈旧行情产生信号，模拟盘按陈旧价「成交」，
+today_trades / hold_days 全按错误口径累计。
+
+设计上刻意保守：
+  - 日历数据是**可选增强**。文件缺失或不覆盖当年时，退回「周中即交易日」的原行为，
+    并只打一次 warning —— 不能因为拿不到日历就把交易全停了。
+  - 绝不内置硬编码的节假日表：A 股休市安排每年由交易所公布，写死一份猜测的日期
+    比没有日历更危险（可能在真交易日停机，或在休市日照常下单）。
+  - 刷新走 tushare trade_cal，由调度器每日调用一次，**不在 is_trading_time 的
+    热路径里发网络请求**（该函数在调度循环里每 30 秒被调用）。
+
+数据文件 data/trading_calendar.json 结构：
+    {"updated": "2026-07-26", "closed_days": {"2026": ["2026-10-01", ...]}}
+`closed_days` 只记「周中的休市日」，周末不必记（周末永不交易）。
+"""
+from __future__ import annotations
+
+import json
+import logging
+import threading
+from datetime import date, datetime
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+CALENDAR_FILE = Path(__file__).resolve().parent.parent / "data" / "trading_calendar.json"
+
+_lock = threading.Lock()
+_cache: dict | None = None
+_cache_sig: tuple | None = None
+_warned_years: set[str] = set()
+
+
+def _signature() -> tuple:
+    try:
+        st = CALENDAR_FILE.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (0, -1)
+
+
+def load() -> dict:
+    """读日历（带 mtime+size 指纹的进程内缓存）。"""
+    global _cache, _cache_sig
+    sig = _signature()
+    with _lock:
+        if _cache is not None and _cache_sig == sig:
+            return _cache
+        data: dict = {}
+        if CALENDAR_FILE.exists():
+            try:
+                loaded = json.loads(CALENDAR_FILE.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    data = loaded
+            except Exception as e:
+                logger.warning(f"[calendar] 交易日历读取失败，退回「周中即交易日」: {e}")
+        _cache, _cache_sig = data, sig
+        return data
+
+
+def closed_days(year: int | str) -> set[str] | None:
+    """某年的周中休市日集合；返回 None 表示该年无日历数据。"""
+    raw = (load().get("closed_days") or {}).get(str(year))
+    if not isinstance(raw, list):
+        return None
+    return {str(d).strip() for d in raw if str(d).strip()}
+
+
+def has_calendar(year: int | str) -> bool:
+    return closed_days(year) is not None
+
+
+def is_trading_day(d: date | datetime | None = None) -> bool:
+    """d 是否为 A 股交易日。无日历数据时退回「周中即交易日」。"""
+    if d is None:
+        d = date.today()
+    if isinstance(d, datetime):
+        d = d.date()
+    if d.weekday() >= 5:            # 周末永不交易，与日历无关
+        return False
+    holidays = closed_days(d.year)
+    if holidays is None:
+        year_key = str(d.year)
+        if year_key not in _warned_years:
+            _warned_years.add(year_key)
+            logger.warning(
+                "[calendar] 缺少 %s 年交易日历，暂按「周中即交易日」处理"
+                "（法定休市日会被误判为交易日）。可运行 tools/refresh_trading_calendar.py 拉取。",
+                year_key)
+        return True
+    return d.isoformat() not in holidays
+
+
+# ── 刷新（由调度器每日调用一次，不在热路径）──────────────────────
+def refresh_from_tushare(year: int | None = None) -> dict:
+    """用 tushare trade_cal 重建某年的休市日集合并落盘。
+
+    返回 {"ok": bool, "year": int, "closed": int, "msg": str}
+    """
+    target = int(year or date.today().year)
+    try:
+        from analytics import tushare_provider as tp
+        open_days = tp.fetch_trade_calendar(f"{target}0101", f"{target}1231")
+    except Exception as e:
+        return {"ok": False, "year": target, "closed": 0, "msg": f"拉取失败: {e}"}
+
+    if not open_days:
+        return {"ok": False, "year": target, "closed": 0, "msg": "trade_cal 返回空"}
+
+    open_set = {str(d) for d in open_days}
+    # 反推「周中但不开市」的日期 = 休市日
+    closed = []
+    cur = date(target, 1, 1)
+    end = date(target, 12, 31)
+    while cur <= end:
+        if cur.weekday() < 5 and cur.isoformat() not in open_set:
+            closed.append(cur.isoformat())
+        cur = date.fromordinal(cur.toordinal() + 1)
+
+    data = load().copy()
+    days = dict(data.get("closed_days") or {})
+    days[str(target)] = closed
+    data["closed_days"] = days
+    data["updated"] = date.today().isoformat()
+
+    CALENDAR_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CALENDAR_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(CALENDAR_FILE)          # 原子替换，避免读到写一半的文件
+
+    global _cache, _cache_sig
+    with _lock:
+        _cache, _cache_sig = None, None     # 失效缓存
+    logger.info(f"[calendar] {target} 年交易日历已更新：{len(closed)} 个周中休市日")
+    return {"ok": True, "year": target, "closed": len(closed), "msg": "ok"}
+
+
+def ensure_fresh() -> None:
+    """当年日历缺失时尝试补一次。供调度器启动/每日调用，失败不抛异常。"""
+    year = date.today().year
+    if has_calendar(year):
+        return
+    try:
+        refresh_from_tushare(year)
+    except Exception as e:
+        logger.warning(f"[calendar] 自动刷新失败（不影响运行）: {e}")

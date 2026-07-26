@@ -255,6 +255,16 @@ def start_user_trading_schedulers():
             return
         _trading_started = True
     _restore_all_user_states()
+    # 交易日历：缺当年数据时后台补一次。放线程里是因为要发网络请求，
+    # 绝不能拖慢启动，也绝不能放进 is_trading_time 的热路径（每 30s 调一次）。
+    def _warm_calendar():
+        try:
+            from market import trading_calendar
+            trading_calendar.ensure_fresh()
+        except Exception as _ce:
+            logger.warning(f"[calendar] 启动预热失败（退回「周中即交易日」）: {_ce}")
+
+    threading.Thread(target=_warm_calendar, daemon=True, name="calendar-warm").start()
     threading.Thread(target=run_scheduler, daemon=True).start()
     # Vibe Alpha 因子激活调度器（独立线程，每 60s 检查，5 分钟跑一次扫描）
     threading.Thread(target=run_vibe_scheduler, daemon=True, name="vibe-scheduler").start()

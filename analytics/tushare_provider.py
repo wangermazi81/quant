@@ -432,6 +432,37 @@ def _normalize_full_market_daily_frame(df: pd.DataFrame | None) -> pd.DataFrame:
     return data[columns].drop_duplicates(subset=["code", "date"], keep="last").reset_index(drop=True)
 
 
+def fetch_trade_calendar(
+    start_date: str,
+    end_date: str,
+    token: str | None = None,
+    mode: str | None = None,
+) -> list[str]:
+    """取区间内的 A 股**开市日**列表（YYYY-MM-DD）。供 market/trading_calendar 用。"""
+    resolved_mode = _mode(mode)
+    token = token or datasource_config.resolve_tushare_token(mode=resolved_mode)
+    if not token:
+        return []
+    rows = _replay_get(
+        "trade_cal",
+        token,
+        {
+            "exchange": "SSE",
+            "start_date": _date_text(start_date),
+            "end_date": _date_text(end_date),
+            "is_open": "1",
+        },
+    )
+    out = []
+    for row in rows or []:
+        raw = str(row.get("cal_date") or row.get("trade_date") or "").strip()
+        if len(raw) == 8 and raw.isdigit():
+            out.append(f"{raw[:4]}-{raw[4:6]}-{raw[6:]}")
+        elif len(raw) == 10:
+            out.append(raw)
+    return out
+
+
 def fetch_full_market_daily(
     trade_date: str,
     token: str | None = None,
