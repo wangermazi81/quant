@@ -42,7 +42,31 @@ BACKTEST_MAX_CODES = int(os.environ.get("BACKTEST_MAX_CODES", "800") or "800")
 logger   = logging.getLogger(__name__)
 
 # ── 异步回测任务注册表 ──────────────────────────────────
+# 只增不删会持续吃内存：每个 result 里带完整 equity_curve/trades/logs（MB 级），
+# 而云端 worker 常驻数周、systemd 又限了 MemoryMax=512M → 迟早 cgroup OOM-kill 重启
+#（表现同样是"重启才好"）。这里按「容量 + 存活时长」双上限淘汰已结束的任务。
 _bt_tasks: dict = {}   # task_id -> {status, progress, result, created}
+_BT_TASK_MAX      = int(os.environ.get("BACKTEST_TASK_MAX", "20") or "20")
+_BT_TASK_TTL_SEC  = float(os.environ.get("BACKTEST_TASK_TTL", "3600") or "3600")
+
+
+def _prune_bt_tasks() -> None:
+    """淘汰过期/超量的**已结束**任务；运行中的任务永不淘汰。"""
+    try:
+        now = _bt_time.time()
+        finished = [(tid, t) for tid, t in _bt_tasks.items()
+                    if t.get("status") != "running"]
+        for tid, t in finished:
+            if now - float(t.get("created") or 0) > _BT_TASK_TTL_SEC:
+                _bt_tasks.pop(tid, None)
+        finished = [(tid, t) for tid, t in _bt_tasks.items()
+                    if t.get("status") != "running"]
+        if len(finished) > _BT_TASK_MAX:
+            finished.sort(key=lambda kv: float(kv[1].get("created") or 0))
+            for tid, _ in finished[:len(finished) - _BT_TASK_MAX]:
+                _bt_tasks.pop(tid, None)
+    except Exception as e:
+        logger.warning(f"[backtest] 任务表清理失败（不影响本次回测）: {e}")
 
 
 # ══════════════════════════════════════════════════
@@ -810,6 +834,10 @@ def _load_strategy(code_str: str, is_builtin: bool = False):
         f.write(code_str)
         tmp = f.name
     try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    try:
         spec = importlib.util.spec_from_file_location("_bt_mod", tmp)
         mod  = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -827,16 +855,13 @@ def run_backtest(strategy_code: str, codes: list,
                  max_positions: int = 5,
                  stop_loss: float = -0.05,
                  take_profit: float = 0.10,
+                 is_builtin: bool = False,
                  _progress_fn=None,
                  _cancel_fn=None) -> dict:
     """
     Backtrader 风格回测入口。
     codes=[] → 全市场模式（本地CSV + TDX活跃前800只）
     _progress_fn(current, total, stage) → 供异步轮询使用
-    try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
     """
     logs = []
     Order._id_seq = 0   # 每次回测重置 ID 计数器
@@ -855,7 +880,6 @@ def run_backtest(strategy_code: str, codes: list,
             return {"ok": False, "error": "策略必须包含 scan() 函数", "logs": logs}
 
         full_market = not codes   # codes=[] → 全市场模式
-                 is_builtin: bool = False,
         logs.append({"level": "INFO",
                       "msg": f"策略加载成功，{'全市场' if full_market else f'{len(codes)}只'}回测模式，开始数据加载..."})
 
@@ -961,8 +985,10 @@ def start_backtest_async(strategy_code: str, codes: list,
                           max_positions: int = 5,
                           stop_loss: float = -0.05,
                           take_profit: float = 0.10,
+                          is_builtin: bool = False,
                           uid: int | None = None) -> str:
     """在后台线程运行回测，立即返回 task_id（前端轮询 /api/backtest/task/<task_id>）"""
+    _prune_bt_tasks()          # 新任务入表前先清理已结束的旧任务
     task_id = _bt_uuid.uuid4().hex
     _bt_tasks[task_id] = {
         "status":   "running",
@@ -985,13 +1011,13 @@ def start_backtest_async(strategy_code: str, codes: list,
             result = run_backtest(
                 strategy_code   = strategy_code,
                 codes           = codes,
-                          is_builtin: bool = False,
                 start_date      = start_date,
                 end_date        = end_date,
                 initial_capital = initial_capital,
                 max_positions   = max_positions,
                 stop_loss       = stop_loss,
                 take_profit     = take_profit,
+                is_builtin      = is_builtin,
                 _progress_fn    = _prog,
                 _cancel_fn      = _is_canceled,
             )
@@ -1017,7 +1043,6 @@ def start_backtest_async(strategy_code: str, codes: list,
 
     _bt_threading.Thread(target=_worker, daemon=True).start()
     return task_id
-                is_builtin      = is_builtin,
 
 
 def cancel_backtest_task(task_id: str) -> dict:

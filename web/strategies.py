@@ -7,6 +7,7 @@
 import json
 import logging
 import threading
+import time as _time
 import uuid as _uuid
 
 from flask import Blueprint, jsonify, request, session
@@ -22,8 +23,32 @@ bp = Blueprint("strategies", __name__)
 
 
 # 策略选股异步任务表（进程内，重启丢失）
-_strat_tasks: dict = {}            # task_id -> {status, result, error, ...}
+# 只增不删 → 每次全市场选股的 result 永久留在进程里，云端 worker 常驻数周必然膨胀。
+# 按「容量 + 存活时长」淘汰已结束的任务；运行中的永不淘汰。
+_strat_tasks: dict = {}            # task_id -> {status, result, error, created, ...}
 _strat_tasks_lock = threading.Lock()
+_STRAT_TASK_MAX     = 20
+_STRAT_TASK_TTL_SEC = 3600.0
+
+
+def _prune_strat_tasks_locked() -> None:
+    """调用方必须已持有 _strat_tasks_lock。"""
+    try:
+        now = _time.time()
+        done = [(tid, t) for tid, t in _strat_tasks.items()
+                if t.get("status") in ("done", "error")]
+        for tid, t in done:
+            if now - float(t.get("created") or 0) > _STRAT_TASK_TTL_SEC:
+                _strat_tasks.pop(tid, None)
+        done = [(tid, t) for tid, t in _strat_tasks.items()
+                if t.get("status") in ("done", "error")]
+        if len(done) > _STRAT_TASK_MAX:
+            done.sort(key=lambda kv: float(kv[1].get("created") or 0))
+            for tid, _ in done[:len(done) - _STRAT_TASK_MAX]:
+                _strat_tasks.pop(tid, None)
+    except Exception as e:
+        logger.warning(f"[strategies] 任务表清理失败: {e}")
+
 
 def _get_owned_strat_task(task_id: str, uid: int):
     with _strat_tasks_lock:
@@ -175,10 +200,12 @@ def api_run_async():
         return jsonify(err), 402
     task_id = _uuid.uuid4().hex
     with _strat_tasks_lock:
+        _prune_strat_tasks_locked()
         _strat_tasks[task_id] = {
             "status": "pending",
             "uid": uid,
             "fn": fn,
+            "created": _time.time(),
             "progress": {
                 "running": False,
                 "stage": "pending",

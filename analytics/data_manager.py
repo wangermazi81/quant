@@ -359,7 +359,8 @@ def merge_kline_cache(code: str, df: pd.DataFrame, update_metadata: bool = True)
                 "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
             })
             meta[code] = item
-            _save_meta(meta)
+            # 逐只股票的热路径：只标脏，按间隔合并落盘（见 _save_meta 上方注释）
+            _save_meta(meta, immediate=False)
         except Exception as e:
             logger.debug(f"[data] K线元数据写入失败（不影响本次返回）{code}: {e}")
 
@@ -1010,17 +1011,91 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
     return result
 
 
-def _load_meta() -> dict:
-    if META_FILE.exists():
-        try:
-            return json.loads(META_FILE.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.warning(f"[data] K线元数据文件损坏，回退空（将触发重新下载）: {e}")
-    return {}
+# ── K线元数据：进程内缓存 + 延迟原子落盘 ──────────────────────────
+# 背景：metadata.json 实测 858KB / 4000+ 条目，而 merge_kline_cache() 对**每只股票**
+# 都要「整份读 + 整份重写」。一轮 5000 只的全市场扫描 ≈ 数 GB 无谓磁盘 I/O，
+# 外加 4000+ 次 json.loads/dumps 在 GIL 内串行，直接抢占唯一 gunicorn worker 的 CPU。
+# 且 write_text 是非原子截断写、该路径无锁，并发扫描会把文件写残
+#（"元数据文件损坏，回退空"的自愈日志就是这么来的）。
+#
+# 现在：读走 mtime+size 校验的进程内缓存；写只标脏，按 _META_FLUSH_INTERVAL 合并落盘，
+# 落盘走 tempfile + os.replace 原子替换。批量任务结束/进程退出时强制 flush。
+# 元数据是缓存不是真相（真相是 data/daily/*.csv），极端情况下丢几条只会触发重新下载。
+_META_LOCK = threading.RLock()
+_META_CACHE: dict | None = None
+_META_STAMP = None          # 上次读/写时的 (mtime_ns, size)
+_META_DIRTY = False
+_META_LAST_FLUSH = 0.0
+_META_FLUSH_INTERVAL = 30.0
 
-def _save_meta(meta: dict):
+
+def _meta_stamp():
+    try:
+        st = META_FILE.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def _load_meta() -> dict:
+    global _META_CACHE, _META_STAMP
+    with _META_LOCK:
+        # 有未落盘的改动时以内存版为准（此时文件 stamp 必然对不上）
+        if _META_CACHE is not None and (_META_DIRTY or _meta_stamp() == _META_STAMP):
+            return _META_CACHE
+        data = {}
+        if META_FILE.exists():
+            try:
+                data = json.loads(META_FILE.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning(f"[data] K线元数据文件损坏，回退空（将触发重新下载）: {e}")
+                data = {}
+        _META_CACHE = data
+        _META_STAMP = _meta_stamp()
+        return _META_CACHE
+
+
+def _flush_meta_locked() -> None:
+    """把内存态原子写盘。调用方必须已持有 _META_LOCK。"""
+    global _META_STAMP, _META_DIRTY, _META_LAST_FLUSH
+    if _META_CACHE is None:
+        return
     META_FILE.parent.mkdir(parents=True, exist_ok=True)
-    META_FILE.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp = META_FILE.with_suffix(f".tmp{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(_META_CACHE, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, META_FILE)          # 原子替换，不会留下写残的半份文件
+        _META_STAMP = _meta_stamp()
+        _META_DIRTY = False
+    except Exception as e:
+        logger.warning(f"[data] K线元数据落盘失败（内存态保留，下次再试）: {e}")
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    finally:
+        _META_LAST_FLUSH = time.time()
+
+
+def flush_meta() -> None:
+    """强制把元数据落盘。批量下载/扫描结束时调用；进程退出时自动调用。"""
+    with _META_LOCK:
+        if _META_DIRTY:
+            _flush_meta_locked()
+
+
+def _save_meta(meta: dict, immediate: bool = True):
+    """更新元数据。immediate=False 只标脏并按间隔合并落盘（供逐只股票的热路径用）。"""
+    global _META_CACHE, _META_DIRTY
+    with _META_LOCK:
+        _META_CACHE = meta
+        _META_DIRTY = True
+        if immediate or (time.time() - _META_LAST_FLUSH) >= _META_FLUSH_INTERVAL:
+            _flush_meta_locked()
+
+
+import atexit as _atexit
+_atexit.register(flush_meta)
 
 
 # ── 股票名称缓存（全量，避免东方财富接口被代理拦截）────────
