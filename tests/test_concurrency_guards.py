@@ -6,6 +6,7 @@
 3-4 个标签就能把线程池吃干 → 所有请求排队到 300s 超时 → 「选股返回 0、重启才好」。
 """
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -91,6 +92,36 @@ class TestSseSlot:
             st = cc.sse_stats()
             assert st["total"] == 1
             assert st["global_limit"] == 12
+
+    def test_rejected_context_does_not_hold_stats_lock(self, monkeypatch):
+        monkeypatch.setattr(cc, "SSE_PER_USER_LIMIT", 1)
+        monkeypatch.setattr(cc, "SSE_GLOBAL_LIMIT", 99)
+        rejected_entered = threading.Event()
+        release_rejected = threading.Event()
+        stats_done = threading.Event()
+
+        def hold_rejected_context():
+            with cc.sse_slot("paper", 7) as granted:
+                assert granted is None
+                rejected_entered.set()
+                release_rejected.wait(2)
+
+        def read_stats():
+            cc.sse_stats()
+            stats_done.set()
+
+        with cc.sse_slot("paper", 7):
+            rejected_thread = threading.Thread(target=hold_rejected_context)
+            rejected_thread.start()
+            assert rejected_entered.wait(1)
+            stats_thread = threading.Thread(target=read_stats)
+            stats_thread.start()
+            try:
+                assert stats_done.wait(0.3), "拒绝路径仍持有 _sse_guard，统计接口被锁死"
+            finally:
+                release_rejected.set()
+                rejected_thread.join(2)
+                stats_thread.join(2)
 
     def test_deadline_is_in_the_future(self):
         import time

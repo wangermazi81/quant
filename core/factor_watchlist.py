@@ -16,12 +16,18 @@ import json
 import logging
 import os
 import re
+import tempfile
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 from web._params import _int_value
+
+
+_watchlist_guard = threading.RLock()
 
 
 def factor_mining_root() -> Path:
@@ -76,7 +82,7 @@ def enrich_watchlist_identity(raw: dict) -> dict:
     return item
 
 
-def load_factor_watchlist() -> dict:
+def _load_factor_watchlist_unlocked() -> dict:
     data = _read_json_file(factor_watchlist_path(), {})
     if not isinstance(data, dict):
         data = {}
@@ -87,11 +93,71 @@ def load_factor_watchlist() -> dict:
     }
 
 
-def save_factor_watchlist(data: dict) -> None:
+def _save_factor_watchlist_unlocked(data: dict) -> None:
     path = factor_watchlist_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+@contextmanager
+def _watchlist_file_lock():
+    lock_path = factor_watchlist_path().with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with _watchlist_guard:
+        with lock_path.open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def load_factor_watchlist() -> dict:
+    with _watchlist_file_lock():
+        return _load_factor_watchlist_unlocked()
+
+
+def save_factor_watchlist(data: dict) -> None:
+    with _watchlist_file_lock():
+        _save_factor_watchlist_unlocked(data)
+
+
+@contextmanager
+def factor_watchlist_transaction():
+    with _watchlist_file_lock():
+        data = _load_factor_watchlist_unlocked()
+        before = json.dumps(data, ensure_ascii=False, sort_keys=True)
+        yield data
+        after = json.dumps(data, ensure_ascii=False, sort_keys=True)
+        if after != before:
+            _save_factor_watchlist_unlocked(data)
 
 
 def clean_watchlist_json(value, limit: int = 12000):
@@ -203,20 +269,20 @@ def import_factor_candidates_to_watchlist(candidates: list, run_id: str | None =
     if not imported:
         return {"ok": False, "imported": 0, "total": len(load_factor_watchlist()["items"])}
 
-    data = load_factor_watchlist()
-    by_id = {str(item.get("id")): item for item in data["items"] if item.get("id")}
-    for item in imported:
-        previous = by_id.get(item["id"], {})
-        if previous.get("note") and not item.get("note"):
-            item["note"] = previous["note"]
-        if previous.get("status") and previous.get("status") != "pending":
-            item["status"] = previous["status"]
-        item["created_at"] = previous.get("created_at") or item["created_at"]
-        by_id[item["id"]] = item
-    data["items"] = list(by_id.values())
-    prune_factor_watchlist(data)          # ★ 写盘前裁剪，防止无限堆积
-    save_factor_watchlist(data)
-    return {"ok": True, "imported": len(imported), "total": len(data["items"]), "items": data["items"]}
+    with factor_watchlist_transaction() as data:
+        by_id = {str(item.get("id")): item for item in data["items"] if item.get("id")}
+        for item in imported:
+            previous = by_id.get(item["id"], {})
+            if previous.get("note") and not item.get("note"):
+                item["note"] = previous["note"]
+            if previous.get("status") and previous.get("status") != "pending":
+                item["status"] = previous["status"]
+            item["created_at"] = previous.get("created_at") or item["created_at"]
+            by_id[item["id"]] = item
+        data["items"] = list(by_id.values())
+        prune_factor_watchlist(data)          # ★ 写盘前裁剪，防止无限堆积
+        result = {"ok": True, "imported": len(imported), "total": len(data["items"]), "items": data["items"]}
+    return result
 
 
 def ai_trade_decision_path() -> Path:
@@ -314,29 +380,25 @@ def apply_ai_trade_decision_to_watchlist(decision: dict) -> None:
     results = decision.get("results") if isinstance(decision, dict) else None
     if not isinstance(results, list):
         return
-    data = load_factor_watchlist()
-    by_id = {str(item.get("id")): item for item in data["items"] if item.get("id")}
-    changed = False
-    for result in results:
-        if not isinstance(result, dict):
-            continue
-        source = result.get("source") if isinstance(result.get("source"), dict) else {}
-        wid = str(source.get("watchlist_id") or "")
-        item = by_id.get(wid)
-        if not item:
-            continue
-        action = str(result.get("action") or "")
-        if result.get("executed"):
-            item["status"] = "bought"
-        elif action == "BUY" and result.get("risk_ok"):
-            item["status"] = "ready"
-        elif action in {"HOLD", "SKIP"}:
-            item["status"] = "watch"
-        elif result.get("blocked"):
-            item["status"] = "skipped"
-        reason = result.get("reason") or result.get("blocked") or action
-        item["note"] = clean_watchlist_text(f"AI {action}: {reason}", 240)
-        item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        changed = True
-    if changed:
-        save_factor_watchlist(data)
+    with factor_watchlist_transaction() as data:
+        by_id = {str(item.get("id")): item for item in data["items"] if item.get("id")}
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            source = result.get("source") if isinstance(result.get("source"), dict) else {}
+            wid = str(source.get("watchlist_id") or "")
+            item = by_id.get(wid)
+            if not item:
+                continue
+            action = str(result.get("action") or "")
+            if result.get("executed"):
+                item["status"] = "bought"
+            elif action == "BUY" and result.get("risk_ok"):
+                item["status"] = "ready"
+            elif action in {"HOLD", "SKIP"}:
+                item["status"] = "watch"
+            elif result.get("blocked"):
+                item["status"] = "skipped"
+            reason = result.get("reason") or result.get("blocked") or action
+            item["note"] = clean_watchlist_text(f"AI {action}: {reason}", 240)
+            item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

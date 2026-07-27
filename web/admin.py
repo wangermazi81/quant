@@ -234,6 +234,7 @@ def _run_factor_mining_job(task_id: str, params: dict) -> None:
 _factor_watchlist_path = _fw.factor_watchlist_path
 _load_factor_watchlist = _fw.load_factor_watchlist
 _save_factor_watchlist = _fw.save_factor_watchlist
+_factor_watchlist_transaction = _fw.factor_watchlist_transaction
 _clean_watchlist_text = _fw.clean_watchlist_text
 _resolve_watchlist_name = _fw.resolve_watchlist_name
 _enrich_watchlist_identity = _fw.enrich_watchlist_identity
@@ -576,37 +577,36 @@ def admin_factor_watchlist_import():
 def admin_factor_watchlist_update(item_id):
     body = request.json or {}
     allowed_status = {"pending", "ready", "bought", "skipped", "watch"}
-    data = _load_factor_watchlist()
-    found = False
-    for item in data["items"]:
-        if str(item.get("id")) != item_id:
-            continue
-        found = True
-        if "status" in body:
-            status = _clean_watchlist_text(body.get("status"), 20)
-            if status not in allowed_status:
-                return jsonify({"ok": False, "error": "状态不合法"}), 400
-            item["status"] = status
-        if "note" in body:
-            item["note"] = _clean_watchlist_text(body.get("note"), 240)
-        item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        break
-    if not found:
-        return jsonify({"ok": False, "error": "候选标的不存在"}), 404
-    _save_factor_watchlist(data)
+    status = _clean_watchlist_text(body.get("status"), 20) if "status" in body else None
+    if status is not None and status not in allowed_status:
+        return jsonify({"ok": False, "error": "状态不合法"}), 400
+    with _factor_watchlist_transaction() as data:
+        found = False
+        for item in data["items"]:
+            if str(item.get("id")) != item_id:
+                continue
+            found = True
+            if status is not None:
+                item["status"] = status
+            if "note" in body:
+                item["note"] = _clean_watchlist_text(body.get("note"), 240)
+            item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            break
+        if not found:
+            return jsonify({"ok": False, "error": "候选标的不存在"}), 404
     return jsonify({"ok": True})
 
 
 @bp.route("/api/admin/factor-watchlist/<item_id>", methods=["DELETE"])
 @require_root_admin
 def admin_factor_watchlist_delete(item_id):
-    data = _load_factor_watchlist()
-    before = len(data["items"])
-    data["items"] = [item for item in data["items"] if str(item.get("id")) != item_id]
-    if len(data["items"]) == before:
-        return jsonify({"ok": False, "error": "候选标的不存在"}), 404
-    _save_factor_watchlist(data)
-    return jsonify({"ok": True, "total": len(data["items"])})
+    with _factor_watchlist_transaction() as data:
+        before = len(data["items"])
+        data["items"] = [item for item in data["items"] if str(item.get("id")) != item_id]
+        if len(data["items"]) == before:
+            return jsonify({"ok": False, "error": "候选标的不存在"}), 404
+        total = len(data["items"])
+    return jsonify({"ok": True, "total": total})
 
 
 @bp.route("/api/admin/ai-trade-decision/latest", methods=["GET"])

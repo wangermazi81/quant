@@ -112,19 +112,24 @@ def sse_slot(stream: str, uid: int):
     """占一个 SSE 名额。占不到时 yield None，调用方应立刻结束流。"""
     global _sse_total
     key = (stream, int(uid or 0))
+    rejected = None
     with _sse_guard:
         if _sse_total >= SSE_GLOBAL_LIMIT:
+            rejected = "global"
+        elif _sse_counts.get(key, 0) >= SSE_PER_USER_LIMIT:
+            rejected = "user"
+        else:
+            _sse_counts[key] = _sse_counts.get(key, 0) + 1
+            _sse_total += 1
+    if rejected:
+        if rejected == "global":
             logger.warning("[SSE] 全局连接数已达上限 %s，拒绝 %s uid=%s",
                            SSE_GLOBAL_LIMIT, stream, uid)
-            yield None
-            return
-        if _sse_counts.get(key, 0) >= SSE_PER_USER_LIMIT:
+        else:
             logger.info("[SSE] uid=%s 的 %s 连接数已达上限 %s，拒绝新连接",
                         uid, stream, SSE_PER_USER_LIMIT)
-            yield None
-            return
-        _sse_counts[key] = _sse_counts.get(key, 0) + 1
-        _sse_total += 1
+        yield None
+        return
     try:
         yield True
     finally:
