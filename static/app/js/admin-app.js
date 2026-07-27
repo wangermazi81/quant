@@ -1622,9 +1622,17 @@ function fmWatchPlanText(item){
 
 // 当前查看的交易日（空=后端给的最新一天）
 let FM_WATCH_DATE = '';
+// 只看可执行（live_readiness_status=ready）。市场弱势时 100 只候选可能只有几只能买，
+// 平铺看不出「明天到底买哪几只」。
+let FM_WATCH_READY_ONLY = false;
 
 function fmSwitchWatchDate(el){
   FM_WATCH_DATE = (el && el.value) || '';
+  return fmLoadWatchlist();
+}
+
+function fmToggleReadyOnly(){
+  FM_WATCH_READY_ONLY = !FM_WATCH_READY_ONLY;
   return fmLoadWatchlist();
 }
 
@@ -1633,7 +1641,10 @@ async function fmLoadWatchlist(){
   const updated = document.getElementById('fm-watch-updated');
   if(body) body.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr>';
   // 默认只看最新交易日：多跑几天会有几百条新旧混排，真正要盯的永远是最近一天
-  const qs = FM_WATCH_DATE ? `?date=${encodeURIComponent(FM_WATCH_DATE)}` : '';
+  const params = [];
+  if(FM_WATCH_DATE) params.push(`date=${encodeURIComponent(FM_WATCH_DATE)}`);
+  if(FM_WATCH_READY_ONLY) params.push('readiness=ready');
+  const qs = params.length ? `?${params.join('&')}` : '';
   const r = await _annFetch('GET', `/admin/factor-watchlist${qs}`);
   if(!r || !r.ok){
     const error = (r && r.error) || '加载失败';
@@ -1651,9 +1662,20 @@ async function fmLoadWatchlist(){
            ${dates.map(d=>`<option value="${esc(d)}" ${d===FM_WATCH_DATE?'selected':''}>${esc(d)}（${(r.counts_by_date||{})[d]||0}只）</option>`).join('')}
          </select>`
       : '';
+    const cr = r.counts_by_readiness || {};
+    const readyN = cr.ready || 0;
+    // 「今日可执行 N 只」是这张表最该被一眼看到的数字：市场弱势时 100 只候选
+    // 可能只有几只真能买，其余都是观察级。
+    const readyBadge = `<span style="margin-left:10px;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:700;
+        background:${readyN ? 'rgba(42,122,80,.12)' : 'rgba(148,163,184,.15)'};
+        color:${readyN ? '#2A7A50' : 'var(--text3)'}">可执行 ${readyN}</span>`
+      + `<span style="margin-left:6px;font-size:12px;color:var(--text3)">观察 ${cr.watch || 0} ｜ 回避 ${cr.avoid || 0}</span>`;
+    const readyBtn = `<button class="btn btn-outline" style="padding:3px 10px;font-size:12px;margin-left:8px"
+        data-ui-click="fmToggleReadyOnly()">${FM_WATCH_READY_ONLY ? '显示全部' : '只看可执行'}</button>`;
     updated.innerHTML = `${esc(r.selected_date || '')} 共 <b>${items.length}</b> 只`
       + (r.total_all && r.total_all !== items.length ? `　池内累计 ${r.total_all}` : '')
-      + (r.updated_at ? `　更新 ${esc(r.updated_at)}` : '')
+      + readyBadge + readyBtn
+      + (r.updated_at ? `<span style="margin-left:8px;font-size:12px;color:var(--text3)">更新 ${esc(r.updated_at)}</span>` : '')
       + picker;
   }
   if(!body) return;

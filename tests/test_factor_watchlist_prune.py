@@ -84,6 +84,39 @@ def test_import_prunes_before_saving(store):
     assert "2026-07-13" not in dates, "最旧的应被裁掉"
 
 
+def test_readiness_sort_puts_actionable_first():
+    """★可执行的必须排在最前。
+
+    市场弱势时 100 只候选可能只有 5 只 ready，而它们按 relay_score 排会散落在
+    #1/#10/#12/#26/#32 —— 用户得人肉翻找「明天到底买哪几只」。
+    这里直接验后台用的排序键。
+    """
+    import web.admin as admin
+
+    rows = [
+        {"trade_date": "2026-07-24", "candidate_rank": 1, "code": "600001",
+         "live_readiness_status": "watch"},
+        {"trade_date": "2026-07-24", "candidate_rank": 32, "code": "600032",
+         "live_readiness_status": "ready"},
+        {"trade_date": "2026-07-24", "candidate_rank": 4, "code": "600004",
+         "live_readiness_status": "avoid"},
+        {"trade_date": "2026-07-24", "candidate_rank": 10, "code": "600010",
+         "live_readiness_status": "ready"},
+    ]
+    order = {"ready": 2, "watch": 1, "avoid": 0}
+
+    def key(item):
+        return (str(item.get("trade_date") or ""),
+                order.get(str(item.get("live_readiness_status") or ""), 0),
+                -int(item.get("candidate_rank") or 999999),
+                str(item.get("code") or ""))
+
+    got = [i["code"] for i in sorted(rows, key=key, reverse=True)]
+    # ready 两只（rank 10 在前，32 在后）→ watch → avoid
+    assert got == ["600010", "600032", "600001", "600004"], got
+    assert admin._READY_ORDER == order, "后台排序权重被改动，请同步本用例"
+
+
 def test_import_preserves_manual_note_and_status(store):
     """重复导入同一只票时，人工备注与已改状态不能被覆盖回 pending。"""
     fw.import_factor_candidates_to_watchlist([_cand("600123", "2026-07-24")], run_id="r1")

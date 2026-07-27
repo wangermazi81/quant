@@ -485,6 +485,13 @@ def admin_factor_mining_run():
     return jsonify({"ok": True, "found": True, "reused": False, **_factor_mining_job_snapshot(task)}), 202
 
 
+# 可执行性排序权重：ready > watch > avoid。
+# 市场弱势时（如 2026-07-24，情绪<50、状态门未通过）100 只候选里可能只有 5 只
+# 是 ready，而它们按 relay_score 排会散落在 #1/#10/#12/#26/#32 —— 用户得人肉翻找。
+# 后台真正要回答的问题是「明天能买哪几只」，所以先按可执行性分组，再按原排名。
+_READY_ORDER = {"ready": 2, "watch": 1, "avoid": 0}
+
+
 @bp.route("/api/admin/factor-watchlist", methods=["GET"])
 @require_root_admin
 def admin_factor_watchlist_get():
@@ -499,6 +506,7 @@ def admin_factor_watchlist_get():
 
     def _sort_key(item):
         return (str(item.get("trade_date") or ""),
+                _READY_ORDER.get(str(item.get("live_readiness_status") or ""), 0),
                 -int(item.get("candidate_rank") or 999999),
                 str(item.get("code") or ""))
 
@@ -519,6 +527,16 @@ def admin_factor_watchlist_get():
         selected = want_date if want_date in dates else (dates[0] if dates else "")
         items = [i for i in all_items if str(i.get("trade_date") or "") == selected] if selected else all_items
 
+    # 当日可执行性分布（前端用来显示「今日 N 只可执行」并支持一键只看可执行）
+    counts_by_readiness = {}
+    for i in items:
+        key = str(i.get("live_readiness_status") or "unknown")
+        counts_by_readiness[key] = counts_by_readiness.get(key, 0) + 1
+
+    want_readiness = _clean_watchlist_text(request.args.get("readiness"), 12)
+    if want_readiness:
+        items = [i for i in items if str(i.get("live_readiness_status") or "") == want_readiness]
+
     items = sorted(items, key=_sort_key, reverse=True)
     return jsonify({
         "ok": True,
@@ -529,6 +547,8 @@ def admin_factor_watchlist_get():
         "total_all": len(all_items),
         "counts_by_date": counts_by_date,
         "counts_by_status": counts_by_status,
+        "counts_by_readiness": counts_by_readiness,
+        "readiness_filter": want_readiness,
     })
 
 
