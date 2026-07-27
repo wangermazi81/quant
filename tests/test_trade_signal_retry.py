@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
-def test_get_pending_signals_requeues_stale_sent(tmp_path, monkeypatch):
+def test_get_pending_signals_does_not_requeue_stale_sent(tmp_path, monkeypatch):
     from core import db_migration as dbm
     from core import user_manager as um
 
@@ -28,12 +28,12 @@ def test_get_pending_signals_requeues_stale_sent(tmp_path, monkeypatch):
 
     signals = um.get_pending_signals(uid)
 
-    assert [s["id"] for s in signals] == [stale_id]
+    assert signals == []
     assert um.get_trade_signal(stale_id)["status"] == "sent"
     assert um.get_trade_signal(fresh_id)["status"] == "sent"
 
 
-def test_restore_stale_sent_signals_keeps_submitted(tmp_path, monkeypatch):
+def test_restore_stale_sent_signals_requires_broker_reconciliation(tmp_path, monkeypatch):
     from core import db_migration as dbm
     from core import user_manager as um
 
@@ -52,6 +52,13 @@ def test_restore_stale_sent_signals_keeps_submitted(tmp_path, monkeypatch):
             (stale_sent, submitted),
         )
 
-    assert um.restore_stale_sent_signals(uid, older_than_sec=120) == 1
+    assert um.restore_stale_sent_signals(uid, older_than_sec=120) == 0
+    assert um.get_trade_signal(stale_sent)["status"] == "sent"
+
+    assert um.restore_stale_sent_signals(
+        uid,
+        older_than_sec=120,
+        confirmed_not_submitted=True,
+    ) == 1
     assert um.get_trade_signal(stale_sent)["status"] == "pending"
     assert um.get_trade_signal(submitted)["status"] == "submitted"

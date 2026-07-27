@@ -224,13 +224,31 @@ class TestConfirmRechecksRisk:
         eng, _ = _engine(monkeypatch, mode="live")
         self._prep(monkeypatch, eng)
         executed = []
-        monkeypatch.setattr(eng, "_execute", lambda *a, **k: executed.append(a))
+        monkeypatch.setattr(
+            eng,
+            "_execute",
+            lambda *a, **k: executed.append(a) or {"ok": True, "msg": "queued", "signal_id": 81},
+        )
 
         eng.pending["p1"] = _buy()
         r = eng.confirm("p1", approve=True)
 
         assert r["ok"] is True
         assert len(executed) == 1
+        assert r["signal_id"] == 81
+
+
+    def test_confirm_preserves_pending_when_execution_fails(self, monkeypatch):
+        eng, _ = _engine(monkeypatch, mode="live")
+        self._prep(monkeypatch, eng)
+        monkeypatch.setattr(eng, "_execute", lambda *a, **k: {"ok": False, "msg": "queue write failed"})
+
+        decision = _buy()
+        eng.pending["p1"] = decision
+        r = eng.confirm("p1", approve=True)
+
+        assert r == {"ok": False, "msg": "queue write failed"}
+        assert eng.pending["p1"] is decision
 
     def test_reject_never_executes(self, monkeypatch):
         eng, _ = _engine(monkeypatch, mode="live")

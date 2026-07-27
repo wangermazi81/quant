@@ -29,7 +29,7 @@ def test_live_execute_buy_clamps_signal_shares_before_bridge_queue(monkeypatch):
     monkeypatch.setattr(
         trade_service.um,
         "add_trade_signal",
-        lambda user_id, code, name, action, price, shares: captured.setdefault("args", (user_id, code, name, action, price, shares)) or 123,
+        lambda user_id, code, name, action, price, shares: (captured.setdefault("args", (user_id, code, name, action, price, shares)), 123)[1],
     )
 
     result = trade_service.execute_buy(uid, "600519", "贵州茅台", 10.0, 15600, reason="测试")
@@ -61,6 +61,25 @@ def test_live_execute_buy_rejects_signal_when_budget_below_one_lot(monkeypatch):
 
     assert result["ok"] is False
     assert calls == []
+
+
+def test_live_execute_buy_reports_duplicate_signal(monkeypatch):
+    uid = 91003
+    state = get_user_state(uid)
+    state["position_ratio"] = 0.50
+    state["single_position_max_ratio"] = 0.10
+
+    monkeypatch.setattr(trade_service, "DRY_RUN", False)
+    monkeypatch.setattr(
+        trade_service.um,
+        "get_user_broker_config",
+        lambda user_id: {"broker_type": "live", "config": {"live_cash": 20000}},
+    )
+    monkeypatch.setattr(trade_service.um, "add_trade_signal", lambda *args: -1)
+
+    result = trade_service.execute_buy(uid, "600519", "Test", 10.0, 100, reason="test")
+
+    assert result == {"ok": False, "msg": "\u4eca\u65e5\u5df2\u6709\u540c\u65b9\u5411\u672a\u5b8c\u6210\u4fe1\u53f7"}
 
 
 class FakeMobileAccountOperator:

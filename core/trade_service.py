@@ -141,6 +141,9 @@ def execute_buy(uid: int, code: str, name: str, price: float, shares: int,
         if safe_shares != int(shares):
             _add_log(uid, f"🛡 实盘买入夹仓: {code} {name} {shares}->{safe_shares}股 @{price:.2f}；{sizing_msg}", "info")
         signal_id = um.add_trade_signal(uid, code, name, "BUY", price, safe_shares)
+        if signal_id < 0:
+            _add_log(uid, f"⏭ 实盘买入信号去重: {code} {name}", "info")
+            return {"ok": False, "msg": "今日已有同方向未完成信号"}
         _add_log(uid, f"⏳ 实盘买入信号已发送队列: {code} {name} {safe_shares}股 @{price:.2f}", "info")
         return {"ok": True, "msg": "已生成实盘买入信号，等待本地执行...", "signal_id": signal_id, "shares": safe_shares}
 
@@ -189,6 +192,9 @@ def execute_sell(uid: int, code: str, price: float, sell_reason: str = "手动�
         if shares <= 0:
             return {"ok": False, "msg": "无持仓"}
         signal_id = um.add_trade_signal(uid, code, name, "SELL", price, shares)
+        if signal_id < 0:
+            _add_log(uid, f"⏭ 实盘卖出信号去重: {code} {name}", "info")
+            return {"ok": False, "msg": "今日已有同方向未完成信号"}
         _add_log(uid, f"⏳ 实盘卖出信号已发送队列: {code} {name} {shares}股 @{price:.2f}", "info")
         return {"ok": True, "msg": "已生成实盘卖出信号，等待本地执行...", "signal_id": signal_id}
 

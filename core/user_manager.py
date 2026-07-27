@@ -1394,12 +1394,15 @@ def cancel_pending_signals(user_id: int = None) -> int:
         return cur.rowcount
 
 
-def restore_stale_sent_signals(user_id: int = None, older_than_sec: int = 120) -> int:
-    """把当天长时间停在 sent 的信号退回 pending。
+def restore_stale_sent_signals(user_id: int = None, older_than_sec: int = 120,
+                               confirmed_not_submitted: bool = False) -> int:
+    """经券商对账确认未提交后，把当天超时 sent 信号退回 pending。
 
-    sent 只表示桥接器已取走信号；如果桥接器取走后崩溃、手机配置炸、ADB 掉线，
-    信号会卡在 sent，不再下发。submitted/executed/failed 不在这里处理。
+    默认保持 sent，避免柜台已受理但云端回报丢失时重复下单。只有调用方完成
+    券商委托对账并明确传入 confirmed_not_submitted=True，才允许重新排队。
     """
+    if not confirmed_not_submitted:
+        return 0
     try:
         seconds = max(30, int(older_than_sec))
     except (TypeError, ValueError):
@@ -1407,7 +1410,7 @@ def restore_stale_sent_signals(user_id: int = None, older_than_sec: int = 120) -
     with _lock, _conn() as c:
         sql = (
             "UPDATE trade_signals SET status='pending', "
-            "msg=CASE WHEN COALESCE(msg,'')='' THEN '桥接器超时未回报，已重新排队' ELSE msg END, "
+            "msg='券商对账确认未提交，已重新排队', "
             "updated_at=datetime('now','localtime') "
             "WHERE status='sent' "
             "AND date(created_at) = date('now','localtime') "
@@ -1450,15 +1453,6 @@ def get_pending_signals(user_id: int, limit: int = None) -> list:
     """拉取用户当天处于 pending 状态的实盘信号，并原子性地标记为 sent 防止重复拉取。
     只发当天的：隔日遗留信号价格已失效，绝不能补发给交易机执行。"""
     with _lock, _conn() as c:
-        c.execute(
-            "UPDATE trade_signals SET status='pending', "
-            "msg=CASE WHEN COALESCE(msg,'')='' THEN '桥接器超时未回报，已重新排队' ELSE msg END, "
-            "updated_at=datetime('now','localtime') "
-            "WHERE user_id=? AND status='sent' "
-            "AND date(created_at) = date('now','localtime') "
-            "AND datetime(updated_at) <= datetime('now','localtime', '-120 seconds')",
-            (user_id,),
-        )
         sql = (
             "SELECT * FROM trade_signals WHERE user_id=? AND status='pending' "
             "AND date(created_at) = date('now','localtime') ORDER BY id"

@@ -11,6 +11,7 @@ import time
 import secrets
 import json
 import logging
+import sqlite3
 import importlib
 import requests
 from pathlib import Path
@@ -68,7 +69,8 @@ DEFAULT_CONFIG = {
     "max_order_amount": 50000.0,
     "use_mobile_available_cash": True,
     "bridge_user_id": 1,
-    "bridge_token": ""
+    "bridge_token": "",
+    "execution_state_path": "logs/bridge_execution_state.db",
 }
 
 
@@ -147,6 +149,9 @@ class CloudLocalBridge:
         self.session_cookie = (self.config.get("session_cookie") or "").strip()
         self.session_cookie_name = self.config.get("session_cookie_name") or "session"
         self.poll_interval = float(self.config["poll_interval_sec"])
+        self.execution_state_path = _config_path(
+            self.config.get("execution_state_path", "logs/bridge_execution_state.db")
+        )
         
         self.session = requests.Session()
         if self.bridge_token:
@@ -317,6 +322,57 @@ class CloudLocalBridge:
             return safe, f"单笔金额护栏夹仓到 {safe}股"
         return safe, ""
 
+    def _execution_conn(self):
+        path = Path(self.execution_state_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path, timeout=10)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS bridge_executions ("
+            "signal_id INTEGER PRIMARY KEY, "
+            "status TEXT NOT NULL, "
+            "msg TEXT NOT NULL, "
+            "exec_price REAL, "
+            "manual_confirm INTEGER NOT NULL DEFAULT 0, "
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+        return conn
+
+    def _load_execution_result(self, signal_id: int):
+        with self._execution_conn() as conn:
+            row = conn.execute(
+                "SELECT status, msg, exec_price, manual_confirm "
+                "FROM bridge_executions WHERE signal_id=?",
+                (int(signal_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def _save_execution_result(self, signal_id: int, status: str, msg: str,
+                               exec_price=None, manual_confirm: bool = False):
+        with self._execution_conn() as conn:
+            conn.execute(
+                "INSERT INTO bridge_executions "
+                "(signal_id, status, msg, exec_price, manual_confirm, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(signal_id) DO UPDATE SET "
+                "status=excluded.status, msg=excluded.msg, "
+                "exec_price=excluded.exec_price, manual_confirm=excluded.manual_confirm, "
+                "updated_at=CURRENT_TIMESTAMP",
+                (int(signal_id), str(status), str(msg), exec_price, int(bool(manual_confirm))),
+            )
+
+    def _replay_execution_result(self, signal_id: int, saved: dict):
+        status = saved["status"]
+        msg = saved["msg"]
+        exec_price = saved.get("exec_price")
+        manual_confirm = bool(saved.get("manual_confirm"))
+        if status == "executing":
+            status = "submitted"
+            msg = "本地执行中断，需券商对账确认最终状态"
+            self._save_execution_result(signal_id, status, msg, exec_price, manual_confirm)
+        self.report_result(signal_id, status, msg, exec_price=exec_price)
+        return {"status": status, "manual_confirm": manual_confirm,
+                "signal_id": signal_id, "msg": msg}
     def execute_signal(self, signal: dict):
         """在本地同花顺上执行交易信号"""
         sig_id = signal["id"]
@@ -325,6 +381,10 @@ class CloudLocalBridge:
         action = signal["action"]
         price = signal["price"]
         shares = signal["shares"]
+
+        saved = self._load_execution_result(sig_id)
+        if saved:
+            return self._replay_execution_result(sig_id, saved)
         
         logger.info(f"🔔 抓取到新实盘交易信号: ID={sig_id} | {action} | {code} ({name}) | {shares}股 @{price:.2f}")
 
@@ -334,10 +394,12 @@ class CloudLocalBridge:
             if not self.is_connected_ths or self.operator is None:
                 logger.error("❌ 本地未检测到正常运行的同花顺，拒绝执行并汇报失败")
                 self.report_result(sig_id, "failed", "本地未启动或无法连接同花顺客户端")
+                self._save_execution_result(sig_id, "failed", "本地未启动或无法连接同花顺客户端")
                 return
 
         # 执行下单 — operator.buy/sell 现在返回 dict 而非 bool
         logger.info(f"🛠 正在唤起同花顺界面执行 {action} 操作...")
+        self._save_execution_result(sig_id, "executing", "已开始调用本地交易执行器")
         before_shares = 0
         try:
             if hasattr(self.operator, "get_positions"):
@@ -357,6 +419,7 @@ class CloudLocalBridge:
                 if safe_shares <= 0:
                     logger.error(f"❌ 实盘 BUY 拒单: {cash_msg}")
                     self.report_result(sig_id, "failed", cash_msg)
+                    self._save_execution_result(sig_id, "failed", cash_msg)
                     return
                 if safe_shares != int(shares):
                     logger.info(f"🛡 {cash_msg}")
@@ -414,10 +477,13 @@ class CloudLocalBridge:
             logger.info(f"{icon} 实盘 {action} 结果: status={status} | {msg}"
                         + (f" | 成交均价={exec_px}" if exec_px else " | 未读到成交价(按信号价记账)"))
             self.report_result(sig_id, status, msg, exec_price=exec_px)
+            self._save_execution_result(sig_id, status, msg, exec_px, manual_confirm)
             return {"status": status, "manual_confirm": manual_confirm, "signal_id": sig_id, "msg": msg}
         except Exception as e:
             logger.error(f"❌ 本地执行下单发生异常: {e}")
-            self.report_result(sig_id, "failed", f"本地发生执行异常: {str(e)}")
+            msg = f"本地执行异常，需券商对账: {str(e)}"
+            self._save_execution_result(sig_id, "submitted", msg)
+            self.report_result(sig_id, "submitted", msg)
 
     def run(self):
         """主轮询循环"""

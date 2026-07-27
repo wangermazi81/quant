@@ -1468,24 +1468,28 @@ class _Engine:
         }
 
     def confirm(self, pid: str, approve: bool) -> dict:
-        d = self.pending.pop(pid, None)
+        d = self.pending.get(pid)
         if not d:
             return {"ok": False, "msg": "该待确认已失效"}
         st = load_settings(self.uid)
         if approve:
-            # ★ 确认时必须**重新过一遍风控**：这条待确认是生成时通过的，
-            #   而从生成到用户点确认之间可能已经过了很久 —— 现金被别处花掉、
-            #   这只票已经买过、当日交易已达上限、行情数据降级……
-            #   这是实盘路径（真金白银），拿一份过期的放行结论去下单不可接受。
+            # 确认时重新过风控，避免使用生成信号时的过期账户状态。
             ok, why = self._risk_gate(d, st)
             if not ok:
+                self.pending.pop(pid, None)
                 self._log(f"🛡️ 确认时风控拦截 {d['code']} {d['action']}：{why}", "warn")
                 self._push("ai_pending_resolved",
                            {"id": pid, "approved": False, "blocked": why})
                 return {"ok": False, "msg": f"风控拦截：{why}"}
-            self._execute(d, st, source="confirmed")
+            result = self._execute(d, st, source="confirmed")
+            if not isinstance(result, dict):
+                result = {"ok": False, "msg": "执行器未返回结果"}
+            if not result.get("ok"):
+                return result
+            self.pending.pop(pid, None)
             self._push("ai_pending_resolved", {"id": pid, "approved": True})
-            return {"ok": True, "msg": "已确认执行"}
+            return result
+        self.pending.pop(pid, None)
         self._log(f"🚫 已拒绝 AI {d['action']} {d['code']}", "warn")
         self._push("ai_pending_resolved", {"id": pid, "approved": False})
         return {"ok": True, "msg": "已拒绝"}
