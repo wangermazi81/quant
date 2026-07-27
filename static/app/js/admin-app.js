@@ -1359,13 +1359,15 @@ const FM_DEFAULT_RULES = {
   weights: {ret_5:0.18, ret_10:0.12, ret_20:0.12, volume_ratio_20:0.16, amount_ratio_20:0.10, near_high_20:0.16, limit_count_20:0.10, volatility_10:-0.08, overheat_ret_3:-0.08},
   risk_thresholds: {overextended_3d:0.24, high_volatility:0.08, weak_volume:0.75, deep_drawdown:-0.18},
   tier_thresholds: {strong_percentile:0.97, watch_percentile:0.90, strong_requires_no_risk:true},
-  filters: {min_relay_score:null, min_volume_ratio_20:null, min_near_high_20:null, exclude_high_risk:false}
+  filters: {min_relay_score:null, min_volume_ratio_20:null, min_near_high_20:null, exclude_high_risk:false},
+  market_gate: {enabled:true, emo_min:20, emo_max:70, require_cooling:true}
 };
 
 const FM_RULE_LABELS = {
   ret_5:'5日动量', ret_10:'10日动量', ret_20:'20日动量', volume_ratio_20:'20日量比', amount_ratio_20:'20日额比', near_high_20:'接近20日高点', limit_count_20:'20日涨停次数', volatility_10:'10日波动惩罚', overheat_ret_3:'3日过热惩罚',
   overextended_3d:'3日涨幅过热', high_volatility:'10日高波动', weak_volume:'弱量阈值', deep_drawdown:'20日深回撤',
-  strong_percentile:'强候选分位', watch_percentile:'观察分位', min_relay_score:'最低评分', min_volume_ratio_20:'最低量比', min_near_high_20:'最低接近高点'
+  strong_percentile:'强候选分位', watch_percentile:'观察分位', min_relay_score:'最低评分', min_volume_ratio_20:'最低量比', min_near_high_20:'最低接近高点',
+  emo_min:'情绪下限(含)', emo_max:'情绪上限(不含)'
 };
 
 function fmCloneRules(rules){ return JSON.parse(JSON.stringify(rules || FM_DEFAULT_RULES)); }
@@ -1388,6 +1390,14 @@ function fmRenderRuleEditor(rules){
   const excludeRisk = document.getElementById('fm-filter-exclude-risk');
   if(strongNoRisk) strongNoRisk.checked = (next.tier_thresholds || {}).strong_requires_no_risk !== false;
   if(excludeRisk) excludeRisk.checked = !!((next.filters || {}).exclude_high_risk);
+  // 市场状态门
+  const gate = next.market_gate || FM_DEFAULT_RULES.market_gate;
+  const gateBox = document.getElementById('fm-rule-gate');
+  if(gateBox) gateBox.innerHTML = ['emo_min','emo_max'].map(k=>fmRuleNumber('market_gate', k, gate[k], '1')).join('');
+  const gateEnabled = document.getElementById('fm-gate-enabled');
+  const gateCooling = document.getElementById('fm-gate-cooling');
+  if(gateEnabled) gateEnabled.checked = gate.enabled !== false;
+  if(gateCooling) gateCooling.checked = gate.require_cooling !== false;
 }
 
 function fmReadRuleFloat(group, key){
@@ -1405,6 +1415,9 @@ function fmReadMiningRules(){
   ['min_relay_score','min_volume_ratio_20','min_near_high_20'].forEach(k=>{ rules.filters[k]=fmReadRuleFloat('filters', k); });
   rules.tier_thresholds.strong_requires_no_risk = !!document.getElementById('fm-rule-strong-no-risk')?.checked;
   rules.filters.exclude_high_risk = !!document.getElementById('fm-filter-exclude-risk')?.checked;
+  ['emo_min','emo_max'].forEach(k=>{ const v=fmReadRuleFloat('market_gate', k); if(v!==null) rules.market_gate[k]=v; });
+  rules.market_gate.enabled = !!document.getElementById('fm-gate-enabled')?.checked;
+  rules.market_gate.require_cooling = !!document.getElementById('fm-gate-cooling')?.checked;
   return rules;
 }
 
@@ -1425,7 +1438,46 @@ function fmRenderRuleExplain(report){
     <div><b>风险阈值：</b>${Object.entries(rules.risk_thresholds || {}).map(([k,v])=>`${FM_RULE_LABELS[k] || k}=${v}`).join('，')}</div>
     <div><b>分层：</b>强候选≥${(rules.tier_thresholds || {}).strong_percentile}，观察≥${(rules.tier_thresholds || {}).watch_percentile}，强候选无风险=${(rules.tier_thresholds || {}).strong_requires_no_risk !== false ? '是' : '否'}</div>
     <div><b>过滤：</b>${activeFilters.length ? activeFilters.join('，') : '未启用额外过滤'}</div>
+    <div><b>状态门：</b>${(rules.market_gate || {}).enabled !== false
+      ? `情绪带 [${(rules.market_gate || {}).emo_min ?? 20}, ${(rules.market_gate || {}).emo_max ?? 70})${(rules.market_gate || {}).require_cooling !== false ? '，且要求降温/持平进场' : ''}（回测输出 门前/门后 双轨对照）`
+      : '未启用（每个测试日都进场）'}</div>
     ${explain.length ? `<div style="margin-top:4px"><b>引擎说明：</b>${explain.map(esc).join('；')}</div>` : ''}`;
+}
+
+// 今日市场状态门横幅 + 门轨指标卡
+function fmRenderGate(report){
+  const banner = document.getElementById('fm-gate-banner');
+  const summary = (report && report.summary) || {};
+  const gate = summary.gate_today || null;
+  if(banner){
+    if(!gate || !gate.enabled){
+      banner.style.display = 'none';
+    } else {
+      const pass = !!gate.pass;
+      banner.style.display = 'block';
+      banner.style.background = pass ? 'rgba(103,194,58,.09)' : 'rgba(230,162,60,.10)';
+      banner.style.borderColor = pass ? 'rgba(103,194,58,.45)' : 'rgba(230,162,60,.5)';
+      const emo = (gate.emotion===null||gate.emotion===undefined) ? '—' : Number(gate.emotion).toFixed(1);
+      const delta = (gate.emotion_delta===null||gate.emotion_delta===undefined) ? '—'
+        : (gate.emotion_delta>0?'+':'') + Number(gate.emotion_delta).toFixed(1);
+      banner.innerHTML = `<b style="color:${pass?'var(--green)':'var(--orange)'}">${pass?'🟢 今日通过市场状态门':'🟡 今日未过市场状态门 — 建议观望'}</b>
+        &nbsp;市场情绪 <b>${emo}</b>（较前日 ${delta}）｜ ${esc(gate.reason_cn || gate.reason || '')}
+        ${!pass ? '<br>候选已全体降级（strong→watch→observe）并标记 <b>market_gate_blocked</b>；历史归因显示不过门日子接力胜率显著偏低。' : ''}
+        ${summary.gate_note ? `<div style="margin-top:4px;font-size:11px;color:var(--text3)">${esc(summary.gate_note)}</div>` : ''}`;
+    }
+  }
+  const gatedVal = document.getElementById('fm-gated-return');
+  const gatedSub = document.getElementById('fm-gated-sub');
+  if(gatedVal){
+    if(summary.market_gate_applied){
+      gatedVal.textContent = fmPctText(summary.gated_live_total_return_pct ?? summary.gated_total_return_pct);
+      if(gatedSub) gatedSub.textContent =
+        `门后 ${fmNumText(summary.gated_trade_count)} 天(跳过 ${fmNumText(summary.gated_skipped_days)}) 胜率 ${fmRateText(summary.gated_live_hit_rate ?? summary.gated_hit_rate)} ｜ 门前 ${fmPctText(summary.live_total_return_pct ?? summary.total_return_pct)}`;
+    } else {
+      gatedVal.textContent = '—';
+      if(gatedSub) gatedSub.textContent = summary.market_gate_note || '门未启用';
+    }
+  }
 }
 
 async function loadFactorMining(){
@@ -1473,6 +1525,7 @@ function renderFactorMining(r){
     if(candidateBody) candidateBody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">暂无候选</td></tr>';
     if(windowBody) windowBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text3)">暂无窗口结果</td></tr>';
     fmRenderRuleExplain({mining_rules:FM_DEFAULT_RULES, condition_explain:[]});
+    fmRenderGate(null);
     return;
   }
 
@@ -1502,6 +1555,7 @@ function renderFactorMining(r){
   fmSetText('fm-trades', `实盘样本 ${fmNumText(summary.live_trade_count ?? summary.trade_count)} / 原始 ${fmNumText(summary.trade_count)} / 候选 ${fmNumText(summary.latest_candidate_count || candidates.length)}`);
   fmSetText('fm-total-return', fmPctText(liveTotalReturn));
   fmSetText('fm-drawdown', `实盘回撤 ${fmPctText(liveDrawdown)} / 原始 ${fmPctText(summary.raw_max_drawdown_pct ?? summary.max_drawdown_pct)}`);
+  fmRenderGate(report);
   if(msg){
     msg.style.color = report.status === 'ok' ? 'var(--green)' : 'var(--orange)';
     const liveMsg = blockRate!==null && blockRate!==undefined ? `；执行过滤 ${fmRateText(blockRate)}` : '';
@@ -1566,11 +1620,21 @@ function fmWatchPlanText(item){
   return `仓位 ${fmRateText(item.position_pct)} / 止损 ${fmRateText(item.stop_loss)} / 止盈 ${fmRateText(item.take_profit)} / 持有 ${hold}`;
 }
 
+// 当前查看的交易日（空=后端给的最新一天）
+let FM_WATCH_DATE = '';
+
+function fmSwitchWatchDate(el){
+  FM_WATCH_DATE = (el && el.value) || '';
+  return fmLoadWatchlist();
+}
+
 async function fmLoadWatchlist(){
   const body = document.getElementById('fm-watchlist');
   const updated = document.getElementById('fm-watch-updated');
   if(body) body.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr>';
-  const r = await _annFetch('GET', '/admin/factor-watchlist');
+  // 默认只看最新交易日：多跑几天会有几百条新旧混排，真正要盯的永远是最近一天
+  const qs = FM_WATCH_DATE ? `?date=${encodeURIComponent(FM_WATCH_DATE)}` : '';
+  const r = await _annFetch('GET', `/admin/factor-watchlist${qs}`);
   if(!r || !r.ok){
     const error = (r && r.error) || '加载失败';
     if(body) body.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
@@ -1578,7 +1642,20 @@ async function fmLoadWatchlist(){
     return;
   }
   const items = Array.isArray(r.items) ? r.items : [];
-  if(updated) updated.textContent = r.updated_at ? `更新 ${r.updated_at}` : `共 ${items.length} 只`;
+  const dates = Array.isArray(r.trade_dates) ? r.trade_dates : [];
+  FM_WATCH_DATE = r.selected_date || '';
+  if(updated){
+    const picker = dates.length > 1
+      ? `<select class="form-input" style="padding:4px 8px;font-size:12px;margin-left:8px"
+                data-ui-change="fmSwitchWatchDate(this)">
+           ${dates.map(d=>`<option value="${esc(d)}" ${d===FM_WATCH_DATE?'selected':''}>${esc(d)}（${(r.counts_by_date||{})[d]||0}只）</option>`).join('')}
+         </select>`
+      : '';
+    updated.innerHTML = `${esc(r.selected_date || '')} 共 <b>${items.length}</b> 只`
+      + (r.total_all && r.total_all !== items.length ? `　池内累计 ${r.total_all}` : '')
+      + (r.updated_at ? `　更新 ${esc(r.updated_at)}` : '')
+      + picker;
+  }
   if(!body) return;
   if(!items.length){
     body.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">暂无标的，可从最新候选一键导入</td></tr>';

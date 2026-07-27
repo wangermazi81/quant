@@ -54,6 +54,19 @@ DEFAULT_MINING_RULES: dict[str, Any] = {
         "min_near_high_20": None,
         "exclude_high_risk": False,
     },
+    # 市场状态门（2026-07-27 引入）：接力策略不该天天进场。
+    # 基于 auto-20260724 一轮 90 个交易日的归因：
+    #   - 情绪升温日买入（尾盘追高）raw -21.2%，降温日买入 raw +23.0%；
+    #   - 情绪带呈倒U：[20,70) 内最好，过热(>=70)接盘、过冷(<20)无承接均亏；
+    #   - 门后 live 口径 -19.8% → +26.1%，回撤 -39.5% → -15.9%。
+    # ⚠️ 参数是在同段历史上校准的（in-sample），报告会同时输出 门前/门后 双轨指标，
+    #    未来窗口若门后跑输门前，前端能直接看见——不许静默失效。
+    "market_gate": {
+        "enabled": True,
+        "emo_min": 20.0,          # 当日市场情绪下限（含）
+        "emo_max": 70.0,          # 上限（不含），>=70 视为过热不进场
+        "require_cooling": True,  # 要求当日情绪 <= 前一交易日（降温/持平才进）
+    },
 }
 
 _RULE_DESCRIPTIONS: dict[str, dict[str, str]] = {
@@ -84,6 +97,12 @@ _RULE_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "min_volume_ratio_20": "drop candidates below this volume ratio when set",
         "min_near_high_20": "drop candidates below this 20 day high proximity when set",
         "exclude_high_risk": "drop candidates that have any risk flag",
+    },
+    "market_gate": {
+        "enabled": "skip entries on days that fail the market regime gate",
+        "emo_min": "minimum market emotion score (inclusive) to allow entries",
+        "emo_max": "maximum market emotion score (exclusive); above = overheated",
+        "require_cooling": "only enter when today's emotion <= previous trading day",
     },
 }
 
@@ -139,6 +158,16 @@ _LIVE_WARNING_TEXT: dict[str, str] = {
     "feedback_near_limit_queue": "盘口反馈多次接近涨停队列，容易出现信号好但买不到。",
     "feedback_paper_loss": "模拟盘闭环收益为负，历史因子需要等待新样本修复。",
     "feedback_low_win_rate": "模拟盘胜率偏低，暂不按强候选处理。",
+    "market_gate_blocked": "今日未过市场状态门（情绪带/降温条件），接力胜率历史上明显偏低，建议观望不进场。",
+}
+
+_GATE_REASON_TEXT: dict[str, str] = {
+    "pass": "通过：市场情绪处于可接力区间且未在升温追高",
+    "gate_disabled": "状态门未启用",
+    "gate_data_missing": "市场情绪数据缺失，门保守放行",
+    "emotion_too_cold": "市场情绪过冷（低于下限），接力缺乏承接",
+    "emotion_overheated": "市场情绪过热（达到上限），追高接盘风险大",
+    "emotion_heating_up": "市场情绪快速升温中，按门规则等待降温再接",
 }
 
 
@@ -233,6 +262,19 @@ def normalize_mining_rules(raw: dict[str, Any] | None = None) -> dict[str, Any]:
     rules["filters"]["min_volume_ratio_20"] = _clean_float(filter_raw.get("min_volume_ratio_20"), None, 0.0, 20.0)
     rules["filters"]["min_near_high_20"] = _clean_float(filter_raw.get("min_near_high_20"), None, 0.0, 2.0)
     rules["filters"]["exclude_high_risk"] = bool(filter_raw.get("exclude_high_risk", False))
+
+    gate_raw = raw.get("market_gate") if isinstance(raw.get("market_gate"), dict) else {}
+    gate_defaults = DEFAULT_MINING_RULES["market_gate"]
+    emo_min = _clean_float(gate_raw.get("emo_min"), float(gate_defaults["emo_min"]), 0.0, 100.0)
+    emo_max = _clean_float(gate_raw.get("emo_max"), float(gate_defaults["emo_max"]), 0.0, 100.0)
+    if emo_min is not None and emo_max is not None and emo_min >= emo_max:
+        emo_min, emo_max = float(gate_defaults["emo_min"]), float(gate_defaults["emo_max"])
+    rules["market_gate"] = {
+        "enabled": bool(gate_raw.get("enabled", gate_defaults["enabled"])),
+        "emo_min": emo_min,
+        "emo_max": emo_max,
+        "require_cooling": bool(gate_raw.get("require_cooling", gate_defaults["require_cooling"])),
+    }
     rules["descriptions"] = _RULE_DESCRIPTIONS
     return rules
 
@@ -243,12 +285,22 @@ def condition_explain(rules: dict[str, Any]) -> list[str]:
     tiers = rules["tier_thresholds"]
     filters = rules["filters"]
     active_filters = [f"{key}>={value}" for key, value in filters.items() if value not in (None, False)]
+    gate = rules.get("market_gate") or {}
+    if gate.get("enabled"):
+        gate_text = (
+            f"market gate: emotion in [{gate.get('emo_min')}, {gate.get('emo_max')})"
+            + (", cooling required (today <= prev day)" if gate.get("require_cooling") else "")
+            + " — entries skipped on failing days; report keeps both gated and ungated tracks"
+        )
+    else:
+        gate_text = "market gate: disabled (trades every test day)"
     return [
         "relay_score = weighted cross-sectional ranks of momentum, volume, amount, high proximity and limit strength, minus volatility and 3 day overheat penalties",
         "weights: " + ", ".join(f"{key}={value}" for key, value in weights.items()),
         "risk flags: " + ", ".join(f"{key}={value}" for key, value in risk.items()),
         "tiers: strong>={strong_percentile}, watch>={watch_percentile}, strong_requires_no_risk={strong_requires_no_risk}".format(**tiers),
         "filters: " + (", ".join(active_filters) if active_filters else "none"),
+        gate_text,
     ]
 
 
@@ -445,6 +497,32 @@ def _live_summary_fields(
     }
 
 
+def _gate_check(
+    gate: dict[str, Any] | None,
+    emotion: float | None,
+    delta: float | None,
+) -> tuple[bool, str]:
+    """市场状态门判定。返回 (是否放行, 原因键)。
+
+    数据缺失时保守放行（gate_data_missing）——门只在有据可依时收紧，
+    绝不因数据缺口静默把整段回测清零。
+    """
+    if not gate or not gate.get("enabled"):
+        return True, "gate_disabled"
+    if emotion is None:
+        return True, "gate_data_missing"
+    if emotion < float(gate.get("emo_min", 0.0)):
+        return False, "emotion_too_cold"
+    if emotion >= float(gate.get("emo_max", 100.0)):
+        return False, "emotion_overheated"
+    if gate.get("require_cooling"):
+        if delta is None:
+            return True, "gate_data_missing"
+        if delta > 0:
+            return False, "emotion_heating_up"
+    return True, "pass"
+
+
 def walk_forward_relay(
     features: pd.DataFrame,
     labels: pd.DataFrame,
@@ -452,12 +530,44 @@ def walk_forward_relay(
     test_days: int = 10,
     step_days: int | None = None,
     top_k: int = 5,
+    market_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """滚动窗口回测。双轨输出：
+
+    - 原轨（ungated）：每个测试日照旧成篮，与历史报告可比；
+    - 门轨（gated_*）：仅统计通过市场状态门的日子——这才是建议实际执行的口径。
+    每笔 trade 记录当日情绪/情绪变化/门判定，复盘归因不再需要回拼 features.csv。
+    """
     if train_days <= 0 or test_days <= 0 or top_k <= 0:
         raise ValueError("train_days, test_days and top_k must be positive")
     data = features.merge(labels, on=["trade_date", "ts_code"], how="inner")
+    empty_summary = {
+        **_trade_summary([]), **_live_summary_fields([], [], []),
+        "window_count": 0, "positive_window_rate": 0.0,
+        **{f"gated_{k}": v for k, v in _trade_summary([]).items()},
+        "gated_live_total_return_pct": 0.0, "gated_skipped_days": 0,
+        "market_gate_applied": bool(market_gate and market_gate.get("enabled")),
+    }
     if data.empty:
-        return {"windows": [], "trades": [], "summary": {**_trade_summary([]), **_live_summary_fields([], [], []), "window_count": 0, "positive_window_rate": 0.0}}
+        return {"windows": [], "trades": [], "summary": empty_summary}
+
+    # 每个交易日的市场情绪与前日差（列缺失=门自动失效并如实标注）
+    has_emotion = "market_emotion_score" in data.columns
+    emo_by_date: dict[str, float] = {}
+    delta_by_date: dict[str, float] = {}
+    if has_emotion:
+        emo_series = (
+            data.groupby("trade_date")["market_emotion_score"].first().sort_index()
+        )
+        prev = emo_series.shift(1)
+        for d in emo_series.index:
+            v = emo_series.get(d)
+            p = prev.get(d)
+            if v is not None and not pd.isna(v):
+                emo_by_date[str(d)] = float(v)
+                if p is not None and not pd.isna(p):
+                    delta_by_date[str(d)] = float(v) - float(p)
+
     dates = sorted(data["trade_date"].unique().tolist())
     step = int(step_days or test_days)
     windows: list[dict[str, Any]] = []
@@ -472,6 +582,9 @@ def walk_forward_relay(
         window_returns: list[float] = []
         window_live_returns: list[float] = []
         window_blocked_counts: list[int] = []
+        gated_window_returns: list[float] = []
+        gated_window_live_returns: list[float] = []
+        gated_skipped = 0
         for trade_date in test_dates:
             day = data[data["trade_date"] == trade_date].copy()
             if day.empty:
@@ -489,6 +602,9 @@ def walk_forward_relay(
             live_field = "live_adjusted_return_pct" if "live_adjusted_return_pct" in executable.columns else "forward_return_pct"
             live_ret = round(float(executable[live_field].mean()), 4) if not executable.empty else 0.0
             codes = picks["ts_code"].astype(str).tolist()
+            emotion = emo_by_date.get(str(trade_date))
+            delta = delta_by_date.get(str(trade_date))
+            gate_pass, gate_reason = _gate_check(market_gate, emotion, delta)
             trades.append({
                 "trade_date": trade_date,
                 "direction": direction,
@@ -498,12 +614,22 @@ def walk_forward_relay(
                 "live_adjusted_return_pct": live_ret,
                 "executable_count": int(len(executable)),
                 "blocked_count": blocked_count,
+                "market_emotion_score": emotion,
+                "emotion_delta": None if delta is None else round(delta, 4),
+                "gate_pass": gate_pass,
+                "gate_reason": gate_reason,
             })
             window_returns.append(ret)
             window_live_returns.append(live_ret)
             window_blocked_counts.append(blocked_count)
+            if gate_pass:
+                gated_window_returns.append(ret)
+                gated_window_live_returns.append(live_ret)
+            else:
+                gated_skipped += 1
         ws = _trade_summary(window_returns)
         live_ws = _live_summary_fields(window_returns, window_live_returns, window_blocked_counts, top_k=top_k)
+        gated_ws = {f"gated_{k}": v for k, v in _trade_summary(gated_window_returns).items()}
         windows.append(
             {
                 "train_start": train_dates[0],
@@ -514,6 +640,9 @@ def walk_forward_relay(
                 "train_corr": None if pd.isna(corr) else round(float(corr), 6),
                 **ws,
                 **live_ws,
+                **gated_ws,
+                "gated_live_total_return_pct": round(float(sum(gated_window_live_returns)), 4),
+                "gated_skipped_days": gated_skipped,
             }
         )
         start += step
@@ -524,6 +653,17 @@ def walk_forward_relay(
     summary.update(_live_summary_fields(raw_returns, live_returns, blocked_counts, top_k=top_k))
     summary["window_count"] = len(windows)
     summary["positive_window_rate"] = round(sum(1 for w in windows if w["total_return_pct"] > 0) / len(windows), 4) if windows else 0.0
+    # 门轨总览
+    gated_trades = [t for t in trades if t.get("gate_pass")]
+    gated_raw = [float(t["return_pct"]) for t in gated_trades]
+    gated_live = [float(t.get("live_adjusted_return_pct", t["return_pct"])) for t in gated_trades]
+    summary.update({f"gated_{k}": v for k, v in _trade_summary(gated_raw).items()})
+    summary["gated_live_total_return_pct"] = round(float(sum(gated_live)), 4)
+    summary["gated_live_hit_rate"] = round(sum(1 for r in gated_live if r > 0) / len(gated_live), 4) if gated_live else 0.0
+    summary["gated_skipped_days"] = int(len(trades) - len(gated_trades))
+    summary["market_gate_applied"] = bool(market_gate and market_gate.get("enabled") and has_emotion)
+    if market_gate and market_gate.get("enabled") and not has_emotion:
+        summary["market_gate_note"] = "market_emotion_score column missing; gate inactive"
     return {"windows": windows, "trades": trades, "summary": summary}
 
 
@@ -959,7 +1099,11 @@ def run_relay_research(
         market_signal_frame = build_market_signal_frame(features_raw["trade_date"].unique())
     features = apply_market_signals(features_raw, market_signal_frame)
     training_features = features[features["market_data_trusted"]] if "market_data_trusted" in features.columns else features
-    wf = walk_forward_relay(training_features, labels, train_days=train_days, test_days=test_days, step_days=step_days, top_k=top_k)
+    wf = walk_forward_relay(
+        training_features, labels,
+        train_days=train_days, test_days=test_days, step_days=step_days, top_k=top_k,
+        market_gate=rules.get("market_gate"),
+    )
     live_feedback: dict[str, dict[str, Any]] = {}
     live_feedback_health: dict[str, Any] = {"ok": False, "reason": "not_loaded"}
     try:
@@ -979,11 +1123,43 @@ def run_relay_research(
         mining_rules=rules,
         live_feedback=live_feedback,
     )
+    latest_market = _latest_market_summary(features)
+
+    # ── 今日市场状态门：不过门 → 候选全体降级 + 明确"建议观望" ──
+    gate = rules.get("market_gate") or {}
+    gate_today: dict[str, Any] = {"enabled": bool(gate.get("enabled"))}
+    if gate.get("enabled"):
+        emotion_today = latest_market.get("market_emotion_score")
+        delta_today = _latest_emotion_delta(features)
+        gate_pass, gate_reason = _gate_check(gate, emotion_today, delta_today)
+        gate_today.update({
+            "pass": gate_pass,
+            "reason": gate_reason,
+            "reason_cn": _GATE_REASON_TEXT.get(gate_reason, gate_reason),
+            "emotion": emotion_today,
+            "emotion_delta": delta_today,
+        })
+        if not gate_pass:
+            downgrade = {"strong": "watch", "watch": "observe"}
+            for candidate in candidates:
+                tier = str(candidate.get("candidate_tier") or "")
+                if tier in downgrade:
+                    candidate["candidate_tier"] = downgrade[tier]
+                    candidate["tier_downgraded_by_gate"] = True
+                warns = candidate.setdefault("live_warnings", [])
+                keys = candidate.setdefault("live_warning_keys", [])
+                if "market_gate_blocked" not in keys:
+                    keys.append("market_gate_blocked")
+                    warns.append(_LIVE_WARNING_TEXT["market_gate_blocked"])
+    else:
+        gate_today["pass"] = True
+        gate_today["reason"] = "gate_disabled"
+        gate_today["reason_cn"] = _GATE_REASON_TEXT["gate_disabled"]
+
     tier_counts: dict[str, int] = {}
     for candidate in candidates:
         tier = str(candidate.get("candidate_tier", "unknown"))
         tier_counts[tier] = tier_counts.get(tier, 0) + 1
-    latest_market = _latest_market_summary(features)
     summary = {
         **wf["summary"],
         "feature_rows": int(len(features)),
@@ -1001,6 +1177,11 @@ def run_relay_research(
         "live_feedback_updated_at": live_feedback_health.get("updated_at"),
         "live_feedback_status": "ok" if live_feedback_health.get("ok") else "degraded",
         "live_feedback_error": live_feedback_health.get("error") or live_feedback_health.get("reason") or "",
+        "gate_today": gate_today,
+        "gate_note": (
+            "市场状态门参数在历史样本内校准（in-sample）；报告同时保留 门前/门后 双轨指标，"
+            "若未来窗口门后持续跑输门前，应重新校准或停用该门。"
+        ) if gate.get("enabled") else "",
     }
     min_dates = train_days + test_days
     unique_dates = int(training_features["trade_date"].nunique()) if not training_features.empty else 0
@@ -1030,6 +1211,19 @@ def run_relay_research(
     }
     _write_outputs(out_path, features, labels, report, candidates)
     return report
+
+
+def _latest_emotion_delta(features: pd.DataFrame) -> float | None:
+    """最新交易日的市场情绪相对前一交易日的变化（升温为正）。"""
+    if features.empty or "market_emotion_score" not in features.columns:
+        return None
+    series = features.groupby("trade_date")["market_emotion_score"].first().sort_index()
+    if len(series) < 2:
+        return None
+    last, prev = series.iloc[-1], series.iloc[-2]
+    if pd.isna(last) or pd.isna(prev):
+        return None
+    return round(float(last) - float(prev), 4)
 
 
 def _latest_market_summary(features: pd.DataFrame) -> dict[str, Any]:

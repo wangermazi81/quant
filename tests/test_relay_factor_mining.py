@@ -417,3 +417,86 @@ def test_cli_passes_market_signal_flag(monkeypatch, tmp_path):
 
     assert code == 0
     assert captured["include_market_signals"] is True
+
+
+# ── 市场状态门（2026-07-27 引入）──────────────────────────────────
+
+def _gate_features_labels(n_days: int = 30, emotions=None):
+    """构造带 market_emotion_score 的最小 features/labels 对。"""
+    dates = [d.strftime("%Y-%m-%d") for d in pd.bdate_range("2026-01-05", periods=n_days)]
+    if emotions is None:
+        emotions = [40.0] * n_days
+    rows_f, rows_l = [], []
+    for i, d in enumerate(dates):
+        for j, code in enumerate(["AAA", "BBB", "CCC"]):
+            rows_f.append({
+                "trade_date": d, "ts_code": code,
+                "relay_score": float(10 - j + i * 0.01),
+                "market_emotion_score": float(emotions[i]),
+            })
+            rows_l.append({
+                "trade_date": d, "ts_code": code,
+                "forward_return_pct": 1.0 if j == 0 else -0.5,
+            })
+    return pd.DataFrame(rows_f), pd.DataFrame(rows_l)
+
+
+def test_gate_check_reasons():
+    gate = {"enabled": True, "emo_min": 20.0, "emo_max": 70.0, "require_cooling": True}
+    assert relay._gate_check(gate, 40.0, -1.0) == (True, "pass")
+    assert relay._gate_check(gate, 40.0, 0.0) == (True, "pass")
+    assert relay._gate_check(gate, 10.0, -1.0) == (False, "emotion_too_cold")
+    assert relay._gate_check(gate, 75.0, -1.0) == (False, "emotion_overheated")
+    assert relay._gate_check(gate, 40.0, 3.0) == (False, "emotion_heating_up")
+    # 数据缺失 → 保守放行
+    assert relay._gate_check(gate, None, None) == (True, "gate_data_missing")
+    assert relay._gate_check(gate, 40.0, None) == (True, "gate_data_missing")
+    # 门关闭 → 全放行
+    assert relay._gate_check({"enabled": False}, 5.0, 9.0) == (True, "gate_disabled")
+    assert relay._gate_check(None, 5.0, 9.0) == (True, "gate_disabled")
+
+
+def test_walk_forward_gate_dual_track():
+    # 30 天：前 20 训练，后 10 测试。测试段情绪交替 40（过门）/ 80（过热不进）
+    emotions = [40.0] * 20 + [40.0, 80.0] * 5
+    features, labels = _gate_features_labels(30, emotions)
+    gate = {"enabled": True, "emo_min": 20.0, "emo_max": 70.0, "require_cooling": False}
+    wf = relay.walk_forward_relay(features, labels, train_days=20, test_days=10, top_k=1, market_gate=gate)
+    trades = wf["trades"]
+    assert len(trades) == 10
+    passed = [t for t in trades if t["gate_pass"]]
+    blocked = [t for t in trades if not t["gate_pass"]]
+    assert len(passed) == 5 and len(blocked) == 5
+    assert all(t["gate_reason"] == "emotion_overheated" for t in blocked)
+    # 双轨：原轨统计全部 10 天，门轨只统计 5 天
+    s = wf["summary"]
+    assert s["trade_count"] == 10
+    assert s["gated_trade_count"] == 5
+    assert s["gated_skipped_days"] == 5
+    assert s["market_gate_applied"] is True
+    # 每笔 trade 带情绪归因字段
+    assert trades[0]["market_emotion_score"] == 40.0
+    assert "emotion_delta" in trades[0]
+
+
+def test_walk_forward_gate_missing_emotion_column_is_inactive():
+    features, labels = _gate_features_labels(30)
+    features = features.drop(columns=["market_emotion_score"])
+    gate = {"enabled": True, "emo_min": 20.0, "emo_max": 70.0, "require_cooling": True}
+    wf = relay.walk_forward_relay(features, labels, train_days=20, test_days=10, top_k=1, market_gate=gate)
+    s = wf["summary"]
+    assert s["market_gate_applied"] is False
+    assert s["gated_trade_count"] == s["trade_count"]  # 门失效=不减少样本
+    assert "market_gate_note" in s
+
+
+def test_normalize_rules_market_gate_bounds():
+    rules = relay.normalize_mining_rules({"market_gate": {"emo_min": 80, "emo_max": 30}})
+    # min>=max 非法 → 回落默认
+    assert rules["market_gate"]["emo_min"] == 20.0
+    assert rules["market_gate"]["emo_max"] == 70.0
+    rules2 = relay.normalize_mining_rules({"market_gate": {"enabled": False, "emo_min": 25, "emo_max": 65, "require_cooling": False}})
+    assert rules2["market_gate"] == {"enabled": False, "emo_min": 25.0, "emo_max": 65.0, "require_cooling": False}
+    # condition_explain 包含门说明
+    lines = relay.condition_explain(relay.normalize_mining_rules(None))
+    assert any("market gate" in line for line in lines)
