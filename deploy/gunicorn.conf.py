@@ -24,6 +24,9 @@ keepalive = 5
 #    若 preload 则线程只活在 master，fork 后 worker 里不存在 → 自动扫描失效。
 preload_app = False
 
+# Gunicorn 26 默认创建控制套接字；本服务未使用该接口，关闭后保留 systemd ProtectHome 隔离。
+control_socket_disable = True
+
 # 日志
 accesslog = "logs/access.log"
 errorlog  = "logs/error.log"

@@ -8,6 +8,7 @@ def test_gunicorn_uses_threads_for_ai_trader_sse_without_extra_process_state():
     assert cfg["workers"] == 1
     assert cfg["worker_class"] == "gthread"
     assert int(cfg.get("threads", 0)) >= 4
+    assert cfg.get("control_socket_disable") is True
 
 
 def test_all_deployment_entrypoints_reference_existing_gunicorn_config():
