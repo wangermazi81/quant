@@ -272,8 +272,7 @@ def test_positions_sell_falls_back_to_broker_price_when_request_price_invalid(mo
     broker = FakeBroker()
     broker.positions = [{"code": "000001", "cur_price": 11.2, "cost_price": 10.5}]
     calls = []
-    fake_quote = types.SimpleNamespace(get_client=lambda: None)
-    stub_project_module(monkeypatch, "ths_quote", fake_quote)
+    _stub_realtime_quote(monkeypatch, None)
     monkeypatch.setattr(trade_web, "DRY_RUN", True)
     monkeypatch.setattr(pb, "get_broker", lambda uid: broker)
     monkeypatch.setattr(

@@ -27,6 +27,7 @@
    确实需要联网的用例加 @pytest.mark.allow_network。
 """
 import os
+import json
 import socket
 import sys
 from pathlib import Path
@@ -64,6 +65,19 @@ def _isolate_persistent_state(tmp_path_factory):
     mp.setattr(um, "DB_PATH", data_dir / "users.db", raising=False)
     mp.setattr(pb, "DB_PATH", data_dir / "paper_trading.db", raising=False)
 
+
+    from analytics import datasource_config
+    datasource_path = data_dir / "datasource_config.json"
+    datasource_path.write_text(json.dumps({
+        "schema_version": 2,
+        "provider": "current",
+        "tushare_enabled": False,
+        "tushare_mode": "replay",
+        "tushare_token": "",
+        "fallback_enabled": False,
+    }), encoding="utf-8")
+    mp.setattr(datasource_config, "CONFIG_FILE", datasource_path, raising=False)
+    datasource_config._RAW_CACHE, datasource_config._RAW_CACHE_SIG = None, None
     try:
         from analytics import ai_analyst
         mp.setattr(ai_analyst, "CONFIG_FILE", data_dir / "ai_config.json", raising=False)
@@ -75,7 +89,7 @@ def _isolate_persistent_state(tmp_path_factory):
     # 注意：不要删 SECRET_KEY —— main._load_or_create_secret_key 在缺失时会往
     # 真实 data/.secret_key 写文件，反而污染生产目录。
     for _k in ("AI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-               "AI_BASE_URL", "AI_MODEL", "AI_PROVIDER", "TUSHARE_TOKEN"):
+               "AI_BASE_URL", "AI_MODEL", "AI_PROVIDER", "TUSHARE_TOKEN", "TUSHARE_REPLAY_API_KEY"):
         mp.delenv(_k, raising=False)
 
     yield data_dir

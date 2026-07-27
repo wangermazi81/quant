@@ -52,11 +52,7 @@ jobs:
           python tools/gen_ui_handlers.py --check
 
       - name: Guard against 'unsafe-eval' creeping back into CSP
-        run: |
-          if grep -q "unsafe-eval" app_security.py; then
-            echo "::error::CSP 重新引入了 'unsafe-eval'。请改用 tools/gen_ui_handlers.py 的静态表方案。"
-            exit 1
-          fi
+        run: python -m pytest -q tests/test_app_security.py::TestSecurityHeaders::test_headers_present
 
       - name: Guard against side-effecting scripts under tests/
         run: |

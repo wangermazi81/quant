@@ -375,6 +375,7 @@ def test_market_snapshot_metrics_ignores_low_trust_cache_and_fetches_tushare(mon
         "breadth": {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
     }
     monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(market_stats.dg, "get_source_order", lambda: ["tushare", "current"])
     market_stats.save_market_snapshot(snapshot)
     fresh_snapshot = {
         "source": "tushare_replay_daily",
@@ -407,6 +408,7 @@ def test_market_breadth_and_turnover_ignore_low_trust_cached_three_market_snapsh
         "breadth": {"source": "eastmoney_three_market", "up": 1876, "down": 3541, "flat": 102, "total": 5519, "degraded": False},
     }
     monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(market_stats.dg, "get_source_order", lambda: ["tushare", "current"])
     market_stats.save_market_snapshot(snapshot)
     fresh_snapshot = {
         "source": "tushare_replay_daily",
@@ -770,6 +772,7 @@ def test_low_trust_old_market_snapshot_cache_is_ignored(monkeypatch, tmp_path):
 def test_market_breadth_prefers_tushare_replay_before_eastmoney(monkeypatch, tmp_path):
     snapshot = _sample_tushare_snapshot()
     monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(market_stats.dg, "get_source_order", lambda: ["tushare", "current"])
     monkeypatch.setattr(market_stats, "fetch_tushare_replay_market_snapshot", lambda date_text=None: snapshot)
     monkeypatch.setattr(
         market_stats,
@@ -786,6 +789,7 @@ def test_market_breadth_prefers_tushare_replay_before_eastmoney(monkeypatch, tmp
 def test_market_turnover_prefers_tushare_replay_before_eastmoney(monkeypatch, tmp_path):
     snapshot = _sample_tushare_snapshot()
     monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(market_stats.dg, "get_source_order", lambda: ["tushare", "current"])
     monkeypatch.setattr(market_stats, "fetch_tushare_replay_market_snapshot", lambda date_text=None: snapshot)
     monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [])
     monkeypatch.setattr(
@@ -803,6 +807,7 @@ def test_market_turnover_prefers_tushare_replay_before_eastmoney(monkeypatch, tm
 def test_market_snapshot_metrics_keeps_tushare_turnover_from_same_snapshot(monkeypatch, tmp_path):
     snapshot = _sample_tushare_snapshot()
     monkeypatch.setattr(market_stats, "MARKET_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(market_stats.dg, "get_source_order", lambda: ["tushare", "current"])
     monkeypatch.setattr(market_stats, "fetch_tushare_replay_market_snapshot", lambda date_text=None: snapshot)
     monkeypatch.setattr(market_stats, "_turnover_trend_from_index_daily", lambda: [])
     monkeypatch.setattr(

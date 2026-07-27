@@ -18,7 +18,7 @@ scp data\ai_config.json %SERVER%:%REMOTE%/data/ai_config.json
 scp data\search_config.json %SERVER%:%REMOTE%/data/search_config.json
 
 echo [3/4] 解压并重启服务器...
-ssh %SERVER% "cd %REMOTE% && unzip -o deploy_temp.zip -d . && rm deploy_temp.zip && pkill -f gunicorn; sleep 1; source venv/bin/activate && nohup gunicorn -c gunicorn.conf.py main:app > app.log 2>&1 &"
+ssh %SERVER% "cd %REMOTE% && unzip -o deploy_temp.zip -d . && rm deploy_temp.zip && pkill -f gunicorn; sleep 1; source venv/bin/activate && nohup gunicorn -c deploy/gunicorn.conf.py main:app > app.log 2>&1 &"
 
 echo [4/4] 清理临时文件...
 del deploy_temp.zip

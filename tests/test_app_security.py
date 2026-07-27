@@ -119,6 +119,7 @@ class TestSecurityHeaders:
         assert r.headers.get("X-Content-Type-Options") == "nosniff"
         assert r.headers.get("X-Frame-Options") == "SAMEORIGIN"
         assert "Content-Security-Policy" in r.headers
+        assert "'unsafe-eval'" not in r.headers["Content-Security-Policy"]
 
     def test_cookie_hardening_config(self):
         app = Flask(__name__)

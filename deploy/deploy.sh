@@ -42,7 +42,7 @@ After=network.target
 User=root
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$APP_DIR/.env
-ExecStart=$APP_DIR/venv/bin/gunicorn -c gunicorn.conf.py main:app
+ExecStart=$APP_DIR/venv/bin/gunicorn -c deploy/gunicorn.conf.py main:app
 Restart=always
 RestartSec=5
 
