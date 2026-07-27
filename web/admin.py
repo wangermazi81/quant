@@ -488,13 +488,48 @@ def admin_factor_mining_run():
 @bp.route("/api/admin/factor-watchlist", methods=["GET"])
 @require_root_admin
 def admin_factor_watchlist_get():
+    """次日自选池。
+
+    **默认只返回最新交易日**的候选：每次挖掘导入约 100 只，多跑几天就是几百条
+    新旧混排，后台打开根本分不清今天该看哪些。真正要盯的永远是最近一个交易日。
+    需要看别的日子传 ?date=YYYY-MM-DD，要全量传 ?all=1。
+    """
     data = _load_factor_watchlist()
-    items = sorted(
-        data["items"],
-        key=lambda item: (str(item.get("trade_date") or ""), -int(item.get("candidate_rank") or 999999), str(item.get("code") or "")),
-        reverse=True,
-    )
-    return jsonify({"ok": True, "updated_at": data.get("updated_at"), "items": items})
+    all_items = data["items"]
+
+    def _sort_key(item):
+        return (str(item.get("trade_date") or ""),
+                -int(item.get("candidate_rank") or 999999),
+                str(item.get("code") or ""))
+
+    dates = sorted({str(i.get("trade_date") or "") for i in all_items if i.get("trade_date")},
+                   reverse=True)
+    counts_by_date = {}
+    counts_by_status = {}
+    for i in all_items:
+        counts_by_date[str(i.get("trade_date") or "")] = counts_by_date.get(str(i.get("trade_date") or ""), 0) + 1
+        counts_by_status[str(i.get("status") or "pending")] = counts_by_status.get(str(i.get("status") or "pending"), 0) + 1
+
+    want_all = str(request.args.get("all") or "").strip() in ("1", "true", "yes")
+    want_date = _clean_watchlist_text(request.args.get("date"), 20)
+    selected = ""
+    if want_all:
+        items = all_items
+    else:
+        selected = want_date if want_date in dates else (dates[0] if dates else "")
+        items = [i for i in all_items if str(i.get("trade_date") or "") == selected] if selected else all_items
+
+    items = sorted(items, key=_sort_key, reverse=True)
+    return jsonify({
+        "ok": True,
+        "updated_at": data.get("updated_at"),
+        "items": items,
+        "trade_dates": dates,
+        "selected_date": selected,
+        "total_all": len(all_items),
+        "counts_by_date": counts_by_date,
+        "counts_by_status": counts_by_status,
+    })
 
 
 @bp.route("/api/admin/factor-watchlist/import", methods=["POST"])

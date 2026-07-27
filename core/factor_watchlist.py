@@ -13,9 +13,13 @@ admin.py 保留同名薄别名，既不改路由行为，也不破坏既有的 m
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from web._params import _int_value
 
@@ -154,6 +158,41 @@ def sanitize_watchlist_item(raw: dict, run_id: str | None = None,
     return item
 
 
+# 观察池只保留最近 N 个**交易日**的候选。
+# 此前从不淘汰：每次挖掘导入 100 条，线上已堆到 700 条、7 个日期混排，
+# 后台打开就是一片新旧混杂的列表，根本分不清哪些是今天该看的。
+WATCHLIST_KEEP_DAYS = int(os.environ.get("FACTOR_WATCHLIST_KEEP_DAYS", "5") or "5")
+# 已经产生过动作的条目（人工标记/AI 决策过）永不自动删除 —— 那是决策留痕，
+# 删了就无法复盘「当初为什么买/为什么跳过」。
+_STICKY_STATUS = {"bought", "skipped", "ready", "watch"}
+
+
+def prune_factor_watchlist(data: dict, keep_days: int | None = None) -> dict:
+    """按交易日裁剪观察池，返回裁剪后的 data（原地修改并返回）。
+
+    规则：
+      · 按 trade_date 倒序取最近 keep_days 个交易日，其余日期的条目丢弃；
+      · 但 status 属于「已产生动作」的一律保留（决策留痕，不能删）；
+      · 没有 trade_date 的脏条目视为最旧，优先丢。
+    """
+    keep_days = WATCHLIST_KEEP_DAYS if keep_days is None else keep_days
+    items = data.get("items") or []
+    dates = sorted({str(i.get("trade_date") or "") for i in items if i.get("trade_date")},
+                   reverse=True)
+    keep_dates = set(dates[:max(1, keep_days)])
+    kept = [
+        i for i in items
+        if str(i.get("trade_date") or "") in keep_dates
+        or str(i.get("status") or "") in _STICKY_STATUS
+    ]
+    dropped = len(items) - len(kept)
+    if dropped:
+        logger.info("[watchlist] 裁剪 %s 条过期候选（保留最近 %s 个交易日 + 已决策条目），剩 %s 条",
+                    dropped, keep_days, len(kept))
+    data["items"] = kept
+    return data
+
+
 def import_factor_candidates_to_watchlist(candidates: list, run_id: str | None = None,
                                           strategy_name: str | None = None) -> dict:
     imported = []
@@ -175,6 +214,7 @@ def import_factor_candidates_to_watchlist(candidates: list, run_id: str | None =
         item["created_at"] = previous.get("created_at") or item["created_at"]
         by_id[item["id"]] = item
     data["items"] = list(by_id.values())
+    prune_factor_watchlist(data)          # ★ 写盘前裁剪，防止无限堆积
     save_factor_watchlist(data)
     return {"ok": True, "imported": len(imported), "total": len(data["items"]), "items": data["items"]}
 
