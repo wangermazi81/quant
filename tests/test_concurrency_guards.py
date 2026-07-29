@@ -52,6 +52,19 @@ class TestHeavySlot:
             with cc.heavy_slot("backtest", limit=1):     # 不同名互不影响
                 pass
 
+    def test_acquired_lease_can_be_released_by_worker_thread(self):
+        lease = cc.acquire_heavy("scan", limit=1)
+        with pytest.raises(cc.HeavyBusy):
+            cc.acquire_heavy("scan", limit=1)
+
+        worker = threading.Thread(target=lease.release)
+        worker.start()
+        worker.join(1)
+
+        assert not worker.is_alive()
+        again = cc.acquire_heavy("scan", limit=1)
+        again.release()
+
 
 class TestSseSlot:
     def test_per_user_limit_rejects_extra_connection(self, monkeypatch):

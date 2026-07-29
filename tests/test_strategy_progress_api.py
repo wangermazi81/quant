@@ -154,6 +154,145 @@ def test_async_strategy_worker_stores_progress_from_its_own_callback(monkeypatch
         "code": "000001",
     }
 
+
+def test_strategy_run_async_reuses_active_task_for_same_user_without_charging(monkeypatch):
+    class NonStartingThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+
+        def start(self):
+            raise AssertionError("重复提交不应再启动后台线程")
+
+    calls = []
+    task_id = "existing-active-task"
+    monkeypatch.setattr(
+        strategies_web,
+        "_deduct",
+        lambda *args, **kwargs: calls.append(("deduct", args, kwargs)) or None,
+    )
+    monkeypatch.setattr(strategies_web.threading, "Thread", NonStartingThread)
+    with strategies_web._strat_tasks_lock:
+        strategies_web._strat_tasks.clear()
+        strategies_web._strat_tasks[task_id] = {
+            "status": "running",
+            "uid": 7,
+            "fn": "demo",
+            "created": 1,
+            "progress": {
+                "running": True,
+                "stage": "market",
+                "current": 0,
+                "total": 0,
+                "code": "",
+            },
+        }
+
+    client = main.app.test_client()
+    _login(client, uid=7)
+    response = client.post(
+        "/api/strategies/run_async",
+        json={"filename": "demo", "max_codes": 600},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "ok": True,
+        "task_id": task_id,
+        "reused": True,
+    }
+    assert calls == []
+    with strategies_web._strat_tasks_lock:
+        assert list(strategies_web._strat_tasks) == [task_id]
+
+
+def test_strategy_run_async_holds_global_heavy_slot_for_worker_lifetime(monkeypatch):
+    class ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    lease_events = []
+
+    class RecordingLease:
+        def release(self):
+            lease_events.append("release")
+
+    def acquire_slot(name):
+        lease_events.append(("acquire", name))
+        return RecordingLease()
+
+    monkeypatch.setattr(
+        strategies_web,
+        "acquire_heavy",
+        acquire_slot,
+        raising=False,
+    )
+    monkeypatch.setattr(strategies_web, "_deduct", lambda *args, **kwargs: None)
+    monkeypatch.setattr(strategies_web, "_add_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(strategies_web.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(
+        sm,
+        "run",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "results": [],
+            "count": 0,
+            "scanned": 1,
+        },
+    )
+    with strategies_web._strat_tasks_lock:
+        strategies_web._strat_tasks.clear()
+
+    client = main.app.test_client()
+    _login(client, uid=8)
+    response = client.post(
+        "/api/strategies/run_async",
+        json={"filename": "demo", "codes": ["000001"]},
+    )
+
+    assert response.status_code == 200
+    assert lease_events == [
+        ("acquire", "strategy_run"),
+        "release",
+    ]
+
+
+def test_strategy_run_async_rejects_busy_before_charging(monkeypatch):
+    calls = []
+
+    def reject_slot(name):
+        raise strategies_web.HeavyBusy(name)
+
+    monkeypatch.setattr(
+        strategies_web,
+        "acquire_heavy",
+        reject_slot,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        strategies_web,
+        "_deduct",
+        lambda *args, **kwargs: calls.append(("deduct", args, kwargs)) or None,
+    )
+    with strategies_web._strat_tasks_lock:
+        strategies_web._strat_tasks.clear()
+
+    client = main.app.test_client()
+    _login(client, uid=9)
+    response = client.post(
+        "/api/strategies/run_async",
+        json={"filename": "demo", "max_codes": 600},
+    )
+
+    assert response.status_code == 429
+    assert response.get_json()["error"] == "busy"
+    assert calls == []
+    with strategies_web._strat_tasks_lock:
+        assert strategies_web._strat_tasks == {}
+
+
 def test_strategy_run_rejects_missing_filename_before_deducting(monkeypatch):
     calls = []
     monkeypatch.setattr(strategies_web, "_deduct", lambda *args, **kwargs: calls.append(("deduct", args)) or None)

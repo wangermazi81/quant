@@ -67,19 +67,36 @@ def _heavy_sem(name: str, limit: int) -> threading.BoundedSemaphore:
         return sem
 
 
-@contextmanager
-def heavy_slot(name: str, limit: int | None = None):
-    """占一个重请求名额；占不到抛 HeavyBusy。"""
+class HeavyLease:
+    def __init__(self, sem: threading.BoundedSemaphore):
+        self._sem = sem
+        self._released = False
+        self._guard = threading.Lock()
+
+    def release(self) -> None:
+        with self._guard:
+            if self._released:
+                return
+            self._released = True
+        self._sem.release()
+
+
+def acquire_heavy(name: str, limit: int | None = None) -> HeavyLease:
+    """非阻塞获取重任务名额，返回可由后台线程释放的租约。"""
     sem = _heavy_sem(name, limit or HEAVY_LIMIT_DEFAULT)
     if not sem.acquire(blocking=False):
         raise HeavyBusy(name)
+    return HeavyLease(sem)
+
+
+@contextmanager
+def heavy_slot(name: str, limit: int | None = None):
+    """占一个重请求名额；占不到抛 HeavyBusy。"""
+    lease = acquire_heavy(name, limit)
     try:
         yield
     finally:
-        try:
-            sem.release()
-        except ValueError:          # pragma: no cover - 理论上不会多释放
-            pass
+        lease.release()
 
 
 class HeavyBusy(RuntimeError):

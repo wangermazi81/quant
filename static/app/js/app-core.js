@@ -8,6 +8,7 @@ window.onerror = function(msg, src, line, col, err){
 const API = '/api'
 const MOBILE_API_FALLBACK = `${location.protocol}//${location.hostname}:5002/api`
 let editor, curStrat=null, scResults=[], charts={}, dlTaskId=null, dlTimer=null
+let _screenRunPromise = null
 let _bridgePollStarted = false
 let _bridgeStatusPromise = null
 
@@ -2676,26 +2677,47 @@ async function activateStrat(){
 
 // ── 选股 ──
 async function runScreen(maxCodes = 0){
+  if(_screenRunPromise) return _screenRunPromise
+  document.querySelectorAll('[data-ui-click^="runScreen("]').forEach(button=>{
+    button.disabled = true
+    button.setAttribute('aria-busy','true')
+  })
+  _screenRunPromise = _runScreen(maxCodes)
+  try{
+    return await _screenRunPromise
+  }finally{
+    _screenRunPromise = null
+    document.querySelectorAll('[data-ui-click^="runScreen("]').forEach(button=>{
+      button.disabled = false
+      button.removeAttribute('aria-busy')
+    })
+  }
+}
+
+async function _runScreen(maxCodes = 0){
   // 因子模式：转发到因子选股
   if(_curMode==='factor'){
     if(!curFactor){alert('请先选择或保存因子');return}
+    setMobileStrategyPane('result')
     switchRTab('screen',document.querySelectorAll('.rtab')[1])
     await _runFactorScreen(curFactor)
     return
   }
   if(!curStrat){alert('请先保存或选择策略');return}
+  setMobileStrategyPane('result')
   switchRTab('screen',document.querySelectorAll('.rtab')[1])
   const scInfo = document.getElementById('scInfo')
   const scProg = document.getElementById('scProgWrap')
   const scBar  = document.getElementById('scProgBar')
-  scInfo.innerHTML='<span class="spin">⟳</span> 全市场扫描中（约30-60秒）...'
-  document.getElementById('scBody').innerHTML='<div class="empty"><span class="spin" style="font-size:22px">⟳</span><br><span style="font-size:12px;color:var(--t4)">正在获取全市场行情并筛选...</span></div>'
+  const scanScope = maxCodes > 0 ? `活跃前 ${maxCodes} 只` : '全市场'
+  scInfo.innerHTML=`<span class="spin">⟳</span> ${scanScope}扫描任务启动中...`
+  document.getElementById('scBody').innerHTML=`<div class="empty"><span class="spin" style="font-size:22px">⟳</span><br><span style="font-size:12px;color:var(--t4)">正在获取${scanScope}行情并筛选...</span></div>`
   scProg.style.display='block'
   scBar.className='scan-prog-bar pulse'; scBar.style.width=''
 
   // 异步模式：先获取 task_id，再轮询进度和结果
   const initR = await api('/strategies/run_async','POST',{filename:curStrat, max_codes: maxCodes})
-  if(!initR?.ok){
+  if(!initR?.ok || !initR.task_id){
     scProg.style.display='none'
     scInfo.textContent='❌ 选股失败: '+(initR?.error||initR?.msg||'未知错误')
     document.getElementById('scBody').innerHTML=`<div style="padding:14px"><div style="background:#2d1a1e;border:1px solid var(--red);border-radius:8px;padding:12px;color:var(--rl);font-size:13px">${initR?.error||initR?.msg||'选股失败'}</div></div>`
@@ -2704,10 +2726,22 @@ async function runScreen(maxCodes = 0){
   const taskId = initR.task_id
   // 轮询进度
   let r = null
+  let progressFailures = 0
   while(true){
     await new Promise(res => setTimeout(res, 1500))
     const prog = await api('/strategies/progress/'+taskId)
-    if(!prog) continue
+    if(!prog?.ok){
+      progressFailures += 1
+      if(progressFailures < 3){
+        scInfo.innerHTML=`<span class="spin">⟳</span> 进度连接波动，正在重试 ${progressFailures}/3...`
+        continue
+      }
+      scProg.style.display='none'
+      scInfo.textContent='❌ 无法读取扫描进度: '+(prog?.error||prog?.msg||'网络异常')
+      document.getElementById('scBody').innerHTML=`<div style="padding:14px"><div style="background:#2d1a1e;border:1px solid var(--red);border-radius:8px;padding:12px;color:var(--rl);font-size:13px">${prog?.error||prog?.msg||'无法读取扫描进度，请稍后重试'}</div></div>`
+      return
+    }
+    progressFailures = 0
     if(prog.status === 'error'){
       scProg.style.display='none'
       scInfo.textContent='❌ 选股失败: '+(prog.error||'未知错误')

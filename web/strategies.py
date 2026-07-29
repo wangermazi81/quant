@@ -17,7 +17,7 @@ from app_state import (
     _add_log, _deduct, is_root_admin_session, current_admin_permissions,
 )
 from strategy_engine import strategy_manager as sm
-from web._concurrency import limit_heavy
+from web._concurrency import HeavyBusy, acquire_heavy, limit_heavy
 
 logger = logging.getLogger(__name__)
 bp = Blueprint("strategies", __name__)
@@ -57,6 +57,13 @@ def _get_owned_strat_task(task_id: str, uid: int):
         if not task or task.get("uid") != uid:
             return None
         return dict(task)
+
+
+def _active_strat_task_locked(uid: int):
+    for task_id, task in _strat_tasks.items():
+        if task.get("uid") == uid and task.get("status") in ("pending", "running"):
+            return task_id
+    return None
 
 
 @bp.route("/api/strategies")
@@ -199,12 +206,33 @@ def api_run_async():
         mc = int(d.get("max_codes", 0))
     except (TypeError, ValueError):
         mc = 0
-    err = _deduct("scan", "全市场选股扫描")
-    if err:
-        return jsonify(err), 402
-    task_id = _uuid.uuid4().hex
+
     with _strat_tasks_lock:
         _prune_strat_tasks_locked()
+        active_task_id = _active_strat_task_locked(uid)
+        if active_task_id:
+            return jsonify({
+                "ok": True,
+                "task_id": active_task_id,
+                "reused": True,
+            })
+        try:
+            lease = acquire_heavy("strategy_run")
+        except HeavyBusy:
+            return jsonify({
+                "ok": False,
+                "error": "busy",
+                "msg": "当前已有选股任务在运行，请等待现有任务完成后再试",
+            }), 429
+        try:
+            err = _deduct("scan", "全市场选股扫描")
+        except Exception:
+            lease.release()
+            raise
+        if err:
+            lease.release()
+            return jsonify(err), 402
+        task_id = _uuid.uuid4().hex
         _strat_tasks[task_id] = {
             "status": "pending",
             "uid": uid,
@@ -230,20 +258,49 @@ def api_run_async():
             task = _strat_tasks.get(task_id)
             if task and task.get("uid") == uid:
                 task["progress"] = dict(progress)
+
     def _worker():
         try:
             with _strat_tasks_lock:
                 _strat_tasks[task_id]["status"] = "running"
-            r = sm.run(fn, cs, max_codes=mc, user_id=uid, progress_callback=_store_progress)
+            r = sm.run(
+                fn,
+                cs,
+                max_codes=mc,
+                user_id=uid,
+                progress_callback=_store_progress,
+            )
             with _strat_tasks_lock:
                 _strat_tasks[task_id].update({"status": "done", "result": r})
             scanned = r.get("scanned", r.get("count", 0))
-            _add_log(uid, f"选股完成(异步)，扫描 {scanned} 只，命中 {r.get('count',0)} 只")
+            _add_log(
+                uid,
+                f"选股完成(异步)，扫描 {scanned} 只，命中 {r.get('count',0)} 只",
+            )
         except Exception as e:
             logger.exception(f"[uid={uid}] async scan 失败 task={task_id}")
             with _strat_tasks_lock:
-                _strat_tasks[task_id].update({"status": "error", "error": str(e), "progress": {"running": False, "stage": "error", "current": 0, "total": 0, "code": ""}})
-    threading.Thread(target=_worker, daemon=True).start()
+                _strat_tasks[task_id].update({
+                    "status": "error",
+                    "error": str(e),
+                    "progress": {
+                        "running": False,
+                        "stage": "error",
+                        "current": 0,
+                        "total": 0,
+                        "code": "",
+                    },
+                })
+        finally:
+            lease.release()
+
+    try:
+        threading.Thread(target=_worker, daemon=True).start()
+    except Exception:
+        lease.release()
+        with _strat_tasks_lock:
+            _strat_tasks.pop(task_id, None)
+        raise
     return jsonify({"ok": True, "task_id": task_id})
 
 
