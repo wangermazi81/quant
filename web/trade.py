@@ -235,7 +235,7 @@ def get_positions_api():
         return jsonify([])
     live = {}
     try:
-        qs = dg.get_realtime_quotes(list(positions.keys()))
+        qs = dg.get_display_quotes(list(positions.keys()))
         live = {q["code"]: q["price"] for q in qs if q.get("price", 0) > 0}
     except Exception:
         pass

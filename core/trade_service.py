@@ -21,6 +21,7 @@ from core.daban_state import (
     _DABAN_PEAKS, _LIVE_SELL_PENDING, _daban_ride_decision, _save_daban_peaks,
 )
 from broker import paper_broker as pb
+from analytics import data_gateway as dg
 
 logger = logging.getLogger(__name__)
 
@@ -517,12 +518,9 @@ def _paper_live_prices(broker) -> dict:
         positions = broker.get_positions()
         if not positions:
             return {}
-        from market import ths_quote as tq
-        client = tq.get_client()
-        if client and client._ok:
-            codes = [p["code"] for p in positions]
-            qs    = client.get_quotes(codes)
-            return {q["code"]: q.get("price", 0) for q in qs if q.get("price", 0) > 0}
+        codes = [p["code"] for p in positions]
+        qs = dg.get_display_quotes(codes)
+        return {q["code"]: q.get("price", 0) for q in qs if q.get("price", 0) > 0}
     except Exception as e:
         logger.debug(f"[paper] 实时价拉取失败（市值/盈亏按成本价显示）: {e}")
     return {}

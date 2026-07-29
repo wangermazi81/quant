@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from copy import deepcopy
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -54,6 +55,9 @@ _MOBILE_LEGACY_STATE = {
     "started_at": 0.0,
     "updated_at": "",
 }
+_BRIDGE_PROCESS_STATUS_CACHE = {"ts": 0.0, "data": None}
+_BRIDGE_PROCESS_STATUS_CACHE_LOCK = threading.Lock()
+_BRIDGE_PROCESS_STATUS_CACHE_TTL = 30.0
 
 
 
@@ -421,19 +425,44 @@ Get-CimInstance Win32_Process |
     return processes
 
 
-def bridge_process_status_payload():
-    processes = _bridge_processes()
-    return {
-        'running': bool(processes),
-        'pid': processes[0]['pid'] if processes else None,
-        'pids': [p['pid'] for p in processes],
-        'processes': processes,
-    }
+def clear_bridge_process_status_cache():
+    with _BRIDGE_PROCESS_STATUS_CACHE_LOCK:
+        _BRIDGE_PROCESS_STATUS_CACHE.update({"ts": 0.0, "data": None})
+
+
+def cache_bridge_process_status(payload):
+    with _BRIDGE_PROCESS_STATUS_CACHE_LOCK:
+        _BRIDGE_PROCESS_STATUS_CACHE.update(
+            {"ts": time.monotonic(), "data": deepcopy(payload)}
+        )
+
+
+def bridge_process_status_payload(force_refresh=False):
+    now = time.monotonic()
+    with _BRIDGE_PROCESS_STATUS_CACHE_LOCK:
+        cached = _BRIDGE_PROCESS_STATUS_CACHE["data"]
+        if (
+            not force_refresh
+            and cached is not None
+            and now - _BRIDGE_PROCESS_STATUS_CACHE["ts"] <= _BRIDGE_PROCESS_STATUS_CACHE_TTL
+        ):
+            return deepcopy(cached)
+
+        processes = _bridge_processes()
+        payload = {
+            'running': bool(processes),
+            'pid': processes[0]['pid'] if processes else None,
+            'pids': [p['pid'] for p in processes],
+            'processes': processes,
+        }
+        _BRIDGE_PROCESS_STATUS_CACHE.update({"ts": time.monotonic(), "data": deepcopy(payload)})
+        return payload
 
 
 def stop_bridge_process():
     processes = _bridge_processes()
     if not processes:
+        clear_bridge_process_status_cache()
         return {'stopped': 0, 'pids': []}
     pids = [p['pid'] for p in processes]
     if platform.system() == 'Windows':
@@ -446,11 +475,12 @@ def stop_bridge_process():
         )
     else:
         subprocess.run(['kill', '-TERM'] + [str(pid) for pid in pids], check=False)
+    clear_bridge_process_status_cache()
     return {'stopped': len(pids), 'pids': pids}
 
 
 def start_bridge_process():
-    status = bridge_process_status_payload()
+    status = bridge_process_status_payload(force_refresh=True)
     if status['running']:
         return {'pid': status['pid'], 'already_running': True}
 
@@ -466,6 +496,7 @@ def start_bridge_process():
         creationflags=creationflags,
         env=_bridge_env(),
     )
+    clear_bridge_process_status_cache()
     return {'pid': proc.pid, 'already_running': False}
 
 
@@ -623,14 +654,24 @@ def bridge_process_status():
 @require_root_admin
 def bridge_process_start():
     result = start_bridge_process()
-    return jsonify({"ok": True, **result, **bridge_process_status_payload()})
+    pid = result.get("pid")
+    status = {
+        "running": True,
+        "pid": pid,
+        "pids": [pid] if pid else [],
+        "processes": [],
+    }
+    cache_bridge_process_status(status)
+    return jsonify({"ok": True, **result, **status})
 
 
 @bp.route("/api/bridge/process/stop", methods=["POST"])
 @require_root_admin
 def bridge_process_stop():
     result = stop_bridge_process()
-    return jsonify({"ok": True, **result, **bridge_process_status_payload()})
+    status = {"running": False, "pid": None, "pids": [], "processes": []}
+    cache_bridge_process_status(status)
+    return jsonify({"ok": True, **result, **status})
 
 
 def _mobile_profile_payload(cfg=None, profile=None):

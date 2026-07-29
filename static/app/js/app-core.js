@@ -8,6 +8,8 @@ window.onerror = function(msg, src, line, col, err){
 const API = '/api'
 const MOBILE_API_FALLBACK = `${location.protocol}//${location.hostname}:5002/api`
 let editor, curStrat=null, scResults=[], charts={}, dlTaskId=null, dlTimer=null
+let _bridgePollStarted = false
+let _bridgeStatusPromise = null
 
 function _coreActionAttrs(action, payload){
   return `data-core-action="${action}" data-core-payload="${encodeURIComponent(JSON.stringify(payload || {}))}"`
@@ -96,8 +98,10 @@ function initAuthenticatedShell(){
   if(!_currentUser) return
   loadAnnouncements()
   refreshLiveTradeBadge()
-  refreshBridgeProcessBadge()
-  if(!window._bridgeProcessTimer) window._bridgeProcessTimer = setInterval(refreshBridgeProcessBadge, 5000)
+  if(!_bridgePollStarted){
+    _bridgePollStarted = true
+    pollEvery(refreshBridgeProcessBadge, 15000)
+  }
   startPoll()
   initAI()
   initBrokerConfig()
@@ -234,23 +238,34 @@ function _renderNavModeBadge(){
 }
 
 async function refreshBridgeProcessBadge(){
-  const bridgeEl = document.getElementById('bridgeProcessBadge')
-  const topEl = document.getElementById('mobileTradeBadge')
-  const r = await api('/bridge/process')
-  if(!r || !r.ok){
-    const title = '读取桥接器后台状态失败：' + bridgeProcessErrorText(r, '/api/bridge/process')
-    _setSwitchBadge(bridgeEl, 'bridge-switch checking', '桥接器 未知', title)
-    _setSwitchBadge(topEl, 'bridge-switch checking', '手机交易 未知', title)
-    return null
+  if(!_currentUser) return null
+  if(_bridgeStatusPromise) return _bridgeStatusPromise
+  _pollInflight.bridge = true
+  _bridgeStatusPromise = (async()=>{
+    const bridgeEl = document.getElementById('bridgeProcessBadge')
+    const topEl = document.getElementById('mobileTradeBadge')
+    const r = await api('/bridge/process')
+    if(!r || !r.ok){
+      const title = '读取桥接器后台状态失败：' + bridgeProcessErrorText(r, '/api/bridge/process')
+      _setSwitchBadge(bridgeEl, 'bridge-switch checking', '桥接器 未知', title)
+      _setSwitchBadge(topEl, 'bridge-switch checking', '手机交易 未知', title)
+      return null
+    }
+    if(r.running){
+      _setSwitchBadge(bridgeEl, 'bridge-switch on', `桥接器 开 ${r.pid||''}`, '点击关闭后台桥接器进程')
+      _setSwitchBadge(topEl, 'bridge-switch on', '手机交易 已连接', '打开交易执行控制台：桥接器运行中')
+    }else{
+      _setSwitchBadge(bridgeEl, 'bridge-switch off', '桥接器 关', '点击后台启动桥接器，不弹 CMD 窗口')
+      _setSwitchBadge(topEl, 'bridge-switch off', '手机交易 未启动', '打开交易执行控制台：桥接器未启动')
+    }
+    return r
+  })()
+  try{
+    return await _bridgeStatusPromise
+  }finally{
+    _pollInflight.bridge = false
+    _bridgeStatusPromise = null
   }
-  if(r.running){
-    _setSwitchBadge(bridgeEl, 'bridge-switch on', `桥接器 开 ${r.pid||''}`, '点击关闭后台桥接器进程')
-    _setSwitchBadge(topEl, 'bridge-switch on', '手机交易 已连接', '打开交易执行控制台：桥接器运行中')
-  }else{
-    _setSwitchBadge(bridgeEl, 'bridge-switch off', '桥接器 关', '点击后台启动桥接器，不弹 CMD 窗口')
-    _setSwitchBadge(topEl, 'bridge-switch off', '手机交易 未启动', '打开交易执行控制台：桥接器未启动')
-  }
-  return r
 }
 
 async function toggleBridgeProcess(){
@@ -474,6 +489,9 @@ function switchPage(name,el){
   syncMobileNavigation(name)
   syncMobileHeader(name)
   toggleMobileMore(false)
+  if(typeof aitSetPageActive === 'function') aitSetPageActive(name==='aitrader')
+  if(_currentUser && _isCorePollingPage()){ fetchSt(); fetchPositions(); fetchFunds() }
+  if(_isMarketContextPage()) loadMarketContext(false)
   if(name==='strategy'&&editor) setTimeout(()=>editor.refresh(),80)
 }
 // 按 URL hash 恢复页面：点对应页签（复用其 data-ui-click，连同 loadPaperPage/initReviewPage 等初始化一并触发）
@@ -495,13 +513,22 @@ function switchRTab(name,el){
 }
 
 let _pollStarted = false
-const _pollInflight = {status:false, positions:false, funds:false}
+const _pollInflight = {status:false, positions:false, funds:false, bridge:false}
 const _statusRenderSig = {pool:'', queue:'', logs:''}
 function _statusPayloadSig(value){
   try{return JSON.stringify(value||[])}catch(e){return ''}
 }
-function pollEvery(fn, ms){
-  const run = () => { if(!document.hidden) fn() }
+function _activePageName(){
+  return document.querySelector('.page.active')?.id?.replace(/^page-/,'') || 'monitor'
+}
+function _isCorePollingPage(){
+  return ['monitor','execution'].includes(_activePageName())
+}
+function _isMarketContextPage(){
+  return ['monitor','strategy'].includes(_activePageName())
+}
+function pollEvery(fn, ms, when=null){
+  const run = () => { if(!document.hidden && (!when || when())) fn() }
   run()
   return setInterval(run, ms)
 }
@@ -509,12 +536,16 @@ function startPoll(){
   if(!_currentUser) return
   if(_pollStarted) return
   _pollStarted = true
-  pollEvery(fetchSt, 5000)
-  pollEvery(fetchPositions, 8000)   // 持仓刷新带实时价格，避免请求重叠造成体感卡顿
+  pollEvery(fetchSt, 10000)
+  pollEvery(fetchPositions, 8000, _isCorePollingPage)
   // 资金接口只读缓存；降低轮询频率，下单/查账户后仍会事件驱动刷新。
-  pollEvery(fetchFunds, 15000)
+  pollEvery(fetchFunds, 15000, _isCorePollingPage)
   document.addEventListener('visibilitychange', ()=>{
-    if(!document.hidden){ fetchSt(); fetchPositions(); fetchFunds() }
+    if(!document.hidden){
+      fetchSt()
+      if(_isCorePollingPage()){ fetchPositions(); fetchFunds() }
+      if(_isMarketContextPage()) loadMarketContext(false)
+    }
   })
   refreshAutoModeBadge()   // 顶部实盘自动化状态标签
 }
@@ -3104,7 +3135,11 @@ function fillAiFromEditor(){
 
 // ── 大盘市场环境（含实时指数行情）──
 let _mktRefreshTimer = null
+let _mktInflight = false
+let _mktFollowupTimer = null
 async function loadMarketContext(force=false){
+  if(_mktInflight) return
+  _mktInflight = true
   // 用户点 ⟳ 时给可见反馈
   if(force){
     document.querySelectorAll('[data-ui-click*="loadMarketContext(true)"]').forEach(b=>{
@@ -3157,6 +3192,12 @@ async function loadMarketContext(force=false){
     if(idxEl) idxEl.innerHTML=idxHtml
     const idxElM = document.getElementById('mktIndicesMon')
     if(idxElM) idxElM.innerHTML=idxHtml
+    if(r.refreshing && !_mktFollowupTimer){
+      _mktFollowupTimer = setTimeout(()=>{
+        _mktFollowupTimer = null
+        loadMarketContext(false)
+      }, 1000)
+    }
 
   }catch(e){ console.warn('市场环境加载失败:',e) }
   finally{
@@ -3166,11 +3207,14 @@ async function loadMarketContext(force=false){
         b.disabled = false
       })
     }
+    _mktInflight = false
   }
 
-  // 启动定时刷新（每60秒，只启动一次）
+  // 仅在使用市场环境的页面刷新，后台页签不穿透服务端缓存。
   if(!_mktRefreshTimer){
-    _mktRefreshTimer = setInterval(()=>loadMarketContext(true), 60000)
+    _mktRefreshTimer = setInterval(()=>{
+      if(!document.hidden && _isMarketContextPage()) loadMarketContext(false)
+    }, 60000)
   }
 }
 

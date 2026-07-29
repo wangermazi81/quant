@@ -1,5 +1,5 @@
 ﻿/* ══════════════ 🤖 AI 交易模块（本地）前端驱动 ══════════════ */
-const aitS = { roles:[], agents:{}, decisions:[], execs:[], pending:{}, providers:{}, strategyCatalog:[], settings:null, config:null, tokenUsage:null, candidateTrace:null, es:null, inited:false, loading:false, curStock:'', lastError:'' };
+const aitS = { roles:[], agents:{}, decisions:[], execs:[], pending:{}, providers:{}, strategyCatalog:[], settings:null, config:null, tokenUsage:null, candidateTrace:null, es:null, inited:false, loading:false, accountLoading:false, curStock:'', lastError:'' };
 
 function _aiActionAttrs(action, value){
   return `data-ai-action="${action}" data-ai-value="${encodeURIComponent(String(value ?? ''))}"`;
@@ -22,7 +22,7 @@ document.addEventListener('click', e=>{
 
 async function initAiTrader(){
   if(aitS.loading) return;
-  if(aitS.inited){ aitRefreshStatus(); return; }
+  if(aitS.inited){ aitSetPageActive(true); aitRefreshStatus(); aitLoadAccount(); return; }
   aitS.loading = true;
   aitSetHealth('loading','正在连接 AI 交易引擎','读取模型、风控、账户和实时流');
   try{
@@ -38,7 +38,10 @@ async function initAiTrader(){
     aitRenderAgents();
     aitConnectSSE();
     await aitLoadAccount();
-    if(!aitS.acctTimer) aitS.acctTimer = setInterval(aitLoadAccount, 15000);
+    if(!aitS.acctTimer) aitS.acctTimer = setInterval(()=>{
+      const page=document.getElementById('page-aitrader');
+      if(!document.hidden && page?.classList.contains('active')) aitLoadAccount();
+    }, 30000);
     aitS.inited = true;
     aitS.lastError = '';
     aitRenderHealth();
@@ -50,6 +53,17 @@ async function initAiTrader(){
     fbToast(aitS.lastError, true);
   }finally{
     aitS.loading = false;
+  }
+}
+
+function aitSetPageActive(active){
+  if(active){
+    if(aitS.inited && !aitS.es) aitConnectSSE();
+    return;
+  }
+  if(aitS.es){
+    try{ aitS.es.close(); }catch(e){}
+    aitS.es=null;
   }
 }
 
@@ -258,7 +272,17 @@ async function aitStopOnce(){ await aitControl('/ai_trader/stop_once','单轮测
 
 /* 🤖 AI 独立模拟账户 */
 function aitFmt(n){ return (Number(n)||0).toLocaleString('zh-CN',{maximumFractionDigits:0}); }
-async function aitLoadAccount(){ const r=await api('/ai_trader/account'); if(r&&r.ok) aitRenderAccount(r.account, r.positions); return r; }
+async function aitLoadAccount(){
+  if(aitS.accountLoading) return null;
+  aitS.accountLoading=true;
+  try{
+    const r=await api('/ai_trader/account');
+    if(r&&r.ok) aitRenderAccount(r.account, r.positions);
+    return r;
+  }finally{
+    aitS.accountLoading=false;
+  }
+}
 function aitRenderAccount(acc, poss){
   const a=document.getElementById('aitAccount');
   if(a&&acc){

@@ -1,6 +1,9 @@
 """市场环境 / 大盘复盘 API 蓝图。"""
 from __future__ import annotations
 
+import logging
+import threading
+
 from flask import Blueprint, request, jsonify
 
 from app_security import rate_limit
@@ -13,9 +16,14 @@ from market import market_context as mctx
 from app_state import require_auth
 
 bp = Blueprint("market", __name__)
+logger = logging.getLogger(__name__)
 
 _MARKET_REVIEW_CACHE_TTL = 60
 _MARKET_REVIEW_CACHE: dict[str, tuple[float, dict]] = {}
+_MARKET_CONTEXT_CACHE_TTL = 30
+_MARKET_CONTEXT_CACHE = {"ts": 0.0, "data": None, "refreshing": False}
+_MARKET_CONTEXT_CACHE_LOCK = threading.Lock()
+_MARKET_CONTEXT_CACHE_CONDITION = threading.Condition(_MARKET_CONTEXT_CACHE_LOCK)
 _EASTMONEY_INDUSTRY_URL = "https://17.push2.eastmoney.com/api/qt/clist/get"
 _TRUSTED_TWO_MARKET_TURNOVER_SOURCES = {
     "eastmoney_three_market_verified",
@@ -196,26 +204,84 @@ def _should_use_archive_for_live(now: datetime | None = None) -> bool:
     return clock < 930 or clock >= 1510
 
 
+def clear_market_context_cache():
+    with _MARKET_CONTEXT_CACHE_CONDITION:
+        _MARKET_CONTEXT_CACHE.update({"ts": 0.0, "data": None, "refreshing": False})
+        _MARKET_CONTEXT_CACHE_CONDITION.notify_all()
+
+
+def _compute_market_context(force_refresh=False):
+    return deepcopy(mctx.get_market_regime(force_refresh=force_refresh))
+
+
+def _refresh_market_context_cache():
+    try:
+        payload = _compute_market_context(force_refresh=True)
+        with _MARKET_CONTEXT_CACHE_CONDITION:
+            _MARKET_CONTEXT_CACHE.update({"ts": time(), "data": deepcopy(payload)})
+            _MARKET_CONTEXT_CACHE_CONDITION.notify_all()
+    except Exception:
+        logger.exception("后台刷新市场环境失败")
+    finally:
+        with _MARKET_CONTEXT_CACHE_CONDITION:
+            _MARKET_CONTEXT_CACHE["refreshing"] = False
+            _MARKET_CONTEXT_CACHE_CONDITION.notify_all()
+
+
+def get_market_context_payload(force_refresh=False):
+    now = time()
+    should_start = False
+    cold_owner = False
+    with _MARKET_CONTEXT_CACHE_CONDITION:
+        cached = _MARKET_CONTEXT_CACHE["data"]
+        stale = cached is not None and now - _MARKET_CONTEXT_CACHE["ts"] > _MARKET_CONTEXT_CACHE_TTL
+        if cached is not None:
+            if (force_refresh or stale) and not _MARKET_CONTEXT_CACHE["refreshing"]:
+                _MARKET_CONTEXT_CACHE["refreshing"] = True
+                should_start = True
+            payload = deepcopy(cached)
+            if _MARKET_CONTEXT_CACHE["refreshing"]:
+                payload["refreshing"] = True
+        else:
+            if _MARKET_CONTEXT_CACHE["refreshing"]:
+                _MARKET_CONTEXT_CACHE_CONDITION.wait_for(
+                    lambda: _MARKET_CONTEXT_CACHE["data"] is not None
+                    or not _MARKET_CONTEXT_CACHE["refreshing"]
+                )
+                payload = deepcopy(_MARKET_CONTEXT_CACHE["data"])
+            else:
+                _MARKET_CONTEXT_CACHE["refreshing"] = True
+                cold_owner = True
+                payload = None
+
+    if cold_owner:
+        try:
+            payload = _compute_market_context(force_refresh=force_refresh)
+            with _MARKET_CONTEXT_CACHE_CONDITION:
+                _MARKET_CONTEXT_CACHE.update(
+                    {"ts": time(), "data": deepcopy(payload), "refreshing": False}
+                )
+                _MARKET_CONTEXT_CACHE_CONDITION.notify_all()
+            return payload
+        except Exception:
+            with _MARKET_CONTEXT_CACHE_CONDITION:
+                _MARKET_CONTEXT_CACHE["refreshing"] = False
+                _MARKET_CONTEXT_CACHE_CONDITION.notify_all()
+            raise
+
+    if payload is None:
+        return get_market_context_payload(force_refresh=force_refresh)
+    if should_start:
+        threading.Thread(target=_refresh_market_context_cache, daemon=True).start()
+    return payload
+
+
 @bp.route("/api/market/context")
 @rate_limit(12, 60, scope="public_refresh")
 def api_market_context():
     try:
         force = request.args.get("refresh", "0") == "1"
-        ctx   = mctx.get_market_regime(force_refresh=force)
-        try:
-            index_pairs = [(1, "000001"), (0, "399001"), (0, "399006")]
-            name_map    = {"000001": "上证指数", "399001": "深证成指", "399006": "创业板指"}
-            qs = dg.get_index_quotes(index_pairs)
-            for q in qs:
-                nm = name_map.get(q.get("code", ""), "")
-                if nm:
-                    ctx.setdefault("indices", {}).setdefault(nm, {}).update({
-                        "price":  round(float(q.get("price") or 0), 2),
-                        "change": round(float(q.get("change_pct") or 0), 2),
-                        "code":   q.get("code", ""),
-                    })
-        except Exception:
-            pass
+        ctx = get_market_context_payload(force_refresh=force)
         return jsonify({"ok": True, **ctx})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})

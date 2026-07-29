@@ -9,6 +9,9 @@ analytics.datasource_config: primary provider first, optional fallback second.
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from copy import deepcopy
 from datetime import datetime
 from typing import Any, Iterable
 
@@ -18,6 +21,11 @@ from analytics import datasource_config
 from analytics import tushare_provider
 
 logger = logging.getLogger(__name__)
+
+_DISPLAY_QUOTE_CACHE: dict[tuple[str, ...], tuple[float, list[dict]]] = {}
+_DISPLAY_QUOTE_INFLIGHT: dict[tuple[str, ...], threading.Event] = {}
+_DISPLAY_QUOTE_CACHE_LOCK = threading.Lock()
+_DISPLAY_QUOTE_CACHE_TTL = 15.0
 
 
 def normalize_code(code: str) -> str:
@@ -243,6 +251,52 @@ def get_realtime_quotes_result(codes: Iterable[str] | None = None) -> dict:
 
 def get_realtime_quotes(codes: Iterable[str] | None = None) -> list[dict]:
     return get_realtime_quotes_result(codes).get("quotes", [])
+
+
+def clear_display_quote_cache() -> None:
+    with _DISPLAY_QUOTE_CACHE_LOCK:
+        _DISPLAY_QUOTE_CACHE.clear()
+
+
+def get_display_quotes(codes: Iterable[str], max_age: float = _DISPLAY_QUOTE_CACHE_TTL) -> list[dict]:
+    """短缓存的界面行情，合并持仓、资金和多标签页的重复读取。"""
+    key = tuple(sorted({normalize_code(code) for code in codes if str(code or "").strip()}))
+    if not key:
+        return []
+
+    now = time.monotonic()
+    with _DISPLAY_QUOTE_CACHE_LOCK:
+        cached = _DISPLAY_QUOTE_CACHE.get(key)
+        if cached and now - cached[0] <= max(0.0, float(max_age)):
+            return deepcopy(cached[1])
+        event = _DISPLAY_QUOTE_INFLIGHT.get(key)
+        owner = event is None
+        if owner:
+            event = threading.Event()
+            _DISPLAY_QUOTE_INFLIGHT[key] = event
+
+    if not owner:
+        event.wait()
+        with _DISPLAY_QUOTE_CACHE_LOCK:
+            cached = _DISPLAY_QUOTE_CACHE.get(key)
+            return deepcopy(cached[1]) if cached else []
+
+    try:
+        rows = get_realtime_quotes(key)
+    except Exception:
+        with _DISPLAY_QUOTE_CACHE_LOCK:
+            _DISPLAY_QUOTE_INFLIGHT.pop(key, None)
+            event.set()
+        raise
+
+    with _DISPLAY_QUOTE_CACHE_LOCK:
+        _DISPLAY_QUOTE_CACHE[key] = (time.monotonic(), deepcopy(rows))
+        _DISPLAY_QUOTE_INFLIGHT.pop(key, None)
+        event.set()
+        if len(_DISPLAY_QUOTE_CACHE) > 128:
+            oldest = min(_DISPLAY_QUOTE_CACHE, key=lambda item: _DISPLAY_QUOTE_CACHE[item][0])
+            _DISPLAY_QUOTE_CACHE.pop(oldest, None)
+        return deepcopy(rows)
 
 
 def get_realtime_quote(code: str) -> dict:

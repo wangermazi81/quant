@@ -12,6 +12,9 @@ STRATEGY_SCAN_FILES = [
 FRONTEND_BOOT_FILES = [
     APP_JS / "app-core.js",
 ]
+AI_TRADER_FILES = [
+    APP_JS / "app-ai-trader.js",
+]
 FRONTEND_AUTH_FILES = [
     ROOT / "index.html",
     APP_JS / "app-core.js",
@@ -37,9 +40,36 @@ def test_frontends_guard_background_polling_and_overlapping_requests():
         text = path.read_text(encoding="utf-8")
         assert "_pollInflight" in text, path
         assert "document.hidden" in text, path
-        assert "pollEvery(fetchSt, 5000)" in text, path
-        assert "pollEvery(fetchPositions, 8000)" in text, path
-        assert "pollEvery(fetchFunds, 15000)" in text, path
+        assert "pollEvery(fetchSt, 10000)" in text, path
+        assert "pollEvery(fetchPositions, 8000, _isCorePollingPage)" in text, path
+        assert "pollEvery(fetchFunds, 15000, _isCorePollingPage)" in text, path
+        assert "pollEvery(refreshBridgeProcessBadge, 15000)" in text, path
+        assert "_pollInflight.bridge" in text, path
+        assert "_bridgeStatusPromise" in text, path
+        assert "_bridgeProcessTimer" not in text, path
+        visibility_block = text[text.find("document.addEventListener('visibilitychange'"):][:220]
+        assert "if(_isCorePollingPage())" in visibility_block, path
+
+
+def test_market_context_polling_uses_cache_and_only_runs_on_relevant_pages():
+    for path in STRATEGY_SCAN_FILES:
+        text = path.read_text(encoding="utf-8")
+        assert "_mktInflight" in text, path
+        assert "_isMarketContextPage()" in text, path
+        assert "loadMarketContext(false)" in text, path
+        assert "setInterval(()=>loadMarketContext(true), 60000)" not in text, path
+        assert "_mktFollowupTimer" in text, path
+
+
+def test_ai_account_polling_stops_outside_ai_page_and_deduplicates_requests():
+    for path in AI_TRADER_FILES:
+        text = path.read_text(encoding="utf-8")
+        assert "aitS.accountLoading" in text, path
+        assert "document.hidden" in text, path
+        assert "page-aitrader" in text, path
+        assert "function aitSetPageActive(active)" in text, path
+        assert "aitS.es.close()" in text, path
+        assert "setInterval(aitLoadAccount, 15000)" not in text, path
 
 
 def test_status_polling_skips_unchanged_heavy_renders():
