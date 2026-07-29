@@ -68,6 +68,18 @@ def test_all_api_json_requests_reject_malformed_json():
     assert response.get_json()["error"] == "JSON 请求体格式错误"
 
 
+@pytest.mark.parametrize("path", ["/api/start", "/api/stop"])
+def test_bodyless_control_routes_accept_legacy_empty_json_header(path):
+    response = main.app.test_client().post(
+        path,
+        data=b"",
+        content_type="application/json",
+    )
+
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "请先登录"
+
+
 @pytest.mark.parametrize("name", ["'\"<script>", "A" * 41, "AI/../../etc"])
 def test_chain_stocks_rejects_invalid_name_before_query(monkeypatch, name):
     calls = []

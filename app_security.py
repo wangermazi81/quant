@@ -368,6 +368,11 @@ def init_security(app):
             or not request.is_json
         ):
             return None
+        # 兼容部署前已打开的旧前端：start/stop 本来就没有请求参数，但旧版仍发送
+        # application/json 空 body。只对白名单中的无参控制路由放行，其他 API
+        # 继续严格拒绝空或畸形 JSON。
+        if request.path in {"/api/start", "/api/stop"} and not request.get_data(cache=True):
+            return None
 
         try:
             payload = request.get_json(silent=False)
