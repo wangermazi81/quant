@@ -76,3 +76,30 @@ def test_unified_gateway_uses_current_only_when_config_selects_current(monkeypat
     assert result["ok"] is True
     assert result["source"] == "current"
     assert result["data"]["zt_count"] == 1
+
+
+def test_live_index_quotes_never_use_tushare_daily_replay(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dg.datasource_config, "get_internal_config", lambda: _tushare_cfg())
+    monkeypatch.setattr(
+        dg.tushare_provider,
+        "fetch_index_quotes",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("实时指数不得使用 Tushare index_daily")
+        ),
+    )
+    monkeypatch.setattr(
+        dg,
+        "_current_index_quotes",
+        lambda pairs: calls.append(list(pairs)) or [{
+            "code": "000001",
+            "price": 3388.88,
+            "change_pct": 0.42,
+        }],
+    )
+
+    dg.clear_live_index_quote_cache()
+    rows = dg.get_live_index_quotes([(1, "000001")])
+
+    assert rows == [{"code": "000001", "price": 3388.88, "change_pct": 0.42}]
+    assert calls == [[(1, "000001")]]

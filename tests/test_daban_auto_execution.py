@@ -49,6 +49,7 @@ def uid(tmp_path, monkeypatch):
 def scan_env(uid, monkeypatch):
     # 工单4 后 do_scan 在 scan_service，is_trading_time/nm 绑定在该模块
     monkeypatch.setattr(scan_service, "is_trading_time", lambda: True)
+    monkeypatch.setattr(trade_service, "is_trading_time", lambda: True)
     monkeypatch.setattr(ths_quote, "get_client", lambda *a, **k: None)
     monkeypatch.setattr(nm, "send_notification", lambda *a, **k: {"ok": True})
     monkeypatch.setattr(sm, "get_position_config", lambda *a, **k: {
@@ -124,6 +125,75 @@ def test_auto_live_buy_creates_bridge_signal(scan_env, monkeypatch):
     assert signal["action"] == "BUY"
     assert signal["status"] == "pending"
     assert signal["shares"] == 1500
+
+
+def test_scan_finishing_after_market_close_does_not_enqueue(scan_env, monkeypatch):
+    user_id, _ = scan_env
+    _mock_scan(monkeypatch, position_ratio=0.15)
+    state = _state(user_id, auto_execute=True)
+    trading_checks = iter([True, False])
+    monkeypatch.setattr(scan_service, "is_trading_time", lambda: next(trading_checks))
+
+    main.do_scan(user_id)
+
+    assert state["queue"] == []
+    assert pb.get_broker(user_id).get_positions() == []
+
+
+def test_paper_position_guard_reads_ledger_when_memory_view_is_stale(scan_env, monkeypatch):
+    user_id, _ = scan_env
+    state = _state(user_id, auto_execute=False)
+    assert main.execute_buy(user_id, "000001", "LedgerOnly", 10.0, 1000)["ok"]
+    state["positions"].clear()
+    state["today_trades"] = 0
+    monkeypatch.setattr(sm, "get_position_config", lambda *a, **k: {
+        "max_daily": 5,
+        "max_hold": 1,
+        "sizing": "equal",
+    })
+    _mock_scan(monkeypatch, position_ratio=0.15)
+
+    main.do_scan(user_id)
+
+    assert state["queue"] == []
+    assert [p["code"] for p in pb.get_broker(user_id).get_positions()] == ["000001"]
+
+
+def test_paper_position_guard_fails_closed_when_ledger_unavailable(scan_env, monkeypatch):
+    user_id, _ = scan_env
+    state = _state(user_id, auto_execute=False)
+    _mock_scan(monkeypatch, position_ratio=0.15)
+    monkeypatch.setattr(
+        scan_service.pb,
+        "get_broker",
+        lambda _uid: (_ for _ in ()).throw(RuntimeError("ledger unavailable")),
+    )
+
+    main.do_scan(user_id)
+
+    assert state["queue"] == []
+
+
+def test_auto_buy_refuses_after_market_close(uid, monkeypatch):
+    item = {
+        "code": "000003",
+        "name": "Closed",
+        "price": 10.0,
+        "shares": 100,
+        "status": "pending",
+    }
+    monkeypatch.setattr(trade_service, "is_trading_time", lambda: False)
+    monkeypatch.setattr(
+        trade_service,
+        "execute_buy",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("休市后不得进入自动买入执行")
+        ),
+    )
+
+    trade_service._auto_buy(uid, item)
+
+    assert item["status"] == "skip"
 
 
 def test_lianban_ride_auto_paper_sell_on_stop_loss(scan_env, monkeypatch):

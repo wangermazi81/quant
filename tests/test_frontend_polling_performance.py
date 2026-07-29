@@ -41,8 +41,9 @@ def test_frontends_guard_background_polling_and_overlapping_requests():
         assert "_pollInflight" in text, path
         assert "document.hidden" in text, path
         assert "pollEvery(fetchSt, 10000)" in text, path
-        assert "pollEvery(fetchPositions, 8000, _isCorePollingPage)" in text, path
-        assert "pollEvery(fetchFunds, 15000, _isCorePollingPage)" in text, path
+        assert "pollEvery(fetchPositions, 5000, _isCorePollingPage)" in text, path
+        assert "pollEvery(fetchFunds, 10000, _isCorePollingPage)" in text, path
+        assert "pollEvery(refreshPaperLiveView, 5000, _isPaperPollingPage)" in text, path
         assert "pollEvery(refreshBridgeProcessBadge, 15000)" in text, path
         assert "_pollInflight.bridge" in text, path
         assert "_bridgeStatusPromise" in text, path
@@ -57,8 +58,27 @@ def test_market_context_polling_uses_cache_and_only_runs_on_relevant_pages():
         assert "_mktInflight" in text, path
         assert "_isMarketContextPage()" in text, path
         assert "loadMarketContext(false)" in text, path
+        assert "loadMarketIndices" in text, path
+        assert "setInterval(loadMarketIndices, 5000)" in text, path
+        assert "/market/indices" in text, path
         assert "setInterval(()=>loadMarketContext(true), 60000)" not in text, path
         assert "_mktFollowupTimer" in text, path
+        context_start = text.find("async function loadMarketContext(")
+        context_end = text.find("async function runAI(", context_start)
+        context_block = text[context_start:context_end]
+        assert "_renderMarketIndices(r.indices||{})" not in context_block, path
+
+
+def test_api_does_not_send_json_content_type_without_a_body():
+    text = (APP_JS / "app-core.js").read_text(encoding="utf-8")
+    start = text.find("async function api(")
+    end = text.find("// ═", start)
+    assert start != -1 and end != -1
+    block = text[start:end]
+
+    assert "const hasBody = body !== null && body !== undefined" in block
+    assert "if(hasBody)" in block
+    assert "headers:{'Content-Type':'application/json'}" not in block
 
 
 def test_ai_account_polling_stops_outside_ai_page_and_deduplicates_requests():
@@ -74,7 +94,7 @@ def test_ai_account_polling_stops_outside_ai_page_and_deduplicates_requests():
 
 def test_performance_scripts_use_current_cache_version():
     html = (ROOT / "index.html").read_text(encoding="utf-8")
-    assert "/static/app/js/app-core.js?v=20260729-stock-name" in html
+    assert "/static/app/js/app-core.js?v=20260730-live-runtime" in html
     assert "/static/app/js/app-ai-trader.js?v=20260729-cloud-refresh" in html
 
 

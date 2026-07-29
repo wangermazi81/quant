@@ -11,6 +11,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tests._module_stubs import stub_project_module  # noqa: E402
@@ -96,3 +98,62 @@ def test_scheduler_process_bypasses_blocking_atexit_handlers():
 
     assert "exit_code = main()" in source
     assert "os._exit(exit_code)" in source
+
+
+def test_market_close_keeps_enabled_strategies_for_next_trading_day(monkeypatch):
+    from core import schedulers
+
+    state = {
+        "running": True,
+        "queue": [
+            {"code": "000001", "status": "pending"},
+            {"code": "000002", "status": "done"},
+        ],
+    }
+    cancelled = []
+    monkeypatch.setattr(schedulers, "user_states", {901: state})
+    monkeypatch.setattr(schedulers, "get_user_state", lambda uid: state)
+    monkeypatch.setattr(schedulers, "_snap_all_paper_equity", lambda: None)
+    monkeypatch.setattr(
+        schedulers.um,
+        "cancel_pending_signals",
+        lambda uid: cancelled.append(uid) or 1,
+    )
+    monkeypatch.setattr(schedulers, "_add_log", lambda *args, **kwargs: None)
+
+    schedulers._on_market_close()
+
+    assert state["running"] is True
+    assert state["queue"] == [{"code": "000002", "status": "done"}]
+    assert "_persist_state" not in schedulers._on_market_close.__code__.co_names
+    assert cancelled == [901]
+
+
+def test_scheduler_does_not_dispatch_scans_outside_trading_hours(monkeypatch):
+    from core import schedulers
+
+    class StopLoop(Exception):
+        pass
+
+    started = []
+    monkeypatch.setattr(
+        schedulers,
+        "user_states",
+        {902: {"running": True, "active_strategy": "custom.py"}},
+    )
+    monkeypatch.setattr(schedulers, "is_trading_time", lambda: False)
+    monkeypatch.setattr(
+        schedulers.threading,
+        "Thread",
+        lambda *args, **kwargs: started.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        schedulers.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(StopLoop()),
+    )
+
+    with pytest.raises(StopLoop):
+        schedulers.run_scheduler()
+
+    assert started == []

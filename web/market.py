@@ -24,6 +24,11 @@ _MARKET_CONTEXT_CACHE_TTL = 30
 _MARKET_CONTEXT_CACHE = {"ts": 0.0, "data": None, "refreshing": False}
 _MARKET_CONTEXT_CACHE_LOCK = threading.Lock()
 _MARKET_CONTEXT_CACHE_CONDITION = threading.Condition(_MARKET_CONTEXT_CACHE_LOCK)
+_MARKET_INDEX_META = [
+    (1, "000001", "上证指数"),
+    (0, "399001", "深证成指"),
+    (0, "399006", "创业板指"),
+]
 _EASTMONEY_INDUSTRY_URL = "https://17.push2.eastmoney.com/api/qt/clist/get"
 _TRUSTED_TWO_MARKET_TURNOVER_SOURCES = {
     "eastmoney_three_market_verified",
@@ -276,6 +281,37 @@ def get_market_context_payload(force_refresh=False):
     return payload
 
 
+def get_market_indices_payload() -> dict:
+    pairs = [(market, code) for market, code, _name in _MARKET_INDEX_META]
+    name_map = {code: name for _market, code, name in _MARKET_INDEX_META}
+    indices = {}
+    for quote in dg.get_live_index_quotes(pairs):
+        code = str(quote.get("code") or "")
+        name = name_map.get(code)
+        if not name:
+            continue
+        indices[name] = {
+            "code": code,
+            "price": round(float(quote.get("price") or 0), 2),
+            "change": round(float(quote.get("change_pct") or 0), 2),
+        }
+    return {
+        "ok": bool(indices),
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "indices": indices,
+    }
+
+
+@bp.route("/api/market/indices")
+@rate_limit(30, 60, scope="public_refresh")
+def api_market_indices():
+    try:
+        return jsonify(get_market_indices_payload())
+    except Exception as exc:
+        logger.warning(f"实时指数行情获取失败: {exc}")
+        return jsonify({"ok": False, "error": "实时指数行情暂不可用", "indices": {}})
+
+
 @bp.route("/api/market/context")
 @rate_limit(12, 60, scope="public_refresh")
 def api_market_context():
@@ -359,20 +395,9 @@ def _build_market_review(date_text: str | None = None, allow_archive: bool = Tru
         "sectors": {"top_gainers": [], "top_losers": []},
     }
 
-    # 1. 指数实时价格 —— 优先 TDX，降级 akshare
-    index_meta = [(1, "000001", "上证指数"), (0, "399001", "深证成指"), (0, "399006", "创业板指")]
+    # 1. 指数实时价格 —— 只走实时源，禁止 Tushare 日线回放冒充盘中行情
     try:
-        pairs    = [(mkt, code) for mkt, code, _ in index_meta]
-        qs       = dg.get_index_quotes(pairs)
-        name_map = {code: name for _, code, name in index_meta}
-        for q in qs:
-            nm = name_map.get(q.get("code", ""), "")
-            if nm:
-                review["indices"][nm] = {
-                    "code":   q.get("code", ""),
-                    "price":  round(float(q.get("price") or 0), 2),
-                    "change": round(float(q.get("change_pct") or 0), 2),
-                }
+        review["indices"] = get_market_indices_payload()["indices"]
     except Exception:
         pass
 

@@ -25,6 +25,7 @@ from core.trade_service import (
     _check_add_position, _auto_buy,
 )
 from market.market_data import is_trading_time
+from broker import paper_broker as pb
 from strategy_engine import strategy_manager as sm
 from strategy_engine.strategy import scan_all
 
@@ -118,6 +119,15 @@ def do_scan(uid: int):
         s["scanned"] += len(results)
 
     s["pool"] = results
+    if not is_trading_time():
+        _add_log(uid, "⏸ 扫描完成时已休市，本轮结果仅展示，不入队、不下单", "WARN")
+        s["scan_progress"] = {
+            "running": False,
+            "stage": "已休市",
+            "current": 0,
+            "total": 0,
+        }
+        return
 
     added = 0
     buy_candidates = [r for r in results if r.get("signal", True)]
@@ -173,7 +183,21 @@ def do_scan(uid: int):
         if _ocr.get("date") == datetime.now().strftime("%Y-%m-%d"):
             _occupied |= {c for c in (_ocr.get("codes") or []) if c}
     else:
-        _occupied = set((s.get("positions") or {}).keys())
+        try:
+            _occupied = {
+                str(p.get("code") or "")
+                for p in pb.get_broker(uid).get_positions()
+                if str(p.get("code") or "")
+            }
+        except Exception as exc:
+            _add_log(uid, f"❌ 模拟盘持仓账本不可用，本轮禁止开仓: {exc}", "error")
+            s["scan_progress"] = {
+                "running": False,
+                "stage": "持仓账本不可用",
+                "current": 0,
+                "total": 0,
+            }
+            return
     # 仅计 pending（待执行）买单：done 的买单已落到持仓/台账，由上面持仓侧统计，
     # 再从队列计会在"会话内买入又卖出"后被 done 残留记录永久错占名额。
     _occupied |= {q["code"] for q in s["queue"]
@@ -192,6 +216,9 @@ def do_scan(uid: int):
     _avail_left = _available_cash    # 剩余可用资金（含扣除在途买单），逐仓递减
 
     for r in buy_candidates:
+        if not is_trading_time():
+            _add_log(uid, "⏸ 入队过程中已休市，剩余信号不再入队或下单", "WARN")
+            break
         code  = r["code"]
         # 报价缺失绝不能用 ¥1 兜底：那会把 20 万预算算成 20 万股，
         # 模拟盘按 ≈¥1 成交后成本严重失真，实盘则发出 ¥1 限价单白占开仓名额与额度。
@@ -266,7 +293,14 @@ def do_scan(uid: int):
                 "action":     "buy",
                 "status":     "pending",
             }
+            if not is_trading_time():
+                _add_log(uid, "⏸ 准备入队时已休市，本轮停止入队和下单", "WARN")
+                break
             s["queue"].append(item)
+            if not is_trading_time():
+                s["queue"].remove(item)
+                _add_log(uid, "⏸ 入队瞬间已休市，已撤回该信号", "WARN")
+                break
             _occupied.add(code)   # 占用一个名额，后续信号据此判断是否已满
             _avail_left -= price * shares   # 扣减剩余可用，防止本轮超买
             _add_log(uid,

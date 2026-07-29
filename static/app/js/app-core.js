@@ -133,7 +133,7 @@ function _setSwitchBadge(el, cls, text, title){
 // ── 监控页 KPI 指标条 ──────────────────────────────────────────
 // 只用已有数据源：fetchSt(状态/护栏) + fetchPositions(持仓) + fetchFunds(可用资金)。
 // 拿不到的一律显示「—」，不编造数字。
-const _kpi = {avail:null, mktValue:null, pnl:null, posCount:null, maxPos:null,
+const _kpi = {equity:null, avail:null, mktValue:null, pnl:null, posCount:null, maxPos:null,
               today:null, maxDaily:null, auto:null}
 function _kpiMoney(v){
   if(v==null || !isFinite(v)) return '—'
@@ -147,8 +147,10 @@ function _renderKpiBar(){
   }
   const setSub = (id, text) => { const el=document.getElementById(id); if(el && text!=null) el.textContent = text }
 
-  const net = (_kpi.avail!=null || _kpi.mktValue!=null)
-    ? (+(_kpi.avail||0) + +(_kpi.mktValue||0)) : null
+  const net = _kpi.equity!=null
+    ? +_kpi.equity
+    : ((_kpi.avail!=null || _kpi.mktValue!=null)
+      ? (+(_kpi.avail||0) + +(_kpi.mktValue||0)) : null)
   set('kpiNetAsset', _kpiMoney(net))
   setSub('kpiNetAssetSub', _kpi.mktValue!=null ? `可用 ${_kpiMoney(_kpi.avail)} + 市值 ${_kpiMoney(_kpi.mktValue)}` : '可用 + 持仓市值')
 
@@ -528,6 +530,13 @@ function _isCorePollingPage(){
 function _isMarketContextPage(){
   return ['monitor','strategy'].includes(_activePageName())
 }
+function _isPaperPollingPage(){
+  return _activePageName()==='paper'
+}
+async function refreshPaperLiveView(){
+  if(typeof loadPaperStats!=='function' || typeof loadPaperPositions!=='function') return
+  await Promise.all([loadPaperStats(), loadPaperPositions()])
+}
 function pollEvery(fn, ms, when=null){
   const run = () => { if(!document.hidden && (!when || when())) fn() }
   run()
@@ -538,13 +547,14 @@ function startPoll(){
   if(_pollStarted) return
   _pollStarted = true
   pollEvery(fetchSt, 10000)
-  pollEvery(fetchPositions, 8000, _isCorePollingPage)
-  // 资金接口只读缓存；降低轮询频率，下单/查账户后仍会事件驱动刷新。
-  pollEvery(fetchFunds, 15000, _isCorePollingPage)
+  pollEvery(fetchPositions, 5000, _isCorePollingPage)
+  pollEvery(fetchFunds, 10000, _isCorePollingPage)
+  pollEvery(refreshPaperLiveView, 5000, _isPaperPollingPage)
   document.addEventListener('visibilitychange', ()=>{
     if(!document.hidden){
       fetchSt()
       if(_isCorePollingPage()){ fetchPositions(); fetchFunds() }
+      if(_isPaperPollingPage()) refreshPaperLiveView()
       if(_isMarketContextPage()) loadMarketContext(false)
     }
   })
@@ -568,7 +578,10 @@ async function fetchFunds(){
     if(!d.ok || d.available==null) return   // 实盘暂无缓存时 available 为 null，保留药丸原值
     _availFunds = +d.available
     const totalAsset = d.total_asset!=null ? +d.total_asset : (d.equity!=null ? +d.equity : null)
-    if(Number.isFinite(totalAsset) && totalAsset>0) _accountTotalAsset = totalAsset
+    if(Number.isFinite(totalAsset) && totalAsset>0){
+      _accountTotalAsset = totalAsset
+      _kpi.equity = totalAsset
+    }
     else if(Number.isFinite(_availFunds) && d.market_value!=null) _accountTotalAsset = _availFunds + (+d.market_value||0)
     const capEl = document.getElementById('nCapital')
     if(capEl){
@@ -768,6 +781,10 @@ function renderPositions(positions){
     tb.innerHTML='<tr><td colspan="8"><div class="empty" style="height:40px">暂无持仓</div></td></tr>'
     if(totEl) totEl.textContent='0只'
     if(pnlEl) pnlEl.textContent=''
+    _kpi.posCount = 0
+    _kpi.pnl = 0
+    _kpi.mktValue = 0
+    _renderKpiBar()
     return
   }
   if(totEl) totEl.textContent=positions.length+'只'
@@ -3171,6 +3188,31 @@ function fillAiFromEditor(){
 let _mktRefreshTimer = null
 let _mktInflight = false
 let _mktFollowupTimer = null
+let _mktIndicesTimer = null
+let _mktIndicesInflight = false
+function _renderMarketIndices(indices){
+  const shortName = {'上证指数':'沪','深证成指':'深','创业板指':'创'}
+  const idxHtml = Object.entries(indices||{}).map(([nm,info])=>{
+    const chg = info.change || 0
+    const clr = chg>0?'var(--rl)':chg<0?'var(--gl)':'var(--t3)'
+    const arr = chg>0?'↑':chg<0?'↓':'→'
+    return `<span style="color:${clr};white-space:nowrap">${shortName[nm]||nm} <b>${info.price||'—'}</b> ${arr}${Math.abs(chg).toFixed(2)}%</span>`
+  }).join('<span style="color:var(--b1)">│</span>') || '<span style="color:var(--t4)">指数数据获取中...</span>'
+  const idxEl = document.getElementById('mktIndices')
+  if(idxEl) idxEl.innerHTML=idxHtml
+  const idxElM = document.getElementById('mktIndicesMon')
+  if(idxElM) idxElM.innerHTML=idxHtml
+}
+async function loadMarketIndices(){
+  if(document.hidden || !_isMarketContextPage() || _mktIndicesInflight) return
+  _mktIndicesInflight = true
+  try{
+    const r = await api('/market/indices')
+    if(r?.ok) _renderMarketIndices(r.indices||{})
+  }finally{
+    _mktIndicesInflight = false
+  }
+}
 async function loadMarketContext(force=false){
   if(_mktInflight) return
   _mktInflight = true
@@ -3213,19 +3255,6 @@ async function loadMarketContext(force=false){
     const aElM = document.getElementById('mktAdviceMon')
     if(aElM) aElM.textContent=r.advice||''
 
-    // ── 实时三大指数行情（共用渲染逻辑）────────────
-    const indices  = r.indices || {}
-    const shortName = {'上证指数':'沪','深证成指':'深','创业板指':'创'}
-    const idxHtml  = Object.entries(indices).map(([nm,info])=>{
-      const chg = info.change || 0
-      const clr = chg>0?'var(--rl)':chg<0?'var(--gl)':'var(--t3)'
-      const arr = chg>0?'↑':chg<0?'↓':'→'
-      return `<span style="color:${clr};white-space:nowrap">${shortName[nm]||nm} <b>${info.price||'—'}</b> ${arr}${Math.abs(chg).toFixed(2)}%</span>`
-    }).join('<span style="color:var(--b1)">│</span>') || '<span style="color:var(--t4)">指数数据获取中...</span>'
-    const idxEl = document.getElementById('mktIndices')
-    if(idxEl) idxEl.innerHTML=idxHtml
-    const idxElM = document.getElementById('mktIndicesMon')
-    if(idxElM) idxElM.innerHTML=idxHtml
     if(r.refreshing && !_mktFollowupTimer){
       _mktFollowupTimer = setTimeout(()=>{
         _mktFollowupTimer = null
@@ -3249,6 +3278,10 @@ async function loadMarketContext(force=false){
     _mktRefreshTimer = setInterval(()=>{
       if(!document.hidden && _isMarketContextPage()) loadMarketContext(false)
     }, 60000)
+  }
+  if(!_mktIndicesTimer){
+    loadMarketIndices()
+    _mktIndicesTimer = setInterval(loadMarketIndices, 5000)
   }
 }
 
@@ -3649,14 +3682,20 @@ function toggleAgent(hd){
 }
 // 回测执行与结果渲染函数已拆到 /static/app/js/app-backtest.js
 async function api(path,method='GET',body=null){
-  const makeOpts = ()=>({method,credentials:'include',headers:{'Content-Type':'application/json'}})
+  const hasBody = body !== null && body !== undefined
+  const makeOpts = ()=>{
+    const opts={method,credentials:'include',headers:{}}
+    if(hasBody){
+      opts.headers['Content-Type']='application/json'
+      opts.body=JSON.stringify(body)
+    }
+    return opts
+  }
   const opts=makeOpts()
-  if(body) opts.body=JSON.stringify(body)
   try{
     let r=await fetch(API+path,opts)
     if(r.status===404 && String(path||'').startsWith('/mobile_ths/') && location.port!=='5002'){
       const retryOpts=makeOpts()
-      if(body) retryOpts.body=JSON.stringify(body)
       r=await fetch(MOBILE_API_FALLBACK+path,retryOpts)
     }
     const txt=await r.text()

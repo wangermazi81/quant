@@ -9,6 +9,7 @@
 需要改变交易模式的测试请 monkeypatch.setattr(trade_service, "DRY_RUN", ...)。
 """
 import logging
+import threading
 from datetime import datetime
 
 from app_state import get_user_state, _add_log, _persist_state
@@ -22,8 +23,25 @@ from core.daban_state import (
 )
 from broker import paper_broker as pb
 from analytics import data_gateway as dg
+from market.market_data import is_trading_time
 
 logger = logging.getLogger(__name__)
+
+_PAPER_AFTER_HOURS_PRICES: dict[tuple[str, ...], dict[str, float]] = {}
+_PAPER_AFTER_HOURS_PRICES_LOCK = threading.Lock()
+
+
+def _paper_price_cache_phase(now: datetime) -> str:
+    second = now.hour * 3600 + now.minute * 60 + now.second
+    if second < 9 * 3600 + 30 * 60:
+        return "pre"
+    if second < 11 * 3600 + 30 * 60:
+        return "am"
+    if second < 13 * 3600:
+        return "lunch"
+    if second < 15 * 3600:
+        return "pm"
+    return "post"
 
 
 def _live_safe_buy_shares(uid: int, state: dict, broker_cfg: dict,
@@ -293,8 +311,16 @@ def _auto_buy(uid: int, item: dict):
     name   = item.get("name", "")
     price  = item["price"]
     shares = item.get("shares", 100)
+    if not is_trading_time():
+        item["status"] = "skip"
+        _add_log(uid, f"⏸ 已休市，自动买入取消: {code} {name}", "WARN")
+        return
     try:
         _add_log(uid, f"🤖 自动买入触发: {code} {name} {shares}股 @{price}", "buy")
+        if not is_trading_time():
+            item["status"] = "skip"
+            _add_log(uid, f"⏸ 自动买入执行前已休市，取消: {code} {name}", "WARN")
+            return
         res = execute_buy(uid, code, name, price, shares, reason="自动买入",
                           strategy=item.get("strategy") or "")
         if not res.get("ok"):
@@ -513,14 +539,56 @@ def _check_paper_risk(uid: int):
 
 
 def _paper_live_prices(broker) -> dict:
-    """为模拟盘持仓拉取 TDX 实时价 {code: price}，用于实时市值/盈亏。失败返回 {}。"""
+    """模拟盘持仓价：盘中短缓存刷新，盘后同一持仓集合固定首次确认价。"""
     try:
         positions = broker.get_positions()
         if not positions:
             return {}
-        codes = [p["code"] for p in positions]
-        qs = dg.get_display_quotes(codes)
-        return {q["code"]: q.get("price", 0) for q in qs if q.get("price", 0) > 0}
+        codes = tuple(sorted({
+            str(p.get("code") or "").strip()
+            for p in positions
+            if str(p.get("code") or "").strip()
+        }))
+        if not codes:
+            return {}
+
+        if is_trading_time():
+            with _PAPER_AFTER_HOURS_PRICES_LOCK:
+                _PAPER_AFTER_HOURS_PRICES.clear()
+            qs = dg.get_display_quotes(codes, max_age=5)
+            return {
+                q["code"]: float(q.get("price") or 0)
+                for q in qs
+                if float(q.get("price") or 0) > 0
+            }
+
+        now = datetime.now()
+        # 同一天的盘前、午休和盘后必须分桶；否则盘前确认的昨日收盘价会污染当日盘后。
+        cache_key = (
+            now.strftime("%Y-%m-%d"),
+            _paper_price_cache_phase(now),
+            *codes,
+        )
+        with _PAPER_AFTER_HOURS_PRICES_LOCK:
+            cached = dict(_PAPER_AFTER_HOURS_PRICES.get(cache_key) or {})
+        missing = [code for code in codes if code not in cached]
+        if not missing:
+            return cached
+
+        qs = dg.get_display_quotes(missing, max_age=5)
+        confirmed = {
+            q["code"]: float(q.get("price") or 0)
+            for q in qs
+            if q.get("code") in missing and float(q.get("price") or 0) > 0
+        }
+        with _PAPER_AFTER_HOURS_PRICES_LOCK:
+            frozen = _PAPER_AFTER_HOURS_PRICES.setdefault(cache_key, {})
+            for code, price in confirmed.items():
+                frozen.setdefault(code, price)
+            if len(_PAPER_AFTER_HOURS_PRICES) > 128:
+                for old_key in list(_PAPER_AFTER_HOURS_PRICES)[:-64]:
+                    _PAPER_AFTER_HOURS_PRICES.pop(old_key, None)
+            return dict(frozen)
     except Exception as e:
         logger.debug(f"[paper] 实时价拉取失败（市值/盈亏按成本价显示）: {e}")
     return {}

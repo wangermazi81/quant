@@ -490,5 +490,8 @@ def is_trading_time() -> bool:
             return False
     except Exception as e:                  # 日历模块异常绝不能把交易全停掉
         logger.debug(f"[market] 交易日历判断失败，按周中处理: {e}")
-    t = now.hour * 100 + now.minute
-    return (930 <= t <= 1130) or (1300 <= t <= 1500)
+    second = now.hour * 3600 + now.minute * 60 + now.second
+    return (
+        9 * 3600 + 30 * 60 <= second < 11 * 3600 + 30 * 60
+        or 13 * 3600 <= second < 15 * 3600
+    )

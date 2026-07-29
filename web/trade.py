@@ -44,7 +44,24 @@ def get_status():
     except Exception:
         s["vibe_active"] = False
         s["vibe_factor"] = ""
-    return jsonify(s)
+    payload = dict(s)
+    try:
+        broker_cfg = None if DRY_RUN else um.get_user_broker_config(uid)
+        if DRY_RUN or broker_cfg.get("broker_type", "paper") == "paper":
+            payload["positions"] = {
+                str(p.get("code")): {
+                    "name": p.get("name") or p.get("code", ""),
+                    "shares": int(p.get("shares") or 0),
+                    "cost": float(p.get("cost_price") or 0),
+                    "date": str(p.get("buy_time") or "")[:10],
+                    "strategy": p.get("strategy") or "",
+                }
+                for p in pb.get_broker(uid).get_positions()
+                if p.get("code")
+            }
+    except Exception as exc:
+        logger.debug(f"[status uid={uid}] 模拟盘持仓账本读取失败，回退内存视图: {exc}")
+    return jsonify(payload)
 
 
 @bp.route("/api/start", methods=["POST"])
@@ -230,6 +247,21 @@ def queue_add():
 def get_positions_api():
     uid       = session["user_id"]
     s         = get_user_state(uid)
+    broker_cfg = None if DRY_RUN else um.get_user_broker_config(uid)
+    if DRY_RUN or broker_cfg.get("broker_type", "paper") == "paper":
+        broker = pb.get_broker(uid)
+        positions = broker.get_positions(cur_prices=_paper_live_prices(broker))
+        return jsonify([{
+            "code": p.get("code", ""),
+            "name": p.get("name") or p.get("code", ""),
+            "shares": int(p.get("shares") or 0),
+            "cost": round(float(p.get("cost_price") or 0), 2),
+            "cur_price": round(float(p.get("cur_price") or 0), 2),
+            "pnl_pct": round(float(p.get("pnl_pct") or 0), 2),
+            "pnl_amount": round(float(p.get("pnl_amount") or 0), 2),
+            "market_value": round(float(p.get("market_value") or 0), 2),
+            "date": str(p.get("buy_time") or "")[:10],
+        } for p in positions])
     positions = s.get("positions", {})
     if not positions:
         return jsonify([])

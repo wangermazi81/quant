@@ -110,7 +110,7 @@ def get_market_regime(force_refresh: bool = False) -> dict:
 
     try:
         # ── 实时行情（三大指数，用正确市场编号）─────────
-        qs = dg.get_index_quotes(_INDEX_MARKET_PAIRS)
+        qs = dg.get_live_index_quotes(_INDEX_MARKET_PAIRS)
         indices = {}
         if qs:
             for q in qs:

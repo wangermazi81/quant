@@ -102,6 +102,32 @@ def test_is_trading_time_rejects_holiday(tmp_path, monkeypatch):
     assert market_data.is_trading_time() is True
 
 
+def test_is_trading_time_closes_at_exact_session_boundary(tmp_path, monkeypatch):
+    workday = date(2026, 7, 27)
+    _write_calendar(tmp_path, monkeypatch, workday.year, [])
+
+    monkeypatch.setattr(
+        market_data,
+        "_now",
+        lambda: datetime(workday.year, workday.month, workday.day, 11, 29, 59),
+    )
+    assert market_data.is_trading_time() is True
+
+    monkeypatch.setattr(
+        market_data,
+        "_now",
+        lambda: datetime(workday.year, workday.month, workday.day, 11, 30, 0),
+    )
+    assert market_data.is_trading_time() is False
+
+    monkeypatch.setattr(
+        market_data,
+        "_now",
+        lambda: datetime(workday.year, workday.month, workday.day, 15, 0, 0),
+    )
+    assert market_data.is_trading_time() is False
+
+
 class TestRefreshSanity:
     """★线上实测踩到的坑：replay 端点无视 is_open=1，返回区间内全部日历日。
 

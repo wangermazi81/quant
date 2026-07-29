@@ -26,6 +26,12 @@ _DISPLAY_QUOTE_CACHE: dict[tuple[str, ...], tuple[float, list[dict]]] = {}
 _DISPLAY_QUOTE_INFLIGHT: dict[tuple[str, ...], threading.Event] = {}
 _DISPLAY_QUOTE_CACHE_LOCK = threading.Lock()
 _DISPLAY_QUOTE_CACHE_TTL = 15.0
+_LIVE_INDEX_QUOTE_CACHE: dict[
+    tuple[tuple[int, str], ...], tuple[float, list[dict]]
+] = {}
+_LIVE_INDEX_QUOTE_INFLIGHT: dict[tuple[tuple[int, str], ...], threading.Event] = {}
+_LIVE_INDEX_QUOTE_CACHE_LOCK = threading.Lock()
+_LIVE_INDEX_QUOTE_CACHE_TTL = 3.0
 
 
 def normalize_code(code: str) -> str:
@@ -760,6 +766,62 @@ def _current_index_quotes(pairs: Iterable[tuple[int, str]]) -> list[dict]:
     except Exception as exc:
         logger.debug(f"[gateway] current akshare index quotes failed: {exc}")
     return []
+
+
+def clear_live_index_quote_cache() -> None:
+    with _LIVE_INDEX_QUOTE_CACHE_LOCK:
+        _LIVE_INDEX_QUOTE_CACHE.clear()
+
+
+def get_live_index_quotes(
+    pairs: Iterable[tuple[int, str]],
+    max_age: float = _LIVE_INDEX_QUOTE_CACHE_TTL,
+) -> list[dict]:
+    """实时指数行情，只走 TDX/AkShare，禁止用 Tushare 日线回放充当盘中价。"""
+    key = tuple(sorted({
+        (int(market), normalize_code(code))
+        for market, code in pairs
+        if str(code or "").strip()
+    }))
+    if not key:
+        return []
+
+    now = time.monotonic()
+    with _LIVE_INDEX_QUOTE_CACHE_LOCK:
+        cached = _LIVE_INDEX_QUOTE_CACHE.get(key)
+        if cached and now - cached[0] <= max(0.0, float(max_age)):
+            return deepcopy(cached[1])
+        event = _LIVE_INDEX_QUOTE_INFLIGHT.get(key)
+        owner = event is None
+        if owner:
+            event = threading.Event()
+            _LIVE_INDEX_QUOTE_INFLIGHT[key] = event
+
+    if not owner:
+        event.wait()
+        with _LIVE_INDEX_QUOTE_CACHE_LOCK:
+            cached = _LIVE_INDEX_QUOTE_CACHE.get(key)
+            return deepcopy(cached[1]) if cached else []
+
+    try:
+        rows = _current_index_quotes(key)
+    except Exception:
+        with _LIVE_INDEX_QUOTE_CACHE_LOCK:
+            _LIVE_INDEX_QUOTE_INFLIGHT.pop(key, None)
+            event.set()
+        raise
+
+    with _LIVE_INDEX_QUOTE_CACHE_LOCK:
+        _LIVE_INDEX_QUOTE_CACHE[key] = (time.monotonic(), deepcopy(rows))
+        _LIVE_INDEX_QUOTE_INFLIGHT.pop(key, None)
+        event.set()
+        if len(_LIVE_INDEX_QUOTE_CACHE) > 64:
+            oldest = min(
+                _LIVE_INDEX_QUOTE_CACHE,
+                key=lambda item: _LIVE_INDEX_QUOTE_CACHE[item][0],
+            )
+            _LIVE_INDEX_QUOTE_CACHE.pop(oldest, None)
+        return deepcopy(rows)
 
 
 def get_index_quotes_result(pairs: Iterable[tuple[int, str]]) -> dict:

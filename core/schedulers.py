@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 
 from app_state import (
-    user_states, _user_state_lock, get_user_state, _persist_state, _add_log,
+    user_states, _user_state_lock, get_user_state, _add_log,
     _restore_all_user_states,
 )
 from config import SCAN_INTERVAL, DRY_RUN
@@ -160,8 +160,7 @@ def _snap_all_paper_equity():
 
 
 def _on_market_close():
-    """收盘(15:00)自动终止所有用户的自动交易：停 running + 清残留未执行信号 + 持久化。
-    避免收盘后桥接器还在拉 pending 信号去下单。仅在下午真收盘触发（午休 11:30 不触发）。"""
+    """收盘后暂停扫描并清理当日未执行信号，保留用户长期启用状态。"""
     _snap_all_paper_equity()    # 先落净值快照（与是否有用户在自动交易无关）
     with _user_state_lock:
         uids = [uid for uid, s in user_states.items() if s.get("running")]
@@ -170,23 +169,21 @@ def _on_market_close():
     for uid in uids:
         try:
             s = get_user_state(uid)
-            s["running"] = False
             # 清掉本地队列里 pending 的买单（收盘后不再执行）
             try:
                 s["queue"] = [q for q in s.get("queue", []) if q.get("status") != "pending"]
             except Exception:
                 pass
-            _persist_state(uid, running=0)
             # 取消实盘 pending 交易信号，避免桥接器收盘后继续拉去下单
             try:
                 n = um.cancel_pending_signals(uid)
             except Exception:
                 n = 0
-            _add_log(uid, f"🔔 收盘(15:00)自动终止：已停止自动交易"
+            _add_log(uid, f"🔔 收盘(15:00)自动暂停：下一交易日将自动恢复"
                           + (f"，清理未执行实盘信号 {n} 条" if n else ""), "WARN")
         except Exception as e:
-            logger.warning(f"[收盘终止 uid={uid}] {e}")
-    logger.info(f"[收盘] 已自动终止 {len(uids)} 个用户的自动交易")
+            logger.warning(f"[收盘暂停 uid={uid}] {e}")
+    logger.info(f"[收盘] 已暂停 {len(uids)} 个用户的扫描，保留长期启用状态")
 
 
 def run_scheduler():
@@ -195,7 +192,7 @@ def run_scheduler():
     - 每秒检查所有 running 用户
     - 普通策略：每 SCAN_INTERVAL 秒触发一次
     - 打板策略：每 DABAN_INTERVAL 秒触发一次
-    - 收盘(15:00)自动终止所有自动交易（午休 11:30 不触发）
+    - 收盘(15:00)暂停扫描但保留启用状态（午休 11:30 不触发）
     """
     now_ts = time.time()
     _was_trading = is_trading_time()        # 收盘下降沿检测
@@ -211,6 +208,10 @@ def run_scheduler():
                 except Exception as _ce:
                     logger.warning(f"[收盘终止] 调度异常: {_ce}")
         _was_trading = _now_trading
+
+        if not _now_trading:
+            time.sleep(1)
+            continue
 
         with _user_state_lock:
             active_uids = [uid for uid, s in user_states.items() if s.get("running")]

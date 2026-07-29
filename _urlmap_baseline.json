@@ -608,6 +608,10 @@
   "GET,HEAD,OPTIONS"
  ],
  [
+  "/api/market/indices",
+  "GET,HEAD,OPTIONS"
+ ],
+ [
   "/api/market/regime",
   "OPTIONS,POST"
  ],

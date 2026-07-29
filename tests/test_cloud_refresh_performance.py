@@ -1,3 +1,6 @@
+import threading
+import time
+
 from analytics import data_gateway as dg
 from web import bridge as bridge_web
 from web import market as market_web
@@ -148,5 +151,21 @@ def test_market_context_cold_cache_coalesces_concurrent_requests(monkeypatch):
     for thread in threads:
         thread.join(timeout=2)
     assert len(results) == 2
-import threading
-import time
+
+
+def test_market_indices_payload_uses_lightweight_live_quotes(monkeypatch):
+    monkeypatch.setattr(
+        market_web.dg,
+        "get_live_index_quotes",
+        lambda pairs: [
+            {"code": "000001", "price": 3388.88, "change_pct": 0.42},
+            {"code": "399001", "price": 10888.0, "change_pct": -0.13},
+            {"code": "399006", "price": 2288.0, "change_pct": 0.88},
+        ],
+    )
+
+    payload = market_web.get_market_indices_payload()
+
+    assert payload["indices"]["上证指数"]["price"] == 3388.88
+    assert payload["indices"]["深证成指"]["change"] == -0.13
+    assert payload["indices"]["创业板指"]["change"] == 0.88

@@ -9,6 +9,7 @@
 3. /api/positions/close 只删内存，DB 仓位仍在 → 风控照样自动卖出、重启后复活。
 """
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -148,3 +149,172 @@ def test_close_position_clears_stale_view_entry(logged_client, monkeypatch):
     assert resp.status_code == 200
     assert resp.get_json()["ok"] is True
     assert "000002" not in get_user_state(uid)["positions"]
+
+
+def test_monitor_positions_use_paper_ledger_as_source_of_truth(logged_client, monkeypatch):
+    """模拟盘监控持仓必须读账本，不能返回已经过期的进程内视图。"""
+    import web.trade as trade_web
+
+    uid = 8805
+    get_user_state(uid)["positions"] = {
+        "000001": {"name": "旧持仓", "shares": 100, "cost": 9.0}
+    }
+
+    class FakeBroker:
+        def get_positions(self, cur_prices=None):
+            assert cur_prices == {"600519": 1500.0}
+            return [{
+                "code": "600519",
+                "name": "贵州茅台",
+                "shares": 200,
+                "cost_price": 1400.0,
+                "cur_price": 1500.0,
+                "pnl_pct": 7.14,
+                "pnl_amount": 20000.0,
+                "market_value": 300000.0,
+                "buy_time": "2026-07-28 10:00:00",
+            }]
+
+    monkeypatch.setattr(trade_web, "DRY_RUN", True)
+    monkeypatch.setattr(trade_web.pb, "get_broker", lambda user_id: FakeBroker())
+    monkeypatch.setattr(
+        trade_web,
+        "_paper_live_prices",
+        lambda broker: {"600519": 1500.0},
+    )
+
+    resp = logged_client.get("/api/positions")
+    assert resp.status_code == 200
+    assert resp.get_json() == [{
+        "code": "600519",
+        "name": "贵州茅台",
+        "shares": 200,
+        "cost": 1400.0,
+        "cur_price": 1500.0,
+        "pnl_pct": 7.14,
+        "pnl_amount": 20000.0,
+        "market_value": 300000.0,
+        "date": "2026-07-28",
+    }]
+
+
+def test_status_uses_paper_ledger_for_position_guard(logged_client, monkeypatch):
+    import web.trade as trade_web
+
+    uid = 8805
+    get_user_state(uid)["positions"] = {
+        "000001": {"name": "旧持仓", "shares": 100, "cost": 9.0}
+    }
+
+    class FakeBroker:
+        def get_positions(self):
+            return [{
+                "code": "600519",
+                "name": "贵州茅台",
+                "shares": 200,
+                "cost_price": 1400.0,
+                "buy_time": "2026-07-28 10:00:00",
+                "strategy": "custom.py",
+            }]
+
+    monkeypatch.setattr(trade_web, "DRY_RUN", True)
+    monkeypatch.setattr(trade_web.pb, "get_broker", lambda user_id: FakeBroker())
+
+    resp = logged_client.get("/api/status")
+
+    assert resp.status_code == 200
+    assert resp.get_json()["positions"] == {
+        "600519": {
+            "name": "贵州茅台",
+            "shares": 200,
+            "cost": 1400.0,
+            "date": "2026-07-28",
+            "strategy": "custom.py",
+        }
+    }
+
+
+def test_paper_prices_freeze_outside_trading_hours(monkeypatch):
+    """收盘后同一组持仓只确认一次收盘价，后续页面刷新不得继续跳价。"""
+    calls = []
+
+    class FakeBroker:
+        def get_positions(self):
+            return [{"code": "000001"}]
+
+    monkeypatch.setattr(trade_service, "is_trading_time", lambda: False, raising=False)
+    monkeypatch.setattr(
+        trade_service.dg,
+        "get_display_quotes",
+        lambda codes, **kwargs: calls.append(list(codes)) or [{
+            "code": "000001",
+            "price": 10.0 if len(calls) == 1 else 11.0,
+        }],
+    )
+    cache = getattr(trade_service, "_PAPER_AFTER_HOURS_PRICES", None)
+    if cache is not None:
+        cache.clear()
+
+    first = trade_service._paper_live_prices(FakeBroker())
+    second = trade_service._paper_live_prices(FakeBroker())
+
+    assert first == second == {"000001": 10.0}
+    assert calls == [["000001"]]
+
+
+def test_paper_after_hours_quote_failure_is_not_frozen(monkeypatch):
+    calls = []
+
+    class FakeBroker:
+        def get_positions(self):
+            return [{"code": "000001"}]
+
+    monkeypatch.setattr(trade_service, "is_trading_time", lambda: False)
+    monkeypatch.setattr(
+        trade_service.dg,
+        "get_display_quotes",
+        lambda codes, **kwargs: calls.append(list(codes)) or (
+            [] if len(calls) == 1 else [{"code": "000001", "price": 10.0}]
+        ),
+    )
+    trade_service._PAPER_AFTER_HOURS_PRICES.clear()
+
+    assert trade_service._paper_live_prices(FakeBroker()) == {}
+    assert trade_service._paper_live_prices(FakeBroker()) == {"000001": 10.0}
+    assert calls == [["000001"], ["000001"]]
+
+
+def test_paper_price_cache_separates_same_day_market_phases():
+    assert trade_service._paper_price_cache_phase(datetime(2026, 7, 30, 9, 0)) == "pre"
+    assert trade_service._paper_price_cache_phase(datetime(2026, 7, 30, 11, 30)) == "lunch"
+    assert trade_service._paper_price_cache_phase(datetime(2026, 7, 30, 12, 0)) == "lunch"
+    assert trade_service._paper_price_cache_phase(datetime(2026, 7, 30, 15, 0)) == "post"
+    assert trade_service._paper_price_cache_phase(datetime(2026, 7, 30, 15, 1)) == "post"
+
+
+def test_paper_after_hours_partial_quotes_freeze_per_code(monkeypatch):
+    calls = []
+
+    class FakeBroker:
+        def get_positions(self):
+            return [{"code": "000001"}, {"code": "000002"}]
+
+    def fake_quotes(codes, **kwargs):
+        calls.append(list(codes))
+        if len(calls) == 1:
+            return [{"code": "000001", "price": 10.0}]
+        return [
+            {"code": "000001", "price": 11.0},
+            {"code": "000002", "price": 20.0},
+        ]
+
+    monkeypatch.setattr(trade_service, "is_trading_time", lambda: False)
+    monkeypatch.setattr(trade_service.dg, "get_display_quotes", fake_quotes)
+    trade_service._PAPER_AFTER_HOURS_PRICES.clear()
+
+    assert trade_service._paper_live_prices(FakeBroker()) == {"000001": 10.0}
+    assert trade_service._paper_live_prices(FakeBroker()) == {
+        "000001": 10.0,
+        "000002": 20.0,
+    }
+    assert calls == [["000001", "000002"], ["000002"]]

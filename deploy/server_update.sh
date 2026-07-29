@@ -95,8 +95,24 @@ ensure_data_scheduler_service() {
     if [ -n "$RUN_USER" ] && [ "$RUN_USER" != "quant" ]; then
         sed -i "s/^User=.*/User=$RUN_USER/" "$unit_dst"
     fi
+    sed -i "s|/opt/quant|$APP_DIR|g" "$unit_dst"
     systemctl daemon-reload
     systemctl enable --now quant-scheduler >/dev/null 2>&1 || true
+}
+
+ensure_platform_scheduler_split() {
+    if [ "$(id -u)" != "0" ]; then
+        echo "Skip platform scheduler split: root privileges required."
+        return 0
+    fi
+
+    local override_file="/etc/systemd/system/$SERVICE.service.d/scheduler-split.conf"
+    mkdir -p "$(dirname "$override_file")"
+    cat > "$override_file" <<'EOF'
+[Service]
+Environment=THS_EMBED_SCHEDULER=0
+EOF
+    systemctl daemon-reload
 }
 
 echo "[1/6] Pull latest code from Gitee"
@@ -111,6 +127,9 @@ sync_nginx_anti_crawl
 
 if [ "$LOCAL" = "$REMOTE" ]; then
     secure_runtime_secrets "$RUN_USER"
+    ensure_platform_scheduler_split
+    systemctl restart "$SERVICE"
+    echo "Restarted $SERVICE to apply scheduler split."
     ensure_data_scheduler_service
     if data_scheduler_service_exists; then
         systemctl restart quant-scheduler
@@ -151,6 +170,7 @@ secure_runtime_secrets "$RUN_USER"
 
 echo
 echo "[5/6] Restart service"
+ensure_platform_scheduler_split
 ensure_data_scheduler_service
 systemctl restart "$SERVICE"
 if data_scheduler_service_exists; then

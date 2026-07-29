@@ -131,6 +131,7 @@ Type=simple
 User=root
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$APP_DIR/.env
+Environment=THS_EMBED_SCHEDULER=0
 ExecStart=$APP_DIR/venv/bin/gunicorn -c deploy/gunicorn.conf.py main:app
 Restart=always
 RestartSec=5
@@ -140,11 +141,19 @@ StandardError=append:$APP_DIR/logs/service-err.log
 [Install]
 WantedBy=multi-user.target
 EOF
+cp "$APP_DIR/deploy/quant-scheduler.service" /etc/systemd/system/quant-scheduler.service
+sed -i \
+    -e "s|^User=.*|User=root|" \
+    -e "s|/opt/quant|$APP_DIR|g" \
+    /etc/systemd/system/quant-scheduler.service
 systemctl daemon-reload
 systemctl enable "$SERVICE"
+systemctl enable quant-scheduler
 systemctl restart "$SERVICE"
+systemctl restart quant-scheduler
 sleep 3
 systemctl --no-pager status "$SERVICE" || true
+systemctl --no-pager status quant-scheduler || true
 
 echo
 echo "[9/9] Configure Nginx reverse proxy"

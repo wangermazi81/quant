@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """对比当前 app.url_map 与基线，确认路由路径+方法零变化。"""
 import json
+import os
+
+os.environ.setdefault("QUANT_TEST_IMPORT", "1")
+os.environ.setdefault("THS_NO_SCHEDULER", "1")
+
 import main
 
 base = sorted(tuple(x) for x in json.load(open("_urlmap_baseline.json", encoding="utf-8")))
