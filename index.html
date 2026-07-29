@@ -2,12 +2,13 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>见微 Alpha</title>
 <link rel="icon" type="image/svg+xml" href="/static/logo-icon.svg">
 <link rel="stylesheet" href="/static/lib/codemirror.min.css">
 <link rel="stylesheet" href="/static/lib/dracula.min.css">
 <link rel="stylesheet" href="/static/lib/rb-effects.css">
+<link rel="stylesheet" href="/static/lib/fontawesome/css/all.min.css">
 <!-- cd-linear.css（旧 Linear 深色主题）与糖果主题冲突，已停用 -->
 <script src="/static/lib/codemirror.min.js"></script>
 <script src="/static/lib/python.min.js"></script>
@@ -23,6 +24,9 @@
 <link rel="stylesheet" href="/static/lib/theme-candy.css">
 <!-- 导航外壳（分组侧边栏+精简顶栏）：必须最后加载以接管旧 .nav 样式 -->
 <link rel="stylesheet" href="/static/app/css/app-shell.css?v=20260726-sidebar">
+<link rel="stylesheet" href="/static/app/css/app-mobile-shell.css?v=20260728-mobile-rebuild">
+<link rel="stylesheet" href="/static/app/css/app-mobile-pages.css?v=20260728-mobile-rebuild">
+<link rel="stylesheet" href="/static/app/css/app-mobile-dialogs.css?v=20260728-mobile-rebuild">
 </head>
 <body>
 
@@ -202,6 +206,90 @@
   </div>
 </aside>
 
+<!-- 手机端主导航：高频页面常驻，低频入口收进“更多”抽屉。 -->
+<!-- 手机端独立顶栏：不复用桌面启动/停止组合，避免窄屏重叠。 -->
+<header class="mobile-header" id="mobileHeader">
+  <div class="mobile-header-copy">
+    <span class="mobile-header-eyebrow">JIANWEI ALPHA</span>
+    <h1 id="mobilePageTitle">监控中心</h1>
+    <div class="mobile-header-status" aria-live="polite">
+      <span id="mobileModeState" class="mobile-state mode-paper"><i></i><b>模拟盘</b></span>
+      <span id="mobileRunState" class="mobile-state run-stop"><i></i><b>已停止</b></span>
+    </div>
+  </div>
+  <button type="button" id="mobileRunTrigger" class="mobile-header-control"
+          data-ui-click="toggleMobileRunSheet(true)" aria-controls="mobileRunSheet"
+          aria-expanded="false"><i class="fas fa-power-off" aria-hidden="true"></i><b>控制</b></button>
+</header>
+
+<div class="mobile-run-sheet" id="mobileRunSheet" aria-hidden="true">
+  <button type="button" class="mobile-run-backdrop" data-ui-click="toggleMobileRunSheet(false)" aria-label="关闭运行控制"></button>
+  <section class="mobile-run-panel" role="dialog" aria-modal="true" aria-labelledby="mobileRunTitle">
+    <div class="mobile-sheet-handle" aria-hidden="true"></div>
+    <div class="mobile-run-head">
+      <div><div class="mobile-more-eyebrow">STRATEGY CONTROL</div><h2 id="mobileRunTitle">运行控制</h2></div>
+      <button type="button" class="mobile-sheet-close" data-ui-click="toggleMobileRunSheet(false)" aria-label="关闭">&times;</button>
+    </div>
+    <div class="mobile-run-summary">
+      <div class="mobile-run-card"><span>策略状态</span><strong id="mobileRunDetail">已停止</strong></div>
+      <div class="mobile-run-card"><span>交易模式</span><strong id="mobileModeDetail">模拟盘</strong></div>
+    </div>
+    <div class="mobile-run-actions">
+      <button type="button" class="mobile-run-start" data-ui-click="mStart()"><span aria-hidden="true">&#9654;</span>启动策略</button>
+      <button type="button" class="mobile-run-stop" data-ui-click="mStop()"><span aria-hidden="true">&#9632;</span>停止策略</button>
+    </div>
+    <button type="button" class="mobile-run-execution" data-ui-click="mobileNavigate('execution')">打开交易执行设置 <span aria-hidden="true">&rsaquo;</span></button>
+  </section>
+</div>
+
+<nav class="mobile-dock" id="mobileDock" aria-label="手机端主导航">
+  <button type="button" class="mobile-dock-item active" data-mobile-page="monitor" data-ui-click="mobileNavigate('monitor')" aria-label="监控中心">
+    <span class="mobile-dock-ico" aria-hidden="true">📊</span><span>监控</span>
+  </button>
+  <button type="button" class="mobile-dock-item" data-mobile-page="execution" data-ui-click="mobileNavigate('execution')" aria-label="交易执行">
+    <span class="mobile-dock-ico" aria-hidden="true">⚡</span><span>交易</span>
+  </button>
+  <button type="button" class="mobile-dock-item" data-mobile-page="strategy" data-ui-click="mobileNavigate('strategy')" aria-label="策略中心">
+    <span class="mobile-dock-ico" aria-hidden="true">🧪</span><span>策略</span>
+  </button>
+  <button type="button" class="mobile-dock-item" data-mobile-page="review" data-ui-click="mobileNavigate('review')" aria-label="复盘">
+    <span class="mobile-dock-ico" aria-hidden="true">🔁</span><span>复盘</span>
+  </button>
+  <button type="button" class="mobile-dock-item" data-mobile-page="more" data-ui-click="toggleMobileMore(true)" aria-label="更多功能" aria-controls="mobileMoreSheet" aria-expanded="false">
+    <span class="mobile-dock-ico" aria-hidden="true">•••</span><span>更多</span>
+  </button>
+</nav>
+
+<div class="mobile-more-sheet" id="mobileMoreSheet" aria-hidden="true">
+  <button type="button" class="mobile-more-backdrop" data-ui-click="toggleMobileMore(false)" aria-label="关闭更多功能"></button>
+  <section class="mobile-more-panel" role="dialog" aria-modal="true" aria-labelledby="mobileMoreTitle">
+    <div class="mobile-sheet-handle" aria-hidden="true"></div>
+    <div class="mobile-more-head">
+      <div><div class="mobile-more-eyebrow">JIANWEI ALPHA</div><h2 id="mobileMoreTitle">更多功能</h2></div>
+      <button type="button" class="mobile-sheet-close" data-ui-click="toggleMobileMore(false)" aria-label="关闭">×</button>
+    </div>
+    <div class="mobile-account" id="mobileUser">
+      <div class="mobile-account-avatar" id="mobileAvatar">·</div>
+      <div class="mobile-account-copy"><strong id="mobileUsername">见微用户</strong><span>剩余积分 <b id="mobilePoints">—</b></span></div>
+      <span class="mobile-account-status">已登录</span>
+    </div>
+    <div class="mobile-more-grid">
+      <button type="button" class="mobile-more-item" data-ui-click="mobileNavigate('paper')"><span aria-hidden="true">💹</span><b>模拟盘</b><small>组合与订单</small></button>
+      <button type="button" class="mobile-more-item" data-ui-click="mobileNavigate('search')"><span aria-hidden="true">🧬</span><b>产业链研报</b><small>研究与检索</small></button>
+      <button type="button" class="mobile-more-item" data-ui-click="mobileNavigate('aitrader')"><span aria-hidden="true">🤖</span><b>AI 交易</b><small>决策与执行</small></button>
+      <button type="button" class="mobile-more-item" data-ui-click="mobileNavigate('risk')"><span aria-hidden="true">🛡️</span><b>风控中心</b><small>护栏与状态</small></button>
+      <button type="button" class="mobile-more-item" id="mobileSettingsItem" data-ui-click="mobileNavigate('settings')" style="display:none"><span aria-hidden="true">⚙</span><b>系统设置</b><small>接口与通道</small></button>
+      <button type="button" class="mobile-more-item" data-ui-click="openChangelog();toggleMobileMore(false)"><span aria-hidden="true">📝</span><b>更新日志</b><small>版本变化</small></button>
+      <button type="button" class="mobile-more-item" data-ui-click="openFeedback();toggleMobileMore(false)"><span aria-hidden="true">💬</span><b>问题反馈</b><small>Bug 与建议</small></button>
+      <button type="button" class="mobile-more-item" id="mobileAdminItem" data-ui-click="location.assign('/admin')" style="display:none"><span aria-hidden="true">🧰</span><b>管理后台</b><small>管理员入口</small></button>
+    </div>
+    <div class="mobile-legal">
+      <a href="https://beian.miit.gov.cn" target="_blank" rel="noreferrer">赣ICP备2026011468号</a>
+      <a href="https://beian.mps.gov.cn/#/query/webSearch?code=36102102000155" target="_blank" rel="noreferrer">赣公网安备36102102000155号</a>
+    </div>
+    <button type="button" class="mobile-logout" data-ui-click="doLogout()"><span aria-hidden="true">🚪</span>退出登录</button>
+  </section>
+</div>
 <nav class="nav">
   <div class="nav-brand" title="见微 Alpha"><svg viewBox="0 0 290 90" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="见微 Alpha">
     <g transform="translate(15, 10)">
@@ -321,7 +409,7 @@
 
     <!-- 执行队列 -->
     <div class="card" style="flex:1;min-height:0">
-      <div class="card-hd">
+      <div class="card-hd queue-card-head">
         <h2>🎯 执行队列</h2>
         <span id="qLen" style="font-size:12px;color:var(--t3)">0只</span>
         <!-- 自动执行开关 -->
@@ -495,16 +583,16 @@
 <!-- 智能搜索页(投研中心):产业链/研报为主,搜索为辅 -->
 <div class="page" id="page-search" style="flex-direction:column;overflow:hidden">
   <!-- 顶部子页签 -->
-  <div style="display:flex;gap:4px;padding:8px 16px 0;border-bottom:1px solid var(--b1);flex-shrink:0">
+  <div class="rs-tabs research-tabs">
     <div class="rs-tab active" id="rsTab-chain" data-ui-click="rsSwitch('chain')">🧬 产业链</div>
     <div class="rs-tab" id="rsTab-report" data-ui-click="rsSwitch('report')">📑 研报中心</div>
     <div class="rs-tab" id="rsTab-search" data-ui-click="rsSwitch('search')">🔍 智能搜索</div>
   </div>
 
   <!-- ① 产业链视图 -->
-  <div id="rsView-chain" style="flex:1;display:flex;overflow:hidden">
-    <div style="width:300px;min-width:260px;border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
-      <div style="padding:12px 14px;border-bottom:1px solid var(--b1)">
+  <div id="rsView-chain" class="research-workspace research-chain-workspace" data-mobile-pane="list" style="flex:1;display:flex;overflow:hidden">
+    <div class="research-pane research-master-pane research-chain-list-pane" style="width:300px;min-width:260px;border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
+      <div class="research-pane-header research-chain-search" style="padding:12px 14px;border-bottom:1px solid var(--b1)">
         <div style="display:flex;gap:6px">
           <input id="chainQ" class="set-fi" placeholder="搜概念：低空经济 / 固态电池…" style="flex:1"
                  data-ui-keydown="if(event.key==='Enter')chainSearch(this.value)">
@@ -514,21 +602,22 @@
       </div>
       <div id="chainList" style="flex:1;overflow-y:auto"></div>
     </div>
-    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:420px">
-      <div style="padding:12px 18px;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:10px">
+    <div class="research-pane research-detail-pane research-chain-detail-pane" style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:420px">
+      <div class="research-pane-header research-detail-header" style="padding:12px 18px;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:10px">
+        <button class="btn btn-gray btn-xs research-mobile-back" id="chainMobileBack" data-ui-click="setChainMobilePane('list')" aria-label="返回产业链列表">← 返回列表</button>
         <b id="chainTitle" style="font-size:15px">🧬 产业链</b>
         <span id="chainMeta" style="font-size:11px;color:var(--t3)"></span>
         <button class="btn btn-blue btn-sm" id="chainGraphBtn" style="margin-left:auto;display:none" data-ui-click="genChainGraph()">🧬 AI生成产业链图谱</button>
       </div>
-      <div id="chainDetail" style="flex:1;overflow-y:auto;padding:16px 18px">
+      <div id="chainDetail" class="research-pane-body" style="flex:1;overflow-y:auto;padding:16px 18px">
         <div class="empty-hint">在左侧选择或搜索一个概念板块，查看成分股、相关度与产业链图谱</div>
       </div>
     </div>
   </div>
 
   <!-- ② 研报中心视图 -->
-  <div id="rsView-report" style="flex:1;display:none;flex-direction:column;overflow:hidden">
-    <div style="padding:12px 18px;border-bottom:1px solid var(--b1);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+  <div id="rsView-report" class="research-report-view" style="flex:1;display:none;flex-direction:column;overflow:hidden">
+    <div class="research-filterbar" style="padding:12px 18px;border-bottom:1px solid var(--b1);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <select id="repType" class="set-fi" style="width:120px" data-ui-change="loadReports()">
         <option value="0">📈 个股研报</option>
         <option value="1">🏭 行业研报</option>
@@ -536,20 +625,20 @@
       </select>
       <input id="repQ" class="set-fi" placeholder="筛选：股票代码 / 名称 / 行业 / 关键词，回车查询" style="flex:1;min-width:220px"
              data-ui-keydown="if(event.key==='Enter')loadReports()">
-      <button class="btn btn-blue btn-sm" data-ui-click="loadReports()">查询</button>
-      <button class="btn btn-gray btn-sm" data-ui-click="document.getElementById('repQ').value='';loadReports()">最新全部</button>
+      <button class="btn btn-blue btn-sm research-report-query" data-ui-click="loadReports()">查询</button>
+      <button class="btn btn-gray btn-sm research-report-latest" data-ui-click="document.getElementById('repQ').value='';loadReports()">最新全部</button>
       <span id="repHint" style="font-size:11px;color:var(--t3)"></span>
     </div>
-    <div id="repBody" style="flex:1;overflow-y:auto;padding:14px 18px">
+    <div id="repBody" class="research-pane-body research-report-body" style="flex:1;overflow-y:auto;padding:14px 18px">
       <div class="empty-hint">加载中…</div>
     </div>
   </div>
 
   <!-- ③ 智能搜索视图(增强功能,原有引擎) -->
-  <div id="rsView-search" style="flex:1;display:none;overflow:hidden">
-  <div style="display:flex;flex:1;gap:0;overflow:hidden;height:100%">
+  <div id="rsView-search" class="research-workspace research-search-workspace" data-mobile-pane="results" style="flex:1;display:none;overflow:hidden">
+  <div class="research-search-layout" style="display:flex;flex:1;gap:0;overflow:hidden;height:100%">
     <!-- 左侧搜索区 -->
-    <div style="width:400px;min-width:360px;border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
+    <div class="research-pane research-master-pane research-search-results-pane" style="width:400px;min-width:360px;border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
       <!-- 搜索框 -->
       <div style="padding:16px;border-bottom:1px solid var(--b1)">
         <div style="font-size:16px;font-weight:700;color:var(--t1);margin-bottom:12px">🔍 智能搜索</div>
@@ -596,9 +685,10 @@
     </div>
 
     <!-- 右侧详情区 -->
-    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+    <div class="research-pane research-detail-pane research-search-detail-pane" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
       <!-- 标题栏 -->
-      <div style="padding:14px 20px;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:12px">
+      <div class="research-pane-header research-detail-header research-search-detail-header" style="padding:14px 20px;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:12px">
+        <button class="btn btn-gray btn-xs research-mobile-back" id="searchMobileBack" data-ui-click="setSearchMobilePane('results')" aria-label="返回搜索结果">← 返回结果</button>
         <span id="srchDetailTitle" style="font-size:15px;font-weight:700;color:var(--t1)">搜索结果详情</span>
         <span id="srchDetailMeta" style="font-size:11px;color:var(--t4)"></span>
         <div style="flex:1"></div>
@@ -607,7 +697,7 @@
       </div>
 
       <!-- 详情内容 -->
-      <div id="srchDetail" style="flex:1;overflow-y:auto;padding:20px">
+      <div id="srchDetail" class="research-pane-body" style="flex:1;overflow-y:auto;padding:20px">
         <!-- TwelveData 报价卡 -->
         <div id="srchQuoteCard" style="display:none;background:var(--card);border:1px solid var(--b1);border-radius:10px;padding:16px;margin-bottom:16px">
           <div style="font-size:11px;font-weight:700;color:var(--t4);letter-spacing:.6px;margin-bottom:10px">📡 TwelveData 行情数据</div>
@@ -682,16 +772,16 @@
     </div>
 
     <!-- 右：财经快讯时间线（盘中盯盘 / 盘后复盘素材 / 晚间预案）-->
-    <div style="width:350px;min-width:310px;border-left:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
-      <div style="padding:10px 14px;border-bottom:1px solid var(--b1)">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+    <div class="review-news-column" style="width:350px;min-width:310px;border-left:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden">
+      <div class="review-news-header" style="padding:10px 14px;border-bottom:1px solid var(--b1)">
+        <div class="review-news-title-row" style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
           <b style="font-size:15px">📰 财经快讯</b>
           <span id="rv-news-count" style="font-size:11px;color:var(--t3)"></span>
           <label style="margin-left:auto;font-size:11px;color:var(--t2);display:flex;gap:4px;align-items:center;cursor:pointer">
             <input type="checkbox" id="rv-news-imp" data-ui-change="loadNews()">只看重要
           </label>
         </div>
-        <div style="display:flex;gap:6px">
+        <div class="review-news-filter" style="display:flex;gap:6px">
           <select id="rv-news-src" data-ui-change="loadNews()" style="background:var(--inp);border:1px solid var(--b1);border-radius:6px;padding:4px 6px;color:var(--t1);font-size:12px;max-width:130px">
             <option value="">全部来源</option>
           </select>
@@ -816,7 +906,12 @@
 
 <!-- 策略中心 -->
 <div class="page" id="page-strategy">
-<div class="strat-wrap">
+<div class="strategy-mobile-tabs" id="strategyMobileTabs" role="tablist" aria-label="策略中心工作区">
+  <button type="button" class="active" data-mobile-strategy-pane="library" data-ui-click="setMobileStrategyPane('library')">策略库</button>
+  <button type="button" data-mobile-strategy-pane="editor" data-ui-click="setMobileStrategyPane('editor')">编辑</button>
+  <button type="button" data-mobile-strategy-pane="result" data-ui-click="setMobileStrategyPane('result')">结果</button>
+</div>
+<div class="strat-wrap" data-mobile-pane="library">
 
   <div class="sl">
     <!-- 顶部 Tab 切换 -->
@@ -1637,7 +1732,7 @@
 
 <script src="/static/app/js/ui-handlers.gen.js"></script>
 <script src="/static/app/js/ui-events.js"></script>
-<script src="/static/app/js/app-core.js?v=20260726-sync-ui-polish"></script>
+<script src="/static/app/js/app-core.js?v=20260728-mobile-rebuild"></script>
 <script src="/static/app/js/app-kline.js?v=20260726-kline-module"></script>
 <script src="/static/app/js/app-paper.js?v=20260726-paper-split"></script>
 <script src="/static/app/js/app-backtest.js?v=20260726-backtest-split"></script>
@@ -1679,7 +1774,7 @@
   </div>
 </div>
 
-<script src="/static/app/js/app-ai-gen.js"></script>
+<script src="/static/app/js/app-ai-gen.js?v=20260728-mobile-rebuild"></script>
 
 <!-- K线弹窗 -->
 <div class="kl-overlay" id="klOverlay" data-ui-click="if(event.target===this)closeKL()">

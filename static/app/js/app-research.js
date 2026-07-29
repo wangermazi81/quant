@@ -17,6 +17,27 @@ function rsInit(){
   }, 300000)
 }
 
+function setChainMobilePane(pane){
+  const view = document.getElementById('rsView-chain')
+  if(!view) return
+  view.dataset.mobilePane = pane === 'detail' ? 'detail' : 'list'
+  const target = document.getElementById(pane === 'detail' ? 'chainDetail' : 'chainList')
+  if(target) target.scrollTop = 0
+}
+
+function setChainMobileSection(section){
+  const detail = document.getElementById('chainDetail')
+  if(!detail) return
+  const next = section === 'stocks' ? 'stocks' : 'graph'
+  detail.dataset.mobileSection = next
+  detail.querySelectorAll('[data-chain-section-target]').forEach(button=>{
+    const active = button.dataset.chainSectionTarget === next
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-selected', active ? 'true' : 'false')
+  })
+  detail.scrollTop = 0
+}
+
 function _rvBindEvents(){
   const page = document.getElementById('page-search')
   if(!page || page.dataset.rvBound) return
@@ -38,8 +59,10 @@ function rsSwitch(tab){
   if(btn) btn.classList.add('active')
   document.getElementById('rsView-chain').style.display  = tab==='chain'  ? 'flex' : 'none'
   document.getElementById('rsView-report').style.display = tab==='report' ? 'flex' : 'none'
-  document.getElementById('rsView-search').style.display = tab==='search' ? 'block' : 'none'
-  if(tab==='report') loadReports()      // 每次切入都重新拉取最新研报
+  document.getElementById('rsView-search').style.display = tab==='search' ? 'flex' : 'none'
+  if(tab === 'chain') setChainMobilePane('list')
+  if(tab === 'search' && typeof setSearchMobilePane === 'function') setSearchMobilePane('results')
+  if(tab === 'report') loadReports()
 }
 
 // ── 产业链：概念列表 ───────────────────────────────────────────
@@ -74,6 +97,7 @@ const _REL_STYLE = {
 
 async function openConcept(name, el){
   _curConcept = name
+  setChainMobilePane('detail')
   document.querySelectorAll('#chainList .srch-result-item').forEach(i=>i.classList.remove('active'))
   if(el) el.classList.add('active')
   document.getElementById('chainTitle').textContent = '🧬 ' + name
@@ -104,9 +128,17 @@ async function openConcept(name, el){
         setTimeout(()=>{ if(_curConcept === name) openConcept(name) }, 60000)
       }
     }
-    let html = `<div id="chainGraphBox"></div>`
-    html += `<div class="daily-card"><div style="font-size:12px;color:var(--t3);font-weight:600;margin-bottom:8px">成分股${relNote}</div>
-      <table style="width:100%;font-size:12px;border-collapse:collapse">
+    const graphStatus = d.graph_exists
+      ? '<div class="empty-hint"><span class="spin">\u27f3</span> \u52a0\u8f7d\u4ea7\u4e1a\u94fe\u56fe\u8c31\u2026</div>'
+      : '<div class="empty-hint">\u5c1a\u672a\u751f\u6210\u4ea7\u4e1a\u94fe\u56fe\u8c31\uff0c\u53ef\u4f7f\u7528\u4e0a\u65b9\u6309\u94ae\u751f\u6210</div>'
+    let html = `<div class="research-chain-section-tabs" role="tablist" aria-label="\u4ea7\u4e1a\u94fe\u8be6\u60c5\u5207\u6362">
+      <button type="button" class="research-chain-section-tab" role="tab" data-chain-section-target="graph" data-ui-click="setChainMobileSection('graph')">\u4ea7\u4e1a\u94fe\u56fe\u8c31</button>
+      <button type="button" class="research-chain-section-tab" role="tab" data-chain-section-target="stocks" data-ui-click="setChainMobileSection('stocks')">\u6210\u5206\u80a1 ${d.stocks.length}</button>
+    </div>
+    <section class="research-chain-section research-chain-graph-section" data-chain-section="graph"><div id="chainGraphBox">${graphStatus}</div></section>
+    <section class="research-chain-section research-chain-stocks-section" data-chain-section="stocks">`
+    html += `<div class="daily-card chain-stock-card"><div style="font-size:12px;color:var(--t3);font-weight:600;margin-bottom:8px">成分股${relNote}</div>
+      <div class="research-table-scroll"><table class="chain-stock-table" style="width:100%;font-size:12px;border-collapse:collapse">
       <thead><tr style="color:var(--t3);text-align:left"><th style="padding:4px">代码</th><th>名称</th><th>相关度</th><th style="text-align:right">现价</th><th style="text-align:right">涨跌幅</th><th style="text-align:right">换手%</th><th style="text-align:right">市值(亿)</th><th></th></tr></thead><tbody>`
     d.stocks.forEach(s=>{
       const up  = (s.chg||0) >= 0
@@ -114,17 +146,18 @@ async function openConcept(name, el){
         ? `<span style="font-size:10px;padding:1px 7px;border-radius:9px;${_REL_STYLE[s.rel_level]||_REL_STYLE['一般']}" title="${_rvEsc(s.rel_reason||'')}">${s.rel_level}</span>`
         : '<span style="color:var(--t4);font-size:11px">—</span>'
       html += `<tr style="border-top:1px solid var(--b1)">
-        <td style="padding:5px 4px;font-family:monospace">${s.code}</td>
-        <td><b>${_rvEsc(s.name)}</b></td>
-        <td>${rel}</td>
-        <td style="text-align:right">${s.price ?? '—'}</td>
-        <td style="text-align:right;color:${up?'#f85149':'#3fb950'};font-weight:600">${up?'+':''}${s.chg}%</td>
-        <td style="text-align:right">${s.turnover ?? '—'}</td>
-        <td style="text-align:right">${s.mcap ?? '—'}</td>
-        <td style="text-align:right"><button class="btn btn-gray btn-xs" data-rv-kline data-rv-code="${_rvAttr(s.code)}" data-rv-name="${_rvAttr(s.name)}">K线</button></td></tr>`
+        <td data-label="代码" style="padding:5px 4px;font-family:monospace">${s.code}</td>
+        <td data-label="名称"><b>${_rvEsc(s.name)}</b></td>
+        <td data-label="相关度">${rel}</td>
+        <td data-label="现价" style="text-align:right">${s.price ?? '—'}</td>
+        <td data-label="涨跌幅" style="text-align:right;color:${up?'#f85149':'#3fb950'};font-weight:600">${up?'+':''}${s.chg}%</td>
+        <td data-label="换手率" style="text-align:right">${s.turnover ?? '—'}</td>
+        <td data-label="市值(亿)" style="text-align:right">${s.mcap ?? '—'}</td>
+        <td data-label="操作" style="text-align:right"><button class="btn btn-gray btn-xs" data-rv-kline data-rv-code="${_rvAttr(s.code)}" data-rv-name="${_rvAttr(s.name)}">K线</button></td></tr>`
     })
-    html += '</tbody></table></div>'
+    html += '</tbody></table></div></div></section>'
     box.innerHTML = html
+    setChainMobileSection(d.graph_exists ? 'graph' : 'stocks')
     if(d.graph_exists) _loadChainGraph(name)
   }catch(e){
     document.getElementById('chainMeta').textContent = ''
@@ -158,6 +191,37 @@ async function genChainGraph(){
   btn.disabled = false; btn.textContent = '🔄 重新生成产业链图谱'
 }
 
+function _renderChainGraphCards(d, stageColor, lvColor){
+  const stages = (d.segments||[]).map(seg=>{
+    const color = stageColor[seg.stage] || '#58a6ff'
+    const items = (seg.items||[]).filter(it=>it.segment || (it.stocks||[]).length)
+    if(!items.length) return ''
+    return `<section class="chain-stage-card" style="--chain-stage:${color}">
+      <div class="chain-stage-head"><b>${_rvEsc(seg.stage)}</b>${seg.weight ? `<span>${_rvEsc(seg.weight)}</span>` : ''}</div>
+      <div class="chain-stage-items">${items.map(it=>{
+        const stocks = (it.stocks||[]).length ? it.stocks : [null]
+        return `<article class="chain-segment-card">
+          <div class="chain-segment-title">${_rvEsc(it.segment)||'\u672a\u5206\u7c7b'}</div>
+          ${it.desc ? `<div class="chain-segment-desc">${_rvEsc(it.desc)}</div>` : ''}
+          <div class="chain-segment-stocks">${stocks.map(stock=>{
+            if(!stock) return '<div class="chain-stock-chip">\u6682\u65e0\u4e2a\u80a1</div>'
+            const isObj = typeof stock === 'object'
+            const name = isObj ? stock.name : String(stock).split('(')[0]
+            const code = isObj ? (stock.code||'') : (String(stock).match(/\d{6}/)||[''])[0]
+            const relation = isObj ? (stock.relation||'') : ''
+            const level = isObj ? (stock.level||'') : ''
+            return `<button type="button" class="chain-stock-chip" ${code?`data-rv-kline data-rv-code="${_rvAttr(code)}" data-rv-name="${_rvAttr(name)}"`:''}>
+              <span class="chain-stock-chip-main"><b>${_rvEsc(name)}</b>${code?`<small>${code}</small>`:''}</span>
+              <span class="chain-stock-chip-rel">${level?`<strong style="color:${lvColor[level]||'var(--t3)'}">${_rvEsc(level)}</strong>`:''}${_rvEsc(relation)||'\u2014'}</span>
+            </button>`
+          }).join('')}</div>
+        </article>`
+      }).join('')}</div>
+    </section>`
+  }).join('')
+  return `<div class="chain-mobile-graph">${stages}</div>`
+}
+
 function _renderChainGraph(d, scroll){
   // 韭研产业库式分层表格：大类(占比) | 细分环节(说明) | 个股 | 相关性
   const box = document.getElementById('chainGraphBox')
@@ -169,7 +233,7 @@ function _renderChainGraph(d, scroll){
     <div style="font-size:13px;font-weight:700;color:var(--bl);margin-bottom:6px">🧬 ${_rvEsc(d.name)} 产业链
       <span style="font-size:10px;color:var(--t3);font-weight:400;margin-left:8px">${d.generated_at||''} · AI整理仅供参考</span></div>
     ${d.summary ? `<div style="font-size:12px;color:var(--t2);margin-bottom:10px;line-height:1.6">${_rvEsc(d.summary)}</div>` : ''}
-    <table class="chain-tbl"><thead><tr><th style="width:74px">环节</th><th style="width:120px">细分</th><th style="width:108px">个股</th><th>相关性</th></tr></thead><tbody>`
+    <div class="chain-desktop-graph"><div class="research-table-scroll"><table class="chain-tbl"><thead><tr><th style="width:74px">环节</th><th style="width:120px">细分</th><th style="width:108px">个股</th><th>相关性</th></tr></thead><tbody>`
 
   ;(d.segments||[]).forEach(seg=>{
     const items = (seg.items||[]).filter(it=>it.segment || (it.stocks||[]).length)
@@ -197,7 +261,7 @@ function _renderChainGraph(d, scroll){
       })
     })
   })
-  h += '</tbody></table></div>'
+  h += '</tbody></table></div></div>' + _renderChainGraphCards(d, stageColor, lvColor) + '</div>'
   box.innerHTML = h
   if(scroll) box.scrollIntoView({behavior:'smooth'})
 }
@@ -226,17 +290,25 @@ async function loadReports(){
         `<div class="dash-sum-item"><div class="dash-sum-val" style="color:${ratingColor[k]||'#888'}">${v}</div><div class="dash-sum-lbl">${k}</div></div>`).join('') + `</div>`
     }
     reps.forEach(x=>{
-      const rc  = ratingColor[x.rating] || '#888'
-      const tag = x.stock ? `<span class="srch-badge">${_rvEsc(x.stock)} ${x.code}</span>`
-                : x.industry ? `<span class="srch-badge">${_rvEsc(x.industry)}</span>` : ''
+      const rc = ratingColor[x.rating] || '#888'
+      const tag = x.stock
+        ? `<span class="srch-badge">${_rvEsc(x.stock)} ${_rvEsc(x.code||'')}</span>`
+        : x.industry ? `<span class="srch-badge">${_rvEsc(x.industry)}</span>` : ''
       const safeUrl = _rvSafeUrl(x.url)
-      const title = safeUrl
-        ? `<a href="${_rvAttr(safeUrl)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${_rvEsc(x.title)} <span style="font-size:10px;color:var(--bl)">↗ 阅读</span></a>`
-        : _rvEsc(x.title)
-      html += `<div class="srch-news-card" style="cursor:${safeUrl?'pointer':'default'}" ${safeUrl?`data-rv-url="${_rvAttr(safeUrl)}"`:''}>
-        <div class="nc-title">${title}</div>
-        <div class="nc-meta" data-ui-click="event.stopPropagation()">${x.date} · ${_rvEsc(x.org)}${x.rating ? ` · <b style="color:${rc}">${x.rating}</b>` : ''} ${tag}</div>
-      </div>`
+      const titleText = _rvEsc(x.title)
+      const reportLink = safeUrl
+        ? `<a class="research-report-link" href="${_rvAttr(safeUrl)}" target="_blank" rel="noopener"><span class="nc-title research-report-title">${titleText}</span><span class="research-report-open">\u9605\u8bfb \u2197</span></a>`
+        : `<div class="research-report-link research-report-link-static"><span class="nc-title research-report-title">${titleText}</span></div>`
+      const meta = [
+        x.date ? `<span>${_rvEsc(x.date)}</span>` : '',
+        x.org ? `<span>${_rvEsc(x.org)}</span>` : '',
+        x.rating ? `<strong class="research-report-rating" style="color:${rc}">${_rvEsc(x.rating)}</strong>` : '',
+      ].filter(Boolean).join('')
+      html += `<article class="srch-news-card research-report-card" style="cursor:${safeUrl?'pointer':'default'}" ${safeUrl?`data-rv-url="${_rvAttr(safeUrl)}"`:''}>
+        ${reportLink}
+        ${meta ? `<div class="nc-meta research-report-meta">${meta}</div>` : ''}
+        ${tag ? `<div class="research-report-tags">${tag}</div>` : ''}
+      </article>`
     })
     box.innerHTML = html || '<div class="empty-hint">暂无研报（源站可能限流，稍后重试）</div>'
   }catch(e){
@@ -859,7 +931,7 @@ async function loadNews(silent){
     const src = document.getElementById('rv-news-src').value
     const q   = document.getElementById('rv-news-q').value.trim()
     const imp = document.getElementById('rv-news-imp').checked
-    const ps  = new URLSearchParams({limit:'100', fetch:'1'})   // fetch=1: 顺带触发服务端增量抓取(限频60s)
+    const ps  = new URLSearchParams({limit:'100'})
     if(src) ps.set('source', src)
     if(q)   ps.set('q', q)
     if(imp) ps.set('important', '1')

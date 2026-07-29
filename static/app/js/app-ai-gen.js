@@ -488,16 +488,28 @@ function updateNavUser(user){
     const sp = document.getElementById('sidePoints')
     if(sp) sp.textContent = user.points
   }
-  if(user.is_admin){
-    document.getElementById('navAdminBtn').style.display = 'inline-flex'
-    const sa = document.getElementById('sideAdminBtn')
-    if(sa) sa.style.display = 'flex'
+  const mobileUser = document.getElementById('mobileUser')
+  if(mobileUser){
+    mobileUser.classList.add('on')
+    const av = document.getElementById('mobileAvatar')
+    if(av) av.textContent = (user.username || '·').slice(0,1).toUpperCase()
+    const un = document.getElementById('mobileUsername')
+    if(un) un.textContent = user.username
+    const mp = document.getElementById('mobilePoints')
+    if(mp) mp.textContent = user.points
   }
+  document.getElementById('navAdminBtn').style.display = user.is_admin ? 'inline-flex' : 'none'
+  const sa = document.getElementById('sideAdminBtn')
+  if(sa) sa.style.display = user.is_admin ? 'flex' : 'none'
+  const ma = document.getElementById('mobileAdminItem')
+  if(ma) ma.style.display = user.is_admin ? '' : 'none'
   // 系统设置（AI接口/券商通道/消息推送）仅管理员可见。
   // 注：原实现用 [onclick*="aiset"] 选择器，但这些元素用的是 data-ui-click，
   //     选择器从来没匹配上过 —— 非管理员其实一直能看到入口。这里改为按真实入口隐藏。
   const setTab = document.getElementById('sideSettingsTab')
   if(setTab) setTab.style.display = user.is_admin ? '' : 'none'
+  const mobileSettings = document.getElementById('mobileSettingsItem')
+  if(mobileSettings) mobileSettings.style.display = user.is_admin ? '' : 'none'
 }
 
 async function doLogout(){
@@ -506,6 +518,9 @@ async function doLogout(){
   document.getElementById('navUser').style.display = 'none'
   const foot = document.getElementById('sideFoot')
   if(foot) foot.classList.remove('on')
+  const mobileUser = document.getElementById('mobileUser')
+  if(mobileUser) mobileUser.classList.remove('on')
+  toggleMobileMore(false)
   showAuthOverlay()
 }
 
@@ -525,6 +540,8 @@ async function refreshNavPoints(){
     document.getElementById('navPoints').textContent = r.points
     const sp = document.getElementById('sidePoints')
     if(sp) sp.textContent = r.points
+    const mp = document.getElementById('mobilePoints')
+    if(mp) mp.textContent = r.points
     if(_currentUser) _currentUser.points = r.points
   }
 }

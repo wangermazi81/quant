@@ -33,7 +33,7 @@ def api_chain_stocks():
     name = (request.args.get("name") or "").strip()
     if not name:
         return jsonify({"ok": False, "error": "缺少概念名称"}), 400
-    if len(name) > 40 or not re.fullmatch(r"[\w\u4e00-\u9fff·&（）()+＋\- ]+", name):
+    if len(name) > 40 or not re.fullmatch(r"[\w\u4e00-\u9fff·&（）()+＋\-/／ ]+", name):
         return jsonify({"ok": False, "error": "概念名称格式错误"}), 400
     result = rc.get_concept_stocks(name)
     result["graph_exists"] = rc.load_chain(name) is not None

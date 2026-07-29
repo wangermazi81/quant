@@ -81,6 +81,8 @@ CACHE_DIR = BASE_DIR / "data" / "research_cache"
 
 _cache_lock = threading.Lock()
 _cache: dict = {}            # key -> (ts, data)
+_refresh_lock = threading.Lock()
+_refreshing: set[str] = set()
 
 
 def _cached(key: str, ttl: int):
@@ -94,6 +96,28 @@ def _cached(key: str, ttl: int):
 def _put_cache(key: str, data):
     with _cache_lock:
         _cache[key] = (time.time(), data)
+
+
+def _refresh_async(key: str, fn) -> bool:
+    """同一缓存键只启动一个后台刷新。"""
+    with _refresh_lock:
+        if key in _refreshing:
+            return False
+        _refreshing.add(key)
+
+    def run():
+        try:
+            fn()
+        except Exception as e:
+            logger.debug(f"[research] 后台刷新 {key} 失败: {e}")
+        finally:
+            with _refresh_lock:
+                _refreshing.discard(key)
+
+    threading.Thread(
+        target=run, daemon=True, name=f"research-refresh-{key[:24]}"
+    ).start()
+    return True
 
 
 # 磁盘兜底缓存：东财接口在代理环境时通时断，拉到一次就落盘；
@@ -118,6 +142,16 @@ def _disk_put(key: str, data):
         _disk_path(key).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
+
+
+def _chain_path(name: str) -> Path:
+    """把真实概念名映射为 CHAIN_DIR 内的单个安全文件名。"""
+    raw = str(name or "")
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", raw).strip(" .") or "chain"
+    if safe != raw:
+        suffix = hashlib.md5(raw.encode("utf-8")).hexdigest()[:8]
+        safe = f"{safe}-{suffix}"
+    return CHAIN_DIR / f"{safe}.json"
 
 
 def _retry(fn, attempts: int = 3, wait: float = 2.0):
@@ -253,53 +287,53 @@ def _em_direct_concepts() -> list:
     return out or None
 
 
-def get_concepts(q: str = "", limit: int = 40) -> list:
-    """概念板块列表（按涨跌幅排序，10分钟缓存+磁盘兜底），q 为名称模糊过滤。
+def _fetch_concepts_fresh() -> list:
+    data = _retry(_em_direct_concepts, attempts=2)
+    if not data:
+        def _fetch_ak():
+            import akshare as ak
+            import pandas as pd
+            df = ak.stock_board_concept_name_em()
+            if df is None or df.empty:
+                return None
+            nc  = _col(df, "板块名称", "名称")
+            cc  = _col(df, "板块代码", "代码")
+            chg = _col(df, "涨跌幅")
+            up  = _col(df, "上涨家数")
+            dn  = _col(df, "下跌家数")
+            df[chg] = pd.to_numeric(df[chg], errors="coerce")
+            rows = []
+            for _, r in df.dropna(subset=[chg]).sort_values(chg, ascending=False).iterrows():
+                rows.append({
+                    "name": _clean_text(r[nc]),
+                    "code": str(r[cc]) if cc else "",
+                    "chg":  _num(r[chg]),
+                    "up":   int(_num(r[up], 0) or 0) if up else None,
+                    "down": int(_num(r[dn], 0) or 0) if dn else None,
+                })
+            return rows or None
+        data = _retry(_fetch_ak, attempts=2)
+    if not data:
+        data = _ths_concepts()
+        if data:
+            logger.info("[research] 概念列表用同花顺备源")
+    if data:
+        _put_cache("concepts", data)
+        _disk_put("concepts", data)
+    return data or []
 
-    源优先级：东财延迟集群直连 → akshare东财 → 磁盘缓存 → 同花顺名录。
-    """
+
+def get_concepts(q: str = "", limit: int = 40) -> list:
+    """概念板块列表（10分钟缓存，磁盘旧数据立即返回并后台刷新）。"""
     data = _cached("concepts", 600)
     if data is None:
-        data = _retry(_em_direct_concepts, attempts=2)
-
-        if not data:
-            def _fetch_ak():
-                import akshare as ak
-                import pandas as pd
-                df = ak.stock_board_concept_name_em()
-                if df is None or df.empty:
-                    return None
-                nc  = _col(df, "板块名称", "名称")
-                cc  = _col(df, "板块代码", "代码")
-                chg = _col(df, "涨跌幅")
-                up  = _col(df, "上涨家数")
-                dn  = _col(df, "下跌家数")
-                df[chg] = pd.to_numeric(df[chg], errors="coerce")
-                rows = []
-                for _, r in df.dropna(subset=[chg]).sort_values(chg, ascending=False).iterrows():
-                    rows.append({
-                        "name": _clean_text(r[nc]),
-                        "code": str(r[cc]) if cc else "",
-                        "chg":  _num(r[chg]),
-                        "up":   int(_num(r[up], 0) or 0) if up else None,
-                        "down": int(_num(r[dn], 0) or 0) if dn else None,
-                    })
-                return rows or None
-            data = _retry(_fetch_ak, attempts=2)
-
+        data = _disk_get("concepts")
         if data:
+            logger.info("[research] 概念列表先返回磁盘缓存，后台刷新")
             _put_cache("concepts", data)
-            _disk_put("concepts", data)
+            _refresh_async("concepts", _fetch_concepts_fresh)
         else:
-            data = _disk_get("concepts") or []        # 接口全挂 → 上次成功的列表兜底
-            if data:
-                logger.info("[research] 概念列表用磁盘兜底缓存")
-                _put_cache("concepts", data)
-        if not data:
-            data = _ths_concepts()                    # 最后兜底：同花顺名录(无涨跌幅)
-            if data:
-                logger.info("[research] 概念列表用同花顺备源")
-                _put_cache("concepts", data)
+            data = _fetch_concepts_fresh()
     # 产业过滤：磁盘/缓存旧数据也会被清洗
     data = [d for d in data if _is_industry_concept(d["name"])]
     if q:
@@ -356,15 +390,8 @@ def _ths_concepts() -> list:
     return data
 
 
-def get_concept_stocks(name: str, limit: int = 60) -> dict:
-    """概念成分股行情（10分钟缓存+磁盘兜底）。"""
+def _fetch_concept_stocks_fresh(name: str, limit: int) -> dict | None:
     key = f"cons:{name}"
-    hit = _cached(key, 600)
-    if hit is not None:
-        # 缓存可能是图谱生成前写入的 → 每次返回前都重新合并相关度标注
-        _merge_relevance(name, hit.get("stocks", []))
-        return hit
-
     def _fetch():
         import akshare as ak
         import pandas as pd
@@ -407,12 +434,29 @@ def get_concept_stocks(name: str, limit: int = 60) -> dict:
         _put_cache(key, out)
         _disk_put(key, out)
         return out
-    disk = _disk_get(key)               # 接口全挂 → 上次成功数据兜底（行情可能滞后）
+    return None
+
+
+def get_concept_stocks(name: str, limit: int = 60) -> dict:
+    """概念成分股行情（10分钟缓存，磁盘旧数据立即返回并后台刷新）。"""
+    key = f"cons:{name}"
+    hit = _cached(key, 600)
+    if hit is not None:
+        # 缓存可能是图谱生成前写入的 → 每次返回前都重新合并相关度标注
+        _merge_relevance(name, hit.get("stocks", []))
+        return hit
+
+    disk = _disk_get(key)
     if disk:
-        logger.info(f"[research] 成分股 {name} 用磁盘兜底缓存")
+        logger.info(f"[research] 成分股 {name} 先返回磁盘缓存，后台刷新")
         disk["stale"] = True
         _merge_relevance(name, disk.get("stocks", []))
+        _put_cache(key, disk)
+        _refresh_async(key, lambda: _fetch_concept_stocks_fresh(name, limit))
         return disk
+    fresh = _fetch_concept_stocks_fresh(name, limit)
+    if fresh:
+        return fresh
     return {"ok": False, "name": name, "error": "成分股数据暂时拉取失败，请稍后重试", "stocks": []}
 
 
@@ -582,7 +626,7 @@ def _kg_vocab(concept: str, cap: int = 30) -> str:
 
 
 def load_chain(name: str) -> dict | None:
-    p = CHAIN_DIR / f"{name}.json"
+    p = _chain_path(name)
     if not p.exists():
         return None
     try:
@@ -704,7 +748,7 @@ def generate_chain(name: str) -> dict:
                "segments": segments, "relevance": relevance,
                "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M")}
         CHAIN_DIR.mkdir(parents=True, exist_ok=True)
-        (CHAIN_DIR / f"{name}.json").write_text(
+        _chain_path(name).write_text(
             json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
         return out
     except json.JSONDecodeError:
@@ -960,62 +1004,59 @@ def _fetch_sina_reports(code: str = "", limit: int = 40) -> list:
         return []
 
 
-def get_latest_reports(qtype: int = 0, code: str = "", q: str = "", limit: int = 60) -> list:
-    """最新研报流（5 分钟缓存+磁盘兜底）。
+def _fetch_latest_reports_fresh(qtype: int, code: str, limit: int) -> list:
+    key = f"latest_reports:{qtype}:{code}"
+    normalized: list[dict] = []
+    page_size = max(80, min(int(limit), 200))
+    raw = _retry(
+        lambda: _fetch_reportapi(
+            qtype, code, page_size=page_size, page_no=1
+        ),
+        attempts=2,
+    )
+    if raw:
+        normalized.extend(_norm_em_report(it) for it in raw)
 
-    来源合并: 东方财富(3页共240条) + 巨潮资讯(官方) + 同花顺 + 新浪财经。
-    清洗: 标题+机构哈希去重、评级归一化、短标题剔除。
-    """
+    # 个股查询才补充其他来源；全市场流由东财单次请求提供。
+    if qtype == 0 and code:
+        normalized.extend(
+            _retry(lambda: _fetch_cninfo_reports(code, 40), attempts=2) or []
+        )
+        normalized.extend(_fetch_ths_reports(code, limit=30))
+        normalized.extend(_fetch_sina_reports(code, limit=30))
+
+    seen, data = set(), []
+    for it in normalized:
+        title = it.get("title", "")
+        org = it.get("org", "")
+        if len(title) < 6:
+            continue
+        h = hashlib.md5(f"{title}|{org}".encode()).hexdigest()
+        if h in seen:
+            continue
+        seen.add(h)
+        data.append(it)
+    data.sort(key=lambda x: x.get("date", ""), reverse=True)
+    if data:
+        _put_cache(key, data)
+        _disk_put(key, data)
+    return data
+
+
+def get_latest_reports(qtype: int = 0, code: str = "", q: str = "", limit: int = 60) -> list:
+    """最新研报流（5分钟缓存，磁盘旧数据立即返回并后台刷新）。"""
     key = f"latest_reports:{qtype}:{code}"
     data = _cached(key, 300)
     if data is None:
-        normalized: list[dict] = []
-        em_got_any = False
-
-        # ── 源1: 东方财富(最多3页, 每页80条) ──────────────
-        for pg in range(1, 4):
-            raw = _retry(lambda p=pg: _fetch_reportapi(qtype, code, page_no=p), attempts=2)
-            if raw is None:
-                break          # 请求失败，不继续翻页
-            if not raw:
-                break          # 空页 = 没有更多数据
-            em_got_any = True
-            normalized.extend(_norm_em_report(it) for it in raw)
-
-        # ── 源2: 巨潮资讯（个股查询时补充官方披露研报）──────
-        if qtype == 0 and code:
-            cninfo = _retry(lambda: _fetch_cninfo_reports(code, 40), attempts=2) or []
-            normalized.extend(cninfo)
-
-        # ── 源3: 同花顺（可能需要 hexin-v，失败静默）────────
-        if qtype == 0:
-            normalized.extend(_fetch_ths_reports(code, limit=30))
-
-        # ── 源4: 新浪财经（个股查询）──────────────────────
-        if qtype == 0 and code:
-            normalized.extend(_fetch_sina_reports(code, limit=30))
-
-        if not em_got_any and not normalized:
-            # 全部来源失败 → 磁盘兜底
-            data = _disk_get(key) or []
-            if data:
-                logger.info(f"[research] 研报 qtype={qtype} 用磁盘兜底缓存")
+        data = _disk_get(key)
+        if data:
+            logger.info(f"[research] 研报 qtype={qtype} 先返回磁盘缓存，后台刷新")
+            _put_cache(key, data)
+            _refresh_async(
+                key, lambda: _fetch_latest_reports_fresh(qtype, code, limit)
+            )
         else:
-            seen, data = set(), []
-            for it in normalized:
-                title = it.get("title", "")
-                org   = it.get("org", "")
-                if len(title) < 6:
-                    continue
-                h = hashlib.md5(f"{title}|{org}".encode()).hexdigest()
-                if h in seen:
-                    continue
-                seen.add(h)
-                data.append(it)
-            data.sort(key=lambda x: x.get("date", ""), reverse=True)
-            if data:
-                _put_cache(key, data)
-                _disk_put(key, data)
+            data = _fetch_latest_reports_fresh(qtype, code, limit)
 
     if q:
         ql = q.lower()

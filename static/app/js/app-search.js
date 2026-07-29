@@ -7,6 +7,14 @@ let _srchSelIdx = -1
 let _srchCurCode = ''
 let _srchStatsLoaded = false
 
+function setSearchMobilePane(pane){
+  const view = document.getElementById('rsView-search')
+  if(!view) return
+  view.dataset.mobilePane = pane === 'detail' ? 'detail' : 'results'
+  const target = document.getElementById(pane === 'detail' ? 'srchDetail' : 'srchResults')
+  if(target) target.scrollTop = 0
+}
+
 function setSrchMode(mode, btn){
   _srchMode = mode
   document.querySelectorAll('.srch-mode-btn').forEach(b=>b.classList.remove('active'))
@@ -20,6 +28,7 @@ function quickSearch(q){
 
 async function doSearch(){
   const q = document.getElementById('srchInput').value.trim()
+  setSearchMobilePane('results')
   if(!q){ return }
   const st = document.getElementById('srchStatus')
   const resEl = document.getElementById('srchResults')
@@ -96,6 +105,7 @@ function _renderSrchList(results){
 
 function _selectSrchItem(idx){
   _srchSelIdx = idx
+  setSearchMobilePane('detail')
   document.querySelectorAll('.srch-result-item').forEach((el,i)=>el.classList.toggle('active',i===idx))
   const item = _srchResults[idx]
   if(!item) return
@@ -125,6 +135,7 @@ function _selectSrchItem(idx){
 }
 
 function _renderStockDetail(r){
+  setSearchMobilePane('detail')
   const newsEl  = document.getElementById('srchNewsDetail')
   const quoteEl = document.getElementById('srchQuoteCard')
   const quoteCt = document.getElementById('srchQuoteContent')

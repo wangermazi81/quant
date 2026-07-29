@@ -101,6 +101,43 @@
 .rs-tab:hover{color:var(--t1)}
 .rs-tab.active{color:var(--bl);border-bottom-color:var(--blue)}
 /* ── 龙虎榜 ─────────────────────────────────────────── */
+.rs-tabs{display:flex;gap:4px;padding:8px 16px 0;border-bottom:1px solid var(--b1);flex:0 0 auto;min-width:0}
+.research-workspace,.research-search-layout,.research-pane,.research-pane-body,.research-report-view{min-width:0;min-height:0}
+.research-search-layout{width:100%}
+.research-pane{box-sizing:border-box}
+.research-pane-body{overscroll-behavior:contain}
+.research-mobile-back{display:none}
+.research-detail-header{min-width:0}
+.research-detail-header > :is(b,span){min-width:0;overflow-wrap:anywhere}
+.research-table-scroll{max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain}
+.research-chain-section-tabs{display:none}
+.research-chain-section{min-width:0}
+.research-chain-stocks-section{margin-top:12px}
+.research-report-card{min-width:0}
+.research-report-link{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:12px;color:inherit;text-decoration:none;min-width:0}
+.research-report-card .research-report-title{min-width:0;margin-bottom:0;overflow-wrap:anywhere}
+.research-report-open{display:inline-flex;align-items:center;justify-content:center;min-height:30px;padding:2px 9px;border:1px solid rgba(88,166,255,.3);border-radius:999px;background:rgba(88,166,255,.08);color:var(--bl);font-size:11px;font-weight:700;white-space:nowrap}
+.research-report-meta{display:flex;align-items:center;flex-wrap:wrap;gap:5px 10px;margin:8px 0 0!important;line-height:1.45}
+.research-report-meta > span{min-width:0;overflow-wrap:anywhere}
+.research-report-rating{font-weight:700}
+.research-report-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;min-width:0}
+.research-report-tags .srch-badge{max-width:100%;margin-left:0;overflow-wrap:anywhere}
+.chain-mobile-graph{display:none}
+.chain-stage-card{border:1px solid var(--b1);border-left:3px solid var(--chain-stage,#58a6ff);border-radius:10px;background:var(--card);overflow:hidden}
+.chain-stage-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;background:var(--hover)}
+.chain-stage-head span{font-size:11px;color:var(--t3)}
+.chain-stage-items{display:grid;gap:8px;padding:10px}
+.chain-segment-card{border:1px solid var(--b1);border-radius:8px;padding:10px;background:var(--panel)}
+.chain-segment-title{font-size:13px;font-weight:700;color:var(--t1);overflow-wrap:anywhere}
+.chain-segment-desc{margin-top:4px;font-size:11px;line-height:1.55;color:var(--t3);overflow-wrap:anywhere}
+.chain-segment-stocks{display:grid;gap:6px;margin-top:8px}
+.chain-stock-chip{width:100%;min-width:0;border:1px solid var(--b1);border-radius:8px;padding:8px 9px;background:var(--card);color:var(--t1);text-align:left;display:grid;gap:5px;cursor:pointer}
+.chain-stock-chip-main{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.chain-stock-chip-main b{overflow-wrap:anywhere}
+.chain-stock-chip-main small{flex:0 0 auto;color:var(--t3);font-family:monospace}
+.chain-stock-chip-rel{font-size:11px;line-height:1.5;color:var(--t2);overflow-wrap:anywhere}
+.chain-stock-chip-rel strong{margin-right:6px}
+
 .lhb-graph-wrap{position:relative;overflow:hidden}
 .lhb-col{position:absolute;top:0}
 .lhb-col-hd{font-size:11px;font-weight:700;color:var(--t3);padding:0 0 8px;letter-spacing:.5px;text-transform:uppercase}
@@ -152,3 +189,12 @@
 .tpl-card .tpl-tag{font-size:10px;color:var(--bl);background:rgba(88,166,255,.12);border-radius:3px;padding:1px 4px;display:inline-block}
 .tpl-cat-btn{font-size:11px;padding:2px 8px;border-radius:4px;border:1px solid var(--b1);background:transparent;color:var(--t3);cursor:pointer;transition:.15s}
 .tpl-cat-btn.active,.tpl-cat-btn:hover{border-color:var(--blue);color:var(--bl);background:rgba(88,166,255,.1)}
+/* Keep review filters inside their column when browser text is enlarged. */
+#page-review .review-news-column,
+#page-review .review-news-header,
+#page-review .review-news-title-row,
+#page-review .review-news-filter{min-width:0}
+#page-review .review-news-title-row,
+#page-review .review-news-filter{flex-wrap:wrap}
+#page-review #rv-news-src{min-width:100px;flex:0 1 130px}
+#page-review #rv-news-q{min-width:0;flex:1 1 150px}

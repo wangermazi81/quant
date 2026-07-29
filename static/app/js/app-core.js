@@ -230,6 +230,7 @@ function _renderNavModeBadge(){
     el.title = '当前为模拟盘模式（不动真钱）。点击打开交易执行台'
     el.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:800;cursor:pointer;background:#E7F5EE;color:#2A7A50;border:1px solid #B6E0C8'
   }
+  syncMobileModeState()
 }
 
 async function refreshBridgeProcessBadge(){
@@ -348,9 +349,116 @@ function restartMobileBridge(){ return _mobilePost('/mobile_ths/restart_bridge',
 function setEdSt(s){ document.getElementById('edSt').textContent=s }
 
 const _NAV_PAGES = ['monitor','execution','strategy','paper','search','review','aitrader','risk','settings']
-const _PAGE_TITLES = {monitor:'📊 监控中心', execution:'⚡ 交易执行', strategy:'🧪 策略中心', paper:'💹 模拟盘',
-                      search:'🧬 产业链研报', review:'🔁 复盘', aitrader:'🤖 AI交易',
-                      risk:'🛡️ 风控中心', settings:'⚙ 系统设置'}
+const _PAGE_TITLES = {monitor:'\ud83d\udcca 监控中心', execution:'\u26a1 交易执行', strategy:'\ud83e\uddea 策略中心', paper:'\ud83d\udcb9 模拟盘',
+                      search:'\ud83e\uddec 产业链研报', review:'\ud83d\udd01 复盘', aitrader:'\ud83e\udd16 AI交易',
+                      risk:'\ud83d\udee1\ufe0f 风控中心', settings:'\u2699 系统设置'}
+const _mobileLayoutQuery = window.matchMedia('(max-width: 1024px)')
+let _mobileStrategyPane = 'library'
+let _mobileRunLabel = '已停止'
+function _syncMobileSheetLock(){
+  const open = !!document.querySelector('.mobile-more-sheet.show,.mobile-run-sheet.show')
+  document.body.classList.toggle('mobile-sheet-open', open)
+}
+function setMobileLayoutMode(){
+  const enabled = _mobileLayoutQuery.matches
+  document.body.classList.toggle('mobile-layout', enabled)
+  if(!enabled){
+    toggleMobileMore(false)
+    toggleMobileRunSheet(false)
+  }
+  const activePage = document.querySelector('.page.active')
+  syncMobileHeader(activePage ? activePage.id.replace(/^page-/,'') : 'monitor')
+  if(enabled && editor) setTimeout(()=>editor.refresh(), 60)
+}
+function syncMobileViewport(){
+  const height = window.visualViewport ? window.visualViewport.height : window.innerHeight
+  document.documentElement.style.setProperty('--mobile-viewport-height', `${Math.round(height)}px`)
+}
+function syncMobileHeader(name){
+  const title = document.getElementById('mobilePageTitle')
+  const label = (_PAGE_TITLES[name] || name || '监控中心').replace(/^\S+\s*/, '')
+  if(title) title.textContent = label
+}
+function renderRunState(monitoring,label){
+  const text = monitoring ? (label || '运行中') : '已停止'
+  _mobileRunLabel = text
+  const rb = document.getElementById('runBadge')
+  if(rb){
+    rb.textContent = monitoring ? '运行中' : '已停止'
+    rb.className = 'badge ' + (monitoring ? 'run' : 'stop')
+  }
+  const state = document.getElementById('mobileRunState')
+  if(state){
+    state.className = 'mobile-state ' + (monitoring ? 'run-on' : 'run-stop')
+    const value = state.querySelector('b')
+    if(value) value.textContent = monitoring ? '运行中' : '已停止'
+  }
+  const detail = document.getElementById('mobileRunDetail')
+  if(detail) detail.textContent = text
+}
+function syncMobileModeState(){
+  const isLive = typeof _tradeMode !== 'undefined' && _tradeMode === 'live'
+  const gate = _liveGateOn === true ? ' · 闸开' : (_liveGateOn === false ? ' · 闸关' : '')
+  const shortText = isLive ? '实盘' : '模拟盘'
+  const detailText = shortText + gate
+  const state = document.getElementById('mobileModeState')
+  if(state){
+    state.className = 'mobile-state ' + (isLive ? 'mode-live' : 'mode-paper')
+    const value = state.querySelector('b')
+    if(value) value.textContent = shortText
+  }
+  const detail = document.getElementById('mobileModeDetail')
+  if(detail) detail.textContent = detailText
+}
+function mobileNavigate(name){
+  const tab = document.querySelector(`.side .ntab[data-page="${name}"]`)
+  if(tab) tab.click()
+  toggleMobileMore(false)
+  toggleMobileRunSheet(false)
+}
+function syncMobileNavigation(name){
+  const primary = ['monitor','execution','strategy','review']
+  document.querySelectorAll('.mobile-dock-item').forEach(item => {
+    const target = item.dataset.mobilePage
+    const active = primary.includes(name) ? target === name : target === 'more'
+    item.classList.toggle('active', active)
+    item.setAttribute('aria-current', active ? 'page' : 'false')
+  })
+}
+function toggleMobileMore(open){
+  const sheet = document.getElementById('mobileMoreSheet')
+  if(!sheet) return
+  const show = open === undefined ? !sheet.classList.contains('show') : !!open
+  if(show) toggleMobileRunSheet(false)
+  sheet.classList.toggle('show', show)
+  sheet.setAttribute('aria-hidden', String(!show))
+  const trigger = document.querySelector('.mobile-dock-item[data-mobile-page="more"]')
+  if(trigger) trigger.setAttribute('aria-expanded', String(show))
+  _syncMobileSheetLock()
+}
+function toggleMobileRunSheet(open){
+  const sheet = document.getElementById('mobileRunSheet')
+  if(!sheet) return
+  const show = open === undefined ? !sheet.classList.contains('show') : !!open
+  if(show) toggleMobileMore(false)
+  sheet.classList.toggle('show', show)
+  sheet.setAttribute('aria-hidden', String(!show))
+  const trigger = document.getElementById('mobileRunTrigger')
+  if(trigger) trigger.setAttribute('aria-expanded', String(show))
+  _syncMobileSheetLock()
+}
+function setMobileStrategyPane(pane){
+  if(!['library','editor','result'].includes(pane)) return
+  _mobileStrategyPane = pane
+  const wrap = document.querySelector('#page-strategy .strat-wrap')
+  if(wrap) wrap.dataset.mobilePane = pane
+  document.querySelectorAll('[data-mobile-strategy-pane]').forEach(button => {
+    const active = button.dataset.mobileStrategyPane === pane
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-selected', String(active))
+  })
+  if(pane === 'editor' && editor) setTimeout(()=>editor.refresh(), 40)
+}
 function switchPage(name,el){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'))
   document.querySelectorAll('.ntab').forEach(t=>t.classList.remove('active'))
@@ -363,6 +471,9 @@ function switchPage(name,el){
   if(_NAV_PAGES.includes(name) && location.hash.slice(1) !== name){
     location.hash = name
   }
+  syncMobileNavigation(name)
+  syncMobileHeader(name)
+  toggleMobileMore(false)
   if(name==='strategy'&&editor) setTimeout(()=>editor.refresh(),80)
 }
 // 按 URL hash 恢复页面：点对应页签（复用其 data-ui-click，连同 loadPaperPage/initReviewPage 等初始化一并触发）
@@ -810,6 +921,29 @@ function switchLibTab(tab){
 }
 // 页面初次加载时也跑一次切换（按 _libTab 默认 strat 渲染）
 document.addEventListener('DOMContentLoaded', () => {
+  const activePage = document.querySelector('.page.active')
+  const activeName = activePage ? activePage.id.replace(/^page-/,'') : 'monitor'
+  syncMobileNavigation(activeName)
+  syncMobileHeader(activeName)
+  setMobileStrategyPane(_mobileStrategyPane)
+  setMobileLayoutMode()
+  syncMobileViewport()
+  syncMobileModeState()
+  renderRunState(false, _mobileRunLabel)
+  _mobileLayoutQuery.addEventListener('change', setMobileLayoutMode)
+  window.addEventListener('resize', syncMobileViewport, {passive:true})
+  if(window.visualViewport){
+    window.visualViewport.addEventListener('resize', syncMobileViewport, {passive:true})
+    window.visualViewport.addEventListener('scroll', syncMobileViewport, {passive:true})
+  }
+  document.addEventListener('focusin', event => {
+    if(!document.body.classList.contains('mobile-layout')) return
+    if(!event.target.matches('input,select,textarea,[contenteditable="true"]')) return
+    setTimeout(()=>event.target.scrollIntoView({block:'center',inline:'nearest',behavior:'smooth'}), 120)
+  })
+  document.addEventListener('keydown', event => {
+    if(event.key === 'Escape'){ toggleMobileMore(false); toggleMobileRunSheet(false) }
+  })
   try { switchLibTab(_libTab) } catch(e) { console.warn('libtab init', e) }
   // 把所有 Modal 提升到 body 直接子元素，避免被父 .page.hidden 隐藏
   // 修复 bug：实盘切换 Modal 等只在策略中心可见、切到其他页消失
@@ -2432,7 +2566,10 @@ async function loadStrat(fn){
   editor.setOption('readOnly', d.locked ? 'nocursor' : false)
   document.getElementById('sfn').value=fn
   setEdSt(d.locked ? '🔒 内置策略 · 源码受保护（可激活运行，不可查看/编辑）' : '已加载: '+fn)
-  loadStratList()
+  document.querySelectorAll('#stratList .si').forEach(el => {
+    const action = el.getAttribute('data-ui-click') || ''
+    el.classList.toggle('active', action.includes(`'${fn}'`))
+  })
   scResults=[]
   document.getElementById('scBody').innerHTML='<div class="empty">点击「选股」开始</div>'
   document.getElementById('scInfo').textContent='点击「选股」开始'

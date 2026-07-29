@@ -251,13 +251,11 @@ a{ color:#C7345B; }   /* 链接原用 --blue=#FF7B93 仅 2.47:1 → 加深粉 5.
    复盘三栏合计 min-width ~1060px、产业链主从 260px+，容器 overflow:hidden，
    窄窗口下右栏被直接裁掉且滚不到。≤1100px 改纵向堆叠 + 页面自身滚动。 */
 @media (max-width:1100px){
-  #page-review > div,
-  #rsView-chain{
+  #page-review > div{
     flex-direction:column !important;
     overflow-y:auto !important; overflow-x:hidden !important;
   }
-  #page-review > div > div,
-  #rsView-chain > div{
+  #page-review > div > div{
     width:100% !important; min-width:0 !important; max-width:none !important;
     border-right:0 !important; border-bottom:1px solid var(--shell-border);
     flex:0 0 auto !important; overflow:visible !important; max-height:none !important;

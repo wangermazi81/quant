@@ -31,23 +31,32 @@ _IMPORTANT_KW = (
 )
 
 _db_lock = threading.Lock()
+_schema_lock = threading.Lock()
+_schema_ready_paths: set[str] = set()
 
 
 def _conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(str(DB_PATH), timeout=15)
-    c.execute("""CREATE TABLE IF NOT EXISTS news(
-        id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        hash      TEXT UNIQUE,
-        ts        TEXT,
-        source    TEXT,
-        title     TEXT,
-        content   TEXT DEFAULT '',
-        url       TEXT DEFAULT '',
-        important INTEGER DEFAULT 0,
-        tags      TEXT DEFAULT ''
-    )""")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_news_ts ON news(ts DESC)")
+    c.execute("PRAGMA busy_timeout=15000")
+    path = str(DB_PATH.resolve())
+    with _schema_lock:
+        if path not in _schema_ready_paths:
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("""CREATE TABLE IF NOT EXISTS news(
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                hash      TEXT UNIQUE,
+                ts        TEXT,
+                source    TEXT,
+                title     TEXT,
+                content   TEXT DEFAULT '',
+                url       TEXT DEFAULT '',
+                important INTEGER DEFAULT 0,
+                tags      TEXT DEFAULT ''
+            )""")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_news_ts ON news(ts DESC)")
+            c.commit()
+            _schema_ready_paths.add(path)
     return c
 
 
@@ -107,12 +116,12 @@ def _insert(items: list) -> int:
     with _db_lock:
         c = _conn()
         try:
-            n0 = c.execute("SELECT COUNT(*) FROM news").fetchone()[0]
+            before = c.total_changes
             c.executemany(
                 "INSERT OR IGNORE INTO news(hash,ts,source,title,content,url,important) "
                 "VALUES(:hash,:ts,:source,:title,:content,:url,:important)", items)
             c.commit()
-            return c.execute("SELECT COUNT(*) FROM news").fetchone()[0] - n0
+            return c.total_changes - before
         finally:
             c.close()
 
@@ -265,15 +274,16 @@ def fetch_quick() -> int:
     except Exception:
         import contextlib
         no_proxy = contextlib.nullcontext
-    total = 0
+    items = []
     # 全部为国内源，绕过系统代理直连更稳（见 research_center.no_proxy）
     with no_proxy(), ThreadPoolExecutor(max_workers=5, thread_name_prefix="news-src") as pool:
         futs = {pool.submit(fn): name for name, fn in _QUICK_SOURCES}
         for fut, name in futs.items():
             try:
-                total += _insert(fut.result(timeout=30))
+                items.extend(fut.result(timeout=30) or [])
             except Exception as e:
                 logger.debug(f"[news] {name} 抓取失败: {e}")
+    total = _insert(items)
     if total:
         logger.info(f"[news] 快讯入库 {total} 条")
     return total
@@ -329,23 +339,21 @@ def query(source: str = "", q: str = "", important: bool = False,
         args += [f"%{q}%", f"%{q}%"]
     sql += " ORDER BY ts DESC LIMIT ? OFFSET ?"
     args += [min(int(limit), 200), max(int(offset), 0)]
-    with _db_lock:
-        c = _conn()
-        try:
-            rows = c.execute(sql, args).fetchall()
-        finally:
-            c.close()
+    c = _conn()
+    try:
+        rows = c.execute(sql, args).fetchall()
+    finally:
+        c.close()
     return [{"ts": r[0], "source": r[1], "title": r[2],
              "content": r[3], "url": r[4], "important": bool(r[5])} for r in rows]
 
 
 def list_sources() -> list:
-    with _db_lock:
-        c = _conn()
-        try:
-            rows = c.execute("SELECT source, COUNT(*) FROM news GROUP BY source").fetchall()
-        finally:
-            c.close()
+    c = _conn()
+    try:
+        rows = c.execute("SELECT source, COUNT(*) FROM news GROUP BY source").fetchall()
+    finally:
+        c.close()
     return [{"source": r[0], "count": r[1]} for r in rows]
 
 

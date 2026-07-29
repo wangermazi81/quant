@@ -80,6 +80,25 @@ def test_chain_stocks_rejects_invalid_name_before_query(monkeypatch, name):
     assert calls == []
 
 
+def test_chain_stocks_accepts_real_concept_name_with_slash(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        research_center,
+        "get_concept_stocks",
+        lambda value: calls.append(value) or {"ok": True, "name": value, "stocks": []},
+    )
+    monkeypatch.setattr(research_center, "load_chain", lambda _name: None)
+    monkeypatch.setattr(research_center, "enqueue_chain_autogen", lambda _name: False)
+
+    response = main.app.test_client().get(
+        "/api/chain/stocks", query_string={"name": "DRG/DIP"}
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["ok"] is True
+    assert calls == ["DRG/DIP"]
+
+
 def test_dynamic_user_data_is_not_embedded_in_inline_handlers():
     root = Path(__file__).parent.parent
     core_js = (root / "static/app/js/app-core.js").read_text(encoding="utf-8")
