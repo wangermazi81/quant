@@ -2800,13 +2800,13 @@ function _renderScResults(){
       sigBadge = `<span class="sig-badge" style="background:${scoreColor}">${r.score}分</span>`
     }
     return `<div class="sc-row" style="cursor:pointer" ${_coreActionAttrs('show-kline',{code:r.code,name:r.name||r.code})}>
-      <span style="font-weight:700;width:52px">${r.code}</span>
-      <span style="color:var(--t2);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.name}</span>
-      <span style="width:56px;text-align:right;font-weight:600">¥${(+r.price||0).toFixed(2)}</span>
-      <span style="width:50px;text-align:right" class="${chg>=0?'rise':'fall'}">${(chg>=0?'+':'')+chg.toFixed(2)}%</span>
-      ${sigBadge||`<span style="width:30px;text-align:center;color:var(--ol);font-weight:700">${r.score||0}</span>`}
-      <span style="flex:2;color:var(--t3);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.reason||''}</span>
-      ${btn}
+      <span class="sc-stock-code" style="font-weight:700;width:52px">${r.code}</span>
+      <span class="sc-stock-name" style="color:var(--t2);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.name||r.code}</span>
+      <span class="sc-stock-price" style="width:56px;text-align:right;font-weight:600">¥${(+r.price||0).toFixed(2)}</span>
+      <span class="sc-stock-change ${chg>=0?'rise':'fall'}" style="width:50px;text-align:right">${(chg>=0?'+':'')+chg.toFixed(2)}%</span>
+      <span class="sc-stock-score">${sigBadge||`<span style="width:30px;text-align:center;color:var(--ol);font-weight:700">${r.score||0}</span>`}</span>
+      <span class="sc-stock-reason" style="flex:2;color:var(--t3);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.reason||''}</span>
+      <span class="sc-stock-actions">${btn}</span>
     </div>`
   }).join('')
 }

@@ -74,7 +74,7 @@ def test_ai_account_polling_stops_outside_ai_page_and_deduplicates_requests():
 
 def test_performance_scripts_use_current_cache_version():
     html = (ROOT / "index.html").read_text(encoding="utf-8")
-    assert "/static/app/js/app-core.js?v=20260729-strategy-scan" in html
+    assert "/static/app/js/app-core.js?v=20260729-stock-name" in html
     assert "/static/app/js/app-ai-trader.js?v=20260729-cloud-refresh" in html
 
 

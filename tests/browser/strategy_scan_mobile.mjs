@@ -1,6 +1,7 @@
 import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
+import fs from 'node:fs/promises';
 
 function readArg(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -9,6 +10,8 @@ function readArg(name, fallback) {
 
 const baseUrl = readArg('--base-url', 'http://127.0.0.1:5001');
 const chromePath = readArg('--chrome', 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe');
+const viewportWidth = Number(readArg('--width', '390'));
+const screenshotPath = readArg('--screenshot', '');
 const bundledModules = process.env.CODEX_NODE_MODULES;
 const playwright = bundledModules
   ? await import(pathToFileURL(path.join(bundledModules, 'playwright', 'index.mjs')))
@@ -20,7 +23,7 @@ let progressReads = 0;
 
 try {
   const context = await browser.newContext({
-    viewport: { width: 390, height: 844 },
+    viewport: { width: viewportWidth, height: 844 },
     deviceScaleFactor: 1,
   });
   const page = await context.newPage();
@@ -43,7 +46,19 @@ try {
         ? { ok: true, status: 'done', scan_current: 2, scan_total: 2, scan_stage: 'strategy' }
         : { ok: true, status: 'running', scan_current: 1, scan_total: 2, scan_stage: 'strategy' };
     } else if (path === '/strategies/result/mobile-scan-task') {
-      body = { ok: true, results: [], count: 0, scanned: 2 };
+      body = {
+        ok: true,
+        results: [{
+          code: '000001',
+          name: '\u5e73\u5b89\u94f6\u884c',
+          price: 10.25,
+          change: 1.8,
+          score: 82,
+          reason: '\u5747\u7ebf\u591a\u5934',
+        }],
+        count: 1,
+        scanned: 2,
+      };
     }
 
     await route.fulfill({
@@ -84,6 +99,8 @@ try {
     progressVisible: getComputedStyle(document.getElementById('scProgWrap')).display !== 'none',
     scanButtonsDisabled: [...document.querySelectorAll('[data-ui-click^="runScreen("]')]
       .every(button => button.disabled === false),
+    stockName: document.querySelector('.sc-stock-name')?.textContent?.trim(),
+    stockNameWidth: document.querySelector('.sc-stock-name')?.getBoundingClientRect().width || 0,
   }));
 
   if (scanStarts !== 1) {
@@ -92,7 +109,7 @@ try {
   if (state.pane !== 'result') {
     throw new Error(`手机端未切到结果工作区，当前为 ${state.pane}`);
   }
-  if (!state.info.includes('扫描 2 只，命中 0 只')) {
+  if (!state.info.includes('扫描 2 只，命中 1 只')) {
     throw new Error(`扫描结果状态异常: ${state.info}`);
   }
   if (state.progressVisible) {
@@ -101,13 +118,27 @@ try {
   if (!state.scanButtonsDisabled) {
     throw new Error('扫描完成后按钮没有恢复可用');
   }
+  if (state.stockName !== '\u5e73\u5b89\u94f6\u884c' || state.stockNameWidth < 56) {
+    throw new Error(`\u624b\u673a\u7aef\u80a1\u7968\u540d\u79f0\u4e0d\u53ef\u89c1: ${JSON.stringify({
+      name: state.stockName,
+      width: state.stockNameWidth,
+    })}`);
+  }
+  if (screenshotPath) {
+    const resolvedScreenshot = path.resolve(screenshotPath);
+    await fs.mkdir(path.dirname(resolvedScreenshot), { recursive: true });
+    await page.screenshot({ path: resolvedScreenshot, fullPage: false });
+  }
 
   console.log(JSON.stringify({
     ok: true,
     scanStarts,
     progressReads,
+    viewportWidth,
     pane: state.pane,
     info: state.info,
+    stockName: state.stockName,
+    stockNameWidth: state.stockNameWidth,
   }));
 } finally {
   await browser.close();

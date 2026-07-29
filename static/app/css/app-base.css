@@ -291,6 +291,8 @@ body .nav{height:72px;padding:0 16px;border-bottom:1px solid rgba(234,220,201,.9
 .sc-body{flex:1;overflow-y:auto}
 .sc-row{display:flex;align-items:center;padding:8px 15px;border-bottom:1px solid var(--b2);gap:7px}
 .sc-row:hover{background:var(--card)}
+.sc-stock-score{width:30px;display:flex;justify-content:center;flex-shrink:0}
+.sc-stock-actions{display:flex;align-items:center;gap:4px;flex-shrink:0}
 
 /* 鈹€鈹€ AI鍒嗘瀽澧炲己锛堝叚缁磋瘎鍒嗕华琛ㄧ洏锛夆攢鈹€ */
 .score-dashboard{background:var(--card);border:1px solid var(--b1);border-radius:10px;padding:14px 16px;margin-bottom:12px}

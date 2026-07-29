@@ -58,7 +58,7 @@ def test_mobile_styles_are_split_and_load_after_desktop_shell():
         assert html.index(css_file.name) > html.index("app-shell.css")
 
     assert "app-mobile.css" not in html
-    assert "app-core.js?v=20260729-strategy-scan" in html
+    assert "app-core.js?v=20260729-stock-name" in html
     assert "app-ai-gen.js?v=20260728-mobile-rebuild" in html
     assert not LEGACY_MOBILE_CSS.exists()
 
