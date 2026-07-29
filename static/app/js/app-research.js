@@ -352,6 +352,8 @@ let _rvLiveTimer = null
 let _lhbTab   = 'graph'   // 当前子 tab
 let _lhbCache = null      // 当前加载的数据
 let _lhbInited = false
+let _lhbRetryTimer = null
+const _LHB_RETRY_LIMIT = 4
 
 function rvSwitchTab(tab){
   const isLhb = tab === 'lhb'
@@ -392,23 +394,31 @@ async function _initLhbDates(){
   }catch(e){}
 }
 
-async function loadLhb(force){
+async function loadLhb(force, retryAttempt){
+  const attempt = Number.isFinite(retryAttempt) ? retryAttempt : 0
+  const retrying = attempt > 0
+  if(_lhbRetryTimer){
+    clearTimeout(_lhbRetryTimer)
+    _lhbRetryTimer = null
+  }
   const sel  = document.getElementById('lhb-date')
   const date = sel && sel.value ? sel.value : ''
   const gc   = document.getElementById('lhb-graph-canvas')
   const lc   = document.getElementById('lhb-list-canvas')
   const st   = document.getElementById('lhb-status')
-  if(st) st.textContent = force === true ? '正在强制刷新…' : '正在加载…'
-  gc.innerHTML = '<div class="empty-hint">加载中…</div>'
-  lc.innerHTML = '<div class="empty-hint">加载中…</div>'
+  if(!retrying){
+    if(st) st.textContent = force === true ? '正在刷新…' : '正在加载…'
+    gc.innerHTML = '<div class="empty-hint">加载中…</div>'
+    lc.innerHTML = '<div class="empty-hint">加载中…</div>'
+  }
   try{
     const r = await fetch(`/api/lhb/data?date=${date}${force===true?'&refresh=1':''}`)
     const d = await r.json()
     _lhbCache = d
     if(st){
       const t = d.generated_at ? d.generated_at.slice(11,19) : ''
-      const updating = d.status === 'updating' || d.finalized === false
-      const label = updating ? '整理中' : '已归档'
+      const updating = d.refreshing || d.status === 'updating' || d.finalized === false
+      const label = d.refreshing ? '后台整理中' : (updating ? '整理中' : '已归档')
       const seat = d.seat_detail_target ? ` · 席位 ${d.seat_detail_count||0}/${d.seat_detail_target}` : ''
       st.textContent = d.ok ? `${label} ${d.total||0} 只${seat}${t?' · '+t:''}` : (d.error || '暂无数据')
     }
@@ -418,6 +428,9 @@ async function loadLhb(force){
     if(_lhbTab === 'list'){
       document.getElementById('lhb-graph-area').style.display = 'none'
       document.getElementById('lhb-list-area').style.display  = 'block'
+    }
+    if(d.refreshing && attempt < _LHB_RETRY_LIMIT){
+      _lhbRetryTimer = setTimeout(()=>loadLhb(false, attempt + 1), 10000)
     }
   }catch(e){
     if(st) st.textContent = '加载失败'

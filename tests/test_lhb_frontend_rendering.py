@@ -42,3 +42,11 @@ def test_lhb_frontend_shows_sector_pending_badge_when_source_is_empty():
 
     assert "行业待更新" in helper
     assert "lhb-sector-badge pending" in html
+
+
+def test_lhb_frontend_polls_background_refresh_without_blocking_the_view():
+    html = _index_html()
+
+    assert "d.refreshing" in html
+    assert "_lhbRetryTimer" in html
+    assert "setTimeout(()=>loadLhb(false" in html

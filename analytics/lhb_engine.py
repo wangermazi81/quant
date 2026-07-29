@@ -14,6 +14,7 @@ import logging
 import re
 import time
 import threading
+from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -250,6 +251,23 @@ def _cache_ttl(cached: dict) -> int:
     if cached.get("complete"):
         return 60
     return 300 if datetime.now().hour < 16 else 60
+
+
+def get_lhb_cached_data(date: str | None = None) -> dict | None:
+    """Return memory/disk LHB data without touching any upstream source."""
+    yyyymmdd = (date or _today()).replace("-", "")
+    with _lock:
+        hit = _cache.get(yyyymmdd)
+        if hit and isinstance(hit[1], dict) and hit[1].get("ok"):
+            return deepcopy(hit[1])
+    disk = _disk_get(yyyymmdd)
+    if isinstance(disk, dict) and disk.get("ok"):
+        return disk
+    return None
+
+
+def lhb_cache_ready(data: dict | None) -> bool:
+    return _lhb_cache_ready(data or {})
 
 
 def _enrich_stock_sectors(stocks: list, max_seconds: float = 4.0) -> bool:

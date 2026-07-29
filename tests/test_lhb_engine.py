@@ -1,5 +1,7 @@
 from tests._module_stubs import stub_project_module
 import sys
+import threading
+import time
 import types
 from pathlib import Path
 from contextlib import nullcontext
@@ -10,19 +12,29 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from analytics import lhb_engine
 
 
-def test_lhb_api_refresh_forwards_force_refresh(monkeypatch):
+def test_lhb_api_refresh_returns_cache_and_queues_background_refresh(monkeypatch):
     from flask import Flask
     import web.lhb as lhb_web
 
     calls = []
-
-    def fake_get_lhb_data(date=None, force_refresh=False):
-        calls.append((date, force_refresh))
-        return {"ok": True, "date": date, "stocks": [], "total": 0}
+    stale = {
+        "ok": True,
+        "date": "2026-07-08",
+        "stocks": [{"code": "000001"}],
+        "total": 1,
+        "complete": False,
+    }
 
     fake_engine = types.SimpleNamespace(
-        get_lhb_data=fake_get_lhb_data,
+        get_lhb_cached_data=lambda date=None: stale,
+        lhb_cache_ready=lambda data: False,
         get_lhb_dates=lambda: ["2026-07-08"],
+    )
+    monkeypatch.setattr(
+        lhb_web,
+        "_queue_lhb_refresh",
+        lambda engine, date: calls.append((engine, date)) or (True, True),
+        raising=False,
     )
     stub_project_module(monkeypatch, "lhb_engine", fake_engine)
 
@@ -32,7 +44,99 @@ def test_lhb_api_refresh_forwards_force_refresh(monkeypatch):
     payload = app.test_client().get("/api/lhb/data?date=2026-07-08&refresh=1").get_json()
 
     assert payload["ok"] is True
+    assert payload["stocks"][0]["code"] == "000001"
+    assert payload["refreshing"] is True
+    assert payload["refresh_started"] is True
+    assert calls == [(fake_engine, "2026-07-08")]
+
+
+def test_lhb_api_cold_cache_returns_refreshing_without_sync_fetch(monkeypatch):
+    from flask import Flask
+    import web.lhb as lhb_web
+
+    fake_engine = types.SimpleNamespace(
+        get_lhb_cached_data=lambda date=None: None,
+        lhb_cache_ready=lambda data: False,
+        get_lhb_dates=lambda: [],
+    )
+    queued = []
+    monkeypatch.setattr(
+        lhb_web,
+        "_queue_lhb_refresh",
+        lambda engine, date: queued.append((engine, date)) or (True, True),
+        raising=False,
+    )
+    stub_project_module(monkeypatch, "lhb_engine", fake_engine)
+
+    app = Flask(__name__)
+    app.register_blueprint(lhb_web.bp)
+    payload = app.test_client().get("/api/lhb/data?date=2026-07-08").get_json()
+
+    assert payload == {
+        "ok": False,
+        "date": "2026-07-08",
+        "stocks": [],
+        "youzai_stat": [],
+        "total": 0,
+        "status": "refreshing",
+        "refreshing": True,
+        "refresh_started": True,
+        "error": "龙虎榜数据正在后台整理，请稍后重试",
+    }
+    assert queued == [(fake_engine, "2026-07-08")]
+
+
+def test_lhb_background_refresh_is_deduplicated(monkeypatch):
+    import web.lhb as lhb_web
+
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def slow_refresh(date=None, force_refresh=False):
+        calls.append((date, force_refresh))
+        entered.set()
+        release.wait(timeout=2)
+
+    engine = types.SimpleNamespace(get_lhb_data=slow_refresh)
+    lhb_web._clear_lhb_refresh_state()
+
+    first = lhb_web._queue_lhb_refresh(engine, "2026-07-08")
+    assert entered.wait(timeout=1)
+    second = lhb_web._queue_lhb_refresh(engine, "2026-07-08")
+
+    assert first == (True, True)
+    assert second == (True, False)
     assert calls == [("2026-07-08", True)]
+
+    release.set()
+    deadline = time.monotonic() + 1
+    while lhb_web._lhb_refresh_active("2026-07-08") and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert lhb_web._lhb_refresh_active("2026-07-08") is False
+
+
+def test_get_lhb_cached_data_returns_partial_disk_without_fetching(monkeypatch, tmp_path):
+    monkeypatch.setattr(lhb_engine, "LHB_DIR", tmp_path)
+    monkeypatch.setattr(lhb_engine, "_today", lambda: "20260708")
+    with lhb_engine._lock:
+        lhb_engine._cache.clear()
+    (tmp_path / "lhb_20260708.json").write_text(
+        '{"ok": true, "date": "2026-07-08", "stocks": [{"code": "000001"}], "complete": false}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        lhb_engine,
+        "fetch_lhb_stocks_current",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cache-only read must not fetch upstream")
+        ),
+    )
+
+    data = lhb_engine.get_lhb_cached_data("2026-07-08")
+
+    assert data["stocks"][0]["code"] == "000001"
+    assert data["complete"] is False
 
 
 def test_preload_today_force_refreshes_and_reports_success(monkeypatch):
