@@ -33,21 +33,62 @@ const baseUrl = readArg('--base-url', 'http://127.0.0.1:5001');
 const reportPath = path.resolve(readArg('--report', 'output/playwright/mobile-layout-audit.json'));
 const screenshotDir = path.resolve(readArg('--screenshots', 'output/playwright/mobile-layout-audit'));
 const quick = hasArg('--quick');
+const direct = hasArg('--direct');
+const hostIp = readArg('--host-ip');
+const authConfigPath = readArg('--auth-config');
 const viewports = parsePairs(readArg('--viewports'), quick ? [[320, 568], [761, 900], [1024, 900], [1025, 900], [1440, 900]] : DEFAULT_VIEWPORTS);
 const fontScales = parseNumbers(readArg('--font-scales'), quick ? [100, 150] : DEFAULT_FONT_SCALES);
 const pageNames = readArg('--pages') ? readArg('--pages').split(',').filter(Boolean) : PAGE_NAMES;
 const chromePath = readArg('--chrome', 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe');
+const browserArgs = [];
+if (direct) browserArgs.push('--no-proxy-server');
+if (hostIp) browserArgs.push(`--host-resolver-rules=MAP ${new URL(baseUrl).hostname} ${hostIp}`);
 
 await fs.mkdir(path.dirname(reportPath), { recursive: true });
 await fs.mkdir(screenshotDir, { recursive: true });
 
-const browser = await chromium.launch({ executablePath: chromePath, headless: true });
+const browser = await chromium.launch({ executablePath: chromePath, headless: true, args: browserArgs });
 const results = [];
+let authStorageState;
 
 try {
+  if (authConfigPath) {
+    const credentials = JSON.parse(await fs.readFile(path.resolve(authConfigPath), 'utf8'));
+    if (!credentials.username || !credentials.password) {
+      throw new Error('Auth config must contain username and password');
+    }
+    const loginContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const loginPage = await loginContext.newPage();
+    await loginPage.route('**/api/**', route => route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: '{"ok":false}',
+    }));
+    await loginPage.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await loginPage.unroute('**/api/**');
+    const loginResult = await loginPage.evaluate(async payload => {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const body = await response.json().catch(() => ({}));
+      return { status: response.status, ok: body.ok === true };
+    }, { username: credentials.username, password: credentials.password });
+    if (loginResult.status !== 200 || !loginResult.ok) {
+      throw new Error(`Production audit login failed with HTTP ${loginResult.status}`);
+    }
+    authStorageState = await loginContext.storageState();
+    await loginContext.close();
+  }
+
   for (const [width, height] of viewports) {
     for (const fontScale of fontScales) {
-      const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1 });
+      const context = await browser.newContext({
+        viewport: { width, height },
+        deviceScaleFactor: 1,
+        storageState: authStorageState,
+      });
       const page = await context.newPage();
       const cdp = await context.newCDPSession(page);
       await cdp.send('Page.setBypassCSP', { enabled: true });

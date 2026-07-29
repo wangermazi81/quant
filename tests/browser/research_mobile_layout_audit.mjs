@@ -3,8 +3,21 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
-const baseUrl = process.argv[2] || 'http://127.0.0.1:5001';
-const chromePath = process.argv[3] || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+function readArg(name, fallback = null) {
+  const index = process.argv.indexOf(name);
+  return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback;
+}
+function hasArg(name) { return process.argv.includes(name); }
+
+const hasNamedArgs = process.argv.slice(2).some(arg => arg.startsWith('--'));
+const positionalBaseUrl = hasNamedArgs ? null : process.argv[2];
+const positionalChromePath = hasNamedArgs ? null : process.argv[3];
+const baseUrl = readArg('--base-url', positionalBaseUrl || 'http://127.0.0.1:5001');
+const chromePath = readArg('--chrome', positionalChromePath || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe');
+const hostIp = readArg('--host-ip');
+const browserArgs = [];
+if (hasArg('--direct')) browserArgs.push('--no-proxy-server');
+if (hostIp) browserArgs.push(`--host-resolver-rules=MAP ${new URL(baseUrl).hostname} ${hostIp}`);
 const outDir = path.resolve('output/playwright/research-mobile-layout');
 await fs.mkdir(outDir, { recursive: true });
 
@@ -285,7 +298,7 @@ async function desktopAudit(browser) {
   await context.close();
 }
 
-const browser = await chromium.launch({ executablePath: chromePath, headless: true });
+const browser = await chromium.launch({ executablePath: chromePath, headless: true, args: browserArgs });
 try {
   await mobileAudit(browser, { width: 320, height: 568 }, 'mobile-320-');
   await mobileAudit(browser, { width: 390, height: 844 }, 'mobile-');
