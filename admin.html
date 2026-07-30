@@ -9,6 +9,7 @@
      Font Awesome 本地托管、echarts 删除（假图表下线后已零引用）。
      境外 CDN 在大陆时通时断，曾造成后台白屏数秒 + 图标变方块。 -->
 <link rel="stylesheet" href="/static/lib/fontawesome/css/all.min.css">
+<link rel="stylesheet" href="/static/lib/rb-effects.css">
 <script defer src="/static/lib/rb-effects.js"></script>
 <link rel="stylesheet" href="/static/app/css/admin-base.css">
 <!-- ══════════ 糖果主题覆盖（与前台 /v2 统一风格）══════════ -->
@@ -578,7 +579,7 @@
           </div>
           <div class="form-group" style="margin:0;width:120px">
             <label class="form-label">回看天数</label>
-            <input id="fm-days" class="form-input" type="number" min="60" max="320" value="180">
+            <input id="fm-days" class="form-input" type="number" min="60" max="320" value="320">
           </div>
           <div class="form-group" style="margin:0;width:120px">
             <label class="form-label">训练天数</label>
@@ -591,6 +592,14 @@
           <div class="form-group" style="margin:0;width:120px">
             <label class="form-label">持仓天数</label>
             <input id="fm-hold-days" class="form-input" type="number" min="1" max="10" value="2">
+          </div>
+          <div class="form-group" style="margin:0;width:120px">
+            <label class="form-label">止损（%）</label>
+            <input id="fm-stop-loss" class="form-input" type="number" min="-20" max="-0.5" step="0.1" value="-3.5">
+          </div>
+          <div class="form-group" style="margin:0;width:120px">
+            <label class="form-label">止盈（%）</label>
+            <input id="fm-take-profit" class="form-input" type="number" min="0.5" max="30" step="0.1" value="7">
           </div>
           <div class="form-group" style="margin:0;width:120px">
             <label class="form-label">候选数</label>
@@ -668,8 +677,75 @@
 
       <div class="card" style="margin-bottom:16px">
         <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-          <span><i class="fas fa-list-ol"></i> 最新候选</span>
-          <button class="btn btn-outline" style="padding:6px 12px;font-size:12px" data-ui-click="fmImportWatchlist()"><i class="fas fa-star"></i> 导入次日自选池</button>
+          <span><i class="fas fa-project-diagram"></i> V3 嵌套模型与样本外诊断</span>
+          <span id="fm-model-state" style="font-size:12px;color:var(--text3)">尚未加载</span>
+        </div>
+        <div id="fm-model-meta" style="font-size:12px;color:var(--text2);line-height:1.7;margin-bottom:12px">等待挖掘报告</div>
+        <div id="fm-portfolio-metrics" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:1px;background:var(--border);border:1px solid var(--border);margin-bottom:14px"></div>
+        <div style="display:grid;grid-template-columns:minmax(300px,1fr) minmax(420px,1.35fr);gap:16px;align-items:start">
+          <div style="overflow-x:auto">
+            <div style="font-weight:700;color:var(--text2);font-size:13px;margin-bottom:8px">冻结因子与权重</div>
+            <table>
+              <thead><tr><th>因子</th><th>系数</th><th>归一权重</th><th>训练 IC</th></tr></thead>
+              <tbody id="fm-model-factors"><tr><td colspan="4" style="text-align:center;padding:24px;color:var(--text3)">尚未加载</td></tr></tbody>
+            </table>
+          </div>
+          <div style="overflow-x:auto">
+            <div style="font-weight:700;color:var(--text2);font-size:13px;margin-bottom:8px">训练 / 验证 / 测试表现</div>
+            <table>
+              <thead><tr><th>样本</th><th>数量</th><th>Rank IC</th><th>Q1</th><th>Q5</th><th>多空差</th></tr></thead>
+              <tbody id="fm-model-diagnostics"><tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text3)">尚未加载</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <span><i class="fas fa-flask"></i> 前瞻冻结实验</span>
+          <div class="fm-experiment-actions">
+            <span id="fm-experiment-state" class="tag tag-gray">尚未加载</span>
+            <button class="btn btn-primary" id="fm-lock-btn" type="button" data-ui-click="fmLockExperiment()" disabled>
+              <i class="fas fa-lock"></i> 锁定当前模型
+            </button>
+            <button class="btn btn-danger" id="fm-cancel-btn" type="button" data-ui-click="fmCancelExperiment()" style="display:none">
+              <i class="fas fa-ban"></i> 取消实验
+            </button>
+          </div>
+        </div>
+        <div class="fm-experiment-layout">
+          <div class="fm-experiment-pane">
+            <div class="fm-experiment-kicker">当前挑战者</div>
+            <div id="fm-experiment-meta" class="fm-experiment-meta">等待实验概览</div>
+            <div id="fm-experiment-progress" class="fm-experiment-progress-grid">
+              <div class="fm-experiment-progress-item">尚未加载</div>
+            </div>
+          </div>
+          <div class="fm-experiment-pane">
+            <div class="fm-experiment-kicker">生产基线</div>
+            <div id="fm-experiment-metrics" class="fm-experiment-meta">尚无已验证模型</div>
+          </div>
+        </div>
+        <div class="fm-experiment-note">
+          锁定后模型、因子、参数和验收门槛不可修改。系统只使用锁定日之后最早 20 个交易日，
+          按 T+1、止盈止损、停牌与跌停延迟退出规则结算；未通过的实验不能进入交易观察池。
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead>
+              <tr><th>状态</th><th>来源报告</th><th>前瞻进度</th><th>收益 / 回撤</th><th>成交</th><th>验收结果</th><th>实验 / 模型身份</th><th>时间</th></tr>
+            </thead>
+            <tbody id="fm-experiment-history">
+              <tr><td colspan="8" style="text-align:center;padding:24px;color:var(--text3)">尚未加载</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <span><i class="fas fa-list-ol"></i> 最新候选（历史研究样本）</span>
+          <span style="font-size:12px;font-weight:400;color:var(--text3)">探索结果不可直接交易；仅通过前瞻验证的冻结模型由每日任务自动进入自选池</span>
         </div>
         <table>
           <thead><tr><th>日期</th><th>排名</th><th>代码</th><th>档位</th><th>分数</th><th>置信度</th><th>市场</th><th>计划</th><th>为什么选它</th><th>风险因素</th></tr></thead>
@@ -693,10 +769,12 @@
 
       <div class="card">
         <div class="card-title"><i class="fas fa-chart-area"></i> Walk-forward 窗口</div>
-        <table>
-          <thead><tr><th>训练区间</th><th>测试区间</th><th>方向</th><th>交易数</th><th>胜率</th><th>收益</th><th>回撤</th></tr></thead>
-          <tbody id="fm-windows"><tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr></tbody>
-        </table>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>拟合 / 验证区间</th><th>测试区间</th><th>冻结因子</th><th>样本净化</th><th>训练 / 验证 / 测试 IC</th><th>交易 / 换手</th><th>组合收益</th><th>回撤 / 利用率</th></tr></thead>
+            <tbody id="fm-windows"><tr><td colspan="8" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr></tbody>
+          </table>
+        </div>
       </div>
     </div>
 

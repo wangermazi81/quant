@@ -169,10 +169,12 @@ def _normalize_daily_frame(df: pd.DataFrame | None) -> pd.DataFrame | None:
     required = ["date", "open", "high", "low", "close", "volume"]
     if any(c not in data.columns for c in required):
         return None
-    data = data[required]
+    columns = required + (["amount"] if "amount" in data.columns else [])
+    data = data[columns]
     data["date"] = pd.to_datetime(data["date"], errors="coerce")
-    for col in ("open", "high", "low", "close", "volume"):
-        data[col] = pd.to_numeric(data[col], errors="coerce")
+    for col in ("open", "high", "low", "close", "volume", "amount"):
+        if col in data.columns:
+            data[col] = pd.to_numeric(data[col], errors="coerce")
     data = data.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
     return data if not data.empty else None
 
@@ -408,7 +410,7 @@ def fetch_kline_qfq(
 
 
 def _normalize_full_market_daily_frame(df: pd.DataFrame | None) -> pd.DataFrame:
-    columns = ["code", "date", "open", "high", "low", "close", "volume"]
+    columns = ["code", "date", "open", "high", "low", "close", "volume", "amount"]
     if df is None or df.empty:
         return pd.DataFrame(columns=columns)
     data = df.copy()
@@ -425,7 +427,9 @@ def _normalize_full_market_daily_frame(df: pd.DataFrame | None) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
     data["code"] = data["code"].astype(str).map(_plain_code)
     data["date"] = pd.to_datetime(data["date"], errors="coerce")
-    for column in ("open", "high", "low", "close", "volume"):
+    for column in ("open", "high", "low", "close", "volume", "amount"):
+        if column not in data.columns:
+            data[column] = pd.NA
         data[column] = pd.to_numeric(data[column], errors="coerce")
     data = data.dropna(subset=["date", "open", "high", "low", "close", "volume"])
     data = data[(data["code"].str.len() == 6) & (data["open"] > 0) & (data["close"] > 0)]
@@ -727,6 +731,42 @@ def fetch_stock_basic(
             "source": "tushare_stock_basic",
         })
     return out
+
+
+def fetch_namechange_history(
+    code: str,
+    token: str | None = None,
+    mode: str | None = None,
+) -> list[dict]:
+    ts_code = _ts_code(code)
+    fields = "ts_code,name,start_date,end_date,ann_date,change_reason"
+    rows = query_replay_api(
+        "namechange",
+        {"ts_code": ts_code, "fields": fields},
+        token=token,
+        mode=mode,
+        timeout=15,
+        max_attempts=1,
+    )
+    out: list[dict] = []
+    for row in rows:
+        row_code = _ts_code(str(row.get("ts_code") or code))
+        name = str(row.get("name") or "").strip()
+        dates = {}
+        for key in ("start_date", "end_date", "ann_date"):
+            digits = "".join(ch for ch in str(row.get(key) or "") if ch.isdigit())
+            dates[key] = digits[-8:] if len(digits) >= 8 else ""
+        if row_code != ts_code or not name or not dates["start_date"]:
+            continue
+        out.append(
+            {
+                "ts_code": row_code,
+                "name": name,
+                **dates,
+                "change_reason": str(row.get("change_reason") or "").strip(),
+            }
+        )
+    return sorted(out, key=lambda row: (row["start_date"], row["ann_date"], row["name"]))
 
 
 def fetch_stock_sectors_bulk(

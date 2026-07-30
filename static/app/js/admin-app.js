@@ -80,7 +80,7 @@ const PAGE_PERMISSIONS = {
   changelog: 'content_manage',
   feedback: 'content_manage',
 };
-const ROOT_ONLY_PAGES = new Set(['ai-trade-decision']);
+const ROOT_ONLY_PAGES = new Set(['factor-mining','ai-trade-decision']);
 const PAGE_NAMES = {
   'dashboard':'工作台','users':'用户管理','roles':'角色权限',
   'points':'积分流水','stats':'使用统计','factor-mining':'AI因子挖掘','ai-trade-decision':'AI交易决策','announcements':'公告管理',
@@ -1241,6 +1241,10 @@ let FM_LAST_FACTOR_REPORT = null;
 let FM_LAST_FACTOR_RUN_ID = '';
 let FM_ACTIVE_TASK_ID = '';
 let FM_POLL_GENERATION = 0;
+let FM_EXPERIMENT_OVERVIEW = null;
+let FM_LOAD_GENERATION = 0;
+let FM_EXPERIMENT_REQUEST_GENERATION = 0;
+let FM_WATCHLIST_REQUEST_GENERATION = 0;
 
 function fmSetText(id, text){
   const el = document.getElementById(id);
@@ -1269,6 +1273,18 @@ function fmReadInt(id, fallback){
   const el = document.getElementById(id);
   const n = Number.parseInt(el ? el.value : '', 10);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function fmReadPercent(id, fallback){
+  const el = document.getElementById(id);
+  const n = Number(el ? el.value : '');
+  return Number.isFinite(n) ? n / 100 : fallback;
+}
+
+function fmDecimalText(v, digits=3){
+  if(v===null || v===undefined || v==='') return '—';
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(digits) : '—';
 }
 
 function fmStatusText(status){
@@ -1364,7 +1380,7 @@ const FM_DEFAULT_RULES = {
 };
 
 const FM_RULE_LABELS = {
-  ret_5:'5日动量', ret_10:'10日动量', ret_20:'20日动量', volume_ratio_20:'20日量比', amount_ratio_20:'20日额比', near_high_20:'接近20日高点', limit_count_20:'20日涨停次数', volatility_10:'10日波动惩罚', overheat_ret_3:'3日过热惩罚',
+  ret_3:'3日动量', ret_5:'5日动量', ret_10:'10日动量', ret_20:'20日动量', volume_ratio_20:'20日量比', amount_ratio_20:'20日额比', near_high_20:'接近20日高点', drawdown_20:'20日回撤', limit_count_20:'20日涨停次数', volatility_10:'10日波动惩罚', overheat_ret_3:'3日过热惩罚',
   overextended_3d:'3日涨幅过热', high_volatility:'10日高波动', weak_volume:'弱量阈值', deep_drawdown:'20日深回撤',
   strong_percentile:'强候选分位', watch_percentile:'观察分位', min_relay_score:'最低评分', min_volume_ratio_20:'最低量比', min_near_high_20:'最低接近高点',
   emo_min:'情绪下限(含)', emo_max:'情绪上限(不含)'
@@ -1462,7 +1478,7 @@ function fmRenderGate(report){
         : (gate.emotion_delta>0?'+':'') + Number(gate.emotion_delta).toFixed(1);
       banner.innerHTML = `<b style="color:${pass?'var(--green)':'var(--orange)'}">${pass?'🟢 今日通过市场状态门':'🟡 今日未过市场状态门 — 建议观望'}</b>
         &nbsp;市场情绪 <b>${emo}</b>（较前日 ${delta}）｜ ${esc(gate.reason_cn || gate.reason || '')}
-        ${!pass ? '<br>候选已全体降级（strong→watch→observe）并标记 <b>market_gate_blocked</b>；历史归因显示不过门日子接力胜率显著偏低。' : ''}
+        ${!pass ? '<br>候选已全部改为仅观察、仓位归零，并标记 <b>market_gate_blocked</b>；不会进入 AI 自动交易候选。' : ''}
         ${summary.gate_note ? `<div style="margin-top:4px;font-size:11px;color:var(--text3)">${esc(summary.gate_note)}</div>` : ''}`;
     }
   }
@@ -1480,16 +1496,422 @@ function fmRenderGate(report){
   }
 }
 
+function fmMetricCell(label, value, detail=''){
+  return `<div style="background:var(--card-bg);padding:10px 12px;min-height:62px">
+    <div style="font-size:11px;color:var(--text3)">${esc(label)}</div>
+    <div style="font-size:18px;font-weight:700;color:var(--text1);margin-top:3px">${esc(value)}</div>
+    ${detail ? `<div style="font-size:11px;color:var(--text3);margin-top:2px">${esc(detail)}</div>` : ''}
+  </div>`;
+}
+
+function fmExperimentStatusMeta(status){
+  const map = {
+    exploratory: {label:'探索研究', tag:'tag-blue', color:'var(--blue)'},
+    locked_shadow: {label:'前瞻验证中', tag:'tag-orange', color:'var(--orange)'},
+    validated: {label:'已验证', tag:'tag-green', color:'var(--green)'},
+    failed: {label:'验证失败', tag:'tag-red', color:'var(--red)'},
+    cancelled: {label:'已取消', tag:'tag-gray', color:'var(--text3)'},
+  };
+  return map[status] || {label:status || '未知', tag:'tag-gray', color:'var(--text3)'};
+}
+
+function fmExperimentStatusTag(status){
+  const meta = fmExperimentStatusMeta(status);
+  return `<span class="tag ${meta.tag}">${esc(meta.label)}</span>`;
+}
+
+function fmExperimentForRun(runId, overview=FM_EXPERIMENT_OVERVIEW){
+  const sourceRunId = String(runId || '').trim();
+  if(!sourceRunId || !overview || !overview.ok) return null;
+  const active = overview.experiment;
+  if(active && active.source_run_id === sourceRunId){
+    return {...active, progress:overview.progress || active.progress || null};
+  }
+  const validated = overview.latest_validated;
+  if(validated && validated.source_run_id === sourceRunId) return validated;
+  const history = Array.isArray(overview.experiments) ? overview.experiments : [];
+  return history.find(item=>item && item.source_run_id === sourceRunId) || null;
+}
+
+function fmExperimentFailureText(reasons){
+  const labels = {
+    minimum_total_return_pct_not_met: '前瞻收益未达到门槛',
+    maximum_drawdown_pct_exceeded: '最大回撤超过门槛',
+    minimum_executed_trades_not_met: '成交样本不足',
+    protocol_violation_count_nonzero: '数据或实验协议违规',
+  };
+  if(!Array.isArray(reasons) || !reasons.length) return '—';
+  return reasons.map(reason=>labels[reason] || reason).join('；');
+}
+
+function fmModelLifecycle(report){
+  const assessment = (report && report.research_assessment) || {};
+  const experiment = fmExperimentForRun(FM_LAST_FACTOR_RUN_ID);
+  if(experiment){
+    if(experiment.status === 'locked_shadow') return {label:'前瞻验证中', color:'var(--orange)', experiment};
+    if(experiment.status === 'validated') return {label:'已验证，可部署', color:'var(--green)', experiment};
+    if(experiment.status === 'failed') return {label:'前瞻验证失败', color:'var(--red)', experiment};
+    if(experiment.status === 'cancelled') return {label:'前瞻实验已取消', color:'var(--text3)', experiment};
+  }
+  if(!report) return {label:'尚未加载', color:'var(--text3)', experiment:null};
+  if((report.data_status || report.status) !== 'ok'){
+    return {label:'数据不完整，不可锁定', color:'var(--orange)', experiment:null};
+  }
+  if(report.research_status === 'failed'){
+    return {label:'历史检验未通过', color:'var(--red)', experiment:null};
+  }
+  if(assessment.lock_eligible){
+    return {label:'历史通过，可锁定', color:'var(--orange)', experiment:null};
+  }
+  return {label:'探索研究，不可部署', color:'var(--text3)', experiment:null};
+}
+
+function fmRenderModelDiagnostics(report){
+  const state = document.getElementById('fm-model-state');
+  const meta = document.getElementById('fm-model-meta');
+  const metrics = document.getElementById('fm-portfolio-metrics');
+  const factorBody = document.getElementById('fm-model-factors');
+  const diagnosticsBody = document.getElementById('fm-model-diagnostics');
+  if(!report){
+    if(state){ state.textContent = '尚未加载'; state.style.color = 'var(--text3)'; }
+    if(meta) meta.textContent = '等待挖掘报告';
+    if(metrics) metrics.innerHTML = '';
+    if(factorBody) factorBody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--text3)">尚未加载</td></tr>';
+    if(diagnosticsBody) diagnosticsBody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text3)">尚未加载</td></tr>';
+    return;
+  }
+  const model = report.model || {};
+  const summary = report.summary || {};
+  const selected = Array.isArray(model.selected_factors) ? model.selected_factors : [];
+  const fallback = model.fallback !== false;
+  const lifecycle = fmModelLifecycle(report);
+
+  if(state){
+    state.textContent = fallback && !lifecycle.experiment
+      ? `降级：${model.fallback_reason || '固定评分'}`
+      : lifecycle.label;
+    state.style.color = fallback && !lifecycle.experiment ? 'var(--orange)' : lifecycle.color;
+  }
+  if(meta){
+    const fitRange = model.fit_start || model.fit_end ? `${model.fit_start || '—'} 至 ${model.fit_end || '—'}` : '—';
+    const validationRange = model.validation_start || model.validation_end ? `${model.validation_start || '—'} 至 ${model.validation_end || '—'}` : '—';
+    const testRange = model.test_start || model.test_end ? `${model.test_start || '—'} 至 ${model.test_end || '—'}` : '—';
+    const researchStatus = fmStatusText(report.status);
+    const researchReason = report.reason && report.reason !== 'ok' ? `；原因 ${esc(report.reason)}` : '';
+    meta.innerHTML = `<b>版本：</b>${esc(model.model_version || '—')}　<b>策略：</b>${esc(model.strategy_key || 'relay_factor_mining_v2')}
+      <br><b>拟合：</b>${esc(fitRange)}（${fmNumText(model.fit_sample_count)} 条）　<b>验证：</b>${esc(validationRange)}（${fmNumText(model.validation_sample_count)} 条）　<b>最终测试：</b>${esc(testRange)}
+      <br><b>防未来函数：</b>训练标签退出日必须早于测试起点；本窗口净化 ${fmNumText(model.purged_date_count)} 个日期 / ${fmNumText(model.purged_sample_count)} 条样本。
+      <br><b>数据质量：</b>${summary.amount_data_real ? '真实成交额已参与候选因子' : '缺少真实成交额，代理值仅供旧规则兼容，V2 模型已禁用成交额因子'}；股票池 ${fmNumText(summary.panel_stock_count)} 只，最大单日收盘变化 ${fmRateText(summary.panel_max_abs_close_return)}。
+      <br><b>成交额覆盖：</b>历史 ${fmRateText(summary.amount_data_coverage)}；最新截面 ${fmRateText(summary.latest_amount_data_coverage)}。
+      <br><b>ST 时点覆盖：</b>历史 ${fmRateText(summary.st_status_coverage)}；最新截面 ${fmRateText(summary.latest_st_status_coverage)}；研究状态 ${esc(researchStatus)}${researchReason}。`;
+    const assessment = report.research_assessment || {};
+    const confidence = assessment.bootstrap_total_return_ci_pct || {};
+    const researchKey = report.research_status || report.status || 'unknown';
+    const dataKey = report.data_status || report.status || 'unknown';
+    const failureReasons = Array.isArray(assessment.failure_reasons) ? assessment.failure_reasons : [];
+    const confidenceText = confidence.lower == null
+      ? '样本不足'
+      : `${fmPctText(confidence.lower)} / ${fmPctText(confidence.median)} / ${fmPctText(confidence.upper)}`;
+    const deploymentText = lifecycle.experiment?.status === 'validated'
+      ? '前瞻验证通过，允许自动部署'
+      : '不可自动部署';
+    meta.innerHTML += `<br><b>数据状态：</b>${esc(dataKey)}；<b>研究状态：</b>${esc(researchKey)}；
+      <b>Bootstrap 95%区间（下界/中位/上界）：</b>${confidenceText}；<b>${deploymentText}</b>
+      ${failureReasons.length ? `；<b>未通过项：</b>${esc(failureReasons.join(', '))}` : ''}`;
+    const experiment = lifecycle.experiment;
+    if(experiment){
+      const progress = experiment.progress || {};
+      const evaluationFailures = experiment.evaluation?.failure_reasons || [];
+      const progressText = experiment.status === 'locked_shadow'
+        ? `；观察 ${fmNumText(progress.observed_sessions)} / ${fmNumText(progress.required_sessions)}，结算 ${fmNumText(progress.settled_sessions)} / ${fmNumText(progress.required_sessions)}`
+        : '';
+      const failureText = evaluationFailures.length
+        ? `；${fmExperimentFailureText(evaluationFailures)}`
+        : '';
+      meta.innerHTML += `<br><b>生命周期：</b>${esc(lifecycle.label)}${progressText}${failureText}
+        <br><b>实验身份：</b><span class="fm-experiment-id">${esc(experiment.experiment_id || '—')}</span>；
+        <b>模型身份：</b><span class="fm-experiment-id">${esc(experiment.model_instance_id || '—')}</span>`;
+    }else{
+      meta.innerHTML += `<br><b>生命周期：</b>${esc(lifecycle.label)}；历史报告本身不能进入交易，必须先锁定并完成前瞻验收。`;
+    }
+  }
+  if(metrics){
+    const attempted = Number(summary.portfolio_attempted_slots || 0);
+    const blocked = Number(summary.portfolio_blocked_slots || 0);
+    const blockedRate = attempted > 0 ? blocked / attempted : 0;
+    metrics.innerHTML = [
+      fmMetricCell('组合复利收益', fmPctText(summary.portfolio_total_return_pct), `终值 ${fmDecimalText(summary.portfolio_final_equity, 4)}`),
+      fmMetricCell('真实最大回撤', fmPctText(summary.portfolio_max_drawdown_pct), '按逐日权益曲线计算'),
+      fmMetricCell('平均资金利用率', fmRateText(summary.portfolio_average_capital_utilization), `平均现金 ${fmRateText(summary.portfolio_average_cash_pct)}`),
+      fmMetricCell('峰值总敞口', fmRateText(summary.portfolio_max_gross_exposure), `最低现金 ${fmRateText(summary.portfolio_min_cash)}`),
+      fmMetricCell('执行交易', fmNumText(summary.portfolio_executed_trade_count), `阻断槽位 ${blocked}/${attempted}（${fmRateText(blockedRate)}）`),
+      fmMetricCell('候选换手率', fmRateText(model.selection_turnover), '相邻测试日单边换手'),
+    ].join('');
+  }
+  if(factorBody){
+    if(fallback || !selected.length){
+      factorBody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--orange)">模型数据不足，候选继续使用旧 relay_score；原因：${esc(model.fallback_reason || '未生成冻结因子')}</td></tr>`;
+    }else{
+      const coefficients = model.coefficients || {};
+      const weights = model.normalized_weights || {};
+      const trainingIc = model.training_ic || {};
+      factorBody.innerHTML = selected.map(factor=>`
+        <tr>
+          <td><b>${esc(FM_RULE_LABELS[factor] || factor)}</b><br><span style="font-size:11px;color:var(--text3)">${esc(factor)}</span></td>
+          <td>${fmDecimalText(coefficients[factor], 5)}</td>
+          <td style="color:${Number(weights[factor]) >= 0 ? 'var(--green)' : 'var(--red)'}">${fmRateText(weights[factor])}</td>
+          <td>${fmDecimalText(trainingIc[factor], 3)}</td>
+        </tr>`).join('');
+    }
+  }
+  if(diagnosticsBody){
+    const rows = [
+      ['训练', model.training_diagnostics],
+      ['验证', model.validation_diagnostics],
+      ['测试', model.test_diagnostics],
+    ];
+    diagnosticsBody.innerHTML = rows.map(([label, diagnostics])=>{
+      const diag = diagnostics || {};
+      const groups = diag.quantile_returns || {};
+      return `<tr>
+        <td><b>${label}</b></td>
+        <td>${fmNumText(diag.sample_count)}</td>
+        <td>${fmDecimalText(diag.rank_ic, 3)}</td>
+        <td>${fmPctText(groups['1'])}</td>
+        <td>${fmPctText(groups['5'])}</td>
+        <td>${fmPctText(diag.top_bottom_spread_pct)}</td>
+      </tr>`;
+    }).join('');
+  }
+}
+
+function fmExperimentProgressItem(label, value, detail){
+  return `<div class="fm-experiment-progress-item">
+    <span>${esc(label)}</span>
+    <b>${esc(value)}</b>
+    <span style="color:var(--text3)">${esc(detail || '')}</span>
+  </div>`;
+}
+
+function fmRenderExperimentOverview(overview){
+  FM_EXPERIMENT_OVERVIEW = overview && overview.ok ? overview : null;
+  const state = document.getElementById('fm-experiment-state');
+  const progressEl = document.getElementById('fm-experiment-progress');
+  const metaEl = document.getElementById('fm-experiment-meta');
+  const metricsEl = document.getElementById('fm-experiment-metrics');
+  const historyEl = document.getElementById('fm-experiment-history');
+  const lockBtn = document.getElementById('fm-lock-btn');
+  const cancelBtn = document.getElementById('fm-cancel-btn');
+
+  if(!overview || !overview.ok){
+    const error = (overview && overview.error) || '实验概览加载失败';
+    if(state){
+      state.textContent = '加载失败';
+      state.className = 'tag tag-red';
+    }
+    if(metaEl) metaEl.textContent = error;
+    if(progressEl) progressEl.innerHTML = fmExperimentProgressItem('状态', '不可用', error);
+    if(metricsEl) metricsEl.textContent = '当前生产模型状态未知';
+    if(historyEl) historyEl.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--red)">${esc(error)}</td></tr>`;
+    if(lockBtn){
+      lockBtn.disabled = true;
+      lockBtn.title = error;
+    }
+    if(cancelBtn) cancelBtn.style.display = 'none';
+    if(FM_LAST_FACTOR_REPORT) fmRenderModelDiagnostics(FM_LAST_FACTOR_REPORT);
+    return;
+  }
+
+  const active = overview.experiment || null;
+  const activeProgress = overview.progress || active?.progress || {};
+  const incumbent = overview.latest_validated || null;
+  const history = Array.isArray(overview.experiments) ? overview.experiments : [];
+  const statusMeta = fmExperimentStatusMeta(active?.status);
+
+  if(state){
+    state.textContent = active ? statusMeta.label : '当前无挑战者';
+    state.className = `tag ${active ? statusMeta.tag : 'tag-gray'}`;
+  }
+  if(active){
+    const required = fmNumText(activeProgress.required_sessions);
+    const observed = fmNumText(activeProgress.observed_sessions);
+    const settled = fmNumText(activeProgress.settled_sessions);
+    if(metaEl){
+      metaEl.innerHTML = `<b>来源报告：</b>${esc(active.source_run_id || '—')}
+        <br><b>锁定时间：</b>${esc(active.locked_at || '—')}
+        <br><b>实验 ID：</b><span class="fm-experiment-id">${esc(active.experiment_id || '—')}</span>
+        <br><b>模型 ID：</b><span class="fm-experiment-id">${esc(active.model_instance_id || '—')}</span>`;
+    }
+    if(progressEl){
+      progressEl.innerHTML = [
+        fmExperimentProgressItem('观察进度', `已观察 ${observed} / ${required}`, '只计锁定后的交易日'),
+        fmExperimentProgressItem('结算进度', `已结算 ${settled} / ${required}`, '持仓退出后才算结算'),
+        fmExperimentProgressItem('验收状态', activeProgress.ready_to_evaluate ? '等待验收' : '积累样本中', '达到完整会话数后只验收一次'),
+      ].join('');
+    }
+  }else{
+    if(metaEl){
+      metaEl.innerHTML = '当前没有前瞻挑战者。只有历史检验通过且标记为“可锁定”的最新模型，才能开启新的冻结实验。';
+    }
+    if(progressEl){
+      progressEl.innerHTML = [
+        fmExperimentProgressItem('观察进度', '—', '尚未锁定挑战者'),
+        fmExperimentProgressItem('结算进度', '—', '尚未产生真实前瞻持仓'),
+        fmExperimentProgressItem('验收状态', '未开始', '历史回测不能替代前瞻验证'),
+      ].join('');
+    }
+  }
+
+  if(metricsEl){
+    if(incumbent){
+      const evaluation = incumbent.evaluation || {};
+      const metrics = evaluation.metrics || {};
+      metricsEl.innerHTML = `<b>当前生产模型</b> ${fmExperimentStatusTag(incumbent.status)}
+        <br><b>来源报告：</b>${esc(incumbent.source_run_id || '—')}
+        <br><b>前瞻收益：</b>${fmPctText(metrics.total_return_pct)}；
+        <b>最大回撤：</b>${fmPctText(metrics.max_drawdown_pct)}；
+        <b>成交：</b>${fmNumText(metrics.executed_trade_count)}
+        <br><b>实验 ID：</b><span class="fm-experiment-id">${esc(incumbent.experiment_id || '—')}</span>
+        <br><b>模型 ID：</b><span class="fm-experiment-id">${esc(incumbent.model_instance_id || '—')}</span>`;
+    }else{
+      metricsEl.innerHTML = '<b>当前生产模型</b><br>尚无完成前瞻验收的模型，因子候选不会自动进入交易观察池。';
+    }
+  }
+
+  if(historyEl){
+    if(!history.length){
+      historyEl.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--text3)">暂无冻结实验记录</td></tr>';
+    }else{
+      historyEl.innerHTML = history.map(item=>{
+        const progress = item.progress || {};
+        const evaluation = item.evaluation || {};
+        const metrics = evaluation.metrics || {};
+        const failures = evaluation.failure_reasons || [];
+        const required = fmNumText(progress.required_sessions);
+        const resultText = item.status === 'validated'
+          ? '验收通过'
+          : item.status === 'failed'
+            ? fmExperimentFailureText(failures)
+            : item.status === 'cancelled'
+              ? '管理员取消'
+              : '等待未来交易日';
+        const eventTime = item.evaluated_at || item.cancelled_at || item.locked_at || item.created_at || '—';
+        return `<tr>
+          <td>${fmExperimentStatusTag(item.status)}</td>
+          <td>${esc(item.source_run_id || '—')}</td>
+          <td>观察 ${fmNumText(progress.observed_sessions)} / ${required}<br><span style="font-size:11px;color:var(--text3)">结算 ${fmNumText(progress.settled_sessions)} / ${required}</span></td>
+          <td>${fmPctText(metrics.total_return_pct)}<br><span style="font-size:11px;color:var(--text3)">回撤 ${fmPctText(metrics.max_drawdown_pct)}</span></td>
+          <td>${fmNumText(metrics.executed_trade_count)}</td>
+          <td style="min-width:150px">${esc(resultText)}</td>
+          <td><span class="fm-experiment-id">${esc(item.experiment_id || '—')}</span><br><span class="fm-experiment-id" style="color:var(--text3)">${esc(item.model_instance_id || '—')}</span></td>
+          <td>${esc(eventTime)}</td>
+        </tr>`;
+      }).join('');
+    }
+  }
+
+  const assessment = FM_LAST_FACTOR_REPORT?.research_assessment || {};
+  const currentExperiment = fmExperimentForRun(FM_LAST_FACTOR_RUN_ID, overview);
+  let canLock = false;
+  let lockReason = '';
+  if(active){
+    lockReason = '已有前瞻实验正在验证，需完成或取消后才能锁定新模型';
+  }else if(currentExperiment){
+    const labels = {
+      validated: '当前模型已经通过前瞻验证',
+      failed: '当前模型前瞻验证失败，必须重新挖掘新模型',
+      cancelled: '当前模型的前瞻实验已取消，必须重新挖掘新模型',
+    };
+    lockReason = labels[currentExperiment.status] || '当前模型已有冻结实验记录';
+  }else if(!FM_LAST_FACTOR_RUN_ID || !FM_LAST_FACTOR_REPORT){
+    lockReason = '没有可锁定的最新研究报告';
+  }else if((FM_LAST_FACTOR_REPORT.data_status || FM_LAST_FACTOR_REPORT.status) !== 'ok'){
+    lockReason = '数据质量未通过，不能锁定';
+  }else if(FM_LAST_FACTOR_REPORT.research_status !== 'exploratory' || !assessment.lock_eligible){
+    lockReason = '历史研究门槛未通过，不能锁定';
+  }else{
+    canLock = true;
+    lockReason = '锁定后参数不可修改，并从下一个交易日起记录前瞻结果';
+  }
+  if(lockBtn){
+    lockBtn.disabled = !canLock;
+    lockBtn.title = lockReason;
+  }
+  if(cancelBtn){
+    cancelBtn.style.display = active ? 'inline-flex' : 'none';
+    cancelBtn.title = active ? '取消当前前瞻实验，已记录数据仍保留' : '';
+  }
+  if(FM_LAST_FACTOR_REPORT) fmRenderModelDiagnostics(FM_LAST_FACTOR_REPORT);
+}
+
+async function fmLoadExperimentOverview(){
+  const generation = ++FM_EXPERIMENT_REQUEST_GENERATION;
+  const overview = await _annFetch('GET', '/admin/factor-mining/experiments/active');
+  if(generation !== FM_EXPERIMENT_REQUEST_GENERATION) return null;
+  fmRenderExperimentOverview(overview);
+  return overview;
+}
+
+async function fmLockExperiment(){
+  const btn = document.getElementById('fm-lock-btn');
+  if(btn?.disabled) return;
+  if(!FM_LAST_FACTOR_RUN_ID){
+    showToast('没有可锁定的研究报告', 'warning');
+    return;
+  }
+  if(!confirm('锁定后模型、参数和验收门槛不可修改，并将从下一个交易日起记录前瞻结果。确认锁定？')) return;
+  if(btn) btn.disabled = true;
+  const result = await _annFetch(
+    'POST',
+    `/admin/factor-mining/experiments/${encodeURIComponent(FM_LAST_FACTOR_RUN_ID)}/lock`,
+  );
+  if(result && result.ok){
+    showToast('前瞻冻结实验已创建', 'success');
+    await fmLoadExperimentOverview();
+  }else{
+    showToast((result && result.error) || '锁定实验失败', 'error');
+    await fmLoadExperimentOverview();
+  }
+}
+
+async function fmCancelExperiment(){
+  const active = FM_EXPERIMENT_OVERVIEW?.experiment;
+  if(!active?.experiment_id){
+    showToast('当前没有可取消的前瞻实验', 'warning');
+    return;
+  }
+  if(!confirm('确认取消当前前瞻实验？已记录的会话和候选会保留，但该模型不能继续验收。')) return;
+  const result = await _annFetch(
+    'POST',
+    `/admin/factor-mining/experiments/${encodeURIComponent(active.experiment_id)}/cancel`,
+  );
+  if(result && result.ok){
+    showToast('前瞻实验已取消', 'success');
+  }else{
+    showToast((result && result.error) || '取消实验失败', 'error');
+  }
+  await fmLoadExperimentOverview();
+}
+
 async function loadFactorMining(){
+  const generation = ++FM_LOAD_GENERATION;
+  const experimentGeneration = ++FM_EXPERIMENT_REQUEST_GENERATION;
   const msg = document.getElementById('fm-msg');
   if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '加载最新结果…'; }
-  const rules = await _annFetch('GET', '/admin/factor-mining/rules');
+  const [rules, r, overview, task] = await Promise.all([
+    _annFetch('GET', '/admin/factor-mining/rules'),
+    _annFetch('GET', '/admin/factor-mining/latest'),
+    _annFetch('GET', '/admin/factor-mining/experiments/active'),
+    _annFetch('GET', '/admin/factor-mining/status'),
+  ]);
+  if(generation !== FM_LOAD_GENERATION) return;
   if(rules && rules.ok) fmRenderRuleEditor(rules.mining_rules || FM_DEFAULT_RULES);
   else fmRenderRuleEditor(FM_DEFAULT_RULES);
-  const r = await _annFetch('GET', '/admin/factor-mining/latest');
   renderFactorMining(r);
+  if(experimentGeneration === FM_EXPERIMENT_REQUEST_GENERATION){
+    fmRenderExperimentOverview(overview);
+  }
   fmLoadWatchlist();
-  const task = await _annFetch('GET', '/admin/factor-mining/status');
   if(task && task.ok && task.found && (task.status === 'queued' || task.status === 'running')){
     fmPollFactorMining(task.task_id);
   }
@@ -1505,8 +1927,9 @@ function renderFactorMining(r){
     const error = (r && r.error) || '加载失败';
     if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
     if(candidateBody) candidateBody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
-    if(windowBody) windowBody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
+    if(windowBody) windowBody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
     fmRenderRuleExplain({mining_rules:FM_DEFAULT_RULES, condition_explain:[]});
+    fmRenderModelDiagnostics(null);
     return;
   }
 
@@ -1523,9 +1946,10 @@ function renderFactorMining(r){
     fmSetText('fm-drawdown','最大回撤 —');
     if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '暂无挖掘结果'; }
     if(candidateBody) candidateBody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">暂无候选</td></tr>';
-    if(windowBody) windowBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text3)">暂无窗口结果</td></tr>';
+    if(windowBody) windowBody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:36px;color:var(--text3)">暂无窗口结果</td></tr>';
     fmRenderRuleExplain({mining_rules:FM_DEFAULT_RULES, condition_explain:[]});
     fmRenderGate(null);
+    fmRenderModelDiagnostics(null);
     return;
   }
 
@@ -1542,6 +1966,10 @@ function renderFactorMining(r){
   const marketStatus = summary.latest_market_data_status || 'not_checked';
   const marketReason = summary.latest_market_data_reason || '';
   const emotion = summary.latest_market_emotion_score;
+  const stopLossInput = document.getElementById('fm-stop-loss');
+  const takeProfitInput = document.getElementById('fm-take-profit');
+  if(stopLossInput && config.stop_loss!==null && config.stop_loss!==undefined) stopLossInput.value = (Number(config.stop_loss) * 100).toFixed(1);
+  if(takeProfitInput && config.take_profit!==null && config.take_profit!==undefined) takeProfitInput.value = (Number(config.take_profit) * 100).toFixed(1);
 
   fmSetText('fm-status', fmStatusText(report.status));
   fmSetText('fm-updated', `${updated || '生成时间未知'}${r.run_id ? ' / '+r.run_id : ''}`);
@@ -1556,6 +1984,7 @@ function renderFactorMining(r){
   fmSetText('fm-total-return', fmPctText(liveTotalReturn));
   fmSetText('fm-drawdown', `实盘回撤 ${fmPctText(liveDrawdown)} / 原始 ${fmPctText(summary.raw_max_drawdown_pct ?? summary.max_drawdown_pct)}`);
   fmRenderGate(report);
+  fmRenderModelDiagnostics(report);
   if(msg){
     msg.style.color = report.status === 'ok' ? 'var(--green)' : 'var(--orange)';
     const liveMsg = blockRate!==null && blockRate!==undefined ? `；执行过滤 ${fmRateText(blockRate)}` : '';
@@ -1587,18 +2016,27 @@ function renderFactorMining(r){
   if(windowBody){
     const recentWindows = windows.slice(-8).reverse();
     if(recentWindows.length){
-      windowBody.innerHTML = recentWindows.map(w=>`
-        <tr>
-          <td>${esc(w.train_start || '')} 至 ${esc(w.train_end || '')}</td>
+      windowBody.innerHTML = recentWindows.map(w=>{
+        const model = w.model || {};
+        const trainDiag = w.training_diagnostics || {};
+        const validationDiag = w.validation_diagnostics || {};
+        const testDiag = w.test_diagnostics || {};
+        const factors = Array.isArray(model.selected_factors) && model.selected_factors.length
+          ? model.selected_factors.map(f=>FM_RULE_LABELS[f] || f).join('、')
+          : `降级：${model.fallback_reason || '固定评分'}`;
+        return `<tr>
+          <td>${esc(model.fit_start || w.train_start || '')} 至 ${esc(model.fit_end || w.train_end || '')}<br><span style="font-size:11px;color:var(--text3)">验证 ${esc(model.validation_start || '—')} 至 ${esc(model.validation_end || '—')}</span></td>
           <td>${esc(w.test_start || '')} 至 ${esc(w.test_end || '')}</td>
-          <td>${Number(w.direction) >= 0 ? '正向' : '反向'}</td>
-          <td>${fmNumText(w.trade_count)}</td>
-          <td>${fmRateText(w.live_hit_rate ?? w.hit_rate)}<br><span style="font-size:11px;color:var(--text3)">原始 ${fmRateText(w.hit_rate)}</span></td>
-          <td>${fmPctText(w.live_total_return_pct ?? w.total_return_pct)}<br><span style="font-size:11px;color:var(--text3)">原始 ${fmPctText(w.total_return_pct)}</span></td>
-          <td>${fmPctText(w.live_max_drawdown_pct ?? w.max_drawdown_pct)}<br><span style="font-size:11px;color:var(--text3)">过滤 ${fmRateText(w.live_execution_block_rate)}</span></td>
-        </tr>`).join('');
+          <td style="min-width:150px">${esc(factors)}</td>
+          <td>日期 ${fmNumText(w.purged_date_count)}<br><span style="font-size:11px;color:var(--text3)">样本 ${fmNumText(w.purged_sample_count)}</span></td>
+          <td>${fmDecimalText(trainDiag.rank_ic, 3)} / ${fmDecimalText(validationDiag.rank_ic, 3)} / ${fmDecimalText(testDiag.rank_ic, 3)}<br><span style="font-size:11px;color:var(--text3)">测试多空差 ${fmPctText(testDiag.top_bottom_spread_pct)}</span></td>
+          <td>${fmNumText(w.portfolio_executed_trade_count ?? w.live_trade_count)}<br><span style="font-size:11px;color:var(--text3)">换手 ${fmRateText(w.selection_turnover)}</span></td>
+          <td>${fmPctText(w.portfolio_total_return_pct ?? w.live_total_return_pct)}<br><span style="font-size:11px;color:var(--text3)">胜率 ${fmRateText(w.live_hit_rate ?? w.hit_rate)}</span></td>
+          <td>${fmPctText(w.portfolio_max_drawdown_pct ?? w.live_max_drawdown_pct)}<br><span style="font-size:11px;color:var(--text3)">利用率 ${fmRateText(w.portfolio_average_capital_utilization)}</span></td>
+        </tr>`;
+      }).join('');
     }else{
-      windowBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text3)">暂无可用窗口，通常是可信样本不足</td></tr>';
+      windowBody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:36px;color:var(--text3)">暂无可用窗口，通常是可信样本不足</td></tr>';
     }
   }
 }
@@ -1637,6 +2075,7 @@ function fmToggleReadyOnly(){
 }
 
 async function fmLoadWatchlist(){
+  const generation = ++FM_WATCHLIST_REQUEST_GENERATION;
   const body = document.getElementById('fm-watchlist');
   const updated = document.getElementById('fm-watch-updated');
   if(body) body.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">加载中…</td></tr>';
@@ -1646,6 +2085,7 @@ async function fmLoadWatchlist(){
   if(FM_WATCH_READY_ONLY) params.push('readiness=ready');
   const qs = params.length ? `?${params.join('&')}` : '';
   const r = await _annFetch('GET', `/admin/factor-watchlist${qs}`);
+  if(generation !== FM_WATCHLIST_REQUEST_GENERATION) return;
   if(!r || !r.ok){
     const error = (r && r.error) || '加载失败';
     if(body) body.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--red)">${esc(error)}</td></tr>`;
@@ -1680,7 +2120,7 @@ async function fmLoadWatchlist(){
   }
   if(!body) return;
   if(!items.length){
-    body.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">暂无标的，可从最新候选一键导入</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:36px;color:var(--text3)">暂无标的；通过前瞻验证的冻结模型会由每日任务自动写入</td></tr>';
     return;
   }
   body.innerHTML = items.map(item=>`
@@ -1703,25 +2143,6 @@ async function fmLoadWatchlist(){
         <button class="btn btn-outline" style="padding:4px 8px;font-size:12px" data-ui-click="fmDeleteWatchItem('${escJs(item.id)}')"><i class="fas fa-trash"></i></button>
       </td>
     </tr>`).join('');
-}
-
-async function fmImportWatchlist(){
-  const candidates = FM_LAST_FACTOR_REPORT && Array.isArray(FM_LAST_FACTOR_REPORT.latest_candidates) ? FM_LAST_FACTOR_REPORT.latest_candidates : null;
-  if(!candidates || !candidates.length){
-    showToast('暂无最新候选可导入，请先完成因子挖掘', 'warning');
-    return;
-  }
-  const r = await _annFetch('POST', '/admin/factor-watchlist/import', {
-    run_id: FM_LAST_FACTOR_RUN_ID,
-    strategy_name: 'AI因子挖掘候选',
-    candidates,
-  });
-  if(r && r.ok){
-    showToast(`已导入 ${r.imported} 只候选`, 'success');
-    fmLoadWatchlist();
-  }else{
-    showToast((r && r.error) || '导入失败', 'error');
-  }
 }
 
 // 下面两个薄包装：让 data-ui-change 只传「字面量 + this」，
@@ -1794,6 +2215,7 @@ async function fmPollFactorMining(taskId){
       showToast('AI因子挖掘完成', 'success');
       renderFactorMining({ok:true, found:true, run_id:task.run_id, report:task.report});
       fmLoadWatchlist();
+      fmLoadExperimentOverview();
       return;
     }
     const error = task.error || '挖掘任务失败';
@@ -1807,10 +2229,12 @@ async function runFactorMining(){
   const msg = document.getElementById('fm-msg');
   const body = {
     n_stocks: fmReadInt('fm-n-stocks', 800),
-    days: fmReadInt('fm-days', 180),
+    days: fmReadInt('fm-days', 320),
     train_days: fmReadInt('fm-train-days', 60),
     test_days: fmReadInt('fm-test-days', 10),
     hold_days: fmReadInt('fm-hold-days', 2),
+    stop_loss: fmReadPercent('fm-stop-loss', -0.035),
+    take_profit: fmReadPercent('fm-take-profit', 0.07),
     top_k: fmReadInt('fm-top-k', 10),
     candidate_pool_size: fmReadInt('fm-candidate-pool', 100),
     mining_rules: fmReadMiningRules(),

@@ -18,6 +18,7 @@ import os
 import re
 import tempfile
 import threading
+import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +59,10 @@ def clean_watchlist_text(value, limit: int = 200) -> str:
     return text[:limit]
 
 
+def _strict_optional_bool(value) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
 def resolve_watchlist_name(ts_code: str, raw_name=None) -> str:
     code = str(ts_code or "").split(".")[0]
     cleaned = clean_watchlist_text(raw_name, 40)
@@ -87,8 +92,14 @@ def _load_factor_watchlist_unlocked() -> dict:
     if not isinstance(data, dict):
         data = {}
     items = data.get("items") if isinstance(data.get("items"), list) else []
+    latest_scope = (
+        dict(data["latest_scope"])
+        if isinstance(data.get("latest_scope"), dict)
+        else None
+    )
     return {
         "updated_at": data.get("updated_at"),
+        "latest_scope": latest_scope,
         "items": [enrich_watchlist_identity(item) for item in items if isinstance(item, dict)],
     }
 
@@ -173,9 +184,111 @@ def clean_watchlist_json(value, limit: int = 12000):
 
 
 def watchlist_item_id(item: dict) -> str:
-    raw = f"{item.get('trade_date') or 'unknown'}-{item.get('ts_code') or item.get('code') or ''}"
-    safe = re.sub(r"[^0-9A-Za-z_.-]+", "-", raw).strip("-")
-    return safe or datetime.now().strftime("manual-%Y%m%d%H%M%S")
+    return f"wl-{uuid.uuid4().hex}"
+
+
+def watchlist_business_key(item: dict) -> str:
+    fields = (
+        item.get("strategy_key"),
+        item.get("model_version"),
+        item.get("experiment_id"),
+        item.get("model_instance_id"),
+        item.get("source_run_id"),
+        item.get("trade_date"),
+        item.get("ts_code") or item.get("code"),
+    )
+    return "|".join(clean_watchlist_text(value, 120) for value in fields)
+
+
+def _watchlist_scope(
+    *,
+    trade_date,
+    source_run_id,
+    strategy_key,
+    model_version,
+    experiment_id,
+    model_instance_id,
+    candidate_count,
+) -> dict:
+    date_text = clean_watchlist_text(trade_date, 20)
+    if not date_text:
+        raise ValueError("watchlist scope trade_date is required")
+    try:
+        count = int(candidate_count)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("watchlist scope candidate_count must be an integer") from exc
+    if count < 0:
+        raise ValueError("watchlist scope candidate_count must be non-negative")
+    return {
+        "trade_date": date_text,
+        "source_run_id": clean_watchlist_text(source_run_id, 40),
+        "strategy_key": clean_watchlist_text(strategy_key, 120),
+        "model_version": clean_watchlist_text(model_version, 120),
+        "experiment_id": clean_watchlist_text(experiment_id, 80),
+        "model_instance_id": clean_watchlist_text(model_instance_id, 80),
+        "candidate_count": count,
+        "recorded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _latest_import_scope(items: list[dict]) -> dict | None:
+    dated_items = [item for item in items if item.get("trade_date")]
+    if not dated_items:
+        return None
+    latest_date = max(str(item.get("trade_date") or "") for item in dated_items)
+    scoped = [
+        item
+        for item in dated_items
+        if str(item.get("trade_date") or "") == latest_date
+    ]
+    latest_run_id = next(
+        (
+            str(item.get("source_run_id") or "")
+            for item in reversed(scoped)
+            if item.get("source_run_id")
+        ),
+        "",
+    )
+    if latest_run_id:
+        scoped = [
+            item
+            for item in scoped
+            if str(item.get("source_run_id") or "") == latest_run_id
+        ]
+    identity = scoped[-1]
+    return _watchlist_scope(
+        trade_date=latest_date,
+        source_run_id=latest_run_id,
+        strategy_key=identity.get("strategy_key"),
+        model_version=identity.get("model_version"),
+        experiment_id=identity.get("experiment_id"),
+        model_instance_id=identity.get("model_instance_id"),
+        candidate_count=len(scoped),
+    )
+
+
+def record_factor_watchlist_scope(
+    *,
+    trade_date,
+    source_run_id,
+    strategy_key,
+    model_version,
+    experiment_id,
+    model_instance_id,
+    candidate_count,
+) -> dict:
+    scope = _watchlist_scope(
+        trade_date=trade_date,
+        source_run_id=source_run_id,
+        strategy_key=strategy_key,
+        model_version=model_version,
+        experiment_id=experiment_id,
+        model_instance_id=model_instance_id,
+        candidate_count=candidate_count,
+    )
+    with factor_watchlist_transaction() as data:
+        data["latest_scope"] = scope
+    return {"ok": True, "latest_scope": scope}
 
 
 def sanitize_watchlist_item(raw: dict, run_id: str | None = None,
@@ -192,6 +305,14 @@ def sanitize_watchlist_item(raw: dict, run_id: str | None = None,
         "name": resolve_watchlist_name(ts_code, raw.get("name")),
         "trade_date": clean_watchlist_text(raw.get("trade_date"), 20),
         "source_run_id": clean_watchlist_text(run_id or raw.get("source_run_id") or raw.get("run_id"), 40),
+        "strategy_key": clean_watchlist_text(raw.get("strategy_key"), 120),
+        "model_version": clean_watchlist_text(raw.get("model_version"), 120),
+        "experiment_id": clean_watchlist_text(raw.get("experiment_id"), 80),
+        "model_instance_id": clean_watchlist_text(raw.get("model_instance_id"), 80),
+        "validation_accepted": _strict_optional_bool(raw.get("validation_accepted")),
+        "research_status": clean_watchlist_text(raw.get("research_status"), 20),
+        "deployment_eligible": _strict_optional_bool(raw.get("deployment_eligible")),
+        "research_only": _strict_optional_bool(raw.get("research_only")),
         "strategy_name": clean_watchlist_text(strategy_name or raw.get("strategy_name") or "AI因子挖掘候选", 60),
         "candidate_rank": _int_value(raw.get("candidate_rank"), None),
         "candidate_tier": clean_watchlist_text(raw.get("candidate_tier"), 20),
@@ -217,6 +338,7 @@ def sanitize_watchlist_item(raw: dict, run_id: str | None = None,
         "status": clean_watchlist_text(raw.get("status") or "pending", 20),
         "note": clean_watchlist_text(raw.get("note"), 240),
     }
+    item["business_key"] = watchlist_business_key(item)
     item["id"] = watchlist_item_id(item)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     item["created_at"] = clean_watchlist_text(raw.get("created_at") or now, 30)
@@ -271,17 +393,39 @@ def import_factor_candidates_to_watchlist(candidates: list, run_id: str | None =
 
     with factor_watchlist_transaction() as data:
         by_id = {str(item.get("id")): item for item in data["items"] if item.get("id")}
+        by_business_key = {
+            str(item.get("business_key") or watchlist_business_key(item)): item
+            for item in data["items"]
+        }
         for item in imported:
-            previous = by_id.get(item["id"], {})
+            previous = by_business_key.get(item["business_key"], {})
+            if previous.get("id"):
+                item["id"] = previous["id"]
             if previous.get("note") and not item.get("note"):
                 item["note"] = previous["note"]
             if previous.get("status") and previous.get("status") != "pending":
                 item["status"] = previous["status"]
+            if "market_gate_blocked" in (previous.get("live_warning_keys") or []):
+                item["live_warning_keys"] = list(previous.get("live_warning_keys") or [])
+                item["live_warnings"] = list(previous.get("live_warnings") or [])
+                item["candidate_tier"] = "observe"
+                item["position_pct"] = 0.0
+                item["live_readiness_status"] = "avoid"
             item["created_at"] = previous.get("created_at") or item["created_at"]
             by_id[item["id"]] = item
+            by_business_key[item["business_key"]] = item
         data["items"] = list(by_id.values())
+        latest_scope = _latest_import_scope(imported)
+        if latest_scope is not None:
+            data["latest_scope"] = latest_scope
         prune_factor_watchlist(data)          # ★ 写盘前裁剪，防止无限堆积
-        result = {"ok": True, "imported": len(imported), "total": len(data["items"]), "items": data["items"]}
+        result = {
+            "ok": True,
+            "imported": len(imported),
+            "total": len(data["items"]),
+            "items": data["items"],
+            "latest_scope": data.get("latest_scope"),
+        }
     return result
 
 
@@ -357,14 +501,108 @@ def save_ai_trade_decision(data: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def is_deployable_factor_candidate(item: dict) -> bool:
+    try:
+        position_pct = float(item.get("position_pct"))
+    except (TypeError, ValueError):
+        position_pct = 0.0
+    return bool(
+        clean_watchlist_text(item.get("strategy_key"), 120)
+        and clean_watchlist_text(item.get("model_version"), 120)
+        and clean_watchlist_text(item.get("experiment_id"), 80)
+        and clean_watchlist_text(item.get("model_instance_id"), 80)
+        and item.get("validation_accepted") is True
+        and str(item.get("research_status") or "") == "validated"
+        and item.get("deployment_eligible") is True
+        and item.get("research_only") is False
+        and position_pct > 0.0
+    )
+
+
+def _is_usable_ai_candidate(item: dict) -> bool:
+    allowed_status = {"pending", "ready", "watch"}
+    return bool(
+        is_deployable_factor_candidate(item)
+        and str(item.get("status") or "pending") in allowed_status
+        and str(item.get("live_readiness_status") or "") in {"ready", "watch"}
+        and "market_gate_blocked" not in (item.get("live_warning_keys") or [])
+    )
+
+
+def _expected_scope_trade_date() -> str:
+    try:
+        from analytics import data_manager as dm
+
+        return clean_watchlist_text(dm.expected_completed_trade_date(), 20)
+    except Exception:
+        return ""
+
+
+def _latest_watchlist_scope(
+    items: list[dict],
+    latest_scope: dict | None = None,
+) -> list[dict]:
+    if isinstance(latest_scope, dict) and latest_scope.get("trade_date"):
+        expected_trade_date = _expected_scope_trade_date()
+        if (
+            not expected_trade_date
+            or str(latest_scope.get("trade_date") or "") != expected_trade_date
+        ):
+            return []
+        if int(latest_scope.get("candidate_count") or 0) == 0:
+            return []
+        scope_fields = (
+            "trade_date",
+            "source_run_id",
+            "strategy_key",
+            "model_version",
+            "experiment_id",
+            "model_instance_id",
+        )
+        return [
+            item
+            for item in items
+            if all(
+                not latest_scope.get(field)
+                or str(item.get(field) or "") == str(latest_scope[field])
+                for field in scope_fields
+            )
+        ]
+    scoped = list(items)
+    dates = [str(item.get("trade_date") or "") for item in scoped if item.get("trade_date")]
+    if dates:
+        latest_date = max(dates)
+        scoped = [item for item in scoped if str(item.get("trade_date") or "") == latest_date]
+    latest_run_id = next(
+        (
+            str(item.get("source_run_id") or "")
+            for item in reversed(scoped)
+            if item.get("source_run_id")
+        ),
+        "",
+    )
+    if latest_run_id:
+        scoped = [
+            item
+            for item in scoped
+            if str(item.get("source_run_id") or "") == latest_run_id
+        ]
+    return scoped
+
+
 def factor_watchlist_candidates(max_candidates: int = 6, latest_only: bool = True) -> list[dict]:
     data = load_factor_watchlist()
-    allowed_status = {"pending", "ready", "watch"}
-    items = [item for item in data["items"] if str(item.get("status") or "pending") in allowed_status]
-    if latest_only and items:
-        latest_date = max(str(item.get("trade_date") or "") for item in items)
-        if latest_date:
-            items = [item for item in items if str(item.get("trade_date") or "") == latest_date]
+    source_items = data["items"]
+    if latest_only:
+        source_items = _latest_watchlist_scope(
+            source_items,
+            data.get("latest_scope"),
+        )
+    items = [
+        item
+        for item in source_items
+        if _is_usable_ai_candidate(item)
+    ]
 
     def _rank_value(item: dict) -> int:
         try:
@@ -374,6 +612,40 @@ def factor_watchlist_candidates(max_candidates: int = 6, latest_only: bool = Tru
 
     items.sort(key=lambda item: (str(item.get("trade_date") or ""), -_rank_value(item)), reverse=True)
     return items[:max_candidates]
+
+
+def authoritative_watchlist_candidates(requested: list, max_candidates: int = 6) -> list[dict]:
+    requested_ids = []
+    for raw in requested if isinstance(requested, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        source = raw.get("source") if isinstance(raw.get("source"), dict) else {}
+        item_id = clean_watchlist_text(
+            raw.get("id") or raw.get("watchlist_id") or source.get("watchlist_id"),
+            80,
+        )
+        if item_id and item_id not in requested_ids:
+            requested_ids.append(item_id)
+    if not requested_ids:
+        return []
+
+    data = load_factor_watchlist()
+    by_id = {
+        str(item.get("id")): item
+        for item in _latest_watchlist_scope(
+            data["items"],
+            data.get("latest_scope"),
+        )
+        if item.get("id")
+    }
+    resolved = []
+    for item_id in requested_ids:
+        item = by_id.get(item_id)
+        if item and _is_usable_ai_candidate(item):
+            resolved.append(dict(item))
+        if len(resolved) >= max(1, int(max_candidates or 1)):
+            break
+    return resolved
 
 
 def apply_ai_trade_decision_to_watchlist(decision: dict) -> None:

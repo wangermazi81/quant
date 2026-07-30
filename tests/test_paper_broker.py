@@ -9,6 +9,7 @@ tests/test_paper_broker.py
 """
 
 import sys
+import sqlite3
 import pytest
 from pathlib import Path
 
@@ -105,7 +106,7 @@ class TestT1Rule:
         con.close()
         assert raw_broker.submit_sell("000001", 11.0)["ok"] is True
 
-    def test_unparsable_buy_time_falls_open_but_warns(self, raw_broker, caplog):
+    def test_unparsable_buy_time_fails_closed_and_warns(self, raw_broker, caplog):
         """buy_time 格式非法时当前行为是「放行」，锁死该行为并要求留下 WARNING。
 
         放行是有意的：解析不出日期就无法判断是否当日，拒卖会让这笔持仓永远卖不掉。
@@ -123,7 +124,15 @@ class TestT1Rule:
         with caplog.at_level(logging.WARNING, logger="broker.paper_broker"):
             result = raw_broker.submit_sell("000001", 11.0)
 
-        assert result["ok"] is True
+        assert result["ok"] is False
+        assert "T+1" in result["msg"]
+        con = raw_broker._conn()
+        remaining = con.execute(
+            "SELECT COUNT(*) FROM paper_positions WHERE user_id=? AND code=?",
+            (raw_broker._uid, "000001"),
+        ).fetchone()[0]
+        con.close()
+        assert remaining == 1
         assert any("T+1" in r.message for r in caplog.records), \
             "T+1 检查被跳过时必须留下 WARNING，否则风控静默失效无人知晓"
 
@@ -131,6 +140,40 @@ class TestT1Rule:
 # ══════════════════════════════════════════════════════
 # 1. 买入测试
 # ══════════════════════════════════════════════════════
+class TestStrictMarketQuoteGate:
+    def test_strict_ai_buy_rejects_missing_quote(self, raw_broker, monkeypatch):
+        from market import ths_quote
+
+        monkeypatch.setattr(ths_quote, "get_client", lambda: None)
+        raw_broker.set_config({"require_market_quote": 1})
+
+        result = raw_broker.submit_buy("000001", "Ping An Bank", 10.0, 100)
+
+        assert result["ok"] is False
+        assert "quote" in result["msg"]
+
+    def test_strict_ai_sell_rejects_missing_quote(self, raw_broker, monkeypatch):
+        from datetime import datetime, timedelta
+        from market import ths_quote
+
+        assert raw_broker.submit_buy("000001", "Ping An Bank", 10.0, 100)["ok"] is True
+        con = raw_broker._conn()
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        con.execute(
+            "UPDATE paper_positions SET buy_time=? WHERE user_id=?",
+            (yesterday, raw_broker._uid),
+        )
+        con.commit()
+        con.close()
+        monkeypatch.setattr(ths_quote, "get_client", lambda: None)
+        raw_broker.set_config({"require_market_quote": 1})
+
+        result = raw_broker.submit_sell("000001", 10.0)
+
+        assert result["ok"] is False
+        assert "quote" in result["msg"]
+
+
 class TestBuy:
     def test_default_capital_is_one_million(self, broker):
         acct = broker.get_account()
@@ -142,6 +185,7 @@ class TestBuy:
         """正常买入：资金充足，100整股"""
         result = broker.submit_buy("000001", "平安银行", 12.50, 400, reason="测试买入")
         assert result["ok"] is True
+        assert isinstance(result["trade_id"], int)
         assert result["shares"] == 400
         assert result["exec_price"] > 12.50   # 含滑点
 
@@ -182,6 +226,158 @@ class TestBuy:
         """0股拒绝"""
         result = broker.submit_buy("000001", "平安银行", 10.0, 0)
         assert result["ok"] is False
+
+    def test_attribute_trade_persists_identity_and_updates_position(self, broker):
+        from broker import paper_broker as pb
+
+        result = broker.submit_buy("000001", "平安银行", 10.0, 100)
+        attribution = {
+            "strategy_key": "relay_factor_mining_v2",
+            "model_version": "relay_factor_mining_v2_ridge",
+            "experiment_id": "experiment-v2-1",
+            "model_instance_id": "model-instance-v2-1",
+            "watchlist_id": "2026-07-28-000001.SZ",
+            "source_run_id": "v2-run-1",
+        }
+
+        broker.attribute_trade(result["trade_id"], attribution)
+        pb.init_paper_db()
+
+        trade = broker.get_trades()[0]
+        assert trade["strategy_key"] == attribution["strategy_key"]
+        assert trade["model_version"] == attribution["model_version"]
+        assert trade["experiment_id"] == attribution["experiment_id"]
+        assert trade["model_instance_id"] == attribution["model_instance_id"]
+        assert trade["watchlist_id"] == attribution["watchlist_id"]
+        assert trade["source_run_id"] == attribution["source_run_id"]
+        assert broker.get_positions()[0]["strategy"] == attribution["strategy_key"]
+
+    def test_buy_persists_attribution_in_the_fill_transaction(self, broker):
+        attribution = {
+            "strategy_key": "relay_factor_mining_v2",
+            "model_version": "relay_factor_mining_v2_ridge",
+            "experiment_id": "experiment-v2-atomic",
+            "model_instance_id": "model-instance-v2-atomic",
+            "watchlist_id": "immutable-watchlist-id",
+            "source_run_id": "v2-run-atomic",
+        }
+
+        result = broker.submit_buy(
+            "000001",
+            "平安银行",
+            10.0,
+            100,
+            attribution=attribution,
+        )
+
+        assert result["ok"] is True
+        trade = broker.get_trades()[0]
+        assert {
+            key: trade[key]
+            for key in (
+                "strategy_key",
+                "model_version",
+                "experiment_id",
+                "model_instance_id",
+                "watchlist_id",
+                "source_run_id",
+            )
+        } == attribution
+        assert broker.get_positions()[0]["strategy"] == attribution["strategy_key"]
+
+
+def test_init_paper_db_migrates_legacy_trade_table_idempotently(tmp_path, monkeypatch):
+    from broker import paper_broker as pb
+
+    db_path = tmp_path / "legacy_paper.db"
+    con = sqlite3.connect(db_path)
+    con.execute(
+        """
+        CREATE TABLE paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL DEFAULT 0,
+            code TEXT NOT NULL,
+            name TEXT DEFAULT '',
+            buy_time TEXT NOT NULL,
+            buy_price REAL NOT NULL,
+            shares INTEGER NOT NULL,
+            buy_cost REAL NOT NULL
+        )
+        """
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setattr(pb, "DB_PATH", db_path)
+
+    pb.init_paper_db()
+    pb.init_paper_db()
+
+    con = sqlite3.connect(db_path)
+    columns = {row[1] for row in con.execute("PRAGMA table_info(paper_trades)")}
+    con.close()
+    assert {
+        "strategy_key",
+        "model_version",
+        "experiment_id",
+        "model_instance_id",
+        "watchlist_id",
+        "source_run_id",
+    }.issubset(columns)
+
+
+def test_init_paper_db_serializes_concurrent_legacy_migrations(tmp_path, monkeypatch):
+    from broker import paper_broker as pb
+    import threading
+
+    db_path = tmp_path / "concurrent_legacy_paper.db"
+    con = sqlite3.connect(db_path)
+    con.execute(
+        """
+        CREATE TABLE paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL DEFAULT 0,
+            code TEXT NOT NULL,
+            name TEXT DEFAULT '',
+            buy_time TEXT NOT NULL,
+            buy_price REAL NOT NULL,
+            shares INTEGER NOT NULL,
+            buy_cost REAL NOT NULL
+        )
+        """
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setattr(pb, "DB_PATH", db_path)
+    start = threading.Barrier(8)
+    errors = []
+
+    def migrate():
+        try:
+            start.wait()
+            pb.init_paper_db()
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=migrate) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    con = sqlite3.connect(db_path)
+    columns = [row[1] for row in con.execute("PRAGMA table_info(paper_trades)")]
+    con.close()
+    for column in (
+        "strategy_key",
+        "model_version",
+        "experiment_id",
+        "model_instance_id",
+        "watchlist_id",
+        "source_run_id",
+    ):
+        assert columns.count(column) == 1
 
 
 # ══════════════════════════════════════════════════════

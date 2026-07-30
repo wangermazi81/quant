@@ -90,7 +90,7 @@ body{font-family:'Segoe UI',system-ui,'Microsoft YaHei',sans-serif;font-size:14p
 .card-title i{color:var(--theme-active)}
 
 /* ===== STAT CARDS ===== */
-.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:20px}
 .stat-card{background:var(--card-bg);border-radius:8px;padding:20px 24px;box-shadow:var(--shadow);display:flex;align-items:center;gap:16px;transition:transform .2s;cursor:default;position:relative;overflow:hidden}
 .stat-card:hover{transform:translateY(-2px)}
 .stat-card::after{content:'';position:absolute;right:-10px;bottom:-10px;width:80px;height:80px;border-radius:50%;opacity:.08}
@@ -99,9 +99,9 @@ body{font-family:'Segoe UI',system-ui,'Microsoft YaHei',sans-serif;font-size:14p
 .stat-card.orange .sc-icon{background:#fdf6ec;color:var(--orange)}.stat-card.orange::after{background:var(--orange)}
 .stat-card.purple .sc-icon{background:#f3f0fb;color:var(--purple)}.stat-card.purple::after{background:var(--purple)}
 .sc-icon{width:54px;height:54px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0}
-.sc-body{flex:1}
+.sc-body{flex:1;min-width:0}
 .sc-label{font-size:13px;color:var(--text3);margin-bottom:6px}
-.sc-value{font-size:28px;font-weight:700;color:var(--text1);line-height:1}
+.sc-value{font-size:28px;font-weight:700;color:var(--text1);line-height:1;overflow-wrap:anywhere}
 .sc-sub{font-size:12px;color:var(--text3);margin-top:4px}
 
 /* ===== CHARTS ===== */
@@ -207,10 +207,16 @@ tr:hover td{background:#fafbff}
 
 /* ===== RESPONSIVE ===== */
 @media(max-width:900px){
-  .stat-grid{grid-template-columns:1fr 1fr}
+  .stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .chart-row{grid-template-columns:1fr}
   .profile-layout{grid-template-columns:1fr}
   .form-row{grid-template-columns:1fr}
+  .header{padding:0 8px;gap:4px}
+  .header-breadcrumb{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .header-breadcrumb span{display:none}
+  .h-uname,.h-role,.header-divider{display:none}
+  .header-user{padding:4px}
+  .hbtn{width:34px}
   /* 侧栏改屏外抽屉：原来固定 250px 在手机上占掉大半屏 */
   .sidebar{position:fixed;left:-260px;top:0;bottom:0;z-index:1000;transition:left .2s ease;box-shadow:none}
   .sidebar.mobile-open{left:0;box-shadow:4px 0 24px rgba(0,0,0,.25)}
@@ -218,6 +224,9 @@ tr:hover td{background:#fafbff}
      给卡片内的表格一个可横滚的容器（表格本身设最小宽度以免被压成一团）。 */
   .card{overflow-x:auto}
   .card table{min-width:760px}
+}
+@media(max-width:600px){
+  .stat-grid{grid-template-columns:1fr}
 }
 
 /* ===== EMPTY STATE ===== */
@@ -284,6 +293,19 @@ tr:hover td{background:#fafbff}
   .perm-grid,.perm-catalog,.role-grid{grid-template-columns:1fr}
 }
 
+/* ===== FACTOR PROSPECTIVE EXPERIMENT ===== */
+.fm-experiment-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.fm-experiment-actions .btn:disabled{opacity:.5;cursor:not-allowed;filter:none}
+.fm-experiment-layout{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(280px,.85fr);gap:14px}
+.fm-experiment-pane{min-width:0;border:1px solid var(--border);border-radius:6px;padding:14px;background:#fafbfc}
+.fm-experiment-kicker{font-size:12px;font-weight:700;color:var(--text2);margin-bottom:8px}
+.fm-experiment-meta{font-size:12px;color:var(--text2);line-height:1.7;overflow-wrap:anywhere}
+.fm-experiment-progress-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}
+.fm-experiment-progress-item{min-width:0;padding:9px 10px;border-left:3px solid var(--theme-active);background:#fff;font-size:12px;color:var(--text2);line-height:1.6}
+.fm-experiment-progress-item b{display:block;color:var(--text1);font-size:14px;overflow-wrap:anywhere}
+.fm-experiment-note{margin:12px 0;color:var(--text3);font-size:12px;line-height:1.7}
+.fm-experiment-id{font-family:Consolas,'SFMono-Regular',monospace;font-size:11px;overflow-wrap:anywhere}
+
 /* ===== SWITCH ===== */
 .switch{width:40px;height:22px;background:#ddd;border-radius:11px;position:relative;cursor:pointer;transition:.25s;flex-shrink:0}
 .switch.on{background:var(--theme-active)}
@@ -297,3 +319,9 @@ tr:hover td{background:#fafbff}
 .menu-item.folded{display:none}
 /* 侧栏收成图标模式时组标题隐藏 → 折叠自动失效，条目全部可见（防不可达） */
 .sidebar.collapsed .menu-item.folded{display:flex}
+
+@media(max-width:900px){
+  .fm-experiment-layout{grid-template-columns:1fr}
+  .fm-experiment-progress-grid{grid-template-columns:1fr}
+  .fm-experiment-actions{width:100%;justify-content:flex-start}
+}

@@ -106,7 +106,11 @@ def test_refresh_factor_daily_cache_updates_latest_coverage(monkeypatch, tmp_pat
 
     monkeypatch.setattr(ths_quote, "get_client", lambda: FakeClient())
 
-    result = dm.refresh_factor_daily_cache(days=180, min_required=2)
+    result = dm.refresh_factor_daily_cache(
+        days=180,
+        min_required=2,
+        now=datetime(2026, 7, 13, 17, 10),
+    )
 
     assert result["ok"] is False
     assert result["source_trade_date"] == "2026-07-13"
@@ -242,6 +246,65 @@ def test_refresh_factor_daily_cache_prefers_tushare_batch(monkeypatch, tmp_path)
     assert latest["volume"] == 924746.24
 
 
+def test_refresh_factor_daily_cache_writes_new_amount_for_unchanged_ohlcv(
+    monkeypatch,
+    tmp_path,
+):
+    import analytics.data_manager as dm
+    import market.ths_quote as ths_quote
+
+    data_dir = tmp_path / "daily"
+    data_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", data_dir)
+    monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+    _enable_tushare_factor_source(monkeypatch, dm)
+
+    current = _kline_frame("2026-07-13", periods=80)
+    current.to_csv(data_dir / "000001.csv", index=False, encoding="utf-8")
+    source = current.tail(1).copy()
+    source.insert(0, "code", "000001")
+    source["amount"] = 987654.32
+
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_full_market_daily",
+        lambda trade_date, **kwargs: source if str(trade_date) == "20260713" else pd.DataFrame(),
+    )
+
+    def fake_factors(trade_date, **kwargs):
+        compact = str(trade_date).replace("-", "")
+        if compact == "20260713":
+            return _market_factor_frame("2026-07-13", codes=("000001",), factors=(100.0,))
+        if compact == "20260710":
+            return _market_factor_frame("2026-07-10", codes=("000001",), factors=(100.0,))
+        return pd.DataFrame()
+
+    monkeypatch.setattr(dm.tushare_provider, "fetch_full_market_adj_factors", fake_factors)
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_kline_qfq",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("qfq should not be needed")),
+    )
+    monkeypatch.setattr(
+        ths_quote,
+        "get_client",
+        lambda: (_ for _ in ()).throw(AssertionError("TDX must not be used")),
+    )
+
+    result = dm.refresh_factor_daily_cache(
+        days=180,
+        min_required=1,
+        now=datetime(2026, 7, 14, 10, 30),
+    )
+    saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
+    latest = saved.loc[saved["date"] == pd.Timestamp("2026-07-13")].iloc[0]
+
+    assert result["ok"] is True
+    assert result["refreshed"] == 1
+    assert result["already_current"] == 0
+    assert latest["amount"] == 987654.32
+
+
 def test_refresh_factor_daily_cache_uses_tushare_qfq_for_adjustment_change(monkeypatch, tmp_path):
     import analytics.data_manager as dm
     import market.ths_quote as ths_quote
@@ -284,6 +347,50 @@ def test_refresh_factor_daily_cache_uses_tushare_qfq_for_adjustment_change(monke
     saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
     assert saved["date"].max() == pd.Timestamp("2026-07-13")
     assert saved.loc[saved["date"] == pd.Timestamp("2026-07-13"), "close"].iloc[0] == qfq.iloc[-1]["close"]
+
+
+def test_refresh_factor_daily_cache_rejects_raw_append_when_qfq_repair_fails(monkeypatch, tmp_path):
+    import analytics.data_manager as dm
+    import market.ths_quote as ths_quote
+
+    data_dir = tmp_path / "daily"
+    data_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", data_dir)
+    monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+    _enable_tushare_factor_source(monkeypatch, dm)
+
+    stale = _kline_frame("2026-07-10", periods=80)
+    stale.to_csv(data_dir / "000001.csv", index=False, encoding="utf-8")
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_full_market_daily",
+        lambda trade_date, **kwargs: _market_daily_frame("2026-07-13", codes=("000001",)),
+    )
+
+    def fake_factors(trade_date, **kwargs):
+        compact = str(trade_date).replace("-", "")
+        factor = 200.0 if compact == "20260713" else 100.0
+        return _market_factor_frame(str(trade_date), codes=("000001",), factors=(factor,))
+
+    monkeypatch.setattr(dm.tushare_provider, "fetch_full_market_adj_factors", fake_factors)
+    monkeypatch.setattr(dm.tushare_provider, "fetch_kline_qfq", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        ths_quote,
+        "get_client",
+        lambda: (_ for _ in ()).throw(AssertionError("TDX cannot repair QFQ history")),
+    )
+
+    result = dm.refresh_factor_daily_cache(
+        days=180,
+        min_required=1,
+        now=datetime(2026, 7, 13, 17, 10),
+    )
+
+    assert result["ok"] is False
+    assert result["latest_count"] == 0
+    assert result["adjustment_repair_failed_count"] == 1
+    saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
+    assert saved["date"].max() == pd.Timestamp("2026-07-10")
 
 
 def test_refresh_factor_daily_cache_uses_tdx_only_for_tushare_missing_symbol(monkeypatch, tmp_path):
@@ -403,3 +510,53 @@ def test_refresh_factor_daily_cache_uses_rt_k_after_close_when_daily_is_empty(mo
     assert result["source"] == "tushare_replay_rt_k"
     assert result["source_trade_date"] == "2026-07-14"
     assert result["tdx_fallback_count"] == 0
+
+
+def test_refresh_factor_daily_cache_rejects_previous_session_after_close(monkeypatch, tmp_path):
+    import analytics.data_manager as dm
+
+    data_dir = tmp_path / "daily"
+    data_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", data_dir)
+    monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+    monkeypatch.setattr(
+        dm.datasource_config,
+        "get_internal_config",
+        lambda: {
+            "provider": "tushare",
+            "tushare_enabled": True,
+            "tushare_mode": "replay",
+            "tushare_token": "api-key",
+            "fallback_enabled": False,
+        },
+    )
+
+    stale = _kline_frame("2026-07-13", periods=80)
+    stale.to_csv(data_dir / "000001.csv", index=False, encoding="utf-8")
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_full_market_daily",
+        lambda trade_date, **kwargs: (
+            _market_daily_frame("2026-07-13", codes=("000001",))
+            if str(trade_date) == "20260713"
+            else pd.DataFrame()
+        ),
+    )
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_full_market_realtime_daily",
+        lambda **kwargs: pd.DataFrame(),
+    )
+
+    result = dm.refresh_factor_daily_cache(
+        days=180,
+        min_required=1,
+        now=datetime(2026, 7, 14, 17, 10),
+    )
+
+    assert result["ok"] is False
+    assert result["expected_trade_date"] == "2026-07-14"
+    assert result["source_trade_date"] == "2026-07-13"
+    assert result["error"] == (
+        "factor daily source is stale: expected 2026-07-14, got 2026-07-13"
+    )

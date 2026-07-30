@@ -87,9 +87,25 @@
   "/api/admin/datasource/config",
   "OPTIONS,POST"
  ],
- [
+[
   "/api/admin/datasource/test",
   "OPTIONS,POST"
+ ],
+ [
+  "/api/admin/factor-mining/experiments/<experiment_id>/cancel",
+  "OPTIONS,POST"
+ ],
+ [
+  "/api/admin/factor-mining/experiments/<experiment_id>/prospective",
+  "GET,HEAD,OPTIONS"
+ ],
+ [
+  "/api/admin/factor-mining/experiments/<run_id>/lock",
+  "OPTIONS,POST"
+ ],
+ [
+  "/api/admin/factor-mining/experiments/active",
+  "GET,HEAD,OPTIONS"
  ],
  [
   "/api/admin/factor-mining/latest",

@@ -208,6 +208,18 @@ def test_csp_separates_elements_from_legacy_inline_attributes():
         assert must in csp, f"CSP 缺少 {must}"
 
 
+def test_pages_using_rb_effects_load_bundled_css_under_strict_csp():
+    root = Path(__file__).parent.parent
+    for page_name in ("index.html", "admin.html"):
+        source = (root / page_name).read_text(encoding="utf-8")
+        if '/static/lib/rb-effects.js' not in source:
+            continue
+        assert '/static/lib/rb-effects.css' in source, (
+            f"{page_name} 加载 rb-effects.js 时必须显式加载 CSS；"
+            "严格 CSP 会拦截脚本动态注入的 style 元素"
+        )
+
+
 def test_expensive_public_routes_have_endpoint_rate_limits():
     root = Path(__file__).parent.parent
     cases = {

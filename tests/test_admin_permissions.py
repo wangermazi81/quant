@@ -257,7 +257,14 @@ def test_factor_mining_run_is_root_only_and_invokes_research(isolated_app, monke
         assert release.wait(timeout=2)
         return {
             "status": "ok",
+            "data_status": "ok",
             "reason": "ok",
+            "research_status": "exploratory",
+            "research_assessment": {
+                "research_status": "exploratory",
+                "lock_eligible": True,
+                "deployment_eligible": False,
+            },
             "generated_at": "2026-07-09 10:30:00",
             "summary": {"feature_rows": 10, "trusted_feature_rows": 10},
             "latest_candidates": [
@@ -313,6 +320,8 @@ def test_factor_mining_run_is_root_only_and_invokes_research(isolated_app, monke
                 "train_days": 30,
                 "test_days": 10,
                 "hold_days": 2,
+                "stop_loss": -0.04,
+                "take_profit": 0.08,
                 "top_k": 4,
                 "mining_rules": {"filters": {"min_volume_ratio_20": 1.1}},
             },
@@ -342,16 +351,347 @@ def test_factor_mining_run_is_root_only_and_invokes_research(isolated_app, monke
         assert status["ok"] is True
         assert status["status"] == "done"
         assert status["report"]["status"] == "ok"
-        assert status["watchlist"]["imported"] == 1
+        assert status["watchlist"] == {
+            "ok": False,
+            "skipped": True,
+            "reason": "exploratory_research_not_deployable",
+        }
         assert calls
         assert calls[0]["n_stocks"] == 25
+        assert calls[0]["stop_loss"] == -0.04
+        assert calls[0]["take_profit"] == 0.08
         assert calls[0]["include_market_signals"] is True
         assert calls[0]["mining_rules"]["filters"]["min_volume_ratio_20"] == 1.1
         assert str(calls[0]["out_dir"]).startswith(str(tmp_path / "data" / "research" / "relay_factor"))
         listed = client.get("/api/admin/factor-watchlist").get_json()
-        assert listed["items"][0]["ts_code"] == "000002.SZ"
+        assert listed["items"] == []
     finally:
         release.set()
+
+
+def test_factor_mining_float_bounds_reject_non_finite_values():
+    import web.admin as admin_api
+
+    assert admin_api._bounded_float_value(float("nan"), -0.035, -0.20, -0.005) == -0.035
+    assert admin_api._bounded_float_value(float("inf"), 0.07, 0.005, 0.30) == 0.07
+
+
+def test_root_admin_can_lock_query_and_cancel_a_prospective_factor_experiment(
+    isolated_app,
+    monkeypatch,
+    tmp_path,
+):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(um, permissions=["strategy_manage"])
+    import web.admin as admin_api
+    from analytics import relay_factor_mining as relay
+
+    monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
+    run_dir = (
+        tmp_path
+        / "data"
+        / "research"
+        / "relay_factor"
+        / "run-lockable"
+    )
+    run_dir.mkdir(parents=True)
+    report = {
+        "status": "ok",
+        "data_status": "ok",
+        "generated_at": "2026-07-29 17:10:00",
+        "research_status": "exploratory",
+        "research_assessment": {
+            "metric_gate_passed": True,
+            "lock_eligible": True,
+            "oos_total_return_pct": 8.0,
+            "oos_max_drawdown_pct": -5.0,
+            "executed_trade_count": 150,
+            "bootstrap_total_return_ci_pct": {"lower": 1.0},
+        },
+        "model": {
+            "model_version": "relay_factor_mining_v3_nested_ridge",
+            "strategy_key": relay.STRATEGY_KEY,
+            "fallback": False,
+            "validation_accepted": True,
+            "selected_factors": ["ret_5"],
+            "coefficients": {"ret_5": 1.0},
+            "feature_means": {"ret_5": 0.5},
+            "feature_scales": {"ret_5": 0.25},
+            "selected_market_gate": {"enabled": False},
+        },
+        "config": {
+            "n_stocks": 800,
+            "days": 180,
+            "hold_days": 2,
+            "stop_loss": -0.035,
+            "take_profit": 0.07,
+            "top_k": 10,
+            "candidate_pool_size": 100,
+            "include_market_signals": False,
+            "universe_selection": "point_in_time_eligible_stable_sha256_sample",
+            "data_quality_policy": {"minimum_real_amount_coverage": 0.95},
+        },
+        "mining_rules": relay.normalize_mining_rules(None),
+        "summary": {"latest_trade_date": "2026-07-29"},
+    }
+    (run_dir / "walkforward_report.json").write_text(
+        json.dumps(report, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    client = app.test_client()
+    _login_session(client, ops_uid, "ops")
+    denied = client.post(
+        "/api/admin/factor-mining/experiments/run-lockable/lock"
+    )
+    assert denied.status_code == 403
+
+    _login_session(client, 1, "admin")
+    locked_response = client.post(
+        "/api/admin/factor-mining/experiments/run-lockable/lock"
+    )
+    locked = locked_response.get_json()
+    assert locked_response.status_code == 201
+    assert locked["ok"] is True
+    assert locked["experiment"]["status"] == "locked_shadow"
+    assert locked["experiment"]["manifest"]["source_run_id"] == "run-lockable"
+    assert locked["progress"]["observed_sessions"] == 0
+
+    active = client.get(
+        "/api/admin/factor-mining/experiments/active"
+    ).get_json()
+    assert active["found"] is True
+    assert (
+        active["experiment"]["experiment_id"]
+        == locked["experiment"]["experiment_id"]
+    )
+    assert active["latest_validated"] is None
+    assert [item["experiment_id"] for item in active["experiments"]] == [
+        locked["experiment"]["experiment_id"]
+    ]
+    assert active["experiments"][0]["progress"]["required_sessions"] == 20
+
+    detail = client.get(
+        "/api/admin/factor-mining/experiments/"
+        + locked["experiment"]["experiment_id"]
+        + "/prospective"
+    ).get_json()
+    assert detail["progress"]["required_sessions"] == 20
+    assert detail["sessions"] == []
+
+    cancelled = client.post(
+        "/api/admin/factor-mining/experiments/"
+        + locked["experiment"]["experiment_id"]
+        + "/cancel"
+    ).get_json()
+    assert cancelled["experiment"]["status"] == "cancelled"
+    overview = client.get(
+        "/api/admin/factor-mining/experiments/active"
+    ).get_json()
+    assert overview["found"] is False
+    assert overview["experiments"][0]["status"] == "cancelled"
+
+
+def test_factor_experiment_overview_includes_incumbent_and_recent_history(
+    isolated_app,
+    monkeypatch,
+):
+    app, _um, _main = isolated_app
+    import web.admin as admin_api
+
+    active = {
+        "experiment_id": "exp-challenger",
+        "source_run_id": "run-challenger",
+        "model_instance_id": "model-challenger",
+        "status": "locked_shadow",
+    }
+    incumbent = {
+        "experiment_id": "exp-incumbent",
+        "source_run_id": "run-incumbent",
+        "model_instance_id": "model-incumbent",
+        "status": "validated",
+    }
+    failed = {
+        "experiment_id": "exp-failed",
+        "source_run_id": "run-failed",
+        "model_instance_id": "model-failed",
+        "status": "failed",
+    }
+    expected_overview = {
+        "found": True,
+        "experiment": active,
+        "progress": {
+            "experiment_id": "exp-challenger",
+            "status": "locked_shadow",
+            "required_sessions": 20,
+            "observed_sessions": 7,
+            "settled_sessions": 5,
+            "ready_to_evaluate": False,
+        },
+        "latest_validated": incumbent,
+        "experiments": [
+            {
+                **active,
+                "progress": {
+                    "experiment_id": "exp-challenger",
+                    "status": "locked_shadow",
+                    "required_sessions": 20,
+                    "observed_sessions": 7,
+                    "settled_sessions": 5,
+                    "ready_to_evaluate": False,
+                },
+            },
+            {
+                **incumbent,
+                "progress": {
+                    "experiment_id": "exp-incumbent",
+                    "status": "validated",
+                    "required_sessions": 20,
+                    "observed_sessions": 7,
+                    "settled_sessions": 5,
+                    "ready_to_evaluate": False,
+                },
+            },
+            {
+                **failed,
+                "progress": {
+                    "experiment_id": "exp-failed",
+                    "status": "failed",
+                    "required_sessions": 20,
+                    "observed_sessions": 7,
+                    "settled_sessions": 5,
+                    "ready_to_evaluate": False,
+                },
+            },
+        ],
+    }
+
+    class FakeStore:
+        def get_overview(self, limit=20):
+            assert limit == 10
+            return expected_overview
+
+    monkeypatch.setattr(admin_api, "_factor_experiment_store", FakeStore)
+    client = app.test_client()
+    _login_session(client, 1, "admin")
+
+    response = client.get("/api/admin/factor-mining/experiments/active")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["found"] is True
+    assert payload["experiment"] == active
+    assert payload["latest_validated"] == incumbent
+    assert [item["experiment_id"] for item in payload["experiments"]] == [
+        "exp-challenger",
+        "exp-incumbent",
+        "exp-failed",
+    ]
+    assert payload["experiments"][1]["progress"]["settled_sessions"] == 5
+
+
+def test_factor_watchlist_defaults_to_empty_latest_scope_instead_of_older_items(
+    isolated_app,
+    monkeypatch,
+):
+    app, _um, _main = isolated_app
+    import web.admin as admin_api
+
+    latest_scope = {
+        "trade_date": "2026-07-29",
+        "source_run_id": "run-empty",
+        "strategy_key": "relay_factor_mining_v2",
+        "model_version": "relay_factor_mining_v3_nested_ridge",
+        "experiment_id": "experiment-validated",
+        "model_instance_id": "model-validated",
+        "candidate_count": 0,
+        "recorded_at": "2026-07-29 17:10:00",
+    }
+    older_item = {
+        "id": "wl-old",
+        "ts_code": "000001.SZ",
+        "code": "000001",
+        "name": "平安银行",
+        "trade_date": "2026-07-28",
+        "source_run_id": "run-old",
+        "strategy_key": "relay_factor_mining_v2",
+        "model_version": "relay_factor_mining_v3_nested_ridge",
+        "experiment_id": "experiment-validated",
+        "model_instance_id": "model-validated",
+        "candidate_rank": 1,
+        "status": "pending",
+        "live_readiness_status": "ready",
+    }
+    monkeypatch.setattr(
+        admin_api,
+        "_load_factor_watchlist",
+        lambda: {
+            "updated_at": "2026-07-29 17:10:00",
+            "latest_scope": latest_scope,
+            "items": [older_item],
+        },
+    )
+    client = app.test_client()
+    _login_session(client, 1, "admin")
+
+    latest = client.get("/api/admin/factor-watchlist").get_json()
+    historical = client.get(
+        "/api/admin/factor-watchlist?date=2026-07-28"
+    ).get_json()
+
+    assert latest["latest_scope"] == latest_scope
+    assert latest["selected_date"] == "2026-07-29"
+    assert latest["trade_dates"] == ["2026-07-29", "2026-07-28"]
+    assert latest["counts_by_date"]["2026-07-29"] == 0
+    assert latest["items"] == []
+    assert historical["selected_date"] == "2026-07-28"
+    assert [item["ts_code"] for item in historical["items"]] == ["000001.SZ"]
+
+
+def test_factor_experiment_lock_rejects_degraded_report(
+    isolated_app,
+    monkeypatch,
+    tmp_path,
+):
+    app, _um, _main = isolated_app
+    import web.admin as admin_api
+
+    monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
+    run_dir = (
+        tmp_path
+        / "data"
+        / "research"
+        / "relay_factor"
+        / "run-degraded"
+    )
+    run_dir.mkdir(parents=True)
+    (run_dir / "walkforward_report.json").write_text(
+        json.dumps(
+            {
+                "status": "degraded",
+                "data_status": "degraded",
+                "research_assessment": {
+                    "metric_gate_passed": True,
+                    "lock_eligible": True,
+                },
+                "model": {
+                    "fallback": False,
+                    "validation_accepted": True,
+                    "selected_factors": ["ret_5"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = app.test_client()
+    _login_session(client, 1, "admin")
+
+    response = client.post(
+        "/api/admin/factor-mining/experiments/run-degraded/lock"
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["ok"] is False
 
 
 def test_factor_watchlist_import_update_delete_is_root_only(isolated_app, monkeypatch, tmp_path):
@@ -365,6 +705,51 @@ def test_factor_watchlist_import_update_delete_is_root_only(isolated_app, monkey
     import app_state as _app_state
     monkeypatch.setattr(_app_state, "BASE_DIR", tmp_path)  # 观察池存储已下沉 core/factor_watchlist，按真正的源头打桩
     monkeypatch.setattr(dm, "get_stock_name", lambda code: "平安银行")
+    monkeypatch.setattr(
+        admin_api._fw,
+        "_expected_scope_trade_date",
+        lambda: "2026-07-09",
+    )
+    trusted_candidates = [
+        {
+            "ts_code": "000001.SZ",
+            "trade_date": "2026-07-09",
+            "candidate_rank": 1,
+            "candidate_tier": "strong",
+            "relay_score": 88.5,
+            "confidence": 0.72,
+            "strategy_key": "relay_factor_mining_v2",
+            "model_version": "relay_factor_mining_v3_nested_ridge",
+            "experiment_id": "experiment-admin-import",
+            "model_instance_id": "model-instance-admin-import",
+            "validation_accepted": True,
+            "research_status": "validated",
+            "deployment_eligible": True,
+            "research_only": False,
+            "live_readiness_status": "ready",
+            "position_pct": 0.1,
+            "stop_loss": -0.055,
+            "take_profit": 0.12,
+            "positive_factors": ["volume_confirmation"],
+            "factor_explain": {
+                "factor_version": "relay_factor_mining_v1",
+                "summary": "二三板接力情绪强势延续",
+                "matched_factors": [{"key": "volume_ratio_20", "label": "20日量比", "text": "量能确认"}],
+                "risk_controls": ["不追一字板排队"],
+                "trading_plan": {"hold_days": 2, "stop_loss": -0.055, "take_profit": 0.12},
+            },
+        }
+    ]
+    monkeypatch.setattr(
+        admin_api,
+        "_factor_mining_payload",
+        lambda run_dir: {
+            "ok": True,
+            "found": True,
+            "run_id": "20260709-160000",
+            "report": {"latest_candidates": trusted_candidates},
+        },
+    )
     client = app.test_client()
     _login_session(client, ops_uid, "ops")
 
@@ -378,26 +763,7 @@ def test_factor_watchlist_import_update_delete_is_root_only(isolated_app, monkey
         json={
             "run_id": "20260709-160000",
             "strategy_name": "AI因子挖掘候选",
-            "candidates": [
-                {
-                    "ts_code": "000001.SZ",
-                    "trade_date": "2026-07-09",
-                    "candidate_rank": 1,
-                    "candidate_tier": "strong",
-                    "relay_score": 88.5,
-                    "confidence": 0.72,
-                    "stop_loss": -0.055,
-                    "take_profit": 0.12,
-                    "positive_factors": ["volume_confirmation"],
-                    "factor_explain": {
-                        "factor_version": "relay_factor_mining_v1",
-                        "summary": "二三板接力情绪强势延续",
-                        "matched_factors": [{"key": "volume_ratio_20", "label": "20日量比", "text": "量能确认"}],
-                        "risk_controls": ["不追一字板排队"],
-                        "trading_plan": {"hold_days": 2, "stop_loss": -0.055, "take_profit": 0.12},
-                    },
-                }
-            ],
+            "candidates": [{"ts_code": "999999.SZ", "trade_date": "2026-07-09"}],
         },
     )
     data = imported.get_json()
@@ -407,7 +773,8 @@ def test_factor_watchlist_import_update_delete_is_root_only(isolated_app, monkey
 
     listed = client.get("/api/admin/factor-watchlist").get_json()
     item = listed["items"][0]
-    assert item["id"] == "2026-07-09-000001.SZ"
+    assert item["id"].startswith("wl-")
+    assert item["ts_code"] == "000001.SZ"
     assert item["name"] == "平安银行"
     assert item["strategy_name"] == "AI因子挖掘候选"
     assert item["factor_explain"]["factor_version"] == "relay_factor_mining_v1"
@@ -427,6 +794,18 @@ def test_factor_watchlist_import_update_delete_is_root_only(isolated_app, monkey
     assert deleted.status_code == 200
     assert client.get("/api/admin/factor-watchlist").get_json()["items"] == []
 
+    trusted_candidates[0].update(
+        {
+            "research_status": "exploratory",
+            "deployment_eligible": False,
+            "research_only": True,
+            "position_pct": 0.0,
+        }
+    )
+    rejected = client.post("/api/admin/factor-watchlist/import", json={})
+    assert rejected.status_code == 400
+    assert rejected.get_json()["ok"] is False
+
 
 def test_ai_trade_decision_is_root_only_and_updates_watchlist(isolated_app, monkeypatch, tmp_path):
     app, um, _main = isolated_app
@@ -437,6 +816,53 @@ def test_ai_trade_decision_is_root_only_and_updates_watchlist(isolated_app, monk
     monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
     import app_state as _app_state
     monkeypatch.setattr(_app_state, "BASE_DIR", tmp_path)  # 观察池存储已下沉 core/factor_watchlist，按真正的源头打桩
+    monkeypatch.setattr(
+        admin_api._fw,
+        "_expected_scope_trade_date",
+        lambda: "2026-07-09",
+    )
+    trusted_candidates = [
+        {
+            "ts_code": "000001.SZ",
+            "trade_date": "2026-07-09",
+            "candidate_rank": 1,
+            "confidence": 0.8,
+            "strategy_key": "relay_factor_mining_v2",
+            "model_version": "relay_factor_mining_v3_nested_ridge",
+            "experiment_id": "experiment-ai-decision",
+            "model_instance_id": "model-instance-ai-decision",
+            "validation_accepted": True,
+            "research_status": "validated",
+            "deployment_eligible": True,
+            "research_only": False,
+            "live_readiness_status": "ready",
+            "position_pct": 0.1,
+        },
+        {
+            "ts_code": "000002.SZ",
+            "trade_date": "2026-07-09",
+            "candidate_rank": 2,
+            "confidence": 0.7,
+            "strategy_key": "relay_factor_mining_v2",
+            "model_version": "relay_factor_mining_v3_nested_ridge",
+            "validation_accepted": True,
+            "research_status": "validated",
+            "deployment_eligible": True,
+            "research_only": False,
+            "live_readiness_status": "ready",
+            "position_pct": 0.1,
+        },
+    ]
+    monkeypatch.setattr(
+        admin_api,
+        "_factor_mining_payload",
+        lambda run_dir: {
+            "ok": True,
+            "found": True,
+            "run_id": "20260709-160000",
+            "report": {"latest_candidates": trusted_candidates},
+        },
+    )
     client = app.test_client()
 
     _login_session(client, ops_uid, "ops")
@@ -450,10 +876,7 @@ def test_ai_trade_decision_is_root_only_and_updates_watchlist(isolated_app, monk
         json={
             "run_id": "20260709-160000",
             "strategy_name": "ai-factor",
-            "candidates": [
-                {"ts_code": "000001.SZ", "trade_date": "2026-07-09", "candidate_rank": 1, "confidence": 0.8},
-                {"ts_code": "000002.SZ", "trade_date": "2026-07-09", "candidate_rank": 2, "confidence": 0.7},
-            ],
+            "candidates": [{"ts_code": "999999.SZ", "trade_date": "2026-07-09"}],
         },
     )
     assert imported.status_code == 200
@@ -463,6 +886,7 @@ def test_ai_trade_decision_is_root_only_and_updates_watchlist(isolated_app, monk
             assert max_candidates == 1
             assert execute_paper is True
             assert candidates[0]["code"] == "000001"
+            watchlist_id = candidates[0]["id"]
             return {
                 "ok": True,
                 "generated_at": "2026-07-10 09:26:00",
@@ -479,7 +903,7 @@ def test_ai_trade_decision_is_root_only_and_updates_watchlist(isolated_app, monk
                         "risk_ok": True,
                         "executed": False,
                         "reason": "test buy",
-                        "source": {"watchlist_id": "2026-07-09-000001.SZ"},
+                        "source": {"watchlist_id": watchlist_id},
                     }
                 ],
             }

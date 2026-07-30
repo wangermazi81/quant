@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import math
 import threading
 import uuid
 from datetime import datetime
@@ -17,6 +18,7 @@ import app_security as sec
 from analytics import datasource_config
 from analytics import tushare_provider
 from analytics import relay_factor_mining
+from analytics import relay_factor_experiment
 from analytics import ai_trader as ai_trader_engine
 from analytics import auto_factor_scheduler
 from app_state import BASE_DIR, require_admin, require_admin_perm, require_root_admin
@@ -37,6 +39,18 @@ def _bounded_int_value(raw, default: int, min_value: int, max_value: int) -> int
     except (TypeError, ValueError):
         value = default
     return max(min_value, min(max_value, value))
+
+
+def _bounded_float_value(raw, default: float, min_value: float, max_value: float) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(value):
+        return float(default)
+    if value < min_value or value > max_value:
+        return float(default)
+    return value
 
 
 def _optional_int_arg(name: str) -> int | None:
@@ -157,6 +171,29 @@ def _factor_mining_payload(run_dir: Path | None) -> dict:
     }
 
 
+def _factor_experiment_store() -> relay_factor_experiment.RelayFactorExperimentStore:
+    return relay_factor_experiment.RelayFactorExperimentStore(
+        _factor_mining_root() / "prospective.sqlite3"
+    )
+
+
+def _factor_mining_run_dir(run_id: str) -> Path | None:
+    clean = str(run_id or "").strip()
+    if (
+        not clean
+        or clean in {".", ".."}
+        or re.fullmatch(r"[A-Za-z0-9._-]{1,80}", clean) is None
+    ):
+        return None
+    root = _factor_mining_root()
+    candidate = (root / clean).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate
+
+
 def _factor_mining_job_snapshot(task: dict) -> dict:
     payload = {
         "task_id": task.get("task_id"),
@@ -196,16 +233,28 @@ def _run_factor_mining_job(task_id: str, params: dict) -> None:
                 train_days=params["train_days"],
                 test_days=params["test_days"],
                 hold_days=params["hold_days"],
+                stop_loss=params["stop_loss"],
+                take_profit=params["take_profit"],
                 top_k=params["top_k"],
                 candidate_pool_size=params["candidate_pool_size"],
                 include_market_signals=True,
                 mining_rules=params["mining_rules"],
+                feedback_user_id=params["feedback_user_id"],
             )
-            watchlist = _import_factor_candidates_to_watchlist(
-                report.get("latest_candidates", []) if isinstance(report, dict) else [],
-                run_id=params["run_id"],
-                strategy_name="AI因子挖掘候选",
+            data_status = (
+                str(report.get("data_status") or report.get("status") or "degraded")
+                if isinstance(report, dict)
+                else "degraded"
             )
+            watchlist = {
+                "ok": False,
+                "skipped": True,
+                "reason": (
+                    "exploratory_research_not_deployable"
+                    if data_status == "ok"
+                    else f"data_status_{data_status}"
+                ),
+            }
         _set_factor_mining_job(
             task_id,
             status="done",
@@ -416,6 +465,90 @@ def admin_factor_mining_rules():
     return jsonify({"ok": True, "mining_rules": rules, "condition_explain": relay_factor_mining.condition_explain(rules)})
 
 
+@bp.route(
+    "/api/admin/factor-mining/experiments/<run_id>/lock",
+    methods=["POST"],
+)
+@require_root_admin
+def admin_factor_experiment_lock(run_id):
+    run_dir = _factor_mining_run_dir(run_id)
+    report_path = run_dir / "walkforward_report.json" if run_dir is not None else None
+    if (
+        report_path is None
+        or not report_path.exists()
+        or not report_path.is_file()
+    ):
+        return jsonify({"ok": False, "error": "研究报告不存在"}), 404
+    report = _read_json_file(report_path, {})
+    try:
+        manifest = relay_factor_mining.build_frozen_experiment_manifest(report)
+        manifest["owner_user_id"] = int(session.get("user_id") or 0)
+        experiment = _factor_experiment_store().create_locked_experiment(
+            str(run_id),
+            manifest,
+        )
+        progress = _factor_experiment_store().get_progress(
+            experiment["experiment_id"]
+        )
+    except (TypeError, ValueError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify(
+        {
+            "ok": True,
+            "experiment": experiment,
+            "progress": progress,
+        }
+    ), 201
+
+
+@bp.route(
+    "/api/admin/factor-mining/experiments/active",
+    methods=["GET"],
+)
+@require_root_admin
+def admin_factor_experiment_active():
+    overview = _factor_experiment_store().get_overview(limit=10)
+    return jsonify({"ok": True, **overview})
+
+
+@bp.route(
+    "/api/admin/factor-mining/experiments/<experiment_id>/prospective",
+    methods=["GET"],
+)
+@require_root_admin
+def admin_factor_experiment_prospective(experiment_id):
+    store = _factor_experiment_store()
+    try:
+        experiment = store.get_experiment(experiment_id)
+    except KeyError:
+        return jsonify({"ok": False, "error": "前瞻实验不存在"}), 404
+    return jsonify(
+        {
+            "ok": True,
+            "experiment": experiment,
+            "progress": store.get_progress(experiment_id),
+            "sessions": store.list_sessions(experiment_id),
+            "candidates": store.list_candidates(experiment_id),
+        }
+    )
+
+
+@bp.route(
+    "/api/admin/factor-mining/experiments/<experiment_id>/cancel",
+    methods=["POST"],
+)
+@require_root_admin
+def admin_factor_experiment_cancel(experiment_id):
+    store = _factor_experiment_store()
+    try:
+        experiment = store.cancel_experiment(experiment_id)
+    except KeyError:
+        return jsonify({"ok": False, "error": "前瞻实验不存在"}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 409
+    return jsonify({"ok": True, "experiment": experiment})
+
+
 @bp.route("/api/admin/factor-mining/status", methods=["GET"])
 @require_root_admin
 def admin_factor_mining_status():
@@ -436,10 +569,12 @@ def admin_factor_mining_run():
 
     body = request.json or {}
     n_stocks = _bounded_int_value(body.get("n_stocks"), 800, 5, 2000)
-    days = _bounded_int_value(body.get("days"), 180, 60, 320)
+    days = _bounded_int_value(body.get("days"), 320, 60, 320)
     train_days = _bounded_int_value(body.get("train_days"), 60, 10, 160)
     test_days = _bounded_int_value(body.get("test_days"), 10, 5, 60)
     hold_days = _bounded_int_value(body.get("hold_days"), 2, 1, 10)
+    stop_loss = _bounded_float_value(body.get("stop_loss"), -0.035, -0.20, -0.005)
+    take_profit = _bounded_float_value(body.get("take_profit"), 0.07, 0.005, 0.30)
     top_k = _bounded_int_value(body.get("top_k"), 10, 1, 50)
     candidate_pool_size = _bounded_int_value(body.get("candidate_pool_size"), 100, top_k, 300)
     mining_rules = body.get("mining_rules") if isinstance(body.get("mining_rules"), dict) else None
@@ -458,9 +593,12 @@ def admin_factor_mining_run():
             "train_days": train_days,
             "test_days": test_days,
             "hold_days": hold_days,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
             "top_k": top_k,
             "candidate_pool_size": candidate_pool_size,
             "mining_rules": mining_rules,
+            "feedback_user_id": int(session.get("user_id") or 0),
         }
         task = {
             "task_id": task_id,
@@ -504,6 +642,16 @@ def admin_factor_watchlist_get():
     """
     data = _load_factor_watchlist()
     all_items = data["items"]
+    latest_scope = (
+        data.get("latest_scope")
+        if isinstance(data.get("latest_scope"), dict)
+        else None
+    )
+    latest_scope_date = (
+        str(latest_scope.get("trade_date") or "")
+        if latest_scope is not None
+        else ""
+    )
 
     def _sort_key(item):
         return (str(item.get("trade_date") or ""),
@@ -511,9 +659,18 @@ def admin_factor_watchlist_get():
                 -int(item.get("candidate_rank") or 999999),
                 str(item.get("code") or ""))
 
-    dates = sorted({str(i.get("trade_date") or "") for i in all_items if i.get("trade_date")},
-                   reverse=True)
-    counts_by_date = {}
+    dates = sorted(
+        {
+            *(
+                str(i.get("trade_date") or "")
+                for i in all_items
+                if i.get("trade_date")
+            ),
+            *([latest_scope_date] if latest_scope_date else []),
+        },
+        reverse=True,
+    )
+    counts_by_date = {trade_date: 0 for trade_date in dates}
     counts_by_status = {}
     for i in all_items:
         counts_by_date[str(i.get("trade_date") or "")] = counts_by_date.get(str(i.get("trade_date") or ""), 0) + 1
@@ -525,8 +682,23 @@ def admin_factor_watchlist_get():
     if want_all:
         items = all_items
     else:
-        selected = want_date if want_date in dates else (dates[0] if dates else "")
-        items = [i for i in all_items if str(i.get("trade_date") or "") == selected] if selected else all_items
+        selected = (
+            want_date
+            if want_date in dates
+            else latest_scope_date or (dates[0] if dates else "")
+        )
+        if not want_date and latest_scope_date:
+            items = _fw._latest_watchlist_scope(all_items, latest_scope)
+        else:
+            items = (
+                [
+                    i
+                    for i in all_items
+                    if str(i.get("trade_date") or "") == selected
+                ]
+                if selected
+                else all_items
+            )
 
     # 当日可执行性分布（前端用来显示「今日 N 只可执行」并支持一键只看可执行）
     counts_by_readiness = {}
@@ -542,6 +714,7 @@ def admin_factor_watchlist_get():
     return jsonify({
         "ok": True,
         "updated_at": data.get("updated_at"),
+        "latest_scope": latest_scope,
         "items": items,
         "trade_dates": dates,
         "selected_date": selected,
@@ -557,14 +730,18 @@ def admin_factor_watchlist_get():
 @require_root_admin
 def admin_factor_watchlist_import():
     body = request.json or {}
-    candidates = body.get("candidates")
     run_id = _clean_watchlist_text(body.get("run_id"), 40)
     strategy_name = _clean_watchlist_text(body.get("strategy_name") or "AI因子挖掘候选", 60)
-    if not isinstance(candidates, list):
-        payload = _factor_mining_payload(_latest_factor_mining_dir())
-        report = payload.get("report") if isinstance(payload, dict) else None
-        candidates = report.get("latest_candidates", []) if isinstance(report, dict) else []
-        run_id = run_id or _clean_watchlist_text(payload.get("run_id"), 40)
+    payload = _factor_mining_payload(_latest_factor_mining_dir())
+    report = payload.get("report") if isinstance(payload, dict) else None
+    candidates = report.get("latest_candidates", []) if isinstance(report, dict) else []
+    candidates = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, dict)
+        and _fw.is_deployable_factor_candidate(candidate)
+    ]
+    run_id = run_id or _clean_watchlist_text(payload.get("run_id"), 40)
 
     result = _import_factor_candidates_to_watchlist(candidates, run_id=run_id, strategy_name=strategy_name)
     if not result.get("ok"):
@@ -628,9 +805,7 @@ def admin_ai_trade_decision_run():
     max_candidates = _bounded_int_value(body.get("max_candidates"), 6, 1, 20)
     execute_paper = bool(body.get("execute_paper"))
     latest_only = body.get("latest_only") is not False
-    candidates = body.get("candidates") if isinstance(body.get("candidates"), list) else None
-    if candidates is None:
-        candidates = _factor_watchlist_candidates(max_candidates=max_candidates, latest_only=latest_only)
+    candidates = _factor_watchlist_candidates(max_candidates=max_candidates, latest_only=latest_only)
     if not candidates:
         return jsonify({"ok": False, "error": "no factor watchlist candidates"}), 400
     result = ai_trader_engine.get_engine(session["user_id"]).decide_watchlist_candidates(

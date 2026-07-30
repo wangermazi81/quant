@@ -8,6 +8,8 @@ paper_broker.py — 多用户模拟盘引擎
 import sqlite3
 import threading
 import logging
+import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict
@@ -38,9 +40,39 @@ DEFAULT_SEAL_BAN_THRESHOLD = 50_000_000.0
 # 实测分布参考：103 只追踪 → 0-30 占 12 只 / 31-50 占 89 只 / 51+ 占 2 只
 # 阈值 45 = 中等严：约 1 亿+封单的会被拒，5000 万以下能上
 DEFAULT_SEAL_SCORE_THRESHOLD = 45
+_db_init_guard = threading.RLock()
 
 
-def init_paper_db():
+@contextmanager
+def _paper_schema_lock():
+    lock_path = DB_PATH.with_suffix(".schema.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with _db_init_guard:
+        with lock_path.open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _init_paper_db_unlocked():
     """创建/迁移 paper_trading.db 表结构（幂等，含 user_id 列）"""
     ddl = """
     CREATE TABLE IF NOT EXISTS paper_config (
@@ -85,7 +117,13 @@ def init_paper_db():
         pnl         REAL,
         pnl_pct     REAL,
         hold_days   INTEGER,
-        sell_reason TEXT    DEFAULT ''
+        sell_reason TEXT    DEFAULT '',
+        strategy_key TEXT   DEFAULT '',
+        model_version TEXT  DEFAULT '',
+        experiment_id TEXT  DEFAULT '',
+        model_instance_id TEXT DEFAULT '',
+        watchlist_id TEXT   DEFAULT '',
+        source_run_id TEXT  DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_pt_uid ON paper_trades(user_id);
 
@@ -115,11 +153,27 @@ def init_paper_db():
     con = sqlite3.connect(str(DB_PATH), timeout=10)
     con.execute("PRAGMA journal_mode=WAL")
     con.executescript(ddl)
-    cols = {row[1] for row in con.execute("PRAGMA table_info(paper_positions)")}
-    if "strategy" not in cols:
+    position_cols = {row[1] for row in con.execute("PRAGMA table_info(paper_positions)")}
+    if "strategy" not in position_cols:
         con.execute("ALTER TABLE paper_positions ADD COLUMN strategy TEXT DEFAULT ''")
+    trade_cols = {row[1] for row in con.execute("PRAGMA table_info(paper_trades)")}
+    for column in (
+        "strategy_key",
+        "model_version",
+        "experiment_id",
+        "model_instance_id",
+        "watchlist_id",
+        "source_run_id",
+    ):
+        if column not in trade_cols:
+            con.execute(f"ALTER TABLE paper_trades ADD COLUMN {column} TEXT DEFAULT ''")
     con.commit()
     con.close()
+
+
+def init_paper_db():
+    with _paper_schema_lock():
+        _init_paper_db_unlocked()
 
 
 # ════════════════════════════════════════════════════
@@ -216,8 +270,16 @@ class PaperBroker:
         return {r["key"]: r["value"] for r in rows}
 
     def set_config(self, cfg: dict) -> dict:
-        allowed = {"commission_rate", "min_commission", "tax_rate",
-                   "slippage_bps", "stop_loss", "take_profit", "max_hold_days"}
+        allowed = {
+            "commission_rate",
+            "min_commission",
+            "tax_rate",
+            "slippage_bps",
+            "stop_loss",
+            "take_profit",
+            "max_hold_days",
+            "require_market_quote",
+        }
         with self._lock:
             con = self._conn()
             for k, v in cfg.items():
@@ -228,6 +290,32 @@ class PaperBroker:
         return {"ok": True}
 
     # ── 账户 ─────────────────────────────────────────
+    @staticmethod
+    def _strict_execution_quote(code: str) -> tuple[dict | None, str]:
+        try:
+            from market import ths_quote as _tq
+
+            client = _tq.get_client()
+            if not client or not getattr(client, "_ok", False):
+                return None, "realtime quote client unavailable"
+            quotes = client.get_quotes([code])
+            if not quotes or not isinstance(quotes[0], dict):
+                return None, "realtime quote unavailable"
+            quote = quotes[0]
+            price = float(quote.get("price", 0) or 0)
+            raw_volume = quote.get("vol")
+            if raw_volume is None:
+                raw_volume = quote.get("volume")
+            volume = float(raw_volume or 0)
+            if price <= 0:
+                return None, "realtime quote price unavailable"
+            if volume <= 0:
+                return None, "realtime quote volume is zero or unavailable"
+            return quote, ""
+        except Exception as exc:
+            logger.warning("[PB] strict realtime quote check failed: %s", exc)
+            return None, "realtime quote check failed"
+
     def _cash(self) -> float:
         return self._cfg("cash") or 0.0
 
@@ -326,13 +414,19 @@ class PaperBroker:
 
     # ── 买入 ─────────────────────────────────────────
     def submit_buy(self, code: str, name: str, signal_price: float,
-                   shares: int, reason: str = "", strategy: str = "") -> dict:
+                   shares: int, reason: str = "", strategy: str = "",
+                   attribution: dict | None = None) -> dict:
         if shares <= 0 or shares % 100 != 0:
             shares = (shares // 100) * 100
         if shares <= 0:
             return {"ok": False, "msg": "手数不足100股"}
         # 防御：如果 name 是空 / 含问号（PowerShell GBK 转码丢失中文等场景）
         # 从 stock_names.json 重新查正确名称
+        if bool(self._cfg("require_market_quote", int)):
+            strict_quote, quote_error = self._strict_execution_quote(code)
+            if strict_quote is None:
+                return {"ok": False, "msg": quote_error}
+
         if not name or "?" in name or "??" in name or name == code or len(name.strip()) < 2:
             try:
                 from pathlib import Path
@@ -412,6 +506,19 @@ class PaperBroker:
         exec_price, amount, commission, slippage_cost = self._calc_buy_cost(
             signal_price, shares, price_cap=_price_cap)
         total_cost = amount + commission
+        attribution = attribution if isinstance(attribution, dict) else {}
+        attribution_values = {
+            key: str(attribution.get(key) or "")
+            for key in (
+                "strategy_key",
+                "model_version",
+                "experiment_id",
+                "model_instance_id",
+                "watchlist_id",
+                "source_run_id",
+            )
+        }
+        position_strategy = attribution_values["strategy_key"] or strategy or ""
 
         with self._lock:
             con = self._conn()
@@ -442,8 +549,19 @@ class PaperBroker:
 
             cur = con.execute(
                 "INSERT INTO paper_trades"
-                "(user_id,code,name,buy_time,buy_price,shares,buy_cost) VALUES(?,?,?,?,?,?,?)",
-                (self._uid, code, name, now_str, exec_price, shares, round(total_cost, 2)),
+                "(user_id,code,name,buy_time,buy_price,shares,buy_cost,"
+                "strategy_key,model_version,experiment_id,model_instance_id,"
+                "watchlist_id,source_run_id)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    self._uid, code, name, now_str, exec_price, shares, round(total_cost, 2),
+                    attribution_values["strategy_key"],
+                    attribution_values["model_version"],
+                    attribution_values["experiment_id"],
+                    attribution_values["model_instance_id"],
+                    attribution_values["watchlist_id"],
+                    attribution_values["source_run_id"],
+                ),
             )
             trade_id = cur.lastrowid
 
@@ -452,7 +570,7 @@ class PaperBroker:
                 "(user_id,code,name,shares,cost_price,buy_time,buy_amount,trade_id,strategy)"
                 " VALUES(?,?,?,?,?,?,?,?,?)",
                 (self._uid, code, name, shares, cost_price, now_str,
-                 round(total_cost, 2), trade_id, strategy or ""),
+                 round(total_cost, 2), trade_id, position_strategy),
             )
             con.execute(
                 "INSERT INTO paper_orders"
@@ -470,10 +588,53 @@ class PaperBroker:
         logger.info(f"[PB uid={self._uid}] 买入 {code} {shares}股 @{exec_price:.2f} "
                     f"花费¥{total_cost:,.2f} 余¥{new_cash:,.2f}")
         return {
-            "ok": True, "exec_price": exec_price, "shares": shares,
+            "ok": True, "trade_id": int(trade_id), "exec_price": exec_price, "shares": shares,
             "total_cost": round(total_cost, 2), "commission": commission,
             "slippage_cost": slippage_cost, "cash_after": new_cash,
         }
+
+    def attribute_trade(self, trade_id: int, attribution: dict) -> None:
+        """Attach research identity to a filled trade and its open position."""
+        try:
+            trade_id = int(trade_id)
+        except (TypeError, ValueError):
+            return
+        attribution = attribution if isinstance(attribution, dict) else {}
+        values = {
+            key: str(attribution.get(key) or "")
+            for key in (
+                "strategy_key",
+                "model_version",
+                "experiment_id",
+                "model_instance_id",
+                "watchlist_id",
+                "source_run_id",
+            )
+        }
+        with self._lock:
+            con = self._conn()
+            con.execute(
+                "UPDATE paper_trades SET strategy_key=?,model_version=?,experiment_id=?,"
+                "model_instance_id=?,watchlist_id=?,source_run_id=?"
+                " WHERE id=? AND user_id=?",
+                (
+                    values["strategy_key"],
+                    values["model_version"],
+                    values["experiment_id"],
+                    values["model_instance_id"],
+                    values["watchlist_id"],
+                    values["source_run_id"],
+                    trade_id,
+                    self._uid,
+                ),
+            )
+            con.execute(
+                "UPDATE paper_positions SET strategy=?"
+                " WHERE user_id=? AND trade_id=?",
+                (values["strategy_key"], self._uid, trade_id),
+            )
+            con.commit()
+            con.close()
 
     # ── 卖出 ─────────────────────────────────────────
     def submit_sell(self, code: str, signal_price: float,
@@ -484,6 +645,11 @@ class PaperBroker:
                 "SELECT * FROM paper_positions WHERE user_id=? AND code=?",
                 (self._uid, code),
             ).fetchone()
+            if pos and bool(self._cfg("require_market_quote", int)):
+                strict_quote, quote_error = self._strict_execution_quote(code)
+                if strict_quote is None:
+                    con.close()
+                    return {"ok": False, "msg": quote_error}
             if not pos:
                 con.close()
                 return {"ok": False, "msg": f"无持仓: {code}"}
@@ -491,14 +657,23 @@ class PaperBroker:
             # ── T+1 拒卖（A 股真实规则：当天买入不可当天卖出）──
             try:
                 _buy_dt = datetime.strptime(pos["buy_time"][:10], "%Y-%m-%d").date()
-                if _buy_dt == datetime.now().date():
+                if _buy_dt >= datetime.now().date():
                     con.close()
                     return {"ok": False,
                             "msg": f"T+1 拒卖: {code} 当天买入（{pos['buy_time']}）不可当天卖出，请明日再试"}
             except Exception as _e:
                 # 放行是有意的（解析不出日期就无法判断是否当日，拒卖会让持仓永远卖不掉），
                 # 但这等于绕过一条风控 —— 必须是 WARNING 而不是 debug，否则静默失效无人知晓。
-                logger.warning(f"[PB] T+1 检查无法判定，本次放行: buy_time={pos['buy_time']!r} err={_e}")
+                logger.warning(
+                    "[PB] T+1 check failed closed: buy_time=%r err=%s",
+                    pos["buy_time"],
+                    _e,
+                )
+                con.close()
+                return {
+                    "ok": False,
+                    "msg": f"T+1 check failed: invalid buy_time for {code}",
+                }
 
             # 跌停价下限：弱跌停路径按跌停价成交，后续不得再被滑点压穿合法价带
             _price_floor = None

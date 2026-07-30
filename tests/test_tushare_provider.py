@@ -7,6 +7,40 @@ import pytest
 import analytics.tushare_provider as tp
 
 
+def test_fetch_namechange_history_normalizes_and_sorts_records(monkeypatch):
+    captured = {}
+
+    def fake_query(api_name, params, **kwargs):
+        captured.update({"api_name": api_name, "params": params, **kwargs})
+        return [
+            {
+                "ts_code": "000010.SZ",
+                "name": "*ST美丽",
+                "start_date": "20260711",
+                "end_date": "",
+                "ann_date": "20260710",
+                "change_reason": "*ST",
+            },
+            {
+                "ts_code": "000010.SZ",
+                "name": "美丽生态",
+                "start_date": "20200101",
+                "end_date": "20260710",
+                "ann_date": "20191231",
+                "change_reason": "其他",
+            },
+        ]
+
+    monkeypatch.setattr(tp, "query_replay_api", fake_query)
+
+    rows = tp.fetch_namechange_history("000010", token="tok", mode="replay")
+
+    assert captured["api_name"] == "namechange"
+    assert captured["params"]["ts_code"] == "000010.SZ"
+    assert rows[0]["start_date"] == "20200101"
+    assert rows[-1]["name"] == "*ST美丽"
+
+
 def test_fetch_kline_qfq_normalizes_pro_bar(monkeypatch):
     calls = []
 
@@ -443,6 +477,7 @@ def test_fetch_full_market_daily_uses_one_replay_request(monkeypatch):
                 "low": 10.38,
                 "close": 10.54,
                 "vol": 924746.24,
+                "amount": 978410.52,
             },
             {
                 "ts_code": "600000.SH",
@@ -452,6 +487,7 @@ def test_fetch_full_market_daily_uses_one_replay_request(monkeypatch):
                 "low": 8.9,
                 "close": 9.1,
                 "vol": 361767.0,
+                "amount": 329208.0,
             },
         ]
 
@@ -476,6 +512,7 @@ def test_fetch_full_market_daily_uses_one_replay_request(monkeypatch):
     assert df["date"].dt.strftime("%Y-%m-%d").tolist() == ["2026-07-13", "2026-07-13"]
     assert df["close"].tolist() == [10.54, 9.1]
     assert df["volume"].tolist() == [924746.24, 361767.0]
+    assert df["amount"].tolist() == [978410.52, 329208.0]
 
 
 def test_fetch_full_market_adj_factors_uses_trade_date(monkeypatch):

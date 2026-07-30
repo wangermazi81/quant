@@ -1,9 +1,9 @@
 # API 清单（自动生成，勿手改）
 
 > 由 `tools/gen_api_doc.py` 从 `app.url_map` 导出，CI 校验与代码同步。
-> 共 219 条路由，按蓝图分组。
+> 共 239 条路由，按蓝图分组。
 
-## admin — 管理后台（49 条）
+## admin — 管理后台（56 条）
 
 | 路径 | 方法 | 端点 | 说明 |
 |---|---|---|---|
@@ -11,6 +11,7 @@
 | `/api/admin/ai-trade-decision/auto/status` | GET | admin.admin_ai_trade_auto_status |  |
 | `/api/admin/ai-trade-decision/latest` | GET | admin.admin_ai_trade_decision_latest |  |
 | `/api/admin/ai-trade-decision/run` | POST | admin.admin_ai_trade_decision_run |  |
+| `/api/admin/analytics` | GET | admin.admin_analytics | 运营统计聚合（真实数据）。前端工作台/使用统计页的图表数据源。 |
 | `/api/admin/announcements` | GET | admin.admin_list_announcements |  |
 | `/api/admin/announcements` | POST | admin.admin_create_announcement |  |
 | `/api/admin/announcements/<int:ann_id>` | DELETE | admin.admin_delete_announcement |  |
@@ -22,10 +23,15 @@
 | `/api/admin/datasource/config` | GET | admin.admin_datasource_config_get |  |
 | `/api/admin/datasource/config` | POST | admin.admin_datasource_config_save |  |
 | `/api/admin/datasource/test` | POST | admin.admin_datasource_test |  |
+| `/api/admin/factor-mining/experiments/<experiment_id>/cancel` | POST | admin.admin_factor_experiment_cancel |  |
+| `/api/admin/factor-mining/experiments/<experiment_id>/prospective` | GET | admin.admin_factor_experiment_prospective |  |
+| `/api/admin/factor-mining/experiments/<run_id>/lock` | POST | admin.admin_factor_experiment_lock |  |
+| `/api/admin/factor-mining/experiments/active` | GET | admin.admin_factor_experiment_active |  |
 | `/api/admin/factor-mining/latest` | GET | admin.admin_factor_mining_latest |  |
 | `/api/admin/factor-mining/rules` | GET | admin.admin_factor_mining_rules |  |
 | `/api/admin/factor-mining/run` | POST | admin.admin_factor_mining_run |  |
-| `/api/admin/factor-watchlist` | GET | admin.admin_factor_watchlist_get |  |
+| `/api/admin/factor-mining/status` | GET | admin.admin_factor_mining_status |  |
+| `/api/admin/factor-watchlist` | GET | admin.admin_factor_watchlist_get | 次日自选池。 |
 | `/api/admin/factor-watchlist/<item_id>` | DELETE | admin.admin_factor_watchlist_delete |  |
 | `/api/admin/factor-watchlist/<item_id>` | PATCH | admin.admin_factor_watchlist_update |  |
 | `/api/admin/factor-watchlist/import` | POST | admin.admin_factor_watchlist_import |  |
@@ -48,6 +54,7 @@
 | `/api/admin/transactions` | GET | admin.admin_transactions |  |
 | `/api/admin/users` | GET | admin.admin_users |  |
 | `/api/admin/users/<int:uid>` | DELETE | admin.admin_delete_user | 删除用户（不可删自己）。 |
+| `/api/admin/users/<int:uid>` | PUT | admin.admin_update_user | 编辑用户资料（用户名/邮箱）。root 管理员的资料只允许其本人改。 |
 | `/api/admin/users/<int:uid>/active` | POST | admin.admin_set_active |  |
 | `/api/admin/users/<int:uid>/admin` | POST | admin.admin_set_admin |  |
 | `/api/admin/users/<int:uid>/permissions` | GET | admin.admin_get_user_permissions |  |
@@ -112,16 +119,29 @@
 | `/api/auth/reset` | POST | auth.auth_reset | 凭 token 设置新密码。 |
 | `/api/auth/reset/validate` | GET | auth.auth_reset_validate | 前端打开重置页时先校验 token 是否有效（决定显示表单还是失效提示）。 |
 
-## bridge — 实盘桥接（6 条）
+## bridge — 实盘桥接（19 条）
 
 | 路径 | 方法 | 端点 | 说明 |
 |---|---|---|---|
 | `/api/bridge/live_enabled` | GET | bridge.get_live_enabled |  |
 | `/api/bridge/live_enabled` | POST | bridge.set_live_enabled |  |
+| `/api/bridge/mobile/mode` | POST | bridge.bridge_mobile_mode_switch |  |
+| `/api/bridge/mobile/open-app` | POST | bridge.bridge_mobile_open_app |  |
+| `/api/bridge/process` | GET | bridge.bridge_process_status |  |
+| `/api/bridge/process/start` | POST | bridge.bridge_process_start |  |
+| `/api/bridge/process/stop` | POST | bridge.bridge_process_stop |  |
 | `/api/bridge/signals` | GET | bridge.bridge_get_signals |  |
 | `/api/bridge/signals/<int:signal_id>/report` | POST | bridge.bridge_report_signal |  |
 | `/api/bridge/signals/<int:signal_id>/status` | GET | bridge.bridge_signal_status | 前端轮询单条信号当前状态（pending/sent/executed/failed/cancelled） |
 | `/api/bridge/today_orders` | GET | bridge.bridge_today_orders | 读 xiadan 当日委托表，返回每笔精确状态（已成/已报/部成/已撤/废单） |
+| `/api/execution/state` | GET | bridge.execution_state |  |
+| `/api/mobile_ths/account` | GET,POST | bridge.mobile_ths_legacy_account |  |
+| `/api/mobile_ths/confirm_mode` | POST | bridge.mobile_ths_legacy_confirm_mode |  |
+| `/api/mobile_ths/connection` | POST | bridge.mobile_ths_legacy_connection |  |
+| `/api/mobile_ths/mode` | POST | bridge.mobile_ths_legacy_mode |  |
+| `/api/mobile_ths/open_ths` | POST | bridge.mobile_ths_legacy_open_ths |  |
+| `/api/mobile_ths/profile` | GET,POST | bridge.mobile_ths_legacy_profile |  |
+| `/api/mobile_ths/restart_bridge` | POST | bridge.mobile_ths_legacy_restart_bridge |  |
 
 ## data — 行情数据（10 条）
 
@@ -133,7 +153,7 @@
 | `/api/data/refresh_names` | POST | data.api_refresh_names |  |
 | `/api/data/sector/<code>` | GET | data.api_stock_sector |  |
 | `/api/data/stocks` | GET | data.api_data_list |  |
-| `/api/kline/<code>` | GET | data.api_kline | K 线数据：本地已是最新交易日才走本地快路径，否则优先 TDX 实时日K， |
+| `/api/kline/<code>` | GET | data.api_kline | K 线数据：统一数据源，第一源 Tushare，第二源按后台配置降级。 |
 | `/api/kline/<code>/minute` | GET | data.api_minute_kline | Minute K-line data for the stock chart modal. |
 | `/api/kline/<code>/seconds` | GET | data.api_second_kline | Second-level tick data for the stock chart modal. |
 | `/api/quote/<code>/order_book` | GET | data.api_order_book | Realtime five-level bid/ask book for the stock chart modal. |
@@ -293,7 +313,7 @@
 | `/api/auto_execute` | POST | trade.set_auto_execute |  |
 | `/api/execute` | POST | trade.execute |  |
 | `/api/positions` | GET | trade.get_positions_api |  |
-| `/api/positions/close` | POST | trade.close_position |  |
+| `/api/positions/close` | POST | trade.close_position | 从**内存持仓视图**里移除一条记录（不是真平仓）。 |
 | `/api/positions/sell` | POST | trade.sell_position |  |
 | `/api/queue/add` | POST | trade.queue_add |  |
 | `/api/queue/clear` | POST | trade.clear_queue |  |

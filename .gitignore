@@ -42,6 +42,7 @@ data/paper_trading.db-shm
 data/daily/
 data/stock_names.json
 data/metadata.json
+data/st_namechange_cache.json
 
 # ── 回测缓存 ──────────────────────────────────────
 data/bt_cache/

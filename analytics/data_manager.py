@@ -271,7 +271,7 @@ def _clean_kline(df: pd.DataFrame) -> pd.DataFrame:
         return df
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    for c in ("open", "high", "low", "close", "volume"):
+    for c in ("open", "high", "low", "close", "volume", "amount"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["date", "close", "open"])
@@ -313,7 +313,8 @@ def _standardize_kline_for_cache(df: pd.DataFrame) -> pd.DataFrame:
     required = ["date", "open", "high", "low", "close", "volume"]
     if any(c not in out.columns for c in required):
         return pd.DataFrame()
-    return _clean_kline(out[required])
+    optional = [column for column in ("amount", "name", "is_st") if column in out.columns]
+    return _clean_kline(out[required + optional])
 
 
 def merge_kline_cache(code: str, df: pd.DataFrame, update_metadata: bool = True) -> pd.DataFrame:
@@ -336,6 +337,18 @@ def merge_kline_cache(code: str, df: pd.DataFrame, update_metadata: bool = True)
         except Exception:
             old_df = pd.DataFrame()
         if old_df is not None and not old_df.empty:
+            old_by_date = old_df.drop_duplicates("date", keep="last").set_index("date")
+            for column in ("amount", "name", "is_st"):
+                if column not in old_by_date.columns:
+                    continue
+                previous = new_df["date"].map(old_by_date[column])
+                if column in new_df.columns:
+                    missing = new_df[column].isna()
+                    if column == "name":
+                        missing |= new_df[column].astype("string").str.strip().eq("").fillna(True)
+                    new_df.loc[missing, column] = previous.loc[missing]
+                else:
+                    new_df[column] = previous
             merged = _clean_kline(pd.concat([old_df, new_df], ignore_index=True))
         else:
             merged = new_df
@@ -343,7 +356,8 @@ def merge_kline_cache(code: str, df: pd.DataFrame, update_metadata: bool = True)
         merged = new_df
 
     required = ["date", "open", "close", "high", "low", "volume"]
-    merged[required].to_csv(csv_path, index=False, encoding="utf-8")
+    optional = [column for column in ("amount", "name", "is_st") if column in merged.columns]
+    merged[required + optional].to_csv(csv_path, index=False, encoding="utf-8")
 
     if update_metadata:
         try:
@@ -375,6 +389,45 @@ def _latest_date_text(df: pd.DataFrame) -> str:
         return latest.strftime("%Y-%m-%d")
     except Exception:
         return ""
+
+
+def expected_completed_trade_date(now: datetime | None = None) -> str:
+    current = now or datetime.now()
+    market_close_guard = current.replace(hour=15, minute=30, second=0, microsecond=0)
+    candidate = current.date() if current >= market_close_guard else (current - timedelta(days=1)).date()
+    try:
+        from market import trading_calendar
+
+        is_trading_day = trading_calendar.is_trading_day
+    except Exception:
+        is_trading_day = lambda value: value.weekday() < 5
+    for _ in range(31):
+        if is_trading_day(candidate):
+            return candidate.isoformat()
+        candidate -= timedelta(days=1)
+    raise RuntimeError("completed trading day unavailable")
+
+
+def _stale_factor_source_result(
+    source_trade_date: str,
+    expected_trade_date: str,
+    *,
+    source: str,
+    min_required: int,
+) -> dict:
+    return {
+        "ok": False,
+        "error": (
+            f"factor daily source is stale: expected {expected_trade_date}, "
+            f"got {source_trade_date}"
+        ),
+        "source": source,
+        "primary_source": source,
+        "source_trade_date": source_trade_date,
+        "expected_trade_date": expected_trade_date,
+        "latest_count": 0,
+        "min_required": max(1, int(min_required)),
+    }
 
 
 def _kline_is_stale_for_live_use(df: pd.DataFrame, max_lag_days: int = 3) -> bool:
@@ -562,6 +615,15 @@ def _refresh_factor_daily_cache_tdx(days: int = 180, min_required: int = 800, no
                 "min_required": min_required,
             }
         source_date = pd.Timestamp(completed_dates.max()).normalize()
+    expected_trade_date = expected_completed_trade_date(current)
+    source_trade_date = str(source_date.date())
+    if source_trade_date != expected_trade_date:
+        return _stale_factor_source_result(
+            source_trade_date,
+            expected_trade_date,
+            source="tdx_daily",
+            min_required=min_required,
+        )
     csv_paths = sorted(DATA_DIR.glob("*.csv"))
     if not csv_paths:
         return {"ok": False, "error": "daily cache is empty", "latest_count": 0, "min_required": min_required}
@@ -627,6 +689,7 @@ def _refresh_factor_daily_cache_tdx(days: int = 180, min_required: int = 800, no
         "ok": latest_count >= max(1, int(min_required)),
         "source": "tdx_daily",
         "source_trade_date": str(source_date.date()),
+        "expected_trade_date": expected_trade_date,
         "total": len(csv_paths),
         "latest_count": latest_count,
         "min_required": max(1, int(min_required)),
@@ -671,6 +734,17 @@ def _same_daily_row(old_frame: pd.DataFrame, new_frame: pd.DataFrame, source_dat
             return False
         tolerance = max(1e-6, abs(right) * 1e-8)
         if abs(left - right) > tolerance:
+            return False
+    if "amount" in new_row.index and pd.notna(new_row.get("amount")):
+        if "amount" not in old_row.index or pd.isna(old_row.get("amount")):
+            return False
+        try:
+            old_amount = float(old_row["amount"])
+            new_amount = float(new_row["amount"])
+        except (TypeError, ValueError):
+            return False
+        tolerance = max(1e-4, abs(new_amount) * 1e-8)
+        if abs(old_amount - new_amount) > tolerance:
             return False
     return True
 
@@ -789,6 +863,22 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
             result["tushare_errors"] = tushare_errors
         return result
 
+    expected_trade_date = expected_completed_trade_date(current)
+    source_trade_date = str(source_date.date())
+    if source_trade_date != expected_trade_date:
+        result = _stale_factor_source_result(
+            source_trade_date,
+            expected_trade_date,
+            source=source_name,
+            min_required=min_required,
+        )
+        result["tushare_count"] = 0
+        result["tushare_qfq_count"] = 0
+        result["tdx_fallback_count"] = 0
+        if tushare_errors:
+            result["tushare_errors"] = tushare_errors
+        return result
+
     source_frame = source_frame.copy()
     if "code" not in source_frame.columns:
         return {
@@ -810,6 +900,9 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
     current_factors: dict[str, float] = {}
     previous_factors: dict[str, float] = {}
     previous_trade_date = None
+    previous_expected_date = expected_completed_trade_date(
+        datetime.combine((source_date - timedelta(days=1)).date(), datetime.min.time()).replace(hour=23)
+    )
     try:
         factor_frame = tushare_provider.fetch_full_market_adj_factors(
             source_date.strftime("%Y%m%d"), token=token, mode=mode
@@ -832,7 +925,10 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
                 previous_dates = pd.to_datetime(previous.get("date"), errors="coerce").dropna()
                 if previous_dates.empty:
                     continue
-                previous_trade_date = pd.Timestamp(previous_dates.max()).normalize()
+                candidate_previous_date = pd.Timestamp(previous_dates.max()).normalize()
+                if str(candidate_previous_date.date()) != previous_expected_date:
+                    continue
+                previous_trade_date = candidate_previous_date
                 previous_factors = {
                     str(row.code): float(row.adj_factor)
                     for row in previous.itertuples()
@@ -851,6 +947,8 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
     tushare_qfq_count = 0
     tdx_fallback_count = 0
     adjustment_fallback_count = 0
+    adjustment_repair_failed_count = 0
+    gap_repair_failed_count = 0
     errors: list[str] = []
     tdx_client = None
 
@@ -914,6 +1012,17 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
                         merged = merge_kline_cache(code, qfq_frame, update_metadata=False)
                         final_source = "tushare_replay_qfq" if str(mode).lower() == "replay" else "tushare_sdk_qfq"
                         updated = not merged.empty
+
+            if (factor_changed or has_gap) and merged.empty:
+                if factor_changed:
+                    adjustment_repair_failed_count += 1
+                if has_gap:
+                    gap_repair_failed_count += 1
+                failed += 1
+                if len(errors) < 20:
+                    reason = "adjustment change" if factor_changed else "history gap"
+                    errors.append(f"{code}: QFQ repair unavailable for {reason}")
+                continue
 
             if merged.empty and not primary_slice.empty:
                 if _same_daily_row(old_frame, primary_slice, source_date) and len(old_frame) >= min_history:
@@ -1010,6 +1119,7 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
         "source": source_name,
         "primary_source": source_name,
         "source_trade_date": str(source_date.date()),
+        "expected_trade_date": expected_trade_date,
         "total": len(csv_paths),
         "latest_count": latest_count,
         "min_required": max(1, int(min_required)),
@@ -1020,6 +1130,8 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
         "tushare_qfq_count": tushare_qfq_count,
         "tdx_fallback_count": tdx_fallback_count,
         "adjustment_fallback_count": adjustment_fallback_count,
+        "adjustment_repair_failed_count": adjustment_repair_failed_count,
+        "gap_repair_failed_count": gap_repair_failed_count,
         "tushare_market_rows": len(source_frame),
     }
     if tushare_errors:
@@ -1441,7 +1553,8 @@ def _download_one(code: str, start_date: str) -> dict:
         if src != "腾讯":
             logger.info(f"[{code}] 已用降级数据源: {src}")
 
-        df = df.rename(columns={"amount": "volume"})
+        if "volume" not in df.columns and "amount" in df.columns:
+            df = df.rename(columns={"amount": "volume"})
 
         required = ["date", "open", "close", "high", "low", "volume"]
         missing  = [c for c in required if c not in df.columns]
@@ -1460,7 +1573,8 @@ def _download_one(code: str, start_date: str) -> dict:
                 "msg": f"下载结果最新日期 {new_latest.date()} 早于现有缓存 {existing_latest.date()}，已拒绝覆盖",
             }
 
-        df[required].to_csv(csv_path, index=False, encoding="utf-8")
+        optional = [column for column in ("amount", "name", "is_st") if column in df.columns]
+        df[required + optional].to_csv(csv_path, index=False, encoding="utf-8")
         logger.info(f"已保存 {csv_path} ({len(df)} 行, 前复权+已清洗)")
 
         # 优先用缓存名称，无则写入 code

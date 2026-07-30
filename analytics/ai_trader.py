@@ -28,6 +28,7 @@ AI 自主交易引擎 (AI Autonomous Trading) —— 本地模块，不同步云
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import queue as _queue
@@ -556,7 +557,10 @@ class _Engine:
 
     def _ai_broker(self):
         from broker import paper_broker as pb
-        return pb.get_broker(self._ai_uid())
+
+        broker = pb.get_broker(self._ai_uid())
+        broker.set_config({"require_market_quote": 1})
+        return broker
 
     def _account(self) -> dict:
         """统一账户视图(mode-aware)。paper=AI独立模拟账户；live=用户实盘账户。
@@ -1274,8 +1278,69 @@ class _Engine:
                 if shares <= 0:
                     budget = acct["capital"] * r["per_trade_ratio"]
                     shares = max(int(budget / price / 100) * 100, 100) if price > 0 else 100
+                source_identity = (
+                    d.get("source")
+                    if isinstance(d.get("source"), dict)
+                    else {}
+                )
+                if source == "watchlist_ai":
+                    frozen_position_pct = _to_float(
+                        source_identity.get("position_pct")
+                        or d.get("position_pct")
+                    )
+                    if (
+                        frozen_position_pct is None
+                        or frozen_position_pct <= 0
+                        or frozen_position_pct > 1
+                    ):
+                        raise ValueError("invalid frozen watchlist position_pct")
+                    frozen_budget = min(
+                        float(acct.get("capital") or 0) * frozen_position_pct,
+                        float(acct.get("cash") or 0),
+                    )
+                    frozen_shares = int(frozen_budget / price / 100) * 100
+                    if frozen_shares <= 0:
+                        raise ValueError("frozen watchlist position is below one lot")
+                    shares = min(shares, frozen_shares)
                 if paper:
-                    res = self._ai_broker().submit_buy(code, name, price, shares, reason=reason)
+                    broker = self._ai_broker()
+                    attribution = {
+                        key: source_identity.get(key, d.get(key))
+                        for key in (
+                            "user_id",
+                            "strategy_key",
+                            "model_version",
+                            "experiment_id",
+                            "model_instance_id",
+                            "watchlist_id",
+                            "source_run_id",
+                        )
+                    }
+                    if attribution.get("user_id") is None:
+                        attribution["user_id"] = self.uid
+                    submit_parameters = inspect.signature(broker.submit_buy).parameters
+                    if "attribution" in submit_parameters:
+                        res = broker.submit_buy(
+                            code,
+                            name,
+                            price,
+                            shares,
+                            reason=reason,
+                            attribution=attribution,
+                        )
+                    else:
+                        res = broker.submit_buy(code, name, price, shares, reason=reason)
+                        attribute_trade = getattr(broker, "attribute_trade", None)
+                        if res.get("ok") and res.get("trade_id") is not None and callable(attribute_trade):
+                            try:
+                                attribute_trade(res["trade_id"], attribution)
+                            except Exception as exc:
+                                logger.warning(
+                                    "paper trade attribution failed uid=%s trade_id=%s: %s",
+                                    self.uid,
+                                    res.get("trade_id"),
+                                    exc,
+                                )
                 else:
                     # 直取 core.trade_service（与 core/schedulers.py 同做法）。
                     # 曾写成 `import main`，形成 main→web.ai_trader→analytics.ai_trader→main
@@ -1315,31 +1380,45 @@ class _Engine:
     # ── 实盘人工确认 ──────────────────────────────────────
     def _hard_buy_filter(self, d: dict):
         """Rule guard for auction/open AI buys. LLM may vote BUY, but this gate is final."""
-        if d.get("action") != "BUY":
+        action = str(d.get("action") or "").upper()
+        if action not in {"BUY", "SELL"}:
             return True, ""
         quote = self._quote(d.get("code", "")) or {}
+        if not quote:
+            return False, "realtime quote unavailable"
         snap = _quote_snapshot(quote)
-        if snap:
-            d["auction_snapshot"] = snap
-        price = _to_float(d.get("price")) or _to_float(quote.get("price"))
+        if not snap:
+            return False, "realtime quote unavailable"
+        d["auction_snapshot"] = snap
+        price = _to_float(quote.get("price"))
+        volume = _to_float(quote.get("vol"))
+        if volume is None:
+            volume = _to_float(quote.get("volume"))
+        if volume is None or volume <= 0:
+            return False, "blocked: suspended, zero volume, or volume unavailable"
+        d["price"] = price
         change_pct = _to_float(quote.get("change_pct"))
         open_price = _to_float(quote.get("open"))
         limit_up = _to_float(quote.get("limit_up"))
         limit_down = _to_float(quote.get("limit_down"))
-        amount = _to_float(quote.get("amount")) or 0
+        amount = _to_float(quote.get("amount"))
         if not price or price <= 0:
             return False, "invalid realtime price"
-        if limit_up and price >= limit_up * 0.999:
-            return False, "blocked: at/near limit-up, order may not fill"
         if limit_down and price <= limit_down * 1.001:
             return False, "blocked: at/near limit-down"
+        if action == "SELL":
+            return True, ""
+        if limit_up and price >= limit_up * 0.999:
+            return False, "blocked: at/near limit-up, order may not fill"
         if change_pct is not None and change_pct > 7.5:
             return False, f"blocked: high open/change {change_pct:.2f}%"
         if change_pct is not None and change_pct < -4.0:
             return False, f"blocked: weak open/change {change_pct:.2f}%"
         if open_price and price and open_price > price * 1.075:
             return False, "blocked: abnormal opening premium"
-        if amount and amount < 3_000_000:
+        if amount is None or amount <= 0:
+            return False, "blocked: realtime turnover unavailable"
+        if amount < 3_000_000:
             return False, "blocked: low auction/realtime turnover"
         return True, ""
 
@@ -1355,10 +1434,15 @@ class _Engine:
         except (TypeError, ValueError):
             max_candidates = 6
 
+        from core.factor_watchlist import authoritative_watchlist_candidates
+
+        candidates = authoritative_watchlist_candidates(candidates, max_candidates=max_candidates)
         selected = []
         seen = set()
         for raw in candidates if isinstance(candidates, list) else []:
             if not isinstance(raw, dict):
+                continue
+            if "market_gate_blocked" in (raw.get("live_warning_keys") or []):
                 continue
             ts_code = str(raw.get("ts_code") or raw.get("code") or "").strip().upper()
             code = str(raw.get("code") or ts_code.split(".")[0]).strip()
@@ -1382,40 +1466,51 @@ class _Engine:
         for item in selected:
             code = item["code"]
             name = item.get("name") or code
+            identity = {
+                "user_id": self.uid,
+                "strategy_key": item.get("strategy_key"),
+                "model_version": item.get("model_version"),
+                "experiment_id": item.get("experiment_id"),
+                "model_instance_id": item.get("model_instance_id"),
+                "watchlist_id": item.get("id"),
+                "source_run_id": item.get("source_run_id"),
+            }
             try:
                 decision = self._team_decide(cfg, code, name, market_view, st)
             except Exception as exc:
                 logger.exception(f"watchlist decision {code}: {exc}")
                 results.append({
+                    **identity,
                     "code": code,
                     "name": name,
                     "action": "ERROR",
                     "ok": False,
                     "blocked": str(exc)[:160],
-                    "source": {"watchlist_id": item.get("id")},
+                    "source": dict(identity),
                 })
                 continue
             if not decision:
                 results.append({
+                    **identity,
                     "code": code,
                     "name": name,
                     "action": "SKIP",
                     "ok": False,
                     "blocked": "insufficient stock data",
-                    "source": {"watchlist_id": item.get("id")},
+                    "source": dict(identity),
                 })
                 continue
 
             decision["source"] = {
-                "watchlist_id": item.get("id"),
+                **identity,
                 "ts_code": item.get("ts_code") or item.get("code"),
                 "trade_date": item.get("trade_date"),
-                "source_run_id": item.get("source_run_id"),
                 "strategy_name": item.get("strategy_name"),
                 "candidate_rank": item.get("candidate_rank"),
                 "candidate_tier": item.get("candidate_tier"),
                 "live_readiness_status": item.get("live_readiness_status"),
                 "live_readiness_score": item.get("live_readiness_score"),
+                "position_pct": item.get("position_pct"),
             }
             hard_ok, hard_reason = self._hard_buy_filter(decision)
             risk_ok, risk_reason = (False, hard_reason)
@@ -1438,6 +1533,7 @@ class _Engine:
                 self._push("ai_decision", decision)
 
             results.append({
+                **identity,
                 "id": decision.get("id"),
                 "code": code,
                 "name": name,

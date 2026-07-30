@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -15,6 +16,8 @@ RESEARCH_JS = ROOT / "static" / "app" / "js" / "app-research.js"
 SEARCH_JS = ROOT / "static" / "app" / "js" / "app-search.js"
 RESEARCH_AUDIT = ROOT / "tests" / "browser" / "research_mobile_layout_audit.mjs"
 FONT_AWESOME = ROOT / "static" / "lib" / "fontawesome" / "css" / "all.min.css"
+ADMIN_HTML = ROOT / "admin.html"
+ADMIN_CSS = ROOT / "static" / "app" / "css" / "admin-base.css"
 
 
 def test_mobile_shell_is_independent_from_desktop_controls():
@@ -60,6 +63,14 @@ def test_mobile_styles_are_split_and_load_after_desktop_shell():
     assert "app-mobile.css" not in html
     assert "app-core.js?v=20260730-live-runtime" in html
     assert "app-ai-gen.js?v=20260728-mobile-rebuild" in html
+    assert re.search(
+        r"/static/app/js/app-core\.js\?v=[A-Za-z0-9][A-Za-z0-9._-]*",
+        html,
+    )
+    assert re.search(
+        r"/static/app/js/app-ai-gen\.js\?v=[A-Za-z0-9][A-Za-z0-9._-]*",
+        html,
+    )
     assert not LEGACY_MOBILE_CSS.exists()
 
 
@@ -248,3 +259,28 @@ def test_loading_strategy_does_not_reload_strategy_list():
     )[0]
 
     assert "loadStratList()" not in load_body
+
+
+def test_admin_factor_experiment_panel_reflows_on_mobile():
+    html = ADMIN_HTML.read_text(encoding="utf-8")
+    css = ADMIN_CSS.read_text(encoding="utf-8")
+
+    assert 'class="fm-experiment-layout"' in html
+    assert 'class="fm-experiment-progress-grid"' in html
+    assert ".fm-experiment-layout" in css
+    assert ".fm-experiment-progress-grid" in css
+    assert "@media(max-width:900px)" in css
+    mobile_rules = css.rsplit("@media(max-width:900px)", 1)[1]
+    assert ".fm-experiment-layout{grid-template-columns:1fr}" in mobile_rules
+    assert ".fm-experiment-progress-grid{grid-template-columns:1fr}" in mobile_rules
+
+
+def test_admin_mobile_header_keeps_breadcrumb_readable():
+    css = ADMIN_CSS.read_text(encoding="utf-8")
+
+    assert ".header{padding:0 8px;gap:4px}" in css
+    assert (
+        ".header-breadcrumb{min-width:0;white-space:nowrap;"
+        "overflow:hidden;text-overflow:ellipsis}"
+    ) in css
+    assert ".h-uname,.h-role,.header-divider{display:none}" in css

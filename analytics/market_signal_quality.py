@@ -73,8 +73,8 @@ def quality_row_from_snapshot(snapshot: dict | None, requested_date: str | None 
     turnover = snapshot.get("turnover") if isinstance(snapshot.get("turnover"), dict) else {}
     trade_date = _date_iso(snapshot.get("stat_date") or requested_date)
     source = str(snapshot.get("source") or breadth.get("source") or turnover.get("source") or "none")
-    breadth_source = str(breadth.get("source") or source)
-    turnover_source = str(turnover.get("source") or source)
+    breadth_source = str(breadth.get("source") or "none")
+    turnover_source = str(turnover.get("source") or "none")
 
     up = _safe_int(breadth.get("up"))
     down = _safe_int(breadth.get("down"))
@@ -91,8 +91,10 @@ def quality_row_from_snapshot(snapshot: dict | None, requested_date: str | None 
     reasons: list[str] = []
     if not trade_date:
         reasons.append("missing_date")
-    if source not in TRUSTED_SOURCES and breadth_source not in TRUSTED_SOURCES and turnover_source not in TRUSTED_SOURCES:
-        reasons.append("untrusted_source")
+    if breadth_source not in TRUSTED_SOURCES:
+        reasons.append("untrusted_breadth_source")
+    if turnover_source not in TRUSTED_SOURCES:
+        reasons.append("untrusted_turnover_source")
     if breadth.get("degraded"):
         reasons.append("breadth_degraded")
     if turnover.get("degraded"):
@@ -194,9 +196,13 @@ def apply_market_signals(features: pd.DataFrame, market_signal_frame: pd.DataFra
     if features is None or features.empty or market_signal_frame is None or market_signal_frame.empty:
         out = features.copy() if isinstance(features, pd.DataFrame) else pd.DataFrame()
         if not out.empty and "market_data_trusted" not in out.columns:
-            out["market_data_trusted"] = True
+            out["market_data_trusted"] = pd.Series(
+                [False] * len(out),
+                index=out.index,
+                dtype=object,
+            )
             out["market_data_status"] = "not_checked"
-            out["market_data_reason"] = ""
+            out["market_data_reason"] = "market_signal_not_checked"
         return out
     signals = market_signal_frame.copy()
     signals["trade_date"] = signals["trade_date"].map(_date_iso)

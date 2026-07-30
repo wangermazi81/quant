@@ -9,6 +9,23 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from analytics import ai_trader
 
 
+def test_watchlist_sanitization_preserves_model_identity():
+    from core import factor_watchlist
+
+    item = factor_watchlist.sanitize_watchlist_item(
+        {
+            "ts_code": "000001.SZ",
+            "name": "Ping An Bank",
+            "trade_date": "2026-07-28",
+            "strategy_key": "relay_factor_mining_v2",
+            "model_version": "relay_factor_mining_v2_ridge",
+        }
+    )
+
+    assert item["strategy_key"] == "relay_factor_mining_v2"
+    assert item["model_version"] == "relay_factor_mining_v2_ridge"
+
+
 def test_prescreen_uses_research_ranker_when_available(monkeypatch):
     class FakeStrategyManager:
         @staticmethod
@@ -334,3 +351,284 @@ def test_execute_uses_research_position_size_for_buy(monkeypatch):
 
     assert res["ok"] is True
     assert captured["shares"] == 300
+
+
+def test_execute_caps_watchlist_buy_at_frozen_position_pct(monkeypatch):
+    captured = {}
+
+    class FakeBroker:
+        def submit_buy(self, code, name, price, shares, reason=""):
+            captured["shares"] = shares
+            return {"ok": True, "msg": "filled"}
+
+        def get_positions(self, cur=None):
+            return []
+
+        def get_account(self, cur=None):
+            return {"cash": 100000, "capital": 100000}
+
+        def get_stats(self):
+            return {}
+
+    monkeypatch.setattr(ai_trader._Engine, "_broker_mode", lambda self: "paper")
+    monkeypatch.setattr(ai_trader._Engine, "_ai_broker", lambda self: FakeBroker())
+
+    engine = ai_trader._Engine(101)
+    decision = {
+        "code": "000003",
+        "name": "Gamma",
+        "action": "BUY",
+        "confidence": 90,
+        "price": 10,
+        "reason": "frozen position cap",
+        "position_size": {"shares": 5000},
+        "source": {"position_pct": 0.1},
+    }
+    st = {"risk": {"per_trade_ratio": 0.5}}
+
+    result = engine._execute(
+        decision,
+        st,
+        source="watchlist_ai",
+        acct={"positions": {}, "cash": 100000, "capital": 100000},
+    )
+
+    assert result["ok"] is True
+    assert captured["shares"] == 1000
+
+
+def test_hard_buy_filter_rejects_missing_or_zero_volume_quote(monkeypatch):
+    engine = ai_trader._Engine(101)
+    decision = {
+        "code": "000003",
+        "name": "Gamma",
+        "action": "BUY",
+        "price": 10,
+    }
+
+    monkeypatch.setattr(engine, "_quote", lambda code: {})
+    missing_ok, missing_reason = engine._hard_buy_filter(dict(decision))
+    monkeypatch.setattr(
+        engine,
+        "_quote",
+        lambda code: {
+            "price": 10,
+            "open": 10,
+            "last_close": 10,
+            "change_pct": 0,
+            "volume": 0,
+            "amount": 0,
+        },
+    )
+    zero_ok, zero_reason = engine._hard_buy_filter(dict(decision))
+
+    assert missing_ok is False
+    assert "quote" in missing_reason
+    assert zero_ok is False
+    assert "volume" in zero_reason
+
+
+def test_execute_attributes_filled_paper_buy_without_new_submit_arguments(monkeypatch):
+    captured = {}
+
+    class FakeBroker:
+        def submit_buy(self, code, name, price, shares, reason=""):
+            captured["submit"] = {
+                "code": code,
+                "name": name,
+                "price": price,
+                "shares": shares,
+                "reason": reason,
+            }
+            return {"ok": True, "msg": "filled", "trade_id": 42}
+
+        def attribute_trade(self, trade_id, attribution):
+            captured["trade_id"] = trade_id
+            captured["attribution"] = dict(attribution)
+
+        def get_positions(self, cur=None):
+            return []
+
+        def get_account(self, cur=None):
+            return {"cash": 100000, "capital": 100000}
+
+        def get_stats(self):
+            return {}
+
+    broker = FakeBroker()
+    monkeypatch.setattr(ai_trader._Engine, "_broker_mode", lambda self: "paper")
+    monkeypatch.setattr(ai_trader._Engine, "_ai_broker", lambda self: broker)
+
+    engine = ai_trader._Engine(101)
+    identity = {
+        "user_id": 101,
+        "strategy_key": "relay_factor_mining_v2",
+        "model_version": "relay_factor_mining_v2_ridge",
+        "watchlist_id": "2026-07-28-000004.SZ",
+        "source_run_id": "v2-run-1",
+    }
+    decision = {
+        "code": "000004",
+        "name": "Delta",
+        "action": "BUY",
+        "confidence": 90,
+        "price": 10,
+        "reason": "attributed",
+        "position_size": {"shares": 300},
+        "source": identity,
+    }
+    st = {"risk": {"per_trade_ratio": 0.2}}
+
+    result = engine._execute(
+        decision,
+        st,
+        acct={"positions": {}, "cash": 100000, "capital": 100000},
+    )
+
+    assert result["ok"] is True
+    assert captured["trade_id"] == 42
+    assert {key: captured["attribution"][key] for key in identity} == identity
+
+
+def test_watchlist_decision_returns_identity_at_source_and_result_top_level(monkeypatch, tmp_path):
+    import app_state
+    from core import factor_watchlist as fw
+
+    monkeypatch.setattr(app_state, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(
+        fw,
+        "_expected_scope_trade_date",
+        lambda: "2026-07-28",
+    )
+    monkeypatch.setattr(
+        ai_trader,
+        "load_user_trader_config",
+        lambda uid: {"enabled": True, "api_key": "test"},
+    )
+    monkeypatch.setattr(ai_trader, "load_settings", lambda uid: {"risk": {}})
+    monkeypatch.setattr(ai_trader._Engine, "_agent_market", lambda self, cfg: {})
+    monkeypatch.setattr(
+        ai_trader._Engine,
+        "_team_decide",
+        lambda self, cfg, code, name, market_view, st: {
+            "id": "decision-1",
+            "code": code,
+            "name": name,
+            "action": "HOLD",
+            "confidence": 80,
+            "price": 10,
+            "reason": "identity test",
+        },
+    )
+    monkeypatch.setattr(ai_trader._Engine, "_hard_buy_filter", lambda self, decision: (True, ""))
+    monkeypatch.setattr(
+        ai_trader._Engine,
+        "_risk_gate",
+        lambda self, decision, st, acct=None: (True, ""),
+    )
+    monkeypatch.setattr(
+        ai_trader._Engine,
+        "_account",
+        lambda self: {"positions": {}, "cash": 100000, "capital": 100000},
+    )
+    monkeypatch.setattr(ai_trader._Engine, "_push_status", lambda self: None)
+
+    engine = ai_trader._Engine(101)
+    stored = fw.import_factor_candidates_to_watchlist(
+        [
+            {
+                "ts_code": "000005.SZ",
+                    "name": "Epsilon",
+                    "trade_date": "2026-07-28",
+                    "strategy_key": "relay_factor_mining_v2",
+                    "model_version": "relay_factor_mining_v3_nested_ridge",
+                    "experiment_id": "experiment-v2-1",
+                    "model_instance_id": "model-instance-v2-1",
+                    "validation_accepted": True,
+                    "research_status": "validated",
+                    "deployment_eligible": True,
+                    "research_only": False,
+                    "live_readiness_status": "ready",
+                    "position_pct": 0.1,
+                }
+            ],
+            run_id="v2-run-1",
+    )["items"][0]
+    identity = {
+            "user_id": 101,
+            "strategy_key": "relay_factor_mining_v2",
+            "model_version": "relay_factor_mining_v3_nested_ridge",
+            "experiment_id": "experiment-v2-1",
+            "model_instance_id": "model-instance-v2-1",
+            "watchlist_id": stored["id"],
+            "source_run_id": "v2-run-1",
+        }
+    result = engine.decide_watchlist_candidates(
+        [{"id": identity["watchlist_id"]}],
+        max_candidates=1,
+    )
+
+    row = result["results"][0]
+    assert {key: row["source"][key] for key in identity} == identity
+    assert {key: row[key] for key in identity} == identity
+    assert row["source"]["position_pct"] == 0.1
+
+
+def test_watchlist_decision_rejects_direct_market_gate_bypass(monkeypatch):
+    monkeypatch.setattr(
+        ai_trader,
+        "load_user_trader_config",
+        lambda uid: {"enabled": True, "api_key": "test"},
+    )
+
+    engine = ai_trader._Engine(101)
+    result = engine.decide_watchlist_candidates(
+        [
+            {
+                "ts_code": "000005.SZ",
+                "name": "Epsilon",
+                "strategy_key": "relay_factor_mining_v2",
+                "live_warning_keys": ["market_gate_blocked"],
+            }
+        ],
+        max_candidates=1,
+    )
+
+    assert result == {"ok": False, "error": "no usable watchlist candidates"}
+
+
+def test_watchlist_decision_reloads_authoritative_gate_state(monkeypatch, tmp_path):
+    import app_state
+    from core import factor_watchlist as fw
+
+    monkeypatch.setattr(app_state, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(
+        ai_trader,
+        "load_user_trader_config",
+        lambda uid: {"enabled": True, "api_key": "test"},
+    )
+    stored = fw.import_factor_candidates_to_watchlist(
+        [
+            {
+                "ts_code": "000005.SZ",
+                "name": "Epsilon",
+                "trade_date": "2026-07-28",
+                "strategy_key": "relay_factor_mining_v2",
+                "model_version": "relay_factor_mining_v2_ridge",
+                "live_warning_keys": ["market_gate_blocked"],
+            }
+        ],
+        run_id="run-blocked",
+    )["items"][0]
+    tampered = {
+        "id": stored["id"],
+        "ts_code": stored["ts_code"],
+        "name": stored["name"],
+        "strategy_key": stored["strategy_key"],
+        "live_warning_keys": [],
+    }
+
+    engine = ai_trader._Engine(101)
+    result = engine.decide_watchlist_candidates([tampered], max_candidates=1)
+
+    assert result == {"ok": False, "error": "no usable watchlist candidates"}

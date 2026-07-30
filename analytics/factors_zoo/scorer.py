@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import sys
 import traceback
@@ -37,6 +38,8 @@ from typing import Any, Optional, Sequence
 
 import numpy as np
 import pandas as pd
+
+from analytics import st_status_history
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,7 @@ _DEFAULT_HORIZONS = (1, 5, 10)
 _MIN_CROSS_SECTION = 5
 # 年化常数（A 股交易日数）
 _TRADING_DAYS = 252
+MAX_ABS_DAILY_RETURN = 0.35
 
 # 分类阈值
 _TH_ALIVE_IC = 0.02
@@ -62,11 +66,94 @@ _TH_DEAD_IR  = 0.1
 
 # ============================== 数据加载 ==============================
 
+def _has_discontinuous_price_history(frame: pd.DataFrame) -> bool:
+    """Reject cache slices that cannot represent a continuous tradable price series."""
+    if "close" not in frame.columns:
+        return True
+    close = pd.to_numeric(frame["close"], errors="coerce")
+    if close.isna().any() or (close <= 0).any():
+        return True
+    returns = close.pct_change(fill_method=None)
+    return bool((returns.abs() > MAX_ABS_DAILY_RETURN).any())
+
+
+def _price_continuity_mask(frame: pd.DataFrame) -> pd.Series:
+    close = pd.to_numeric(frame.get("close"), errors="coerce")
+    valid = close.notna() & (close > 0)
+    breaks = ~valid
+    breaks |= close.pct_change(fill_method=None).abs() > MAX_ABS_DAILY_RETURN
+    if bool(breaks.any()):
+        valid.loc[breaks[breaks].index[0] :] = False
+    return valid.astype(bool)
+
+
+def _st_status_from_cache(
+    frame: pd.DataFrame,
+    code: str = "",
+    history_cache: dict | None = None,
+) -> tuple[pd.Series, pd.Series]:
+    if code and isinstance(history_cache, dict):
+        digits = "".join(ch for ch in str(code).split(".", 1)[0] if ch.isdigit())
+        history_item = (
+            (history_cache.get("codes") or {}).get(digits[-6:], {})
+            if len(digits) >= 6
+            else {}
+        )
+        records = (
+            history_item.get("records")
+            if isinstance(history_item, dict)
+            else None
+        )
+        if isinstance(records, list) and records:
+            historical_is_st, historical_known = (
+                st_status_history.status_series(
+                    code,
+                    frame.index,
+                    cache=history_cache,
+                )
+            )
+            return (
+                historical_is_st.astype(np.float64),
+                historical_known.astype(np.float64),
+            )
+
+    is_st = pd.Series(False, index=frame.index, dtype=bool)
+    known = pd.Series(False, index=frame.index, dtype=bool)
+    if "is_st" in frame.columns:
+        raw = frame["is_st"]
+        text = raw.astype("string").str.strip().str.lower()
+        numeric = pd.to_numeric(raw, errors="coerce")
+        explicit_true = text.isin({"1", "true", "yes", "y", "st", "是"}) | numeric.eq(1)
+        explicit_false = text.isin({"0", "false", "no", "n", "normal", "普通", "否"}) | numeric.eq(0)
+        parsed = (explicit_true | explicit_false).fillna(False)
+        is_st.loc[parsed] = explicit_true.loc[parsed].astype(bool)
+        known.loc[parsed] = True
+    if "name" in frame.columns:
+        names = frame["name"].astype("string").str.strip()
+        name_known = (names.notna() & names.str.len().gt(0)).fillna(False)
+        use_name = name_known & ~known
+        normalized = names.str.replace(r"\s+", "", regex=True).str.upper()
+        name_is_st = normalized.str.match(r"^(?:S\*?ST|\*?ST)", na=False)
+        is_st.loc[use_name] = name_is_st.loc[use_name].astype(bool)
+        known.loc[use_name] = True
+    if code and isinstance(history_cache, dict):
+        historical_is_st, historical_known = st_status_history.status_series(
+            code,
+            frame.index,
+            cache=history_cache,
+        )
+        use_history = historical_known
+        is_st.loc[use_history] = historical_is_st.loc[use_history].astype(bool)
+        known.loc[use_history] = True
+    return is_st.astype(np.float64), known.astype(np.float64)
+
+
 def build_panel_from_cache(
     n_stocks: Optional[int] = None,
     days: int = 252,
     min_history: Optional[int] = None,
     require_latest: bool = False,
+    point_in_time: bool = False,
 ) -> tuple[dict[str, pd.DataFrame], list[str]]:
     """从 data/daily/*.csv 拼一个 wide OHLCV panel。
 
@@ -108,18 +195,27 @@ def build_panel_from_cache(
                 f"latest cache date {newest_date.date()} only has {newest_count} eligible stocks; "
                 f"need {n_stocks}. Refresh data before generating live signals."
             )
-        eligible_dates = [date for date, count in latest_counts.items() if count >= n_stocks]
-        if eligible_dates:
-            target_latest = newest_date if require_latest else max(eligible_dates)
-            ranked_csvs = [item for item in ranked_csvs if item[0] == target_latest]
-            logger.info(f"[scorer] 选用覆盖率满足 {n_stocks} 只的最新截面: {target_latest.date()}")
+        if not point_in_time:
+            eligible_dates = [date for date, count in latest_counts.items() if count >= n_stocks]
+            if eligible_dates:
+                target_latest = newest_date if require_latest else max(eligible_dates)
+                ranked_csvs = [item for item in ranked_csvs if item[0] == target_latest]
+                logger.info(f"[scorer] 选用覆盖率满足 {n_stocks} 只的最新截面: {target_latest.date()}")
 
-    ranked_csvs.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    if n_stocks is not None:
+        ranked_csvs.sort(key=lambda item: hashlib.sha256(item[2].encode("ascii", errors="ignore")).hexdigest())
+    else:
+        ranked_csvs.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
     per: dict[str, dict[str, pd.Series]] = {}
+    try:
+        st_history_cache = st_status_history.load_cache()
+    except Exception:
+        st_history_cache = {}
+    skipped_discontinuous = 0
     for _latest, _rows, _code, csv in ranked_csvs:
         # 关键：先按 min_history 过滤，再用 n_stocks 限制结果数量；
         # 否则若前 N 个 CSV 都是新股会全被丢，结果空。
-        if n_stocks is not None and len(per) >= n_stocks:
+        if n_stocks is not None and not point_in_time and len(per) >= n_stocks:
             break
         code = csv.stem
         try:
@@ -130,24 +226,107 @@ def build_panel_from_cache(
             skipped_short += 1
             continue
         df = df.sort_values("date").tail(days).set_index("date")
+        if not point_in_time and _has_discontinuous_price_history(df):
+            skipped_discontinuous += 1
+            continue
+        is_st, st_status_known = _st_status_from_cache(df, code=code, history_cache=st_history_cache)
         cols = {}
         for c in ("open", "high", "low", "close", "volume"):
             if c in df.columns:
-                cols[c] = df[c].astype(np.float64)
+                cols[c] = pd.to_numeric(df[c], errors="coerce").astype(np.float64)
         if "close" in cols:  # close 必有
+            cols["is_st"] = is_st
+            cols["st_status_known"] = st_status_known
+            if "volume" in cols:
+                proxy_amount = cols["close"] * cols["volume"]
+                if "amount" in df.columns:
+                    raw_amount = pd.to_numeric(df["amount"], errors="coerce").astype(np.float64)
+                    real_amount = raw_amount.notna() & (raw_amount > 0)
+                    cols["amount"] = raw_amount.where(real_amount, proxy_amount)
+                    cols["amount_real"] = real_amount.astype(np.float64)
+                else:
+                    cols["amount"] = proxy_amount
+                    cols["amount_real"] = pd.Series(0.0, index=df.index, dtype=np.float64)
+            if point_in_time:
+                cols["continuity_eligible"] = _price_continuity_mask(df).astype(np.float64)
             per[code] = cols
 
     if skipped_short:
         logger.info(f"[scorer] 跳过 {skipped_short} 只历史不足 {min_history} 天的股票")
+    if skipped_discontinuous:
+        logger.warning(
+            f"[scorer] 隔离 {skipped_discontinuous} 只存在单日价格断层的股票 "
+            f"(abs return > {MAX_ABS_DAILY_RETURN:.0%})"
+        )
+    if require_latest and n_stocks is not None and not point_in_time and len(per) < n_stocks:
+        raise ValueError(
+            f"latest cache has only {len(per)} quality-valid stocks after price continuity checks; "
+            f"need {n_stocks}. Refresh or repair daily data before generating live signals."
+        )
     if not per:
         return {}, []
 
     panel: dict[str, pd.DataFrame] = {}
-    for c in ("open", "high", "low", "close", "volume"):
+    for c in (
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "amount_real",
+        "is_st",
+        "st_status_known",
+        "continuity_eligible",
+    ):
         series_map = {code: cols[c] for code, cols in per.items() if c in cols}
         if series_map:
             panel[c] = pd.DataFrame(series_map).sort_index()
-    return panel, sorted(per.keys())
+    if not point_in_time:
+        return panel, sorted(per.keys())
+
+    close = panel["close"].sort_index().tail(days)
+    index = close.index
+    columns = close.columns
+    panel = {
+        key: frame.reindex(index=index, columns=columns)
+        for key, frame in panel.items()
+    }
+    continuity = panel.pop("continuity_eligible").fillna(0.0).astype(bool)
+    required_valid = panel["close"].notna() & (panel["close"] > 0)
+    for field in ("open", "high", "low", "volume"):
+        if field in panel:
+            required_valid &= panel[field].notna()
+    history_ready = panel["close"].notna().cumsum() >= int(min_history)
+    eligible = continuity & required_valid & history_ready
+
+    if n_stocks is not None:
+        stable_order = sorted(
+            columns,
+            key=lambda code: hashlib.sha256(str(code).encode("ascii", errors="ignore")).hexdigest(),
+        )
+        selected = pd.DataFrame(False, index=index, columns=columns)
+        for trade_date in index:
+            available = [code for code in stable_order if bool(eligible.at[trade_date, code])]
+            selected.loc[trade_date, available[:n_stocks]] = True
+        eligible = selected
+
+    latest_count = int(eligible.iloc[-1].sum()) if not eligible.empty else 0
+    if require_latest and n_stocks is not None and latest_count < n_stocks:
+        raise ValueError(
+            f"latest cache has only {latest_count} point-in-time eligible stocks; "
+            f"need {n_stocks}. Refresh or repair daily data before generating live signals."
+        )
+
+    used_codes = [str(code) for code in columns if bool(eligible[code].any())]
+    if not used_codes:
+        return {}, []
+    for field in tuple(panel):
+        panel[field] = panel[field].loc[:, used_codes]
+        if field in {"open", "high", "low", "close", "volume", "amount"}:
+            panel[field] = panel[field].where(continuity.loc[:, used_codes])
+    panel["universe_eligible"] = eligible.loc[:, used_codes]
+    return panel, sorted(used_codes)
 
 
 # ============================== IC 计算 ==============================

@@ -69,6 +69,38 @@ def test_quality_row_rejects_degraded_or_low_coverage_snapshot():
     assert "turnover_degraded" in row["market_data_reason"]
 
 
+def test_quality_row_requires_breadth_and_turnover_sources_to_both_be_trusted():
+    untrusted_breadth = _trusted_snapshot()
+    untrusted_breadth["breadth"]["source"] = "none"
+    breadth_row = msq.quality_row_from_snapshot(untrusted_breadth)
+
+    untrusted_turnover = _trusted_snapshot()
+    untrusted_turnover["turnover"]["source"] = "none"
+    turnover_row = msq.quality_row_from_snapshot(untrusted_turnover)
+
+    assert breadth_row["market_data_trusted"] is False
+    assert "untrusted_breadth_source" in breadth_row["market_data_reason"]
+    assert turnover_row["market_data_trusted"] is False
+    assert "untrusted_turnover_source" in turnover_row["market_data_reason"]
+
+
+def test_quality_row_does_not_inherit_missing_component_sources_from_snapshot():
+    missing_breadth_source = _trusted_snapshot()
+    missing_breadth_source["breadth"].pop("source")
+    breadth_row = msq.quality_row_from_snapshot(missing_breadth_source)
+
+    missing_turnover_source = _trusted_snapshot()
+    missing_turnover_source["turnover"].pop("source")
+    turnover_row = msq.quality_row_from_snapshot(missing_turnover_source)
+
+    assert breadth_row["market_data_trusted"] is False
+    assert breadth_row["breadth_source"] == "none"
+    assert "untrusted_breadth_source" in breadth_row["market_data_reason"]
+    assert turnover_row["market_data_trusted"] is False
+    assert turnover_row["turnover_source"] == "none"
+    assert "untrusted_turnover_source" in turnover_row["market_data_reason"]
+
+
 def test_build_market_signal_frame_uses_provider_and_records_failures():
     def provider(date_text):
         if str(date_text).endswith("08"):
@@ -91,8 +123,35 @@ def test_build_market_signal_frame_accepts_numpy_date_array():
     assert frame.iloc[0]["trade_date"] == "2026-07-08"
 
 
+def test_apply_market_signals_marks_unchecked_rows_untrusted():
+    features = pd.DataFrame(
+        [{"trade_date": "2026-07-08", "ts_code": "000001", "relay_score": 0.8}]
+    )
+
+    result = msq.apply_market_signals(features, None)
+
+    assert result.iloc[0]["market_data_trusted"] is False
+    assert result.iloc[0]["market_data_status"] == "not_checked"
+    assert result.iloc[0]["market_data_reason"] == "market_signal_not_checked"
+
+
 def test_relay_research_excludes_degraded_market_dates(tmp_path):
-    panel = relay_panel(days=45)
+    panel = relay_panel(days=60)
+    panel["amount_real"] = pd.DataFrame(
+        True,
+        index=panel["close"].index,
+        columns=panel["close"].columns,
+    )
+    panel["is_st"] = pd.DataFrame(
+        False,
+        index=panel["close"].index,
+        columns=panel["close"].columns,
+    )
+    panel["st_status_known"] = pd.DataFrame(
+        True,
+        index=panel["close"].index,
+        columns=panel["close"].columns,
+    )
     features = relay.build_feature_frame(panel)
     dates = sorted(features["trade_date"].unique())
     market_frame = pd.DataFrame([
@@ -114,6 +173,8 @@ def test_relay_research_excludes_degraded_market_dates(tmp_path):
     assert result["summary"]["trusted_feature_rows"] < result["summary"]["feature_rows"]
     assert result["summary"]["latest_market_data_status"] == "degraded"
     assert result["latest_candidates"] == []
+    assert result["data_status"] == "degraded"
+    assert result["reason"] == "latest market snapshot is not trusted: bad latest"
 
 
 def relay_panel(days: int = 45) -> dict[str, pd.DataFrame]:
