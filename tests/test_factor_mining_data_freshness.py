@@ -512,7 +512,7 @@ def test_refresh_security_master_backfills_only_point_in_time_pool(
     assert set(calls) == {"000001", "000003", "000004"}
 
 
-def test_refresh_security_master_allows_failed_reserve_when_target_is_usable(
+def test_refresh_security_master_requires_every_sampled_history(
     tmp_path,
     monkeypatch,
 ):
@@ -559,13 +559,14 @@ def test_refresh_security_master_allows_failed_reserve_when_target_is_usable(
         mode="replay",
     )
 
-    assert result["ok"] is True, result
+    assert result["ok"] is False, result
     assert result["history_required"] == 3
     assert result["history_usable"] == 2
     assert result["history_failed"] == 1
+    assert result["minimum_usable"] == 3
 
 
-def test_refresh_security_master_skips_network_when_cached_target_is_usable(
+def test_refresh_security_master_repairs_missing_reserve_even_when_target_is_usable(
     tmp_path,
     monkeypatch,
 ):
@@ -615,11 +616,12 @@ def test_refresh_security_master_skips_network_when_cached_target_is_usable(
         mode="replay",
     )
 
-    assert result["ok"] is True, result
+    assert result["ok"] is False, result
     assert result["history_usable"] == 2
     assert result["history_incomplete"] == 1
-    assert result["history_failed"] == 0
-    assert calls == []
+    assert result["history_failed"] == 1
+    assert result["minimum_usable"] == 3
+    assert calls
 
 
 def test_refresh_security_master_sample_ignores_pre_window_delists_and_recent_ipos(
@@ -1051,7 +1053,7 @@ def test_point_in_time_panel_refills_invalid_member_from_stable_reserve(
     assert bool(latest.get("000009", False)) is False
 
 
-def test_point_in_time_panel_allows_missing_reserve_when_target_is_available(
+def test_point_in_time_panel_rejects_missing_reserve_when_target_is_available(
     tmp_path,
     monkeypatch,
 ):
@@ -1094,16 +1096,18 @@ def test_point_in_time_panel_allows_missing_reserve_when_target_is_available(
         index=False,
     )
 
-    panel, _codes = scorer.build_panel_from_cache(
-        n_stocks=2,
-        days=60,
-        min_history=10,
-        require_latest=True,
-        point_in_time=True,
-        require_security_master=True,
-    )
-
-    assert int(panel["universe_eligible"].iloc[-1].sum()) == 2
+    with pytest.raises(
+        ValueError,
+        match="security master histories missing",
+    ):
+        scorer.build_panel_from_cache(
+            n_stocks=2,
+            days=60,
+            min_history=10,
+            require_latest=True,
+            point_in_time=True,
+            require_security_master=True,
+        )
 
 
 def test_point_in_time_panel_quarantines_only_from_first_price_break(tmp_path, monkeypatch):

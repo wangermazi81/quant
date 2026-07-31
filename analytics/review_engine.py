@@ -538,12 +538,14 @@ def _maybe_backfill_lhb(now: datetime, state: dict, now_ts: float | None = None)
         return False
 
 
-def run_review_scheduler():
+def run_review_scheduler(progress_callback=None):
     logger.info("[review] 每日复盘调度器启动")
     last_try = 0.0
     lhb_state = {}
     lhb_backfill_state = {}
     while True:
+        if progress_callback:
+            progress_callback()
         try:
             now = datetime.now()
             if now.weekday() < 5:
@@ -565,4 +567,6 @@ def run_review_scheduler():
                         generate(today, phase="evening")
         except Exception as e:
             logger.warning(f"[review] 调度异常: {e}")
+        if progress_callback:
+            progress_callback()
         time.sleep(60)

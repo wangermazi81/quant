@@ -246,6 +246,40 @@ _trading_lock = threading.Lock()
 _trading_started = False
 _data_lock = threading.Lock()
 _data_started = False
+_data_runtime_lock = threading.Lock()
+_data_threads: dict[str, threading.Thread] = {}
+_data_progress: dict[str, float] = {}
+
+
+def _mark_data_progress(name: str) -> None:
+    with _data_runtime_lock:
+        _data_progress[name] = time.monotonic()
+
+
+def _run_managed_data_scheduler(name: str, target) -> None:
+    def progress_callback() -> None:
+        _mark_data_progress(name)
+
+    progress_callback()
+    target(progress_callback=progress_callback)
+
+
+def get_data_scheduler_runtime() -> dict[str, dict]:
+    now = time.monotonic()
+    with _data_runtime_lock:
+        threads = dict(_data_threads)
+        progress = dict(_data_progress)
+    return {
+        name: {
+            "thread_alive": bool(thread.is_alive()),
+            "progress_age_seconds": (
+                max(0.0, now - progress[name])
+                if name in progress
+                else None
+            ),
+        }
+        for name, thread in threads.items()
+    }
 
 
 def start_user_trading_schedulers():
@@ -282,36 +316,60 @@ def start_user_trading_schedulers():
 
 def start_data_schedulers():
     """数据组：新闻聚合 / 每日复盘 / 概念日更 / AI 因子挖掘（可跑在独立进程）。"""
-    global _data_started
+    global _data_started, _data_threads
     with _data_lock:
         if _data_started:
-            return
-        _data_started = True
-    # 财经新闻聚合（盘中每3分钟拉快讯，19:40 抓新闻联播）
-    try:
-        import news_center
-        threading.Thread(target=news_center.run_news_scheduler, daemon=True, name="news-center").start()
-    except Exception as _ne:
-        logger.warning(f"新闻聚合调度器启动失败: {_ne}")
-    # 每日复盘（交易日 15:10 收盘版 → 19:50 晚间版，含 AI 总结归档）
-    try:
-        from analytics import review_engine
-        threading.Thread(target=review_engine.run_review_scheduler, daemon=True, name="review-engine").start()
-    except Exception as _re:
-        logger.warning(f"复盘调度器启动失败: {_re}")
-    # 产业概念日更（08:30/15:10 自动刷新并过滤交易信号类，保证每日新概念可见）
-    try:
-        import research_center
-        research_center.run_concept_scheduler()
-    except Exception as _rc:
-        logger.warning(f"概念日更调度器启动失败: {_rc}")
-    # AI因子挖掘 → 次日候选池 → 竞价AI决策自动调度（仅使用root admin账号配置）
-    try:
+            return dict(_data_threads)
         from analytics import auto_factor_scheduler
+
         auto_factor_scheduler.start_background_scheduler()
-    except Exception as _afs:
-        logger.warning(f"AI因子自动调度器启动失败: {_afs}")
+        started_threads: dict[str, threading.Thread] = {}
+
+        # 财经新闻聚合（盘中每3分钟拉快讯，19:40 抓新闻联播）
+        import news_center
+        news_thread = threading.Thread(
+            target=_run_managed_data_scheduler,
+            args=("news-center", news_center.run_news_scheduler),
+            daemon=True,
+            name="news-center",
+        )
+        _mark_data_progress("news-center")
+        news_thread.start()
+        started_threads["news-center"] = news_thread
+
+        # 每日复盘（交易日 15:10 收盘版 → 19:50 晚间版，含 AI 总结归档）
+        from analytics import review_engine
+        review_thread = threading.Thread(
+            target=_run_managed_data_scheduler,
+            args=("review-engine", review_engine.run_review_scheduler),
+            daemon=True,
+            name="review-engine",
+        )
+        _mark_data_progress("review-engine")
+        review_thread.start()
+        started_threads["review-engine"] = review_thread
+
+        # 产业概念日更（08:30/15:10 自动刷新并过滤交易信号类）
+        import research_center
+        _mark_data_progress("concept-daily")
+        concept_thread = research_center.run_concept_scheduler(
+            progress_callback=lambda: _mark_data_progress(
+                "concept-daily"
+            )
+        )
+        if (
+            concept_thread is None
+            or not hasattr(concept_thread, "is_alive")
+            or not concept_thread.is_alive()
+        ):
+            raise RuntimeError("概念日更调度线程启动失败")
+        started_threads["concept-daily"] = concept_thread
+
+        with _data_runtime_lock:
+            _data_threads = dict(started_threads)
+        _data_started = True
     logger.info("数据调度已启动（新闻/复盘/概念/AI因子挖掘）")
+    return dict(_data_threads)
 
 
 def start_background_services():

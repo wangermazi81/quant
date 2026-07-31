@@ -14,14 +14,18 @@ import hmac
 import json
 import os
 import subprocess
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
 
-from analytics.factors_zoo.scorer import MAX_ABS_DAILY_RETURN, build_panel_from_cache
+from analytics.factors_zoo.scorer import (
+    MAX_ABS_DAILY_RETURN,
+    _TrustedCachePanel,
+    build_panel_from_cache,
+)
 from analytics.relay_factor_model import (
     CANDIDATE_FACTORS,
     MIN_REAL_AMOUNT_COVERAGE,
@@ -107,9 +111,13 @@ _RESEARCH_LABEL_COLUMNS = (
     "path_policy",
 )
 
-FROZEN_PROTOCOL_BINDING_VERSION = "relay_frozen_protocol_binding_v1"
+FROZEN_PROTOCOL_BINDING_VERSION = "relay_frozen_protocol_binding_v3"
+FROZEN_PROTOCOL_SOURCE_HASH_POLICY = "text_lf_sha256_v1"
+FEATURE_FRESHNESS_POLICY_VERSION = (
+    "authoritative_completed_session_v2"
+)
 PREREGISTERED_OOS_EVIDENCE_VERSION = (
-    "relay_preregistered_oos_evidence_v3"
+    "relay_preregistered_oos_evidence_v4"
 )
 LOCKING_PROTOCOL_VERSION = "relay_locking_protocol_v2"
 EVIDENCE_CALENDAR_SNAPSHOT_VERSION = (
@@ -117,6 +125,28 @@ EVIDENCE_CALENDAR_SNAPSHOT_VERSION = (
 )
 DATA_QUALITY_ASSESSMENT_VERSION = (
     "relay_data_quality_assessment_v1"
+)
+RAW_DATA_FINGERPRINT_VERSION = "relay_raw_data_fingerprint_v1"
+RAW_DATA_ADJUSTMENT_POLICY = "qfq"
+OOS_DIAGNOSTIC_POLICY_VERSION = "relay_oos_diagnostics_v1"
+BENCHMARK_POLICY_VERSION = (
+    "same_pit_universe_sha256_equal_weight_v1"
+)
+EXCESS_BOOTSTRAP_POLICY_VERSION = (
+    "paired_moving_block_bootstrap_v1"
+)
+RAW_PANEL_FINGERPRINT_FIELDS = (
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount",
+    "amount_real",
+    "is_st",
+    "st_status_known",
+    "universe_eligible",
+    "security_master_eligible",
 )
 FROZEN_BACKTEST_POLICY: dict[str, Any] = {
     "purge": "exit_date_before_test_start",
@@ -146,16 +176,19 @@ FROZEN_DATA_QUALITY_POLICY: dict[str, Any] = {
     ),
 }
 FROZEN_PROTOCOL_VERSIONS: dict[str, str] = {
-    "candidate_selection": "relay_candidate_selection_v2",
+    "candidate_selection": "relay_candidate_selection_v3",
+    "control_selection": BENCHMARK_POLICY_VERSION,
     "readiness": "relay_prospective_readiness_v3",
     "position_sizing": "relay_shadow_position_sizing_v1",
-    "trade_path_settlement": "relay_real_bar_settlement_v3",
+    "trade_path_settlement": (
+        "relay_real_bar_atomic_dual_track_settlement_v4"
+    ),
 }
 FROZEN_PROTOCOL_SOURCE_PATHS: tuple[str, ...] = (
     "analytics/data_manager.py",
     "analytics/factors_zoo/scorer.py",
     "analytics/market_signal_quality.py",
-    "analytics/preregistrations/relay_fixed_ridge_preregistered_v3.json",
+    "analytics/preregistrations/relay_fixed_ridge_preregistered_v5.json",
     "analytics/relay_factor_experiment.py",
     "analytics/relay_factor_mining.py",
     "analytics/relay_factor_model.py",
@@ -295,19 +328,54 @@ EXECUTION_POLICY_VERSIONS: dict[str, str] = {
     "limit_threshold_policy": "board_and_point_in_time_st_v1",
 }
 
-MODEL_SPEC_REGISTERED_AT = "2026-07-31T03:30:00+08:00"
-MODEL_SPEC_OOS_NOT_BEFORE = "2026-07-31"
+MODEL_SPEC_REGISTERED_AT = "2026-07-31T23:38:02+08:00"
+MODEL_SPEC_OOS_NOT_BEFORE = "2026-08-03"
 
-RESEARCH_VALIDATION_RULES: dict[str, Any] = {
+LEGACY_V4_RESEARCH_VALIDATION_RULES: dict[str, Any] = {
     "protocol_version": "relay_research_acceptance_preregistered_v1",
     "calibrated_through": MODEL_SPEC_CALIBRATED_THROUGH,
+    "assessment_schedule": "complete_window_boundary_only_v1",
+    "require_complete_oos_windows": True,
     "minimum_oos_windows": 12,
+    "evaluation_window_count": 12,
+    "window_sessions": 10,
+    "oos_session_count": 120,
+    "stop_rule": "first_fixed_prefix_only",
     "minimum_positive_window_rate": 0.50,
     "minimum_validation_acceptance_rate": 0.50,
     "minimum_executed_trades": 100,
     "maximum_drawdown_pct": -15.0,
     "minimum_bootstrap_lower_return_pct": 0.0,
     "prospective_sessions_required": 60,
+}
+
+OOS_RESEARCH_ACCEPTANCE_RULES: dict[str, float | int] = {
+    "minimum_diagnostic_sample_count_per_session": 200,
+    "minimum_diagnostic_window_acceptance_rate": 0.67,
+    "minimum_oos_mean_rank_ic": 0.02,
+    "minimum_positive_rank_ic_session_rate": 0.55,
+    "minimum_oos_mean_spread_pct": 0.20,
+    "minimum_positive_spread_session_rate": 0.55,
+    "minimum_excess_return_pct": 0.0,
+    "minimum_excess_bootstrap_lower_return_pct": 0.0,
+}
+
+RESEARCH_VALIDATION_RULES: dict[str, Any] = {
+    "protocol_version": "relay_research_acceptance_preregistered_v2",
+    "calibrated_through": MODEL_SPEC_CALIBRATED_THROUGH,
+    "assessment_schedule": "complete_window_boundary_only_v1",
+    "require_complete_oos_windows": True,
+    "minimum_oos_windows": 12,
+    "evaluation_window_count": 12,
+    "window_sessions": 10,
+    "oos_session_count": 120,
+    "stop_rule": "first_fixed_prefix_only",
+    "minimum_positive_window_rate": 0.50,
+    "minimum_executed_trades": 100,
+    "maximum_drawdown_pct": -15.0,
+    "minimum_bootstrap_lower_return_pct": 0.0,
+    "prospective_sessions_required": 60,
+    **OOS_RESEARCH_ACCEPTANCE_RULES,
 }
 
 PROSPECTIVE_ACCEPTANCE_RULES: dict[str, Any] = {
@@ -318,25 +386,106 @@ PROSPECTIVE_ACCEPTANCE_RULES: dict[str, Any] = {
     "minimum_executed_trades": 60,
     "minimum_bootstrap_lower_return_pct": 0.0,
     "maximum_protocol_violations": 0,
+    "preregistered_at": "2026-07-31T18:18:34+08:00",
+    "calibrated_through": MODEL_SPEC_CALIBRATED_THROUGH,
+}
+PROSPECTIVE_DUAL_TRACK_ACCEPTANCE_RULES: dict[str, Any] = {
+    "protocol_version": "prospective_60_session_paired_control_v3",
+    "required_sessions": 60,
+    "minimum_total_return_pct": 2.0,
+    "minimum_excess_return_pct": 0.0,
+    "maximum_drawdown_pct": -10.0,
+    "minimum_executed_trades": 60,
+    "minimum_bootstrap_lower_return_pct": 0.0,
+    "minimum_excess_bootstrap_lower_return_pct": 0.0,
+    "maximum_protocol_violations": 0,
     "preregistered_at": MODEL_SPEC_REGISTERED_AT,
     "calibrated_through": MODEL_SPEC_CALIBRATED_THROUGH,
+}
+PREREGISTERED_RESEARCH_CONFIG: dict[str, Any] = {
+    "n_stocks": 800,
+    "days": 320,
+    "train_days": 60,
+    "test_days": 10,
+    "step_days": 10,
+    "hold_days": 2,
+    "stop_loss": -0.035,
+    "take_profit": 0.07,
+    "top_k": 10,
+    "candidate_pool_size": 100,
+    "include_market_signals": True,
+    "model_version": MODEL_VERSION,
+    "universe_selection": (
+        "point_in_time_eligible_stable_sha256_sample"
+    ),
+    "data_quality_policy": dict(FROZEN_DATA_QUALITY_POLICY),
 }
 
 MODEL_PREREGISTRATION_PATH = (
     _ROOT
     / "analytics"
     / "preregistrations"
-    / "relay_fixed_ridge_preregistered_v3.json"
+    / "relay_fixed_ridge_preregistered_v5.json"
+)
+LEGACY_V4_MODEL_SPEC_PROTOCOL_VERSION = (
+    "relay_fixed_ridge_preregistered_v4"
+)
+LEGACY_V4_MODEL_SPEC_REGISTERED_AT = "2026-07-31T18:18:34+08:00"
+LEGACY_V4_MODEL_SPEC_EXECUTABLE_SHA256 = (
+    "3ecb520d0479f26d6acb1541aa4800ae72fc4b212f942065e363ae6c0f8451b6"
 )
 MODEL_SPEC_EXECUTABLE_SHA256 = (
-    "10577621fb63d6db37e3b4274a72ee5e4af17a33e78ff18a99f8e7c83e285730"
+    "6e60aad947584178b5a5bc7e6613c253fcfe6879e0c1513cb608a30e53157172"
 )
 MODEL_SPEC_CALIBRATION_SHA256 = (
     "f2709fb43fe9f67e5c091107a6632873db6990f2b9498d4c5cbd11828cea8f9b"
 )
-MODEL_SPEC_REGISTRATION_SHA256 = (
-    "b849d8c7dc1cad7b25adfedf2ab48db1c3ccb9536a225149a01a6f34f2c3730c"
+LEGACY_V4_MODEL_SPEC_REGISTRATION_SHA256 = (
+    "d1e25a6b448a841823decd44b110214908f05c46f5ec88d9eee1a9f6197d7c3d"
 )
+MODEL_SPEC_REGISTRATION_SHA256 = (
+    "7c90a02db097b81570199f4f9a9386167afc19bcfb064182d26f2c84aad47a08"
+)
+
+
+def _model_preregistration_profile(
+    protocol_version: Any,
+) -> dict[str, Any] | None:
+    if protocol_version == MODEL_SPEC_PROTOCOL_VERSION:
+        return {
+            "schema_version": 4,
+            "protocol_version": MODEL_SPEC_PROTOCOL_VERSION,
+            "registered_at": MODEL_SPEC_REGISTERED_AT,
+            "research_validation_rules": RESEARCH_VALIDATION_RULES,
+            "prospective_acceptance_rules": (
+                PROSPECTIVE_DUAL_TRACK_ACCEPTANCE_RULES
+            ),
+            "executable_sha256": MODEL_SPEC_EXECUTABLE_SHA256,
+            "calibration_sha256": MODEL_SPEC_CALIBRATION_SHA256,
+            "registration_sha256": MODEL_SPEC_REGISTRATION_SHA256,
+            "current_protocol": True,
+        }
+    if protocol_version == LEGACY_V4_MODEL_SPEC_PROTOCOL_VERSION:
+        return {
+            "schema_version": 3,
+            "protocol_version": LEGACY_V4_MODEL_SPEC_PROTOCOL_VERSION,
+            "registered_at": LEGACY_V4_MODEL_SPEC_REGISTERED_AT,
+            "research_validation_rules": (
+                LEGACY_V4_RESEARCH_VALIDATION_RULES
+            ),
+            "prospective_acceptance_rules": (
+                PROSPECTIVE_ACCEPTANCE_RULES
+            ),
+            "executable_sha256": (
+                LEGACY_V4_MODEL_SPEC_EXECUTABLE_SHA256
+            ),
+            "calibration_sha256": MODEL_SPEC_CALIBRATION_SHA256,
+            "registration_sha256": (
+                LEGACY_V4_MODEL_SPEC_REGISTRATION_SHA256
+            ),
+            "current_protocol": False,
+        }
+    return None
 
 
 def _research_evidence_key() -> bytes | None:
@@ -459,15 +608,32 @@ def load_model_preregistration(
             "record": {},
             "sha256": None,
         }
+    profile = _model_preregistration_profile(
+        record.get("protocol_version")
+    )
+    if profile is None:
+        return {
+            "ok": False,
+            "reason": "preregistration_record_mismatch",
+            "record": record,
+            "sha256": None,
+        }
     expected = {
-        "schema_version": 2,
+        "schema_version": profile["schema_version"],
         "strategy_key": STRATEGY_KEY,
-        "protocol_version": MODEL_SPEC_PROTOCOL_VERSION,
-        "registered_at": MODEL_SPEC_REGISTERED_AT,
+        "protocol_version": profile["protocol_version"],
+        "registered_at": profile["registered_at"],
         "calibrated_through": MODEL_SPEC_CALIBRATED_THROUGH,
         "oos_not_before": MODEL_SPEC_OOS_NOT_BEFORE,
         "parameters": dict(FIXED_MODEL_PARAMETERS),
         "candidate_factors": list(CANDIDATE_FACTORS),
+        "research_protocol": _registered_research_protocol(),
+        "research_validation_rules": dict(
+            profile["research_validation_rules"]
+        ),
+        "prospective_acceptance_rules": dict(
+            profile["prospective_acceptance_rules"]
+        ),
     }
     if any(record.get(key) != value for key, value in expected.items()):
         return {
@@ -517,9 +683,9 @@ def load_model_preregistration(
         not isinstance(executable_model, Mapping)
         or not isinstance(calibration_evidence, Mapping)
         or executable_sha256 != record.get("executable_model_sha256")
-        or executable_sha256 != MODEL_SPEC_EXECUTABLE_SHA256
+        or executable_sha256 != profile["executable_sha256"]
         or calibration_evidence.get("sha256")
-        != MODEL_SPEC_CALIBRATION_SHA256
+        != profile["calibration_sha256"]
         or not calibration_valid
     ):
         return {
@@ -560,7 +726,7 @@ def load_model_preregistration(
         separators=(",", ":"),
     )
     canonical_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    if canonical_sha256 != MODEL_SPEC_REGISTRATION_SHA256:
+    if canonical_sha256 != profile["registration_sha256"]:
         return {
             "ok": False,
             "reason": "preregistration_record_mismatch",
@@ -574,6 +740,7 @@ def load_model_preregistration(
         "sha256": canonical_sha256,
         "model_sha256": executable_sha256,
         "path": str(record_path),
+        "current_protocol": profile["current_protocol"],
     }
 
 
@@ -602,15 +769,339 @@ def _detect_release_revision() -> str | None:
     return revision if result.returncode == 0 and revision else None
 
 
+def _protocol_source_sha256(content: bytes) -> str:
+    normalized = content.replace(b"\r\n", b"\n").replace(
+        b"\r",
+        b"\n",
+    )
+    return hashlib.sha256(normalized).hexdigest()
+
+
+class _DigestTextWriter:
+    def __init__(self) -> None:
+        self.digest = hashlib.sha256()
+
+    def write(self, value: str) -> int:
+        encoded = value.encode("utf-8")
+        self.digest.update(encoded)
+        return len(value)
+
+    def hexdigest(self) -> str:
+        return self.digest.hexdigest()
+
+
+def _canonical_frame_index(value: Any) -> str:
+    try:
+        parsed = pd.Timestamp(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if pd.isna(parsed):
+        return "<NA>"
+    if parsed == parsed.normalize():
+        return parsed.strftime("%Y-%m-%d")
+    return parsed.isoformat()
+
+
+def _canonical_cell_token(value: Any) -> str:
+    try:
+        missing = pd.isna(value)
+        if isinstance(missing, (bool, np.bool_)) and bool(missing):
+            return "n:"
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, (bool, np.bool_)):
+        return "b:1" if bool(value) else "b:0"
+    if isinstance(value, (int, np.integer)) and not isinstance(value, bool):
+        return f"i:{int(value)}"
+    if isinstance(value, (float, np.floating)):
+        numeric = float(value)
+        if not np.isfinite(numeric):
+            return "n:"
+        return f"f:{format(numeric, '.17g')}"
+    if isinstance(value, (datetime, date, pd.Timestamp)):
+        return f"t:{pd.Timestamp(value).isoformat()}"
+    return f"s:{str(value)}"
+
+
+def _wide_frame_fingerprint(frame: Any) -> dict[str, Any]:
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return {
+            "present": False,
+            "sha256": hashlib.sha256(b"").hexdigest(),
+            "row_count": 0,
+            "column_count": 0,
+            "cell_count": 0,
+            "non_null_count": 0,
+            "date_start": None,
+            "date_end": None,
+            "codes_sha256": hashlib.sha256(b"[]").hexdigest(),
+        }
+    normalized = frame.copy()
+    normalized.index = [
+        _canonical_frame_index(value)
+        for value in normalized.index
+    ]
+    normalized.columns = [str(value) for value in normalized.columns]
+    if normalized.index.has_duplicates or normalized.columns.has_duplicates:
+        raise ValueError("raw panel frame contains duplicate axes")
+    normalized = normalized.sort_index().reindex(
+        sorted(normalized.columns),
+        axis=1,
+    )
+    writer = _DigestTextWriter()
+    normalized.to_csv(
+        writer,
+        index=True,
+        index_label="trade_date",
+        encoding=None,
+        float_format="%.17g",
+        na_rep="<NA>",
+        lineterminator="\n",
+    )
+    codes = list(normalized.columns)
+    codes_payload = json.dumps(
+        codes,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "present": True,
+        "sha256": writer.hexdigest(),
+        "row_count": int(normalized.shape[0]),
+        "column_count": int(normalized.shape[1]),
+        "cell_count": int(normalized.size),
+        "non_null_count": int(normalized.notna().sum().sum()),
+        "date_start": str(normalized.index[0]),
+        "date_end": str(normalized.index[-1]),
+        "codes_sha256": hashlib.sha256(codes_payload).hexdigest(),
+    }
+
+
+def _tabular_frame_fingerprint(frame: Any) -> dict[str, Any]:
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return {
+            "present": False,
+            "sha256": hashlib.sha256(b"").hexdigest(),
+            "row_count": 0,
+            "column_count": 0,
+            "columns": [],
+        }
+    normalized = frame.copy()
+    normalized.columns = [str(value) for value in normalized.columns]
+    if normalized.columns.has_duplicates:
+        raise ValueError("raw evidence table contains duplicate columns")
+    normalized = normalized.reindex(sorted(normalized.columns), axis=1)
+    for column in normalized.columns:
+        normalized[column] = normalized[column].map(
+            _canonical_cell_token
+        )
+    normalized = normalized.sort_values(
+        list(normalized.columns),
+        kind="mergesort",
+    ).reset_index(drop=True)
+    writer = _DigestTextWriter()
+    normalized.to_csv(
+        writer,
+        index=False,
+        encoding=None,
+        na_rep="<NA>",
+        lineterminator="\n",
+    )
+    return {
+        "present": True,
+        "sha256": writer.hexdigest(),
+        "row_count": int(normalized.shape[0]),
+        "column_count": int(normalized.shape[1]),
+        "columns": list(normalized.columns),
+    }
+
+
+def _canonical_mapping_sha256(value: Mapping[str, Any] | None) -> str:
+    material = json.dumps(
+        dict(value or {}),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+        default=lambda item: (
+            item.isoformat()
+            if isinstance(item, (date, datetime, pd.Timestamp))
+            else item.item()
+        ),
+    ).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def build_raw_data_fingerprint(
+    panel: Mapping[str, Any],
+    *,
+    security_master: pd.DataFrame | None,
+    market_signal_frame: pd.DataFrame | None,
+    calendar_snapshot: Mapping[str, Any] | None,
+    source_kind: str,
+    adjustment_policy: str = RAW_DATA_ADJUSTMENT_POLICY,
+    snapshot_reference: str | None = None,
+) -> dict[str, Any]:
+    panel_blocks = {
+        field: _wide_frame_fingerprint(panel.get(field))
+        for field in RAW_PANEL_FINGERPRINT_FIELDS
+    }
+    close = panel.get("close")
+    close_block = panel_blocks["close"]
+    panel_material = {
+        "fields": panel_blocks,
+        "required_fields": list(RAW_PANEL_FINGERPRINT_FIELDS),
+    }
+    panel_sha256 = _canonical_mapping_sha256(panel_material)
+    master_block = _tabular_frame_fingerprint(security_master)
+    market_block = _tabular_frame_fingerprint(market_signal_frame)
+    calendar_block = {
+        "present": bool(calendar_snapshot),
+        "sha256": _canonical_mapping_sha256(calendar_snapshot),
+    }
+    complete = bool(
+        all(block["present"] for block in panel_blocks.values())
+        and master_block["present"]
+        and market_block["present"]
+        and calendar_block["present"]
+    )
+    material = {
+        "fingerprint_version": RAW_DATA_FINGERPRINT_VERSION,
+        "source_kind": str(source_kind),
+        "adjustment_policy": str(adjustment_policy),
+        "snapshot_reference": str(
+            snapshot_reference
+            or "content_addressed_runtime_snapshot"
+        ),
+        "date_start": close_block["date_start"],
+        "date_end": close_block["date_end"],
+        "code_count": close_block["column_count"],
+        "complete": complete,
+        "lock_eligible": bool(
+            complete and source_kind == "trusted_cache"
+        ),
+        "blocks": {
+            "panel": {
+                "sha256": panel_sha256,
+                **panel_material,
+            },
+            "security_master": master_block,
+            "market_signals": market_block,
+            "calendar": calendar_block,
+            "pit_universe": panel_blocks[
+                "universe_eligible"
+            ],
+        },
+    }
+    return {
+        **material,
+        "root_sha256": _canonical_mapping_sha256(material),
+    }
+
+
+def _build_raw_calendar_snapshot(
+    panel: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    close = panel.get("close")
+    if not isinstance(close, pd.DataFrame) or close.empty:
+        return None
+    dates = pd.to_datetime(close.index, errors="coerce")
+    dates = pd.DatetimeIndex(dates[~pd.isna(dates)]).normalize()
+    if dates.empty:
+        return None
+    return _build_evidence_calendar_snapshot(
+        dates.min().strftime("%Y-%m-%d"),
+        dates.max().strftime("%Y-%m-%d"),
+    )
+
+
+def _build_research_raw_data_fingerprint(
+    panel: Mapping[str, Any],
+    *,
+    market_signal_frame: pd.DataFrame | None,
+) -> dict[str, Any]:
+    trusted_cache = isinstance(panel, _TrustedCachePanel)
+    security_master = (
+        panel.security_master_snapshot
+        if trusted_cache
+        else None
+    )
+    snapshot_reference = (
+        panel.snapshot_reference
+        if trusted_cache
+        else "caller_injected_runtime_panel"
+    )
+    return build_raw_data_fingerprint(
+        panel,
+        security_master=security_master,
+        market_signal_frame=market_signal_frame,
+        calendar_snapshot=_build_raw_calendar_snapshot(panel),
+        source_kind="trusted_cache" if trusted_cache else "injected",
+        snapshot_reference=snapshot_reference,
+    )
+
+
+def _validate_raw_data_fingerprint(
+    value: Any,
+    *,
+    require_lock_eligible: bool,
+) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    normalized = json.loads(
+        json.dumps(
+            value,
+            ensure_ascii=True,
+            sort_keys=True,
+            allow_nan=False,
+        )
+    )
+    root_sha256 = str(normalized.pop("root_sha256", ""))
+    complete = normalized.get("complete")
+    source_kind = normalized.get("source_kind")
+    expected_lock_eligible = bool(
+        complete is True and source_kind == "trusted_cache"
+    )
+    if (
+        normalized.get("fingerprint_version")
+        != RAW_DATA_FINGERPRINT_VERSION
+        or len(root_sha256) != 64
+        or _canonical_mapping_sha256(normalized) != root_sha256
+        or not isinstance(complete, bool)
+        or source_kind not in {"trusted_cache", "injected"}
+        or normalized.get("lock_eligible")
+        is not expected_lock_eligible
+    ):
+        return None
+    if require_lock_eligible and normalized.get("lock_eligible") is not True:
+        return None
+    blocks = normalized.get("blocks")
+    if not isinstance(blocks, Mapping):
+        return None
+    for key in (
+        "panel",
+        "security_master",
+        "market_signals",
+        "calendar",
+        "pit_universe",
+    ):
+        block = blocks.get(key)
+        digest = block.get("sha256") if isinstance(block, Mapping) else None
+        if not isinstance(digest, str) or len(digest) != 64:
+            return None
+    return {**normalized, "root_sha256": root_sha256}
+
+
 def build_current_frozen_protocol_binding() -> dict[str, Any]:
     source_sha256 = {
-        relative_path: hashlib.sha256(
+        relative_path: _protocol_source_sha256(
             (_ROOT / relative_path).read_bytes()
-        ).hexdigest()
+        )
         for relative_path in FROZEN_PROTOCOL_SOURCE_PATHS
     }
     binding_material = {
         "binding_version": FROZEN_PROTOCOL_BINDING_VERSION,
+        "source_hash_policy": FROZEN_PROTOCOL_SOURCE_HASH_POLICY,
         "protocol_versions": dict(FROZEN_PROTOCOL_VERSIONS),
         "source_sha256": source_sha256,
     }
@@ -632,6 +1123,26 @@ def build_current_frozen_protocol_binding() -> dict[str, Any]:
     return binding
 
 
+def _trusted_protocol_bundle_sha256() -> str | None:
+    try:
+        import config  # noqa: F401
+    except Exception:
+        pass
+    value = str(
+        os.environ.get(
+            "RELAY_FACTOR_PROTOCOL_BUNDLE_SHA256",
+            "",
+        )
+    ).strip().lower()
+    if len(value) != 64:
+        return None
+    try:
+        int(value, 16)
+    except ValueError:
+        return None
+    return value
+
+
 def validate_frozen_protocol_binding(
     manifest: Mapping[str, Any] | None,
 ) -> tuple[bool, str]:
@@ -644,12 +1155,21 @@ def validate_frozen_protocol_binding(
         return False, "frozen_protocol_fingerprint_unavailable"
     for key in (
         "binding_version",
+        "source_hash_policy",
         "protocol_versions",
         "source_sha256",
         "bundle_sha256",
     ):
         if binding.get(key) != current.get(key):
             return False, "frozen_protocol_fingerprint_mismatch"
+    trusted_bundle = _trusted_protocol_bundle_sha256()
+    if trusted_bundle is None:
+        return False, "frozen_protocol_trust_anchor_missing"
+    if not hmac.compare_digest(
+        str(current["bundle_sha256"]).lower(),
+        trusted_bundle,
+    ):
+        return False, "frozen_protocol_trust_anchor_mismatch"
     return True, "ok"
 
 
@@ -784,11 +1304,16 @@ def _panel_for_feature_universe(
         )
         column_positions = pairs["ts_code"].astype(str).map(code_positions)
         valid = row_positions.notna() & column_positions.notna()
-        mask_values = mask.to_numpy(copy=False)
+        mask_values = mask.to_numpy(copy=True)
         mask_values[
             row_positions.loc[valid].astype(int).to_numpy(),
             column_positions.loc[valid].astype(int).to_numpy(),
         ] = True
+        mask = pd.DataFrame(
+            mask_values,
+            index=mask.index,
+            columns=mask.columns,
+        )
     selected_panel = dict(panel)
     selected_panel["universe_eligible"] = mask
     return selected_panel
@@ -1151,6 +1676,14 @@ def _build_locking_protocol(
         "execution_rules": normalized_execution_rules,
         "backtest_policy": dict(FROZEN_BACKTEST_POLICY),
     }
+
+
+def _registered_research_protocol() -> dict[str, Any]:
+    return _build_locking_protocol(
+        config=PREREGISTERED_RESEARCH_CONFIG,
+        mining_rules=normalize_mining_rules(None),
+        execution_rules=normalize_execution_rules(),
+    )
 
 
 def condition_explain(
@@ -2335,6 +2868,245 @@ def _fit_preregistered_frozen_model(
     return model
 
 
+def _canonical_codes_sha256(codes: Sequence[Any]) -> str:
+    normalized = sorted({str(value) for value in codes if str(value)})
+    material = json.dumps(
+        normalized,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def _deterministic_benchmark_codes(
+    codes: Sequence[Any],
+    *,
+    trade_date: str,
+    top_k: int,
+) -> list[str]:
+    normalized = sorted({str(value) for value in codes if str(value)})
+    ranked = sorted(
+        normalized,
+        key=lambda code: (
+            hashlib.sha256(
+                (
+                    f"{BENCHMARK_POLICY_VERSION}|"
+                    f"{trade_date}|{code}"
+                ).encode("utf-8")
+            ).hexdigest(),
+            code,
+        ),
+    )
+    return ranked[: max(0, int(top_k))]
+
+
+def _relative_total_return_pct(
+    strategy_portfolio: Mapping[str, Any],
+    benchmark_portfolio: Mapping[str, Any],
+) -> float:
+    try:
+        strategy_initial = float(
+            strategy_portfolio.get("initial_equity")
+        )
+        strategy_final = float(
+            strategy_portfolio.get("final_equity")
+        )
+        benchmark_initial = float(
+            benchmark_portfolio.get("initial_equity")
+        )
+        benchmark_final = float(
+            benchmark_portfolio.get("final_equity")
+        )
+    except (TypeError, ValueError):
+        return 0.0
+    if (
+        not all(
+            np.isfinite(value) and value > 0.0
+            for value in (
+                strategy_initial,
+                strategy_final,
+                benchmark_initial,
+                benchmark_final,
+            )
+        )
+    ):
+        return 0.0
+    strategy_growth = strategy_final / strategy_initial
+    benchmark_growth = benchmark_final / benchmark_initial
+    return round(
+        (strategy_growth / benchmark_growth - 1.0) * 100.0,
+        4,
+    )
+
+
+def _window_oos_diagnostics(
+    window_dates: Sequence[str],
+    diagnostics_by_date: Mapping[str, Mapping[str, Any]],
+    *,
+    validation_rules: Mapping[str, Any],
+) -> dict[str, Any]:
+    rows = [
+        diagnostics_by_date.get(str(trade_date))
+        for trade_date in window_dates
+    ]
+    minimum_samples = int(
+        validation_rules.get(
+            "minimum_diagnostic_sample_count_per_session",
+            1,
+        )
+    )
+    valid_rows = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        try:
+            sample_count = int(row.get("sample_count") or 0)
+            rank_ic = float(row.get("rank_ic"))
+            spread = float(row.get("top_bottom_spread_pct"))
+        except (TypeError, ValueError):
+            continue
+        if (
+            sample_count < minimum_samples
+            or not np.isfinite(rank_ic)
+            or not np.isfinite(spread)
+        ):
+            continue
+        valid_rows.append((rank_ic, spread))
+    rank_values = [value[0] for value in valid_rows]
+    spread_values = [value[1] for value in valid_rows]
+    mean_rank_ic = (
+        round(float(np.mean(rank_values)), 8)
+        if rank_values
+        else None
+    )
+    mean_spread = (
+        round(float(np.mean(spread_values)), 8)
+        if spread_values
+        else None
+    )
+    positive_rank_rate = (
+        round(
+            sum(value > 0.0 for value in rank_values)
+            / len(rank_values),
+            4,
+        )
+        if rank_values
+        else 0.0
+    )
+    positive_spread_rate = (
+        round(
+            sum(value > 0.0 for value in spread_values)
+            / len(spread_values),
+            4,
+        )
+        if spread_values
+        else 0.0
+    )
+    complete = len(valid_rows) == len(window_dates)
+    passed = bool(
+        complete
+        and mean_rank_ic is not None
+        and mean_rank_ic
+        >= float(
+            validation_rules.get(
+                "minimum_oos_mean_rank_ic",
+                0.0,
+            )
+        )
+        and positive_rank_rate
+        >= float(
+            validation_rules.get(
+                "minimum_positive_rank_ic_session_rate",
+                0.0,
+            )
+        )
+        and mean_spread is not None
+        and mean_spread
+        > float(
+            validation_rules.get(
+                "minimum_oos_mean_spread_pct",
+                0.0,
+            )
+        )
+        and positive_spread_rate
+        >= float(
+            validation_rules.get(
+                "minimum_positive_spread_session_rate",
+                0.0,
+            )
+        )
+    )
+    return {
+        "diagnostic_session_count": len(rows),
+        "diagnostic_evaluable_session_count": len(valid_rows),
+        "oos_mean_rank_ic": mean_rank_ic,
+        "oos_positive_rank_ic_rate": positive_rank_rate,
+        "oos_mean_top_bottom_spread_pct": mean_spread,
+        "oos_positive_spread_rate": positive_spread_rate,
+        "oos_diagnostic_pass": passed,
+    }
+
+
+def _validate_fixed_oos_window_sequence(
+    windows: Sequence[Any],
+    *,
+    session_dates: Sequence[str],
+    expected_session_dates: Sequence[str],
+    model_sha256: str,
+    window_sessions: int,
+) -> bool:
+    if (
+        isinstance(window_sessions, bool)
+        or not isinstance(window_sessions, int)
+        or window_sessions <= 0
+        or list(session_dates) != list(expected_session_dates)
+        or not session_dates
+        or len(session_dates) % window_sessions != 0
+        or len(windows) != len(session_dates) // window_sessions
+    ):
+        return False
+
+    seen_window_ids: set[str] = set()
+    for window_index, raw_window in enumerate(windows):
+        if not isinstance(raw_window, Mapping):
+            return False
+        start = window_index * window_sessions
+        window_dates = list(
+            session_dates[start : start + window_sessions]
+        )
+        material = {
+            "policy_version": OOS_DIAGNOSTIC_POLICY_VERSION,
+            "model_sha256": model_sha256,
+            "window_index": window_index,
+            "session_dates": window_dates,
+        }
+        expected_window_id = hashlib.sha256(
+            json.dumps(
+                material,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        raw_window_id = raw_window.get("window_id")
+        if (
+            not isinstance(raw_window_id, str)
+            or raw_window_id in seen_window_ids
+            or raw_window_id != expected_window_id
+            or isinstance(raw_window.get("window_index"), bool)
+            or raw_window.get("window_index") != window_index
+            or raw_window.get("test_start") != window_dates[0]
+            or raw_window.get("test_end") != window_dates[-1]
+            or isinstance(raw_window.get("session_count"), bool)
+            or raw_window.get("session_count") != window_sessions
+            or raw_window.get("complete") is not True
+            or raw_window.get("model_sha256") != model_sha256
+        ):
+            return False
+        seen_window_ids.add(raw_window_id)
+    return True
+
+
 def _build_preregistered_oos_results(
     *,
     session_dates: Sequence[str],
@@ -2344,16 +3116,60 @@ def _build_preregistered_oos_results(
     test_days: int,
     top_k: int,
     holding_sessions: int,
+    evaluation_window_count: int | None = None,
+    benchmark_attempts: Sequence[Mapping[str, Any]] = (),
+    session_diagnostics: Sequence[Mapping[str, Any]] = (),
+    validation_rules: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_dates = [str(value) for value in session_dates]
+    if evaluation_window_count is not None:
+        fixed_window_count = max(1, int(evaluation_window_count))
+        normalized_dates = normalized_dates[
+            : fixed_window_count * int(test_days)
+        ]
+    selected_dates = set(normalized_dates)
     normalized_trades = [dict(value) for value in trades]
     normalized_attempts = [dict(value) for value in attempts]
+    normalized_trades = [
+        trade
+        for trade in normalized_trades
+        if str(trade.get("trade_date") or "") in selected_dates
+    ]
+    normalized_attempts = [
+        attempt
+        for attempt in normalized_attempts
+        if str(attempt.get("trade_date") or "") in selected_dates
+    ]
+    normalized_benchmark_attempts = [
+        dict(attempt)
+        for attempt in benchmark_attempts
+        if str(attempt.get("trade_date") or "") in selected_dates
+    ]
+    normalized_diagnostics = [
+        dict(item)
+        for item in session_diagnostics
+        if str(item.get("trade_date") or "") in selected_dates
+    ]
     attempts_by_date: dict[str, list[dict[str, Any]]] = {}
     for attempt in normalized_attempts:
         attempts_by_date.setdefault(
             str(attempt.get("trade_date") or ""),
             [],
         ).append(attempt)
+    benchmark_attempts_by_date: dict[
+        str,
+        list[dict[str, Any]],
+    ] = {}
+    for attempt in normalized_benchmark_attempts:
+        benchmark_attempts_by_date.setdefault(
+            str(attempt.get("trade_date") or ""),
+            [],
+        ).append(attempt)
+    diagnostics_by_date = {
+        str(item.get("trade_date") or ""): item
+        for item in normalized_diagnostics
+    }
+    rules = dict(validation_rules or {})
 
     windows: list[dict[str, Any]] = []
     model_sha256 = factor_model_digest(model)
@@ -2362,7 +3178,7 @@ def _build_preregistered_oos_results(
     )
     for offset in range(0, len(normalized_dates), int(test_days)):
         window_dates = normalized_dates[offset : offset + int(test_days)]
-        if len(window_dates) != int(test_days):
+        if not window_dates:
             continue
         window_trades = [
             trade
@@ -2373,6 +3189,14 @@ def _build_preregistered_oos_results(
             attempt
             for trade_date in window_dates
             for attempt in attempts_by_date.get(trade_date, [])
+        ]
+        window_benchmark_attempts = [
+            attempt
+            for trade_date in window_dates
+            for attempt in benchmark_attempts_by_date.get(
+                trade_date,
+                [],
+            )
         ]
         ungated = [
             {**attempt, "gate_pass": True}
@@ -2390,20 +3214,95 @@ def _build_preregistered_oos_results(
             holding_sessions=holding_sessions,
             session_dates=window_dates,
         )
+        benchmark_ungated = [
+            {**attempt, "gate_pass": True}
+            for attempt in window_benchmark_attempts
+        ]
+        benchmark_window_portfolio = simulate_portfolio(
+            benchmark_ungated,
+            top_k=top_k,
+            holding_sessions=holding_sessions,
+            session_dates=window_dates,
+        )
+        gated_benchmark_window_portfolio = simulate_portfolio(
+            window_benchmark_attempts,
+            top_k=top_k,
+            holding_sessions=holding_sessions,
+            session_dates=window_dates,
+        )
+        diagnostics = _window_oos_diagnostics(
+            window_dates,
+            diagnostics_by_date,
+            validation_rules=rules,
+        )
+        if len(window_dates) != int(test_days):
+            diagnostics["oos_diagnostic_pass"] = False
+        window_index = offset // int(test_days)
+        window_material = {
+            "policy_version": OOS_DIAGNOSTIC_POLICY_VERSION,
+            "model_sha256": model_sha256,
+            "window_index": window_index,
+            "session_dates": window_dates,
+        }
+        window_id = hashlib.sha256(
+            json.dumps(
+                window_material,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        benchmark_unevaluable_days = sum(
+            not bool(
+                (
+                    diagnostics_by_date.get(trade_date)
+                    or {}
+                ).get("benchmark_evaluable")
+            )
+            for trade_date in window_dates
+        )
         windows.append(
             {
+                "window_id": window_id,
+                "window_index": window_index,
                 "test_start": window_dates[0],
                 "test_end": window_dates[-1],
+                "session_count": len(window_dates),
+                "complete": len(window_dates) == int(test_days),
                 "model_sha256": model_sha256,
-                "model_validation_stable": bool(
-                    model.get("validation_stable")
-                ),
+                **diagnostics,
                 "live_total_return_pct": window_portfolio[
                     "total_return_pct"
                 ],
                 "gated_live_total_return_pct": gated_window_portfolio[
                     "total_return_pct"
                 ],
+                "benchmark_live_total_return_pct": (
+                    benchmark_window_portfolio[
+                        "total_return_pct"
+                    ]
+                ),
+                "gated_benchmark_live_total_return_pct": (
+                    gated_benchmark_window_portfolio[
+                        "total_return_pct"
+                    ]
+                ),
+                "live_excess_return_pct": _relative_total_return_pct(
+                    window_portfolio,
+                    benchmark_window_portfolio,
+                ),
+                "gated_live_excess_return_pct": (
+                    _relative_total_return_pct(
+                        gated_window_portfolio,
+                        gated_benchmark_window_portfolio,
+                    )
+                ),
+                "benchmark_unevaluable_oos_days": (
+                    benchmark_unevaluable_days
+                ),
+                "benchmark_unevaluable_oos_slots": (
+                    benchmark_unevaluable_days * top_k
+                ),
                 "unevaluable_oos_days": sum(
                     trade.get("research_evaluable") is False
                     for trade in window_trades
@@ -2426,7 +3325,16 @@ def _build_preregistered_oos_results(
         {**attempt, "gate_pass": True}
         for attempt in normalized_attempts
     ]
+    benchmark_ungated_attempts = [
+        {**attempt, "gate_pass": True}
+        for attempt in normalized_benchmark_attempts
+    ]
     return {
+        "session_dates": normalized_dates,
+        "trades": normalized_trades,
+        "attempts": normalized_attempts,
+        "benchmark_attempts": normalized_benchmark_attempts,
+        "session_diagnostics": normalized_diagnostics,
         "windows": windows,
         "portfolio": simulate_portfolio(
             ungated_attempts,
@@ -2440,6 +3348,140 @@ def _build_preregistered_oos_results(
             holding_sessions=holding_sessions,
             session_dates=normalized_dates,
         ),
+        "benchmark_portfolio": simulate_portfolio(
+            benchmark_ungated_attempts,
+            top_k=top_k,
+            holding_sessions=holding_sessions,
+            session_dates=normalized_dates,
+        ),
+        "gated_benchmark_portfolio": simulate_portfolio(
+            normalized_benchmark_attempts,
+            top_k=top_k,
+            holding_sessions=holding_sessions,
+            session_dates=normalized_dates,
+        ),
+    }
+
+
+def _oos_session_diagnostic(
+    day: pd.DataFrame,
+    *,
+    trade_date: str,
+    top_k: int,
+) -> tuple[dict[str, Any], pd.DataFrame]:
+    codes = sorted(
+        {
+            str(value)
+            for value in day.get(
+                "ts_code",
+                pd.Series(dtype="string"),
+            ).dropna()
+            if str(value)
+        }
+    )
+    benchmark_codes = _deterministic_benchmark_codes(
+        codes,
+        trade_date=trade_date,
+        top_k=top_k,
+    )
+    benchmark_rows = pd.DataFrame()
+    if benchmark_codes and "ts_code" in day.columns:
+        indexed = day.assign(
+            ts_code=day["ts_code"].astype(str)
+        ).drop_duplicates("ts_code", keep="first").set_index(
+            "ts_code",
+            drop=False,
+        )
+        if all(code in indexed.index for code in benchmark_codes):
+            benchmark_rows = indexed.loc[benchmark_codes].copy()
+
+    benchmark_evaluable = len(benchmark_rows) == int(top_k)
+    if (
+        benchmark_evaluable
+        and "research_evaluable" in benchmark_rows.columns
+    ):
+        benchmark_evaluable = bool(
+            benchmark_rows["research_evaluable"].map(
+                _is_trusted_marker
+            ).all()
+        )
+    scores = day.get(
+        "factor_model_score",
+        pd.Series(index=day.index, dtype=float),
+    )
+    diagnostics = factor_diagnostics(
+        day,
+        scores,
+        target_col="model_target_pct",
+    )
+    quantiles = diagnostics.get("quantile_returns") or {}
+
+    def metric(value: Any) -> float | None:
+        number = _maybe_float(value)
+        return (
+            round(float(number), 8)
+            if number is not None and np.isfinite(number)
+            else None
+        )
+
+    return (
+        {
+            "trade_date": trade_date,
+            "universe_codes": codes,
+            "universe_codes_sha256": _canonical_codes_sha256(
+                codes
+            ),
+            "sample_count": int(
+                diagnostics.get("sample_count") or 0
+            ),
+            "rank_ic": metric(diagnostics.get("rank_ic")),
+            "bottom_quantile_return_pct": metric(
+                quantiles.get("1")
+            ),
+            "top_quantile_return_pct": metric(
+                quantiles.get("5")
+            ),
+            "top_bottom_spread_pct": metric(
+                diagnostics.get("top_bottom_spread_pct")
+            ),
+            "benchmark_codes": benchmark_codes,
+            "benchmark_evaluable": benchmark_evaluable,
+        },
+        benchmark_rows,
+    )
+
+
+def _unscored_oos_session_diagnostic(
+    day: pd.DataFrame,
+    *,
+    trade_date: str,
+    top_k: int,
+) -> dict[str, Any]:
+    codes = sorted(
+        {
+            str(value)
+            for value in day.get(
+                "ts_code",
+                pd.Series(dtype="string"),
+            ).dropna()
+            if str(value)
+        }
+    )
+    return {
+        "trade_date": trade_date,
+        "universe_codes": codes,
+        "universe_codes_sha256": _canonical_codes_sha256(codes),
+        "sample_count": 0,
+        "rank_ic": None,
+        "bottom_quantile_return_pct": None,
+        "top_quantile_return_pct": None,
+        "top_bottom_spread_pct": None,
+        "benchmark_codes": _deterministic_benchmark_codes(
+            codes,
+            trade_date=trade_date,
+            top_k=top_k,
+        ),
+        "benchmark_evaluable": False,
     }
 
 
@@ -2455,27 +3497,48 @@ def _evaluate_preregistered_oos(
     emotion_delta_by_date: Mapping[str, float | None],
     locking_protocol: Mapping[str, Any] | None,
     data_quality_assessment: Mapping[str, Any] | None,
+    feature_freshness: Mapping[str, Any] | None,
+    raw_data_fingerprint: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     record = (
         registration.get("record")
         if isinstance(registration.get("record"), Mapping)
         else {}
     )
+    try:
+        protocol_binding = build_current_frozen_protocol_binding()
+    except OSError:
+        protocol_binding = None
     base = {
         "evidence_version": PREREGISTERED_OOS_EVIDENCE_VERSION,
         "protocol_version": record.get("protocol_version"),
         "calibrated_through": record.get("calibrated_through"),
         "oos_not_before": record.get("oos_not_before"),
         "registration_sha256": registration.get("sha256"),
+        "protocol_binding": protocol_binding,
         "model_sha256": (
             factor_model_digest(model)
             if isinstance(model, Mapping)
             else None
         ),
+        "diagnostic_policy_version": (
+            OOS_DIAGNOSTIC_POLICY_VERSION
+        ),
+        "benchmark_policy_version": BENCHMARK_POLICY_VERSION,
         "window_count": 0,
         "window_sessions": int(test_days),
         "top_k": int(top_k),
         "holding_sessions": int(holding_sessions),
+        "feature_freshness": (
+            dict(feature_freshness)
+            if isinstance(feature_freshness, Mapping)
+            else None
+        ),
+        "raw_data_fingerprint": (
+            dict(raw_data_fingerprint)
+            if isinstance(raw_data_fingerprint, Mapping)
+            else None
+        ),
         "calendar_snapshot": None,
         "data_quality_assessment": (
             dict(data_quality_assessment)
@@ -2493,6 +3556,8 @@ def _evaluate_preregistered_oos(
         "windows": [],
         "trades": [],
         "attempts": [],
+        "session_diagnostics": [],
+        "benchmark_attempts": [],
     }
     empty_portfolio = simulate_portfolio(
         [],
@@ -2508,6 +3573,28 @@ def _evaluate_preregistered_oos(
                 "gated_portfolio": empty_portfolio,
             }
         )
+    registered_research_protocol = record.get("research_protocol")
+    if (
+        not isinstance(protocol_binding, Mapping)
+        or not isinstance(registered_research_protocol, Mapping)
+        or not isinstance(locking_protocol, Mapping)
+        or not _canonical_json_equal(
+            dict(locking_protocol),
+            dict(registered_research_protocol),
+        )
+    ):
+        return _seal_preregistered_oos_evidence(
+            {
+                **base,
+                "reason": (
+                    "frozen_protocol_fingerprint_unavailable"
+                    if not isinstance(protocol_binding, Mapping)
+                    else "preregistered_research_protocol_mismatch"
+                ),
+                "portfolio": empty_portfolio,
+                "gated_portfolio": empty_portfolio,
+            }
+        )
     oos_not_before = _strict_iso_date(record.get("oos_not_before"))
     if oos_not_before is None:
         return _seal_preregistered_oos_evidence(
@@ -2518,7 +3605,51 @@ def _evaluate_preregistered_oos(
                 "gated_portfolio": empty_portfolio,
             }
         )
-    eligible_dates = sorted(
+    validation_rules = record.get("research_validation_rules")
+    validation_rules = (
+        validation_rules
+        if isinstance(validation_rules, Mapping)
+        else {}
+    )
+    evaluation_window_count = _positive_evidence_int(
+        validation_rules.get("evaluation_window_count")
+    )
+    registered_window_sessions = _positive_evidence_int(
+        validation_rules.get("window_sessions")
+    )
+    oos_session_count = _positive_evidence_int(
+        validation_rules.get("oos_session_count")
+    )
+    if (
+        evaluation_window_count is None
+        or registered_window_sessions != int(test_days)
+        or oos_session_count
+        != evaluation_window_count * int(test_days)
+        or validation_rules.get("stop_rule")
+        != "first_fixed_prefix_only"
+    ):
+        return _seal_preregistered_oos_evidence(
+            {
+                **base,
+                "reason": "preregistration_fixed_oos_policy_invalid",
+                "portfolio": empty_portfolio,
+                "gated_portfolio": empty_portfolio,
+            }
+        )
+    validated_freshness = _validate_feature_freshness(
+        feature_freshness
+    )
+    if validated_freshness is None:
+        return _seal_preregistered_oos_evidence(
+            {
+                **base,
+                "reason": "feature_freshness_invalid",
+                "portfolio": empty_portfolio,
+                "gated_portfolio": empty_portfolio,
+            }
+        )
+    latest_feature_date = validated_freshness["latest_feature_date"]
+    observed_oos_dates = sorted(
         str(value)
         for value in data.get(
             "trade_date",
@@ -2526,53 +3657,30 @@ def _evaluate_preregistered_oos(
         ).dropna().astype(str).unique()
         if str(value) >= oos_not_before
     )
-    if not eligible_dates:
-        return _seal_preregistered_oos_evidence(
-            {
-                **base,
-                "reason": "no_complete_preregistered_oos_window",
-                "portfolio": empty_portfolio,
-                "gated_portfolio": empty_portfolio,
-            }
-        )
-    observation_cutoff = eligible_dates[-1]
     initial_calendar_snapshot = _build_evidence_calendar_snapshot(
         oos_not_before,
-        observation_cutoff,
+        latest_feature_date,
     )
     if initial_calendar_snapshot is None:
         return _seal_preregistered_oos_evidence(
             {
                 **base,
-                "observation_cutoff": observation_cutoff,
                 "reason": "authoritative_trade_calendar_unavailable",
                 "portfolio": empty_portfolio,
                 "gated_portfolio": empty_portfolio,
             }
         )
-    authoritative_sessions = _calendar_snapshot_sessions(
+    authoritative_feature_sessions = _calendar_snapshot_sessions(
         initial_calendar_snapshot
     )
-    if any(value not in authoritative_sessions for value in eligible_dates):
-        return _seal_preregistered_oos_evidence(
-            {
-                **base,
-                "observation_cutoff": observation_cutoff,
-                "reason": "non_trading_oos_observation",
-                "portfolio": empty_portfolio,
-                "gated_portfolio": empty_portfolio,
-            }
-        )
-    complete_count = (
-        len(authoritative_sessions) // int(test_days)
-    ) * int(
-        test_days
+    maturity_lag_sessions = int(
+        validated_freshness["maturity_lag_sessions"]
     )
-    session_dates = authoritative_sessions[:complete_count]
-    pending_session_dates = authoritative_sessions[complete_count:]
-    base["observation_cutoff"] = observation_cutoff
-    base["pending_session_dates"] = pending_session_dates
-    if not session_dates:
+    if (
+        latest_feature_date not in authoritative_feature_sessions
+        or len(authoritative_feature_sessions)
+        <= maturity_lag_sessions
+    ):
         return _seal_preregistered_oos_evidence(
             {
                 **base,
@@ -2581,15 +3689,56 @@ def _evaluate_preregistered_oos(
                 "gated_portfolio": empty_portfolio,
             }
         )
-
+    maturity_observation_cutoff = authoritative_feature_sessions[
+        -(maturity_lag_sessions + 1)
+    ]
+    authoritative_feature_session_set = set(
+        authoritative_feature_sessions
+    )
+    if any(
+        value > latest_feature_date
+        or value not in authoritative_feature_session_set
+        for value in observed_oos_dates
+    ):
+        return _seal_preregistered_oos_evidence(
+            {
+                **base,
+                "observation_cutoff": maturity_observation_cutoff,
+                "reason": "feature_freshness_observation_mismatch",
+                "portfolio": empty_portfolio,
+                "gated_portfolio": empty_portfolio,
+            }
+        )
+    session_dates = [
+        value
+        for value in authoritative_feature_sessions
+        if value <= maturity_observation_cutoff
+    ][:oos_session_count]
+    observation_cutoff = (
+        session_dates[-1]
+        if session_dates
+        else None
+    )
+    pending_session_dates: list[str] = []
+    base["observation_cutoff"] = observation_cutoff
+    base["pending_session_dates"] = pending_session_dates
     selected_gate = dict(
         model.get("selected_market_gate") or {"enabled": False}
     )
     attempts: list[dict[str, Any]] = []
+    benchmark_attempts: list[dict[str, Any]] = []
+    session_diagnostics: list[dict[str, Any]] = []
     trades: list[dict[str, Any]] = []
     for trade_date in session_dates:
         day = data[data["trade_date"].astype(str) == trade_date].copy()
         if day.empty:
+            session_diagnostics.append(
+                _unscored_oos_session_diagnostic(
+                    day,
+                    trade_date=trade_date,
+                    top_k=top_k,
+                )
+            )
             trades.append(
                 {
                     "trade_date": trade_date,
@@ -2609,6 +3758,13 @@ def _evaluate_preregistered_oos(
                 day["market_data_trusted"].map(_is_trusted_marker).all()
             )
         ):
+            session_diagnostics.append(
+                _unscored_oos_session_diagnostic(
+                    day,
+                    trade_date=trade_date,
+                    top_k=top_k,
+                )
+            )
             trades.append(
                 {
                     "trade_date": trade_date,
@@ -2637,9 +3793,29 @@ def _evaluate_preregistered_oos(
                     "gated_portfolio": empty_portfolio,
                 }
             )
+        market_gate_pass, gate_reason = _gate_check(
+            selected_gate,
+            emotion_by_date.get(trade_date),
+            emotion_delta_by_date.get(trade_date),
+        )
+        diagnostic, benchmark_rows = _oos_session_diagnostic(
+            day,
+            trade_date=trade_date,
+            top_k=top_k,
+        )
+        session_diagnostics.append(diagnostic)
+        if diagnostic["benchmark_evaluable"]:
+            benchmark_attempts.extend(
+                _portfolio_attempt(
+                    row,
+                    gate_pass=market_gate_pass,
+                )
+                for _, row in benchmark_rows.iterrows()
+            )
         picks = day.sort_values(
-            "factor_model_score",
-            ascending=False,
+            ["factor_model_score", "ts_code"],
+            ascending=[False, True],
+            kind="mergesort",
         ).head(top_k)
         if picks.empty:
             trades.append(
@@ -2699,11 +3875,6 @@ def _evaluate_preregistered_oos(
             if not executable.empty
             else 0.0
         )
-        market_gate_pass, gate_reason = _gate_check(
-            selected_gate,
-            emotion_by_date.get(trade_date),
-            emotion_delta_by_date.get(trade_date),
-        )
         day_attempts = [
             _portfolio_attempt(row, gate_pass=market_gate_pass)
             for _, row in picks.iterrows()
@@ -2724,10 +3895,13 @@ def _evaluate_preregistered_oos(
 
     calendar_end = max(
         [
-            session_dates[-1],
+            latest_feature_date,
             *[
                 str(attempt.get("exit_date") or "")
-                for attempt in attempts
+                for attempt in [
+                    *attempts,
+                    *benchmark_attempts,
+                ]
             ],
         ]
     )
@@ -2749,10 +3923,14 @@ def _evaluate_preregistered_oos(
         session_dates=session_dates,
         trades=trades,
         attempts=attempts,
+        benchmark_attempts=benchmark_attempts,
+        session_diagnostics=session_diagnostics,
         model=model,
         test_days=test_days,
         top_k=top_k,
         holding_sessions=holding_sessions,
+        evaluation_window_count=evaluation_window_count,
+        validation_rules=validation_rules,
     )
     return _seal_preregistered_oos_evidence(
         {
@@ -2762,12 +3940,24 @@ def _evaluate_preregistered_oos(
             "calendar_snapshot": calendar_snapshot,
             "observation_cutoff": observation_cutoff,
             "pending_session_dates": pending_session_dates,
-            "session_dates": session_dates,
+            "session_dates": results["session_dates"],
             "windows": results["windows"],
-            "trades": trades,
-            "attempts": attempts,
+            "trades": results["trades"],
+            "attempts": results["attempts"],
+            "session_diagnostics": results[
+                "session_diagnostics"
+            ],
+            "benchmark_attempts": results[
+                "benchmark_attempts"
+            ],
             "portfolio": results["portfolio"],
             "gated_portfolio": results["gated_portfolio"],
+            "benchmark_portfolio": results[
+                "benchmark_portfolio"
+            ],
+            "gated_benchmark_portfolio": results[
+                "gated_benchmark_portfolio"
+            ],
         }
     )
 
@@ -2783,6 +3973,8 @@ def walk_forward_relay(
     nested_gate_selection: bool = True,
     locking_protocol: Mapping[str, Any] | None = None,
     data_quality_assessment: Mapping[str, Any] | None = None,
+    feature_freshness: Mapping[str, Any] | None = None,
+    raw_data_fingerprint: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """滚动窗口回测。双轨输出：
 
@@ -2834,6 +4026,11 @@ def walk_forward_relay(
             "portfolio": empty_portfolio,
             "latest_model": empty_model,
             "registered_model": registered_model,
+            "raw_data_fingerprint": (
+                dict(raw_data_fingerprint)
+                if isinstance(raw_data_fingerprint, Mapping)
+                else None
+            ),
         }
 
     # 每个交易日的市场情绪与前日差（列缺失=门自动失效并如实标注）
@@ -3357,6 +4554,8 @@ def walk_forward_relay(
         emotion_delta_by_date=delta_by_date,
         locking_protocol=locking_protocol,
         data_quality_assessment=data_quality_assessment,
+        feature_freshness=feature_freshness,
+        raw_data_fingerprint=raw_data_fingerprint,
     )
     summary["model_spec_calibrated_through"] = MODEL_SPEC_CALIBRATED_THROUGH
     summary["preregistered_oos_window_count"] = int(
@@ -3371,6 +4570,11 @@ def walk_forward_relay(
         "preregistered_oos": preregistered_oos,
         "latest_model": latest_model,
         "registered_model": registered_model,
+        "raw_data_fingerprint": (
+            dict(raw_data_fingerprint)
+            if isinstance(raw_data_fingerprint, Mapping)
+            else None
+        ),
     }
 
 
@@ -3417,11 +4621,152 @@ def _bootstrap_total_return_ci(
     }
 
 
+def _bootstrap_excess_return_ci(
+    strategy_portfolio: Mapping[str, Any],
+    benchmark_portfolio: Mapping[str, Any],
+    *,
+    samples: int = 1000,
+    block_size: int = 5,
+) -> dict[str, float | int | str | None]:
+    def curve_by_date(
+        portfolio: Mapping[str, Any],
+    ) -> tuple[float | None, dict[str, float]]:
+        initial = None
+        values: dict[str, float] = {}
+        for item in portfolio.get("equity_curve") or []:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                equity = float(item.get("equity"))
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(equity) or equity <= 0.0:
+                continue
+            date_text = str(item.get("date") or "")
+            if date_text == "initial":
+                initial = equity
+            elif _strict_iso_date(date_text) is not None:
+                values[date_text] = equity
+        return initial, values
+
+    strategy_initial, strategy_values = curve_by_date(
+        strategy_portfolio
+    )
+    benchmark_initial, benchmark_values = curve_by_date(
+        benchmark_portfolio
+    )
+    dates = sorted(set(strategy_values) | set(benchmark_values))
+    empty = {
+        "lower": None,
+        "median": None,
+        "upper": None,
+        "samples": 0,
+        "block_size": int(block_size),
+        "paired_return_count": 0,
+        "policy_version": EXCESS_BOOTSTRAP_POLICY_VERSION,
+    }
+    if (
+        strategy_initial is None
+        or benchmark_initial is None
+        or not dates
+    ):
+        return empty
+
+    strategy_previous = strategy_initial
+    benchmark_previous = benchmark_initial
+    strategy_current = strategy_initial
+    benchmark_current = benchmark_initial
+    excess_returns: list[float] = []
+    for date_text in dates:
+        strategy_current = strategy_values.get(
+            date_text,
+            strategy_current,
+        )
+        benchmark_current = benchmark_values.get(
+            date_text,
+            benchmark_current,
+        )
+        strategy_return = (
+            strategy_current / strategy_previous - 1.0
+        )
+        benchmark_return = (
+            benchmark_current / benchmark_previous - 1.0
+        )
+        if (
+            not np.isfinite(strategy_return)
+            or not np.isfinite(benchmark_return)
+            or benchmark_return <= -1.0
+        ):
+            return empty
+        excess_returns.append(
+            (1.0 + strategy_return)
+            / (1.0 + benchmark_return)
+            - 1.0
+        )
+        strategy_previous = strategy_current
+        benchmark_previous = benchmark_current
+
+    paired_count = len(excess_returns)
+    if paired_count < 21:
+        return {
+            **empty,
+            "paired_return_count": paired_count,
+        }
+    values = np.asarray(excess_returns, dtype=float)
+    block = max(1, min(int(block_size), paired_count))
+    sample_count = max(100, int(samples))
+    rng = np.random.default_rng(20260731)
+    totals = np.empty(sample_count, dtype=float)
+    max_start = paired_count - block
+    for sample_index in range(sample_count):
+        sampled: list[float] = []
+        while len(sampled) < paired_count:
+            start = (
+                int(rng.integers(0, max_start + 1))
+                if max_start > 0
+                else 0
+            )
+            sampled.extend(values[start : start + block].tolist())
+        totals[sample_index] = (
+            float(
+                np.prod(
+                    1.0
+                    + np.asarray(
+                        sampled[:paired_count],
+                        dtype=float,
+                    )
+                )
+            )
+            - 1.0
+        ) * 100.0
+    lower, median, upper = np.percentile(
+        totals,
+        [2.5, 50.0, 97.5],
+    )
+    return {
+        "lower": round(float(lower), 4),
+        "median": round(float(median), 4),
+        "upper": round(float(upper), 4),
+        "samples": sample_count,
+        "block_size": block,
+        "paired_return_count": paired_count,
+        "policy_version": EXCESS_BOOTSTRAP_POLICY_VERSION,
+    }
+
+
 def _registered_frozen_model_is_eligible(
     model: Any,
     registration: Mapping[str, Any],
 ) -> bool:
-    if not registration.get("ok") or not isinstance(model, Mapping):
+    record = registration.get("record")
+    if (
+        not registration.get("ok")
+        or registration.get("current_protocol") is not True
+        or not isinstance(record, Mapping)
+        or record.get("schema_version") != 4
+        or record.get("protocol_version") != MODEL_SPEC_PROTOCOL_VERSION
+        or not isinstance(model, Mapping)
+    ):
         return False
     try:
         registered_model = _registered_model_from_preregistration(
@@ -3437,7 +4782,6 @@ def _registered_frozen_model_is_eligible(
         return False
     if not model_payload_matches:
         return False
-    record = registration["record"]
     cutoff = str(record["calibrated_through"])[:10]
     try:
         cutoff_date = pd.Timestamp(cutoff)
@@ -3487,6 +4831,147 @@ def _strict_iso_date(value: Any) -> str | None:
     if pd.isna(parsed) or parsed.strftime("%Y-%m-%d") != text:
         return None
     return text
+
+
+_CHINA_TIMEZONE = timezone(timedelta(hours=8))
+_FEATURE_FRESHNESS_KEYS = frozenset(
+    {
+        "policy_version",
+        "clock_source",
+        "as_of",
+        "latest_feature_date",
+        "expected_latest_feature_date",
+        "maturity_lag_sessions",
+    }
+)
+
+
+def _china_datetime(value: datetime | None = None) -> datetime:
+    current = value or datetime.now(_CHINA_TIMEZONE)
+    if current.tzinfo is None or current.utcoffset() is None:
+        return current.replace(tzinfo=_CHINA_TIMEZONE)
+    return current.astimezone(_CHINA_TIMEZONE)
+
+
+def _authoritative_completed_trade_date(
+    as_of: datetime | None = None,
+) -> str | None:
+    from market import trading_calendar
+
+    current = _china_datetime(as_of)
+    close_guard = current.replace(
+        hour=15,
+        minute=30,
+        second=0,
+        microsecond=0,
+    )
+    candidate = (
+        current.date()
+        if current >= close_guard
+        else (current - timedelta(days=1)).date()
+    )
+    for _ in range(40):
+        authority = trading_calendar.authoritative_year(candidate.year)
+        if authority is None:
+            return None
+        if (
+            candidate.weekday() < 5
+            and candidate.isoformat() not in authority.closed_days
+        ):
+            return candidate.isoformat()
+        candidate -= timedelta(days=1)
+    return None
+
+
+def _build_feature_freshness(
+    features: pd.DataFrame,
+    labels: pd.DataFrame,
+    *,
+    as_of: datetime | None,
+    require_authoritative_latest: bool,
+    clock_source: str,
+) -> dict[str, Any]:
+    latest_feature_date = None
+    if not features.empty and "trade_date" in features.columns:
+        values = sorted(
+            str(value)
+            for value in features["trade_date"].dropna().astype(str)
+            if _strict_iso_date(value) is not None
+        )
+        latest_feature_date = values[-1] if values else None
+    current = _china_datetime(as_of)
+    normalized_clock_source = str(clock_source or "").strip().lower()
+    if normalized_clock_source not in {"system", "injected"}:
+        raise ValueError("unsupported research clock source")
+    return {
+        "policy_version": FEATURE_FRESHNESS_POLICY_VERSION,
+        "clock_source": normalized_clock_source,
+        "as_of": current.isoformat(timespec="seconds"),
+        "latest_feature_date": latest_feature_date,
+        "expected_latest_feature_date": (
+            _authoritative_completed_trade_date(current)
+            if require_authoritative_latest
+            else None
+        ),
+        "maturity_lag_sessions": _label_horizon_sessions(
+            features,
+            labels,
+        ),
+    }
+
+
+def _validate_feature_freshness(
+    value: Any,
+) -> dict[str, Any] | None:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _FEATURE_FRESHNESS_KEYS
+        or value.get("policy_version")
+        != FEATURE_FRESHNESS_POLICY_VERSION
+    ):
+        return None
+    clock_source = value.get("clock_source")
+    if clock_source not in {"system", "injected"}:
+        return None
+    as_of_text = value.get("as_of")
+    if not isinstance(as_of_text, str) or not as_of_text.strip():
+        return None
+    try:
+        as_of = datetime.fromisoformat(
+            as_of_text.strip().replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    if as_of.tzinfo is None or as_of.utcoffset() is None:
+        return None
+    latest_feature_date = _strict_iso_date(
+        value.get("latest_feature_date")
+    )
+    expected_latest_feature_date = _strict_iso_date(
+        value.get("expected_latest_feature_date")
+    )
+    maturity_lag = value.get("maturity_lag_sessions")
+    if (
+        latest_feature_date is None
+        or expected_latest_feature_date is None
+        or latest_feature_date != expected_latest_feature_date
+        or isinstance(maturity_lag, bool)
+        or not isinstance(maturity_lag, int)
+        or not 0 <= maturity_lag <= 100
+        or _authoritative_completed_trade_date(as_of)
+        != expected_latest_feature_date
+    ):
+        return None
+    return {
+        "policy_version": FEATURE_FRESHNESS_POLICY_VERSION,
+        "clock_source": clock_source,
+        "as_of": as_of_text,
+        "latest_feature_date": latest_feature_date,
+        "expected_latest_feature_date": (
+            expected_latest_feature_date
+        ),
+        "maturity_lag_sessions": int(maturity_lag),
+    }
 
 
 def _positive_evidence_int(value: Any) -> int | None:
@@ -3550,6 +5035,20 @@ _EVIDENCE_TRADE_KEYS = frozenset(
         "model_sha256",
     }
 )
+_EVIDENCE_SESSION_DIAGNOSTIC_KEYS = frozenset(
+    {
+        "trade_date",
+        "universe_codes",
+        "universe_codes_sha256",
+        "sample_count",
+        "rank_ic",
+        "bottom_quantile_return_pct",
+        "top_quantile_return_pct",
+        "top_bottom_spread_pct",
+        "benchmark_codes",
+        "benchmark_evaluable",
+    }
+)
 _MIN_EVIDENCE_RETURN_PCT = -100.0
 _MAX_EVIDENCE_RETURN_PCT = 1000.0
 
@@ -3573,6 +5072,311 @@ def _bounded_evidence_return(value: Any) -> float | None:
     ):
         return None
     return number
+
+
+def _validate_evidence_attempt_track(
+    raw_attempts: Sequence[Any],
+    *,
+    session_dates: Sequence[str],
+    calendar_sessions: Sequence[str],
+    calendar_index: Mapping[str, int],
+    holding_sessions: int,
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, list[dict[str, Any]]],
+] | None:
+    attempts: list[dict[str, Any]] = []
+    attempts_by_date: dict[str, list[dict[str, Any]]] = {
+        value: [] for value in session_dates
+    }
+    attempt_keys: set[tuple[str, str]] = set()
+    maximum_holding_sessions = (
+        int(holding_sessions) + MAX_DEFERRED_EXIT_SESSIONS
+    )
+    for raw_attempt in raw_attempts:
+        if (
+            not isinstance(raw_attempt, Mapping)
+            or set(raw_attempt) != _EVIDENCE_ATTEMPT_KEYS
+        ):
+            return None
+        attempt = dict(raw_attempt)
+        trade_date = _strict_iso_date(attempt.get("trade_date"))
+        entry_date = _strict_iso_date(attempt.get("entry_date"))
+        exit_date = _strict_iso_date(attempt.get("exit_date"))
+        raw_code = attempt.get("ts_code")
+        code = (
+            raw_code.strip()
+            if isinstance(raw_code, str)
+            else ""
+        )
+        if (
+            trade_date not in attempts_by_date
+            or entry_date is None
+            or exit_date is None
+            or not code
+            or not all(
+                isinstance(attempt.get(key), str)
+                for key in (
+                    "trade_date",
+                    "entry_date",
+                    "exit_date",
+                )
+            )
+            or entry_date <= trade_date
+            or exit_date < entry_date
+            or not isinstance(
+                attempt.get("execution_blocked"),
+                bool,
+            )
+            or not isinstance(attempt.get("gate_pass"), bool)
+            or not isinstance(attempt.get("exit_reason"), str)
+            or not str(
+                attempt.get("exit_reason") or ""
+            ).strip()
+            or attempt.get("exit_reason")
+            != str(attempt.get("exit_reason")).strip()
+        ):
+            return None
+        trade_calendar_index = calendar_index.get(trade_date)
+        entry_calendar_index = calendar_index.get(entry_date)
+        exit_calendar_index = calendar_index.get(exit_date)
+        if (
+            trade_calendar_index is None
+            or entry_calendar_index is None
+            or exit_calendar_index is None
+            or entry_calendar_index
+            != trade_calendar_index + 1
+            or exit_calendar_index < entry_calendar_index
+        ):
+            return None
+        holding_dates = list(
+            calendar_sessions[
+                entry_calendar_index : exit_calendar_index + 1
+            ]
+        )
+        if len(holding_dates) > maximum_holding_sessions:
+            return None
+        key = (trade_date, code)
+        if key in attempt_keys:
+            return None
+        attempt_keys.add(key)
+        live_return = _bounded_evidence_return(
+            attempt.get("live_adjusted_return_pct")
+        )
+        forward_return = _bounded_evidence_return(
+            attempt.get("forward_return_pct")
+        )
+        if live_return is None or forward_return is None:
+            return None
+        path = attempt.get("valuation_path")
+        if attempt["execution_blocked"]:
+            if (
+                exit_date != entry_date
+                or path != []
+                or attempt["exit_reason"]
+                not in _EVIDENCE_BLOCKED_EXIT_REASONS
+                or not np.isclose(
+                    live_return,
+                    0.0,
+                    rtol=0.0,
+                    atol=1e-12,
+                )
+            ):
+                return None
+            attempts.append(attempt)
+            attempts_by_date[trade_date].append(attempt)
+            continue
+        if (
+            not isinstance(path, list)
+            or not path
+            or len(path) > maximum_holding_sessions
+        ):
+            return None
+        is_deferred = len(holding_dates) > holding_sessions
+        if (
+            (
+                is_deferred
+                and attempt["exit_reason"]
+                not in _EVIDENCE_DEFERRED_EXIT_REASONS
+            )
+            or (
+                not is_deferred
+                and attempt["exit_reason"]
+                not in _EVIDENCE_REGULAR_EXIT_REASONS
+            )
+        ):
+            return None
+        path_dates: list[str] = []
+        path_returns: list[float] = []
+        for raw_point in path:
+            if (
+                not isinstance(raw_point, Mapping)
+                or set(raw_point) != _EVIDENCE_PATH_POINT_KEYS
+            ):
+                return None
+            path_date = _strict_iso_date(raw_point.get("date"))
+            path_return = _bounded_evidence_return(
+                raw_point.get("return_pct")
+            )
+            if (
+                path_date is None
+                or not isinstance(raw_point.get("date"), str)
+                or path_return is None
+            ):
+                return None
+            path_dates.append(path_date)
+            path_returns.append(path_return)
+        if (
+            path_dates != sorted(path_dates)
+            or len(path_dates) != len(set(path_dates))
+            or path_dates != holding_dates
+            or path_dates[0] != entry_date
+            or path_dates[-1] != exit_date
+            or not np.isclose(
+                path_returns[-1],
+                live_return,
+                rtol=0.0,
+                atol=1e-9,
+            )
+        ):
+            return None
+        attempts.append(attempt)
+        attempts_by_date[trade_date].append(attempt)
+    return attempts, attempts_by_date
+
+
+def _validate_oos_session_diagnostics(
+    raw_diagnostics: Sequence[Any],
+    *,
+    session_dates: Sequence[str],
+    top_k: int,
+) -> list[dict[str, Any]] | None:
+    if len(raw_diagnostics) != len(session_dates):
+        return None
+    normalized: list[dict[str, Any]] = []
+    seen_dates: set[str] = set()
+    for raw in raw_diagnostics:
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw)
+            != _EVIDENCE_SESSION_DIAGNOSTIC_KEYS
+        ):
+            return None
+        item = dict(raw)
+        trade_date = _strict_iso_date(item.get("trade_date"))
+        universe_codes = item.get("universe_codes")
+        benchmark_codes = item.get("benchmark_codes")
+        sample_count = item.get("sample_count")
+        benchmark_evaluable = item.get("benchmark_evaluable")
+        if (
+            trade_date not in session_dates
+            or trade_date in seen_dates
+            or not isinstance(item.get("trade_date"), str)
+            or not isinstance(universe_codes, list)
+            or not universe_codes
+            or universe_codes
+            != sorted(set(universe_codes))
+            or any(
+                not isinstance(code, str)
+                or not code
+                or code != code.strip()
+                for code in universe_codes
+            )
+            or item.get("universe_codes_sha256")
+            != _canonical_codes_sha256(universe_codes)
+            or isinstance(sample_count, bool)
+            or not isinstance(sample_count, int)
+            or sample_count < 0
+            or sample_count > len(universe_codes)
+            or not isinstance(benchmark_codes, list)
+            or any(
+                not isinstance(code, str)
+                for code in benchmark_codes
+            )
+            or benchmark_codes
+            != _deterministic_benchmark_codes(
+                universe_codes,
+                trade_date=trade_date or "",
+                top_k=top_k,
+            )
+            or not isinstance(benchmark_evaluable, bool)
+            or (
+                benchmark_evaluable
+                and len(benchmark_codes) != int(top_k)
+            )
+        ):
+            return None
+        rank_ic = _finite_evidence_number(item.get("rank_ic"))
+        bottom = _bounded_evidence_return(
+            item.get("bottom_quantile_return_pct")
+        )
+        top = _bounded_evidence_return(
+            item.get("top_quantile_return_pct")
+        )
+        spread = _bounded_evidence_return(
+            item.get("top_bottom_spread_pct")
+        )
+        if sample_count == 0:
+            if any(
+                item.get(key) is not None
+                for key in (
+                    "rank_ic",
+                    "bottom_quantile_return_pct",
+                    "top_quantile_return_pct",
+                    "top_bottom_spread_pct",
+                )
+            ):
+                return None
+        else:
+            if (
+                item.get("rank_ic") is not None
+                and rank_ic is None
+            ):
+                return None
+            if (
+                rank_ic is not None
+                and not -1.0 <= rank_ic <= 1.0
+            ):
+                return None
+            if (
+                item.get("bottom_quantile_return_pct") is not None
+                and bottom is None
+            ) or (
+                item.get("top_quantile_return_pct") is not None
+                and top is None
+            ) or (
+                item.get("top_bottom_spread_pct") is not None
+                and spread is None
+            ):
+                return None
+            if (
+                spread is not None
+                and (bottom is None or top is None)
+            ):
+                return None
+            if (
+                bottom is not None
+                and top is not None
+                and spread is None
+            ):
+                return None
+            if (
+                spread is not None
+                and not np.isclose(
+                    float(top) - float(bottom),
+                    float(spread),
+                    rtol=0.0,
+                    atol=1e-8,
+                )
+            ):
+                return None
+        seen_dates.add(str(trade_date))
+        normalized.append(item)
+    if [item["trade_date"] for item in normalized] != list(
+        session_dates
+    ):
+        return None
+    return normalized
 
 
 _EVIDENCE_CALENDAR_SNAPSHOT_KEYS = frozenset(
@@ -4009,13 +5813,37 @@ def _validate_preregistered_oos_evidence(
         "windows": [],
         "portfolio": {},
         "gated_portfolio": {},
+        "benchmark_portfolio": {},
+        "gated_benchmark_portfolio": {},
         "calendar_snapshot": {},
         "data_quality_assessment": {},
+        "feature_freshness": {},
+        "raw_data_fingerprint": {},
     }
     if (
         not registration.get("ok")
         or not isinstance(model, Mapping)
         or not _verify_preregistered_oos_evidence_seal(evidence)
+    ):
+        return invalid
+    protocol_binding_valid, _binding_reason = (
+        validate_frozen_protocol_binding(
+            {"protocol_binding": evidence.get("protocol_binding")}
+        )
+    )
+    if not protocol_binding_valid:
+        return invalid
+    raw_data_fingerprint = _validate_raw_data_fingerprint(
+        evidence.get("raw_data_fingerprint"),
+        require_lock_eligible=True,
+    )
+    if raw_data_fingerprint is None:
+        return invalid
+    if (
+        evidence.get("diagnostic_policy_version")
+        != OOS_DIAGNOSTIC_POLICY_VERSION
+        or evidence.get("benchmark_policy_version")
+        != BENCHMARK_POLICY_VERSION
     ):
         return invalid
 
@@ -4027,6 +5855,32 @@ def _validate_preregistered_oos_evidence(
         evidence.get("window_sessions")
     )
     if top_k is None or holding_sessions is None or window_sessions is None:
+        return invalid
+    validation_rules = registration["record"].get(
+        "research_validation_rules"
+    )
+    validation_rules = (
+        validation_rules
+        if isinstance(validation_rules, Mapping)
+        else {}
+    )
+    evaluation_window_count = _positive_evidence_int(
+        validation_rules.get("evaluation_window_count")
+    )
+    registered_window_sessions = _positive_evidence_int(
+        validation_rules.get("window_sessions")
+    )
+    oos_session_count = _positive_evidence_int(
+        validation_rules.get("oos_session_count")
+    )
+    if (
+        evaluation_window_count is None
+        or registered_window_sessions != window_sessions
+        or oos_session_count
+        != evaluation_window_count * window_sessions
+        or validation_rules.get("stop_rule")
+        != "first_fixed_prefix_only"
+    ):
         return invalid
 
     raw_locking_protocol = evidence.get("locking_protocol")
@@ -4050,6 +5904,10 @@ def _validate_preregistered_oos_evidence(
             raw_locking_protocol,
             locking_protocol,
         )
+        or not _canonical_json_equal(
+            locking_protocol,
+            registration["record"].get("research_protocol"),
+        )
         or locking_config["top_k"] != top_k
         or locking_config["test_days"] != window_sessions
         or locking_config["hold_days"] + 1 != holding_sessions
@@ -4069,10 +5927,17 @@ def _validate_preregistered_oos_evidence(
     data_quality_assessment = _validate_data_quality_assessment(
         evidence.get("data_quality_assessment")
     )
+    feature_freshness = _validate_feature_freshness(
+        evidence.get("feature_freshness")
+    )
     calendar_validation = _validate_evidence_calendar_snapshot(
         evidence.get("calendar_snapshot")
     )
-    if data_quality_assessment is None or calendar_validation is None:
+    if (
+        data_quality_assessment is None
+        or feature_freshness is None
+        or calendar_validation is None
+    ):
         return invalid
     calendar_snapshot, calendar_sessions = calendar_validation
     calendar_index = {
@@ -4085,6 +5950,12 @@ def _validate_preregistered_oos_evidence(
     raw_windows = evidence.get("windows")
     raw_trades = evidence.get("trades")
     raw_attempts = evidence.get("attempts")
+    raw_session_diagnostics = evidence.get(
+        "session_diagnostics"
+    )
+    raw_benchmark_attempts = evidence.get(
+        "benchmark_attempts"
+    )
     if not all(
         isinstance(value, list)
         for value in (
@@ -4093,7 +5964,15 @@ def _validate_preregistered_oos_evidence(
             raw_windows,
             raw_trades,
             raw_attempts,
+            raw_session_diagnostics,
+            raw_benchmark_attempts,
         )
+    ):
+        return invalid
+    if (
+        len(raw_dates) != oos_session_count
+        or len(raw_windows) != evaluation_window_count
+        or evidence.get("window_count") != evaluation_window_count
     ):
         return invalid
     session_dates = [_strict_iso_date(value) for value in raw_dates]
@@ -4112,8 +5991,7 @@ def _validate_preregistered_oos_evidence(
         or len(pending_session_dates) != len(
             set(pending_session_dates)
         )
-        or len(session_dates) % window_sessions != 0
-        or len(pending_session_dates) >= window_sessions
+        or bool(pending_session_dates)
     ):
         return invalid
     session_dates = [str(value) for value in session_dates]
@@ -4132,18 +6010,37 @@ def _validate_preregistered_oos_evidence(
         or observation_cutoff is None
         or not isinstance(evidence.get("observation_cutoff"), str)
         or calendar_snapshot.get("start_date") != oos_not_before
+        or feature_freshness["latest_feature_date"]
+        not in calendar_index
         or observation_cutoff not in calendar_index
     ):
         return invalid
+    latest_feature_date = feature_freshness["latest_feature_date"]
+    feature_sessions = [
+        value
+        for value in calendar_sessions
+        if value <= latest_feature_date
+    ]
+    maturity_lag_sessions = feature_freshness[
+        "maturity_lag_sessions"
+    ]
+    if (
+        not feature_sessions
+        or feature_sessions[-1] != latest_feature_date
+        or len(feature_sessions) <= maturity_lag_sessions
+    ):
+        return invalid
+    maturity_observation_cutoff = feature_sessions[
+        -(maturity_lag_sessions + 1)
+    ]
     expected_session_dates = [
         value
         for value in calendar_sessions
-        if value <= observation_cutoff
-    ]
+        if value <= maturity_observation_cutoff
+    ][:oos_session_count]
     if (
-        expected_session_dates
-        != session_dates + pending_session_dates
-        or set(session_dates).intersection(pending_session_dates)
+        expected_session_dates != session_dates
+        or observation_cutoff != expected_session_dates[-1]
     ):
         return invalid
 
@@ -4155,8 +6052,47 @@ def _validate_preregistered_oos_evidence(
     if (
         evidence.get("model_sha256") != expected_model_sha256
         or actual_model_sha256 != expected_model_sha256
+        or not _validate_fixed_oos_window_sequence(
+            raw_windows,
+            session_dates=session_dates,
+            expected_session_dates=expected_session_dates,
+            model_sha256=str(expected_model_sha256 or ""),
+            window_sessions=window_sessions,
+        )
     ):
         return invalid
+
+    session_diagnostics = _validate_oos_session_diagnostics(
+        raw_session_diagnostics,
+        session_dates=session_dates,
+        top_k=top_k,
+    )
+    validated_benchmark_track = _validate_evidence_attempt_track(
+        raw_benchmark_attempts,
+        session_dates=session_dates,
+        calendar_sessions=calendar_sessions,
+        calendar_index=calendar_index,
+        holding_sessions=holding_sessions,
+    )
+    if (
+        session_diagnostics is None
+        or validated_benchmark_track is None
+    ):
+        return invalid
+    benchmark_attempts, benchmark_attempts_by_date = (
+        validated_benchmark_track
+    )
+    for diagnostic in session_diagnostics:
+        trade_date = diagnostic["trade_date"]
+        benchmark_codes = [
+            str(attempt.get("ts_code") or "")
+            for attempt in benchmark_attempts_by_date[trade_date]
+        ]
+        if diagnostic["benchmark_evaluable"]:
+            if benchmark_codes != diagnostic["benchmark_codes"]:
+                return invalid
+        elif benchmark_codes:
+            return invalid
 
     attempts: list[dict[str, Any]] = []
     attempts_by_date: dict[str, list[dict[str, Any]]] = {
@@ -4401,10 +6337,13 @@ def _validate_preregistered_oos_evidence(
         session_dates=session_dates,
         trades=trades,
         attempts=attempts,
+        benchmark_attempts=benchmark_attempts,
+        session_diagnostics=session_diagnostics,
         model=model,
         test_days=window_sessions,
         top_k=top_k,
         holding_sessions=holding_sessions,
+        validation_rules=validation_rules,
     )
     window_count = evidence.get("window_count")
     if (
@@ -4420,6 +6359,14 @@ def _validate_preregistered_oos_evidence(
             evidence.get("gated_portfolio"),
             results["gated_portfolio"],
         )
+        or not _canonical_json_equal(
+            evidence.get("benchmark_portfolio"),
+            results["benchmark_portfolio"],
+        )
+        or not _canonical_json_equal(
+            evidence.get("gated_benchmark_portfolio"),
+            results["gated_benchmark_portfolio"],
+        )
     ):
         return invalid
     return {
@@ -4428,9 +6375,16 @@ def _validate_preregistered_oos_evidence(
         "windows": results["windows"],
         "portfolio": results["portfolio"],
         "gated_portfolio": results["gated_portfolio"],
+        "benchmark_portfolio": results["benchmark_portfolio"],
+        "gated_benchmark_portfolio": results[
+            "gated_benchmark_portfolio"
+        ],
+        "session_diagnostics": session_diagnostics,
         "locking_protocol": locking_protocol,
         "calendar_snapshot": calendar_snapshot,
         "data_quality_assessment": data_quality_assessment,
+        "feature_freshness": feature_freshness,
+        "raw_data_fingerprint": raw_data_fingerprint,
     }
 
 
@@ -4447,6 +6401,10 @@ def assess_research_result(
         preregistered if isinstance(preregistered, Mapping) else {}
     )
     registered_model = walk_forward.get("registered_model")
+    top_level_raw_fingerprint = _validate_raw_data_fingerprint(
+        walk_forward.get("raw_data_fingerprint"),
+        require_lock_eligible=False,
+    )
     try:
         evidence_validation = _validate_preregistered_oos_evidence(
             preregistered,
@@ -4460,9 +6418,25 @@ def assess_research_result(
             "windows": [],
             "portfolio": {},
             "gated_portfolio": {},
+            "benchmark_portfolio": {},
+            "gated_benchmark_portfolio": {},
+            "session_diagnostics": [],
             "calendar_snapshot": {},
             "data_quality_assessment": {},
+            "feature_freshness": {},
+            "raw_data_fingerprint": {},
         }
+    evidence_raw_fingerprint = evidence_validation.get(
+        "raw_data_fingerprint"
+    )
+    raw_fingerprint_matches = bool(
+        top_level_raw_fingerprint is not None
+        and isinstance(evidence_raw_fingerprint, Mapping)
+        and _canonical_json_equal(
+            top_level_raw_fingerprint,
+            evidence_raw_fingerprint,
+        )
+    )
     raw_windows = evidence_validation["windows"]
     expected_model_sha256 = registration.get("model_sha256")
     windows = [
@@ -4481,10 +6455,19 @@ def assess_research_result(
         if isinstance(data_quality_assessment, Mapping)
         else {}
     )
+    feature_freshness = evidence_validation.get(
+        "feature_freshness"
+    )
+    feature_freshness = (
+        feature_freshness
+        if isinstance(feature_freshness, Mapping)
+        else {}
+    )
     preregistered_window_count = preregistered.get("window_count")
     preregistered_matches = (
         registration.get("ok")
         and evidence_validation["ok"]
+        and raw_fingerprint_matches
         and preregistered.get("protocol_version")
         == registration["record"]["protocol_version"]
         and preregistered.get("calibrated_through")
@@ -4509,9 +6492,26 @@ def assess_research_result(
     if preregistered_matches:
         ungated_portfolio = evidence_validation["portfolio"]
         gated_portfolio = evidence_validation["gated_portfolio"]
+        ungated_benchmark_portfolio = evidence_validation[
+            "benchmark_portfolio"
+        ]
+        gated_benchmark_portfolio = evidence_validation[
+            "gated_benchmark_portfolio"
+        ]
+        session_diagnostics = evidence_validation.get(
+            "session_diagnostics"
+        )
+        session_diagnostics = (
+            session_diagnostics
+            if isinstance(session_diagnostics, list)
+            else []
+        )
     else:
         ungated_portfolio = {}
         gated_portfolio = {}
+        ungated_benchmark_portfolio = {}
+        gated_benchmark_portfolio = {}
+        session_diagnostics = []
     frozen_model_eligible = _registered_frozen_model_is_eligible(
         registered_model,
         registration,
@@ -4522,36 +6522,130 @@ def assess_research_result(
     )
     if gate_evidence_eligible:
         portfolio = gated_portfolio or ungated_portfolio
+        benchmark_portfolio = (
+            gated_benchmark_portfolio
+            or ungated_benchmark_portfolio
+        )
         assessment_portfolio_source = "gated"
+        assessment_benchmark_source = "gated"
         window_return_field = "gated_live_total_return_pct"
     else:
         portfolio = ungated_portfolio
+        benchmark_portfolio = ungated_benchmark_portfolio
         assessment_portfolio_source = "ungated_due_to_gate_provenance"
+        assessment_benchmark_source = (
+            "ungated_due_to_gate_provenance"
+        )
         window_return_field = "live_total_return_pct"
     window_returns = [
         float(window.get(window_return_field, window.get("total_return_pct", 0.0)) or 0.0)
         for window in windows
     ]
+    complete_window_count = sum(
+        window.get("complete") is True
+        for window in windows
+    )
+    incomplete_window_count = len(windows) - complete_window_count
     positive_window_rate = (
         sum(1 for value in window_returns if value > 0.0) / len(window_returns)
         if window_returns
         else 0.0
     )
-    validation_flags = [
-        bool(window.get("model_validation_stable"))
+    diagnostic_window_flags = [
+        window.get("oos_diagnostic_pass") is True
         for window in windows
     ]
-    validation_acceptance_rate = (
-        sum(validation_flags) / len(validation_flags)
-        if validation_flags
+    diagnostic_window_acceptance_rate = (
+        sum(diagnostic_window_flags) / len(diagnostic_window_flags)
+        if diagnostic_window_flags
         else 0.0
     )
     total_return = float(portfolio.get("total_return_pct") or 0.0)
+    benchmark_total_return = float(
+        benchmark_portfolio.get("total_return_pct") or 0.0
+    )
+    excess_return = _relative_total_return_pct(
+        portfolio,
+        benchmark_portfolio,
+    )
     max_drawdown = float(portfolio.get("max_drawdown_pct") or 0.0)
     executed_trades = int(portfolio.get("executed_trade_count") or 0)
     confidence_interval = _bootstrap_total_return_ci(portfolio)
     lower_bound = confidence_interval.get("lower")
-    rules = RESEARCH_VALIDATION_RULES
+    excess_confidence_interval = _bootstrap_excess_return_ci(
+        portfolio,
+        benchmark_portfolio,
+    )
+    excess_lower_bound = excess_confidence_interval.get("lower")
+    registered_rules = (
+        registration.get("record", {}).get(
+            "research_validation_rules"
+        )
+        if registration.get("ok")
+        else None
+    )
+    rules = (
+        registered_rules
+        if isinstance(registered_rules, Mapping)
+        else RESEARCH_VALIDATION_RULES
+    )
+    required_diagnostic_rules = (
+        "minimum_diagnostic_sample_count_per_session",
+        "minimum_diagnostic_window_acceptance_rate",
+        "minimum_oos_mean_rank_ic",
+        "minimum_positive_rank_ic_session_rate",
+        "minimum_oos_mean_spread_pct",
+        "minimum_positive_spread_session_rate",
+        "minimum_excess_return_pct",
+        "minimum_excess_bootstrap_lower_return_pct",
+    )
+    research_validation_rules_complete = all(
+        _finite_evidence_number(rules.get(key)) is not None
+        for key in required_diagnostic_rules
+    )
+    effective_rules = dict(RESEARCH_VALIDATION_RULES)
+    effective_rules.update(OOS_RESEARCH_ACCEPTANCE_RULES)
+    effective_rules.update(dict(rules))
+    diagnostics_by_date = {
+        str(item.get("trade_date") or ""): item
+        for item in session_diagnostics
+        if isinstance(item, Mapping)
+    }
+    aggregate_diagnostics = _window_oos_diagnostics(
+        session_dates,
+        diagnostics_by_date,
+        validation_rules=effective_rules,
+    )
+    fixed_oos_window_mismatch = False
+    if isinstance(registered_rules, Mapping):
+        expected_window_count = _positive_evidence_int(
+            registered_rules.get("evaluation_window_count")
+        )
+        expected_window_sessions = _positive_evidence_int(
+            registered_rules.get("window_sessions")
+        )
+        expected_session_count = _positive_evidence_int(
+            registered_rules.get("oos_session_count")
+        )
+        supplied_dates = preregistered.get("session_dates")
+        supplied_windows = preregistered.get("windows")
+        fixed_oos_window_mismatch = bool(
+            expected_window_count is None
+            or expected_window_sessions is None
+            or expected_session_count is None
+            or expected_session_count
+            != expected_window_count * expected_window_sessions
+            or registered_rules.get("stop_rule")
+            != "first_fixed_prefix_only"
+            or not isinstance(supplied_dates, list)
+            or len(supplied_dates) != expected_session_count
+            or not isinstance(supplied_windows, list)
+            or len(supplied_windows) != expected_window_count
+            or preregistered.get("window_count")
+            != expected_window_count
+            or preregistered.get("window_sessions")
+            != expected_window_sessions
+        )
     unevaluable_oos_days = sum(
         int(window.get("unevaluable_oos_days") or 0)
         for window in windows
@@ -4559,6 +6653,37 @@ def assess_research_result(
     unevaluable_oos_slots = sum(
         int(window.get("unevaluable_oos_slots") or 0)
         for window in windows
+    )
+    benchmark_unevaluable_oos_days = sum(
+        int(window.get("benchmark_unevaluable_oos_days") or 0)
+        for window in windows
+    )
+    benchmark_unevaluable_oos_slots = sum(
+        int(window.get("benchmark_unevaluable_oos_slots") or 0)
+        for window in windows
+    )
+    diagnostic_session_count = int(
+        aggregate_diagnostics.get("diagnostic_session_count") or 0
+    )
+    diagnostic_evaluable_session_count = int(
+        aggregate_diagnostics.get(
+            "diagnostic_evaluable_session_count"
+        )
+        or 0
+    )
+    mean_rank_ic = aggregate_diagnostics.get("oos_mean_rank_ic")
+    positive_rank_ic_rate = float(
+        aggregate_diagnostics.get(
+            "oos_positive_rank_ic_rate"
+        )
+        or 0.0
+    )
+    mean_spread = aggregate_diagnostics.get(
+        "oos_mean_top_bottom_spread_pct"
+    )
+    positive_spread_rate = float(
+        aggregate_diagnostics.get("oos_positive_spread_rate")
+        or 0.0
     )
 
     failure_reasons = []
@@ -4571,6 +6696,25 @@ def assess_research_result(
         )
     if not preregistered_supplied or not preregistered_matches:
         failure_reasons.append("preregistered_oos_evidence_mismatch")
+    if (
+        top_level_raw_fingerprint is not None
+        and top_level_raw_fingerprint.get("source_kind") == "injected"
+    ):
+        failure_reasons.append(
+            "injected_research_panel_not_lock_eligible"
+        )
+    elif top_level_raw_fingerprint is None:
+        failure_reasons.append("raw_data_fingerprint_invalid")
+    elif top_level_raw_fingerprint.get("lock_eligible") is not True:
+        failure_reasons.append("raw_data_fingerprint_not_lock_eligible")
+    elif evidence_validation["ok"] and not raw_fingerprint_matches:
+        failure_reasons.append("raw_data_fingerprint_mismatch")
+    if fixed_oos_window_mismatch:
+        failure_reasons.append("fixed_oos_window_mismatch")
+    if not research_validation_rules_complete:
+        failure_reasons.append(
+            "research_validation_rules_incomplete"
+        )
     if (
         evidence_validation["ok"]
         and data_quality_assessment.get("status") != "ok"
@@ -4586,26 +6730,103 @@ def assess_research_result(
         failure_reasons.append("preregistered_frozen_model_unavailable")
     if not windows:
         failure_reasons.append("no_preregistered_oos_windows")
+    if (
+        bool(rules.get("require_complete_oos_windows"))
+        and incomplete_window_count
+    ):
+        failure_reasons.append("incomplete_oos_window")
+    if feature_freshness.get("clock_source") != "system":
+        failure_reasons.append("non_system_research_clock")
     if not gate_evidence_eligible:
         failure_reasons.append("market_gate_historical_calibration_overlap")
     if unevaluable_oos_days or unevaluable_oos_slots:
         failure_reasons.append("incomplete_oos_outcomes")
-    if len(windows) < int(rules["minimum_oos_windows"]):
+    if (
+        benchmark_unevaluable_oos_days
+        or benchmark_unevaluable_oos_slots
+    ):
+        failure_reasons.append("incomplete_benchmark_outcomes")
+    if (
+        diagnostic_session_count != len(session_dates)
+        or diagnostic_evaluable_session_count != len(session_dates)
+    ):
+        failure_reasons.append("incomplete_oos_diagnostics")
+    if complete_window_count < int(
+        effective_rules["minimum_oos_windows"]
+    ):
         failure_reasons.append("insufficient_oos_windows")
     if total_return <= 0.0:
         failure_reasons.append("non_positive_oos_return")
-    if max_drawdown < float(rules["maximum_drawdown_pct"]):
+    if max_drawdown < float(
+        effective_rules["maximum_drawdown_pct"]
+    ):
         failure_reasons.append("drawdown_limit_exceeded")
-    if positive_window_rate < float(rules["minimum_positive_window_rate"]):
+    if positive_window_rate < float(
+        effective_rules["minimum_positive_window_rate"]
+    ):
         failure_reasons.append("positive_window_rate_below_minimum")
-    if validation_acceptance_rate < float(rules["minimum_validation_acceptance_rate"]):
-        failure_reasons.append("validation_acceptance_rate_below_minimum")
-    if executed_trades < int(rules["minimum_executed_trades"]):
+    if diagnostic_window_acceptance_rate < float(
+        effective_rules[
+            "minimum_diagnostic_window_acceptance_rate"
+        ]
+    ):
+        failure_reasons.append(
+            "diagnostic_window_acceptance_rate_below_minimum"
+        )
+    if (
+        mean_rank_ic is None
+        or float(mean_rank_ic)
+        < float(effective_rules["minimum_oos_mean_rank_ic"])
+    ):
+        failure_reasons.append("oos_mean_rank_ic_below_minimum")
+    if positive_rank_ic_rate < float(
+        effective_rules[
+            "minimum_positive_rank_ic_session_rate"
+        ]
+    ):
+        failure_reasons.append(
+            "positive_rank_ic_session_rate_below_minimum"
+        )
+    if (
+        mean_spread is None
+        or float(mean_spread)
+        <= float(effective_rules["minimum_oos_mean_spread_pct"])
+    ):
+        failure_reasons.append("oos_mean_spread_below_minimum")
+    if positive_spread_rate < float(
+        effective_rules[
+            "minimum_positive_spread_session_rate"
+        ]
+    ):
+        failure_reasons.append(
+            "positive_spread_session_rate_below_minimum"
+        )
+    if excess_return <= float(
+        effective_rules["minimum_excess_return_pct"]
+    ):
+        failure_reasons.append("excess_return_below_minimum")
+    if executed_trades < int(
+        effective_rules["minimum_executed_trades"]
+    ):
         failure_reasons.append("insufficient_executed_trades")
     if lower_bound is None:
         failure_reasons.append("bootstrap_confidence_unavailable")
-    elif float(lower_bound) <= float(rules["minimum_bootstrap_lower_return_pct"]):
+    elif float(lower_bound) <= float(
+        effective_rules["minimum_bootstrap_lower_return_pct"]
+    ):
         failure_reasons.append("bootstrap_lower_bound_not_positive")
+    if excess_lower_bound is None:
+        failure_reasons.append(
+            "excess_bootstrap_confidence_unavailable"
+        )
+    elif float(excess_lower_bound) <= float(
+        effective_rules[
+            "minimum_excess_bootstrap_lower_return_pct"
+        ]
+    ):
+        failure_reasons.append(
+            "excess_bootstrap_lower_bound_not_positive"
+        )
 
     metric_gate_passed = not failure_reasons
     required_sessions = int(rules["prospective_sessions_required"])
@@ -4629,7 +6850,9 @@ def assess_research_result(
         "preregistered_frozen_model_eligible": frozen_model_eligible,
         "preregistered_oos_evidence_verified": bool(
             evidence_validation["ok"]
+            and raw_fingerprint_matches
         ),
+        "raw_data_fingerprint_verified": raw_fingerprint_matches,
         "data_quality_assessment_verified": bool(
             evidence_validation["ok"]
             and data_quality_assessment
@@ -4637,16 +6860,57 @@ def assess_research_result(
         "data_quality_status": data_quality_assessment.get("status"),
         "market_gate_evidence_eligible": gate_evidence_eligible,
         "assessment_portfolio_source": assessment_portfolio_source,
+        "assessment_benchmark_source": assessment_benchmark_source,
         "failure_reasons": failure_reasons,
         "oos_window_count": len(windows),
+        "oos_complete_window_count": complete_window_count,
+        "oos_incomplete_window_count": incomplete_window_count,
+        "research_clock_source": feature_freshness.get(
+            "clock_source"
+        ),
         "positive_window_rate": round(float(positive_window_rate), 4),
-        "validation_acceptance_rate": round(float(validation_acceptance_rate), 4),
+        "diagnostic_window_acceptance_rate": round(
+            float(diagnostic_window_acceptance_rate),
+            4,
+        ),
+        "validation_acceptance_rate": round(
+            float(diagnostic_window_acceptance_rate),
+            4,
+        ),
+        "oos_diagnostic_session_count": diagnostic_session_count,
+        "oos_diagnostic_evaluable_session_count": (
+            diagnostic_evaluable_session_count
+        ),
+        "oos_mean_rank_ic": mean_rank_ic,
+        "oos_positive_rank_ic_session_rate": round(
+            positive_rank_ic_rate,
+            4,
+        ),
+        "oos_mean_top_bottom_spread_pct": mean_spread,
+        "oos_positive_spread_session_rate": round(
+            positive_spread_rate,
+            4,
+        ),
         "oos_total_return_pct": round(total_return, 4),
+        "benchmark_total_return_pct": round(
+            benchmark_total_return,
+            4,
+        ),
+        "oos_excess_return_pct": round(excess_return, 4),
         "oos_max_drawdown_pct": round(max_drawdown, 4),
         "executed_trade_count": executed_trades,
         "unevaluable_oos_days": unevaluable_oos_days,
         "unevaluable_oos_slots": unevaluable_oos_slots,
+        "benchmark_unevaluable_oos_days": (
+            benchmark_unevaluable_oos_days
+        ),
+        "benchmark_unevaluable_oos_slots": (
+            benchmark_unevaluable_oos_slots
+        ),
         "bootstrap_total_return_ci_pct": confidence_interval,
+        "bootstrap_excess_return_ci_pct": (
+            excess_confidence_interval
+        ),
         "prospective_sessions_observed": 0,
         "prospective_sessions_required": required_sessions,
         "prospective_sessions_source": "frozen_experiment_store_only",
@@ -4654,8 +6918,68 @@ def assess_research_result(
     }
 
 
-def build_frozen_experiment_manifest(report: dict[str, Any]) -> dict[str, Any]:
+def _validate_manifest_research_clock(
+    report: Mapping[str, Any],
+    preregistered_oos: Mapping[str, Any],
+    *,
+    validation_now: datetime | None = None,
+) -> dict[str, Any]:
+    freshness = _validate_feature_freshness(
+        preregistered_oos.get("feature_freshness")
+    )
+    if (
+        freshness is None
+        or freshness.get("clock_source") != "system"
+    ):
+        raise ValueError(
+            "research evidence must use the system clock"
+        )
+    try:
+        evidence_as_of = datetime.fromisoformat(
+            str(freshness["as_of"]).replace("Z", "+00:00")
+        ).astimezone(_CHINA_TIMEZONE)
+        generated_at = datetime.strptime(
+            str(report.get("generated_at") or ""),
+            "%Y-%m-%d %H:%M:%S",
+        ).replace(tzinfo=_CHINA_TIMEZONE)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "research report clock is invalid"
+        ) from exc
+    if generated_at != evidence_as_of:
+        raise ValueError(
+            "report generation time does not match signed evidence"
+        )
+    current = _china_datetime(validation_now)
+    if evidence_as_of > current + timedelta(seconds=30):
+        raise ValueError("research report clock is in the future")
+    current_completed_session = (
+        _authoritative_completed_trade_date(current)
+    )
+    if (
+        current_completed_session is None
+        or freshness.get("expected_latest_feature_date")
+        != current_completed_session
+    ):
+        raise ValueError(
+            "research report does not cover the current completed trading session"
+        )
+    return freshness
+
+
+def build_frozen_experiment_manifest(
+    report: dict[str, Any],
+    *,
+    _validation_now: datetime | None = None,
+) -> dict[str, Any]:
     """Build a lock manifest only from a trusted, server-produced research report."""
+    if (
+        _validation_now is not None
+        and os.environ.get("QUANT_TEST_IMPORT") != "1"
+    ):
+        raise ValueError(
+            "validation clock override is only available in tests"
+        )
     if not isinstance(report, dict):
         raise ValueError("research report is required")
     if str(report.get("data_status") or report.get("status") or "") != "ok":
@@ -4686,6 +7010,9 @@ def build_frozen_experiment_manifest(report: dict[str, Any]) -> dict[str, Any]:
             "gated_portfolio": report.get("gated_portfolio") or {},
             "preregistered_oos": preregistered_oos,
             "registered_model": model,
+            "raw_data_fingerprint": report.get(
+                "raw_data_fingerprint"
+            ),
         }
     )
     if not bool(
@@ -4698,12 +7025,28 @@ def build_frozen_experiment_manifest(report: dict[str, Any]) -> dict[str, Any]:
         "lock_eligible",
         "failure_reasons",
         "oos_window_count",
+        "oos_complete_window_count",
+        "oos_incomplete_window_count",
+        "research_clock_source",
+        "diagnostic_window_acceptance_rate",
+        "oos_diagnostic_session_count",
+        "oos_diagnostic_evaluable_session_count",
+        "oos_mean_rank_ic",
+        "oos_positive_rank_ic_session_rate",
+        "oos_mean_top_bottom_spread_pct",
+        "oos_positive_spread_session_rate",
         "oos_total_return_pct",
+        "benchmark_total_return_pct",
+        "oos_excess_return_pct",
         "oos_max_drawdown_pct",
         "executed_trade_count",
+        "benchmark_unevaluable_oos_days",
+        "benchmark_unevaluable_oos_slots",
+        "bootstrap_excess_return_ci_pct",
         "preregistration_record_sha256",
         "preregistered_frozen_model_eligible",
         "preregistered_oos_evidence_verified",
+        "raw_data_fingerprint_verified",
         "data_quality_assessment_verified",
         "data_quality_status",
     )
@@ -4721,6 +7064,11 @@ def build_frozen_experiment_manifest(report: dict[str, Any]) -> dict[str, Any]:
     ):
         raise ValueError("stored research assessment does not match evidence")
     assessment = recomputed_assessment
+    _validate_manifest_research_clock(
+        report,
+        preregistered_oos,
+        validation_now=_validation_now,
+    )
 
     try:
         report_locking_protocol = _build_locking_protocol(
@@ -4740,17 +7088,19 @@ def build_frozen_experiment_manifest(report: dict[str, Any]) -> dict[str, Any]:
         )
     config = report_locking_protocol["config"]
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
-    latest_trade_date = summary.get("latest_trade_date")
+    latest_oos_observation_date = summary.get(
+        "latest_oos_observation_date"
+    )
     signed_observation_cutoff = preregistered_oos.get(
         "observation_cutoff"
     )
     if (
-        not isinstance(latest_trade_date, str)
-        or _strict_iso_date(latest_trade_date) is None
-        or latest_trade_date != signed_observation_cutoff
+        not isinstance(latest_oos_observation_date, str)
+        or _strict_iso_date(latest_oos_observation_date) is None
+        or latest_oos_observation_date != signed_observation_cutoff
     ):
         raise ValueError(
-            "latest trade date does not match signed OOS evidence"
+            "latest OOS observation date does not match signed evidence"
         )
     try:
         report_data_quality = _build_data_quality_assessment(
@@ -4784,13 +7134,37 @@ def build_frozen_experiment_manifest(report: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "data quality result does not match signed OOS evidence"
         )
+    report_raw_fingerprint = _validate_raw_data_fingerprint(
+        report.get("raw_data_fingerprint"),
+        require_lock_eligible=True,
+    )
+    signed_raw_fingerprint = _validate_raw_data_fingerprint(
+        preregistered_oos.get("raw_data_fingerprint"),
+        require_lock_eligible=True,
+    )
+    if (
+        report_raw_fingerprint is None
+        or signed_raw_fingerprint is None
+        or not _canonical_json_equal(
+            report_raw_fingerprint,
+            signed_raw_fingerprint,
+        )
+    ):
+        raise ValueError(
+            "raw data fingerprint does not match signed OOS evidence"
+        )
     mining_rules = report_locking_protocol["mining_rules"]
     execution_rules = report_locking_protocol["execution_rules"]
     backtest_policy = report_locking_protocol["backtest_policy"]
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "strategy_key": STRATEGY_KEY,
-        "protocol_binding": build_current_frozen_protocol_binding(),
+        "protocol_binding": json.loads(
+            json.dumps(
+                preregistered_oos["protocol_binding"],
+                ensure_ascii=False,
+            )
+        ),
         "model": json.loads(json.dumps(model, ensure_ascii=False)),
         "model_specification": {
             "protocol_version": MODEL_SPEC_PROTOCOL_VERSION,
@@ -4834,10 +7208,20 @@ def build_frozen_experiment_manifest(report: dict[str, Any]) -> dict[str, Any]:
         "data_quality_assessment": json.loads(
             json.dumps(report_data_quality, ensure_ascii=False)
         ),
+        "raw_data_fingerprint": json.loads(
+            json.dumps(report_raw_fingerprint, ensure_ascii=False)
+        ),
         "backtest_policy": json.loads(
             json.dumps(backtest_policy, ensure_ascii=False)
         ),
-        "acceptance_rules": dict(PROSPECTIVE_ACCEPTANCE_RULES),
+        "acceptance_rules": json.loads(
+            json.dumps(
+                registration["record"][
+                    "prospective_acceptance_rules"
+                ],
+                ensure_ascii=False,
+            )
+        ),
         "historical_evidence": {
             "scope": "preregistered_frozen_model_oos",
             "model_sha256": registration["model_sha256"],
@@ -4847,15 +7231,43 @@ def build_frozen_experiment_manifest(report: dict[str, Any]) -> dict[str, Any]:
             "calendar_snapshot_sha256": (
                 preregistered_oos.get("calendar_snapshot") or {}
             ).get("snapshot_sha256"),
+            "raw_data_root_sha256": report_raw_fingerprint.get(
+                "root_sha256"
+            ),
+            "feature_freshness": json.loads(
+                json.dumps(
+                    preregistered_oos.get("feature_freshness") or {},
+                    ensure_ascii=False,
+                )
+            ),
             "generated_at": str(report.get("generated_at") or ""),
             "latest_trade_date": signed_observation_cutoff,
             "oos_total_return_pct": assessment.get("oos_total_return_pct"),
+            "benchmark_total_return_pct": assessment.get(
+                "benchmark_total_return_pct"
+            ),
+            "oos_excess_return_pct": assessment.get(
+                "oos_excess_return_pct"
+            ),
             "oos_max_drawdown_pct": assessment.get("oos_max_drawdown_pct"),
             "executed_trade_count": assessment.get("executed_trade_count"),
             "bootstrap_total_return_ci_pct": assessment.get(
                 "bootstrap_total_return_ci_pct"
             )
             or {},
+            "bootstrap_excess_return_ci_pct": assessment.get(
+                "bootstrap_excess_return_ci_pct"
+            )
+            or {},
+            "diagnostic_window_acceptance_rate": assessment.get(
+                "diagnostic_window_acceptance_rate"
+            ),
+            "oos_mean_rank_ic": assessment.get(
+                "oos_mean_rank_ic"
+            ),
+            "oos_mean_top_bottom_spread_pct": assessment.get(
+                "oos_mean_top_bottom_spread_pct"
+            ),
         },
     }
 
@@ -5461,6 +7873,8 @@ def build_frozen_shadow_snapshot(
         )
 
     candidates: list[dict[str, Any]] = []
+    control_candidates: list[dict[str, Any]] = []
+    control_universe_codes_sha256 = _canonical_codes_sha256([])
     if data_status == "ok":
         candidate_features = features
         if (
@@ -5539,6 +7953,115 @@ def build_frozen_shadow_snapshot(
                     4,
                 )
                 trading_plan["position_pct"] = 0.0
+        control_universe = latest.copy()
+        for field in (
+            "amount_data_real",
+            "st_status_known",
+            "universe_eligible",
+        ):
+            if field in control_universe.columns:
+                control_universe = control_universe[
+                    control_universe[field].map(_is_trusted_marker)
+                ]
+        if (
+            market_signals_required
+            and "market_data_trusted" in control_universe.columns
+        ):
+            control_universe = control_universe[
+                control_universe["market_data_trusted"].map(
+                    _is_trusted_marker
+                )
+            ]
+        control_codes = sorted(
+            {
+                str(value)
+                for value in control_universe.get(
+                    "ts_code",
+                    pd.Series(dtype="string"),
+                ).dropna()
+                if str(value)
+            }
+        )
+        control_universe_codes_sha256 = (
+            _canonical_codes_sha256(control_codes)
+        )
+        top_k = max(1, int(config.get("top_k") or 5))
+        selected_control_codes = _deterministic_benchmark_codes(
+            control_codes,
+            trade_date=signal_date,
+            top_k=top_k,
+        )
+        if len(selected_control_codes) != top_k:
+            data_status = "degraded"
+            reason = "prospective_control_universe_too_small"
+            candidates = []
+        else:
+            indexed_control_universe = (
+                control_universe.assign(
+                    ts_code=control_universe["ts_code"].astype(str)
+                )
+                .drop_duplicates("ts_code", keep="first")
+                .set_index("ts_code", drop=False)
+            )
+            control_target = (
+                round(1.0 / float(top_k), 8)
+                if gate_result["pass"]
+                else 0.0
+            )
+            for rank, code in enumerate(
+                selected_control_codes,
+                start=1,
+            ):
+                row = indexed_control_universe.loc[code]
+                amount_ratio = _maybe_float(
+                    row.get("amount_ratio_20")
+                )
+                control_candidates.append(
+                    {
+                        "experiment_id": str(
+                            manifest.get("experiment_id") or ""
+                        ),
+                        "model_instance_id": str(
+                            manifest.get("model_instance_id") or ""
+                        ),
+                        "source_run_id": str(
+                            manifest.get("source_run_id") or ""
+                        ),
+                        "ts_code": code,
+                        "code": code,
+                        "trade_date": signal_date,
+                        "signal_date": signal_date,
+                        "candidate_rank": rank,
+                        "prospective_track": "control",
+                        "control_policy_version": (
+                            BENCHMARK_POLICY_VERSION
+                        ),
+                        "research_status": "locked_shadow",
+                        "deployment_eligible": False,
+                        "research_only": True,
+                        "gate_pass": bool(gate_result["pass"]),
+                        "selected": True,
+                        "shadow_target_position_pct": (
+                            control_target
+                        ),
+                        "position_pct": 0.0,
+                        "signal_amount_ratio_20": amount_ratio,
+                        "factor_explain": {
+                            "feature_snapshot": {
+                                "amount_ratio_20": amount_ratio,
+                            }
+                        },
+                        "hold_days": int(
+                            config.get("hold_days") or 2
+                        ),
+                        "stop_loss": float(
+                            config.get("stop_loss") or -0.035
+                        ),
+                        "take_profit": float(
+                            config.get("take_profit") or 0.07
+                        ),
+                    }
+                )
 
     return {
         "ok": data_status == "ok",
@@ -5551,7 +8074,12 @@ def build_frozen_shadow_snapshot(
             "latest_st_status_coverage": round(st_coverage, 4),
             "latest_market_data_trusted": market_trusted,
         },
+        "control_policy_version": BENCHMARK_POLICY_VERSION,
+        "control_universe_codes_sha256": (
+            control_universe_codes_sha256
+        ),
         "candidates": candidates,
+        "control_candidates": control_candidates,
     }
 
 
@@ -5826,6 +8354,11 @@ def _universe_eligibility_audit(
             "count_min": 0,
             "count_max": 0,
             "latest_count": 0,
+            "identity_match_date_count": 0,
+            "identity_coverage": 0.0,
+            "latest_identity_match": False,
+            "date_code_digests": [],
+            "identity_root_sha256": None,
         }
 
     panel_dates = pd.Index(
@@ -5852,6 +8385,11 @@ def _universe_eligibility_audit(
             dtype=int,
         )
     else:
+        aligned = pd.DataFrame(
+            False,
+            index=close.index,
+            columns=close.columns,
+        )
         eligible_counts = pd.Series(0, index=panel_dates, dtype=int)
 
     if not features.empty and "trade_date" in features.columns:
@@ -5865,6 +8403,76 @@ def _universe_eligibility_audit(
         )
     else:
         feature_counts = pd.Series(dtype=int)
+    feature_code_sets: dict[str, set[str]] = {}
+    if (
+        not features.empty
+        and {"trade_date", "ts_code"}.issubset(features.columns)
+    ):
+        normalized_features = features.assign(
+            trade_date=features["trade_date"].astype(str).str[:10],
+            ts_code=features["ts_code"].astype(str),
+        )
+        feature_code_sets = {
+            str(trade_date): set(group["ts_code"])
+            for trade_date, group in normalized_features.groupby(
+                "trade_date",
+                sort=False,
+            )
+        }
+    date_code_digests: list[dict[str, Any]] = []
+    identity_matches: list[bool] = []
+    for trade_date in required_dates:
+        date_text = str(trade_date)
+        positions = np.flatnonzero(panel_dates == date_text)
+        required_codes = (
+            sorted(
+                str(code)
+                for code, selected in aligned.iloc[
+                    int(positions[-1])
+                ].items()
+                if bool(selected)
+            )
+            if len(positions)
+            else []
+        )
+        panel_codes = sorted(feature_code_sets.get(date_text, set()))
+        required_digest = hashlib.sha256(
+            json.dumps(
+                required_codes,
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        panel_digest = hashlib.sha256(
+            json.dumps(
+                panel_codes,
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        identity_match = required_codes == panel_codes
+        identity_matches.append(identity_match)
+        date_code_digests.append(
+            {
+                "trade_date": date_text,
+                "required_code_count": len(required_codes),
+                "panel_code_count": len(panel_codes),
+                "missing_code_count": len(
+                    set(required_codes) - set(panel_codes)
+                ),
+                "unexpected_code_count": len(
+                    set(panel_codes) - set(required_codes)
+                ),
+                "required_codes_sha256": required_digest,
+                "panel_codes_sha256": panel_digest,
+                "identity_match": identity_match,
+            }
+        )
+    identity_series = pd.Series(
+        identity_matches,
+        index=required_dates,
+        dtype=bool,
+    )
     usable_counts = pd.concat(
         [
             eligible_counts.reindex(required_dates, fill_value=0),
@@ -5873,18 +8481,53 @@ def _universe_eligibility_audit(
         axis=1,
     ).min(axis=1).astype(int)
     target = max(0, int(required_count))
-    sufficient = usable_counts >= target if target > 0 else usable_counts >= 0
+    count_sufficient = (
+        usable_counts >= target
+        if target > 0
+        else usable_counts >= 0
+    )
+    sufficient = count_sufficient & identity_series
     coverage = round(float(sufficient.mean()), 4) if len(sufficient) else 0.0
     latest_count = int(usable_counts.iloc[-1]) if not usable_counts.empty else 0
+    identity_coverage = (
+        round(float(identity_series.mean()), 4)
+        if len(identity_series)
+        else 0.0
+    )
+    identity_payload = json.dumps(
+        date_code_digests,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return {
         "required_count": target,
         "required_date_count": int(len(usable_counts)),
         "sufficient_date_count": int(sufficient.sum()),
         "coverage": coverage,
-        "latest_coverage": 1.0 if target > 0 and latest_count >= target else 0.0,
+        "latest_coverage": (
+            1.0
+            if (
+                target > 0
+                and latest_count >= target
+                and bool(identity_series.iloc[-1])
+            )
+            else 0.0
+        ),
         "count_min": int(usable_counts.min()) if not usable_counts.empty else 0,
         "count_max": int(usable_counts.max()) if not usable_counts.empty else 0,
         "latest_count": latest_count,
+        "identity_match_date_count": int(identity_series.sum()),
+        "identity_coverage": identity_coverage,
+        "latest_identity_match": (
+            bool(identity_series.iloc[-1])
+            if not identity_series.empty
+            else False
+        ),
+        "date_code_digests": date_code_digests,
+        "identity_root_sha256": hashlib.sha256(
+            identity_payload
+        ).hexdigest(),
     }
 
 
@@ -5907,7 +8550,12 @@ def run_relay_research(
     require_latest_data: bool = True,
     feedback_user_id: int | None = None,
     load_live_feedback: bool = True,
+    research_as_of: datetime | None = None,
 ) -> dict[str, Any]:
+    research_clock = _china_datetime(research_as_of)
+    research_clock_source = (
+        "system" if research_as_of is None else "injected"
+    )
     n_stocks = _strict_protocol_int(
         n_stocks,
         "config.n_stocks",
@@ -6010,7 +8658,11 @@ def run_relay_research(
             point_in_time=True,
             require_security_master=True,
         )
-    out_path = Path(out_dir) if out_dir is not None else _OUT_BASE / datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_path = (
+        Path(out_dir)
+        if out_dir is not None
+        else _OUT_BASE / research_clock.strftime("%Y%m%d-%H%M%S")
+    )
     close_frame = panel.get("close")
     panel_stock_count = int(
         close_frame.shape[1]
@@ -6039,6 +8691,10 @@ def run_relay_research(
     market_signals_required = bool(include_market_signals or market_signal_frame is not None)
     if market_signal_frame is None and include_market_signals:
         market_signal_frame = build_market_signal_frame(features_raw["trade_date"].unique())
+    raw_data_fingerprint = _build_research_raw_data_fingerprint(
+        panel,
+        market_signal_frame=market_signal_frame,
+    )
     features = apply_market_signals(features_raw, market_signal_frame)
     if market_signals_required and "market_data_trusted" in features.columns:
         trusted_feature_rows = int(
@@ -6119,12 +8775,21 @@ def run_relay_research(
         panel_stock_count=panel_stock_count,
         universe_required_count=n_stocks,
     )
+    feature_freshness = _build_feature_freshness(
+        training_features,
+        labels,
+        as_of=research_clock,
+        require_authoritative_latest=require_latest_data,
+        clock_source=research_clock_source,
+    )
     wf = walk_forward_relay(
         training_features, labels,
         train_days=train_days, test_days=test_days, step_days=step_days, top_k=top_k,
         market_gate=rules.get("market_gate"),
         locking_protocol=locking_protocol,
         data_quality_assessment=data_quality_assessment,
+        feature_freshness=feature_freshness,
+        raw_data_fingerprint=raw_data_fingerprint,
     )
     research_assessment = assess_research_result(wf)
     if (
@@ -6338,6 +9003,13 @@ def run_relay_research(
         "lookahead_policy": "features_current_or_past_labels_t_plus_1",
         "backtest_policy": dict(FROZEN_BACKTEST_POLICY),
         "latest_trade_date": features["trade_date"].max() if not features.empty else None,
+        "latest_oos_observation_date": (
+            (wf.get("preregistered_oos") or {}).get(
+                "observation_cutoff"
+            )
+            if isinstance(wf.get("preregistered_oos"), Mapping)
+            else None
+        ),
         "latest_candidate_count": int(len(candidates)),
         "latest_candidate_tier_counts": tier_counts,
         "live_feedback_code_count": int(len(live_feedback)),
@@ -6426,6 +9098,7 @@ def run_relay_research(
         "portfolio": wf.get("portfolio") or {},
         "gated_portfolio": wf.get("gated_portfolio") or {},
         "preregistered_oos": wf.get("preregistered_oos") or {},
+        "raw_data_fingerprint": raw_data_fingerprint,
         "mining_rules": rules,
         "condition_explain": condition_explain(
             rules,
@@ -6434,7 +9107,7 @@ def run_relay_research(
         "windows": wf["windows"],
         "trades": wf["trades"],
         "latest_candidates": candidates,
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "generated_at": research_clock.strftime("%Y-%m-%d %H:%M:%S"),
     }
     _write_outputs(out_path, features, labels, report, candidates, latest_model)
     return report

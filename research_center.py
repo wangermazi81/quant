@@ -1145,7 +1145,7 @@ def _autogen_worker():
 # ──────────────────────────────────────────────────────────────
 # 概念日更调度器
 # ──────────────────────────────────────────────────────────────
-def run_concept_scheduler():
+def run_concept_scheduler(progress_callback=None):
     """每日 08:30 / 15:10 自动刷新产业概念列表并写盘，保证新出现的概念当天可见。
 
     逻辑：
@@ -1172,6 +1172,8 @@ def run_concept_scheduler():
 
     def _worker():
         while True:
+            if progress_callback:
+                progress_callback()
             now = _dt.datetime.now()
             targets = []
             for h, m in [(8, 30), (15, 10)]:
@@ -1179,10 +1181,23 @@ def run_concept_scheduler():
                 if t <= now:
                     t += _dt.timedelta(days=1)
                 targets.append(t)
-            sleep_secs = min((t - now).total_seconds() for t in targets)
-            time.sleep(max(60, sleep_secs))
+            sleep_secs = max(
+                60,
+                min((t - now).total_seconds() for t in targets),
+            )
+            deadline = time.monotonic() + sleep_secs
+            while True:
+                if progress_callback:
+                    progress_callback()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(60, max(1, remaining)))
             _refresh()
+            if progress_callback:
+                progress_callback()
 
     t = threading.Thread(target=_worker, daemon=True, name="concept-daily")
     t.start()
     logger.info("[research] 概念日更调度器已启动（每日 08:30 / 15:10 刷新）")
+    return t

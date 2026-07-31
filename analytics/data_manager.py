@@ -1059,11 +1059,7 @@ def refresh_factor_security_master_history(
         relevant = master["code"].isin(required_codes)
 
     required_count = int(relevant.sum())
-    minimum_usable = (
-        required_count
-        if n_stocks is None
-        else min(max(0, int(n_stocks)), required_count)
-    )
+    minimum_usable = required_count
     entries = []
     for index, row in master.loc[relevant].iterrows():
         code = str(row["code"])

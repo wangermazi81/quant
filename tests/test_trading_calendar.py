@@ -3,8 +3,7 @@
 
 守两件事：
 1. 落在工作日的法定休市日不得被当成交易日（原实现只看「周中 + 时间段」）；
-2. 没有日历数据时必须**退回原行为**而不是把交易全停掉 —— 拿不到日历
-   不能成为停机理由。
+2. 没有可信日历时必须停止自动交易，不能拿旧行情生成模拟盘或实盘信号。
 """
 import hashlib
 import json
@@ -56,8 +55,8 @@ def test_weekday_not_in_holiday_list_is_trading_day(tmp_path, monkeypatch):
     assert trading_calendar.is_trading_day(workday) is True
 
 
-def test_missing_calendar_falls_back_to_weekday_only(tmp_path, monkeypatch):
-    """没有日历数据时退回原行为——不能因为拿不到日历就把交易停掉"""
+def test_missing_calendar_fails_closed(tmp_path, monkeypatch):
+    """缺少权威日历时宁可不交易，也不能把普通工作日当成交易日。"""
     missing = tmp_path / "no_such_calendar.json"
     monkeypatch.setattr(trading_calendar, "CALENDAR_FILE", missing)
     monkeypatch.setattr(trading_calendar, "_cache", None, raising=False)
@@ -66,11 +65,11 @@ def test_missing_calendar_falls_back_to_weekday_only(tmp_path, monkeypatch):
     workday = date(2026, 7, 27)
     while workday.weekday() >= 5:
         workday = date.fromordinal(workday.toordinal() + 1)
-    assert trading_calendar.is_trading_day(workday) is True
+    assert trading_calendar.is_trading_day(workday) is False
     assert trading_calendar.has_calendar(workday.year) is False
 
 
-def test_corrupted_calendar_falls_back(tmp_path, monkeypatch):
+def test_corrupted_calendar_fails_closed(tmp_path, monkeypatch):
     f = tmp_path / "trading_calendar.json"
     f.write_text("{not json", encoding="utf-8")
     monkeypatch.setattr(trading_calendar, "CALENDAR_FILE", f)
@@ -80,7 +79,23 @@ def test_corrupted_calendar_falls_back(tmp_path, monkeypatch):
     workday = date(2026, 7, 27)
     while workday.weekday() >= 5:
         workday = date.fromordinal(workday.toordinal() + 1)
-    assert trading_calendar.is_trading_day(workday) is True
+    assert trading_calendar.is_trading_day(workday) is False
+
+
+def test_is_trading_time_fails_closed_when_calendar_check_raises(
+    monkeypatch,
+):
+    workday = datetime(2026, 7, 27, 10, 30)
+    monkeypatch.setattr(market_data, "_now", lambda: workday)
+    monkeypatch.setattr(
+        trading_calendar,
+        "is_trading_day",
+        lambda _value: (_ for _ in ()).throw(
+            RuntimeError("calendar unavailable")
+        ),
+    )
+
+    assert market_data.is_trading_time() is False
 
 
 def test_is_trading_time_rejects_holiday(tmp_path, monkeypatch):

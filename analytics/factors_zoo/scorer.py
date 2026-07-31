@@ -65,6 +65,21 @@ _TH_REV_IC   = 0.01
 _TH_DEAD_IR  = 0.1
 
 
+class _TrustedCachePanel(dict[str, pd.DataFrame]):
+    """Panel loaded with the validated point-in-time cache snapshot."""
+
+    def __init__(
+        self,
+        frames: dict[str, pd.DataFrame],
+        *,
+        security_master_snapshot: pd.DataFrame,
+        snapshot_reference: str,
+    ) -> None:
+        super().__init__(frames)
+        self.security_master_snapshot = security_master_snapshot
+        self.snapshot_reference = str(snapshot_reference)
+
+
 # ============================== 数据加载 ==============================
 
 def _security_code(value: Any) -> str:
@@ -376,6 +391,7 @@ def build_panel_from_cache(
         if ranked_csvs
         else None
     )
+    required_codes: set[str] = set()
     if (
         require_security_master
         and not _security_master_lifecycle_trusted(
@@ -403,15 +419,9 @@ def build_panel_from_cache(
         }
         cached_codes = {item[2] for item in ranked_csvs}
         missing_histories = sorted(required_codes - cached_codes)
-        usable_history_count = len(required_codes & cached_codes)
-        missing_blocks_target = (
-            n_stocks is None
-            or usable_history_count < max(0, int(n_stocks))
-        )
         if (
             require_security_master
             and missing_histories
-            and missing_blocks_target
         ):
             preview = ",".join(missing_histories[:10])
             raise ValueError(
@@ -486,6 +496,15 @@ def build_panel_from_cache(
             if point_in_time:
                 cols["continuity_eligible"] = _price_continuity_mask(df).astype(np.float64)
             per[code] = cols
+
+    if require_security_master and required_codes:
+        unusable_histories = sorted(required_codes - set(per))
+        if unusable_histories:
+            preview = ",".join(unusable_histories[:10])
+            raise ValueError(
+                "point-in-time security master histories unusable: "
+                f"{len(unusable_histories)} codes ({preview})"
+            )
 
     if skipped_short:
         logger.info(f"[scorer] 跳过 {skipped_short} 只历史不足 {min_history} 天的股票")
@@ -563,7 +582,18 @@ def build_panel_from_cache(
             f"need {n_stocks}. Refresh or repair daily data before generating live signals."
         )
 
-    used_codes = [str(code) for code in columns if bool(eligible[code].any())]
+    if require_security_master and required_codes:
+        used_codes = [
+            str(code)
+            for code in columns
+            if str(code) in required_codes
+        ]
+    else:
+        used_codes = [
+            str(code)
+            for code in columns
+            if bool(eligible[code].any())
+        ]
     if not used_codes:
         return {}, []
     for field in tuple(panel):
@@ -572,7 +602,16 @@ def build_panel_from_cache(
             panel[field] = panel[field].where(continuity.loc[:, used_codes])
     panel["universe_eligible"] = eligible.loc[:, used_codes]
     panel["security_master_eligible"] = security_master_eligible.loc[:, used_codes]
-    return panel, sorted(used_codes)
+    trusted_panel = _TrustedCachePanel(
+        panel,
+        security_master_snapshot=security_master,
+        snapshot_reference=(
+            "factor_daily_cache:"
+            f"{pd.Timestamp(index.min()).strftime('%Y-%m-%d')}:"
+            f"{pd.Timestamp(index.max()).strftime('%Y-%m-%d')}"
+        ),
+    )
+    return trusted_panel, sorted(used_codes)
 
 
 # ============================== IC 计算 ==============================

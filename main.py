@@ -156,12 +156,9 @@ def _init_runtime():
     from core import changelog_manager as clm
     clm.init_db()
     # 迁移必须在 pb.init_paper_db() 之前，先给旧表加 user_id 列
-    try:
-        from core import db_migration as _dbm
-        _dbm.migrate_paper_trading_db()
-        _dbm.migrate_users_db()
-    except Exception as _e:
-        logger.warning(f"[db_migration] {_e}")
+    from core import db_migration as _dbm
+    _dbm.migrate_paper_trading_db()
+    _dbm.migrate_users_db()
     pb.init_paper_db()
 
     if platform.system() == "Windows":

@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import os
+import stat
 import subprocess
 import sys
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
@@ -215,24 +218,158 @@ def systemd_control_group(service: str) -> str:
     return control_group
 
 
+def cleanup_scheduler_lock(app_dir: str | Path) -> Path:
+    lock_path = (
+        Path(app_dir).resolve()
+        / "data"
+        / "research"
+        / "relay_factor"
+        / "auto_scheduler.lock"
+    )
+    try:
+        lock_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"cannot remove scheduler migration lock: {exc}"
+        ) from exc
+    return lock_path
+
+
+def _open_scheduler_guard(path: str | Path):
+    guard_path = Path(path)
+    if guard_path.is_symlink():
+        raise RuntimeError(
+            "scheduler kernel guard must be a regular file"
+        )
+    nofollow = int(getattr(os, "O_NOFOLLOW", 0) or 0)
+    if sys.platform.startswith("linux") and nofollow == 0:
+        raise RuntimeError(
+            "scheduler kernel guard requires O_NOFOLLOW"
+        )
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | int(getattr(os, "O_CLOEXEC", 0) or 0)
+        | int(getattr(os, "O_BINARY", 0) or 0)
+        | nofollow
+    )
+    descriptor = os.open(guard_path, flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RuntimeError(
+                "scheduler kernel guard must be a regular file"
+            )
+        return os.fdopen(descriptor, "r+b")
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+@contextmanager
+def _exclusive_scheduler_guard(app_dir: str | Path):
+    guard_path = (
+        Path(app_dir).resolve()
+        / "data"
+        / "research"
+        / "relay_factor"
+        / "auto_scheduler.lock.guard"
+    )
+    guard_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = _open_scheduler_guard(guard_path)
+    lock_kind = ""
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+                os.fsync(handle.fileno())
+            handle.seek(0)
+            try:
+                msvcrt.locking(
+                    handle.fileno(),
+                    msvcrt.LK_NBLCK,
+                    1,
+                )
+            except OSError as exc:
+                if exc.errno in {
+                    errno.EACCES,
+                    errno.EAGAIN,
+                    errno.EDEADLK,
+                } or getattr(exc, "winerror", None) in {33, 36}:
+                    raise RuntimeError(
+                        "scheduler kernel guard is still held"
+                    ) from exc
+                raise
+            lock_kind = "windows"
+        elif sys.platform.startswith("linux"):
+            import fcntl
+
+            try:
+                fcntl.flock(
+                    handle.fileno(),
+                    fcntl.LOCK_EX | fcntl.LOCK_NB,
+                )
+            except OSError as exc:
+                if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                    raise RuntimeError(
+                        "scheduler kernel guard is still held"
+                    ) from exc
+                raise
+            lock_kind = "linux"
+        else:
+            raise RuntimeError(
+                f"unsupported scheduler lock platform: {sys.platform}"
+            )
+        yield
+    finally:
+        try:
+            if lock_kind == "windows":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(
+                    handle.fileno(),
+                    msvcrt.LK_UNLCK,
+                    1,
+                )
+            elif lock_kind == "linux":
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--app-dir", required=True)
     parser.add_argument("--web-service", required=True)
     parser.add_argument("--proc-root", default="/proc")
+    parser.add_argument("--cleanup-lock", action="store_true")
     args = parser.parse_args(argv)
     try:
         web_cgroup = systemd_control_group(args.web_service)
-        processes = read_processes(args.proc_root)
+        guard = (
+            _exclusive_scheduler_guard(args.app_dir)
+            if args.cleanup_lock
+            else nullcontext()
+        )
+        with guard:
+            processes = read_processes(args.proc_root)
+            issues = find_unsafe_processes(
+                processes,
+                app_dir=args.app_dir,
+                web_cgroup=web_cgroup,
+            )
+            if not issues and args.cleanup_lock:
+                cleanup_scheduler_lock(args.app_dir)
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"ERROR: scheduler quiescence check failed: {exc}", file=sys.stderr)
         return 2
 
-    issues = find_unsafe_processes(
-        processes,
-        app_dir=args.app_dir,
-        web_cgroup=web_cgroup,
-    )
     if not issues:
         print("Scheduler quiescence verified.")
         return 0

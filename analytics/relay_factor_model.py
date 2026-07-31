@@ -28,7 +28,7 @@ MAX_ABS_FACTOR_CORRELATION = 0.98
 MIN_VALIDATION_SAMPLE_COUNT = 10
 MIN_VALIDATION_RANK_IC = 0.01
 FIXED_MODEL_PARAMETERS = {"max_factors": 6, "ridge_alpha": 5.0}
-MODEL_SPEC_PROTOCOL_VERSION = "relay_fixed_ridge_preregistered_v3"
+MODEL_SPEC_PROTOCOL_VERSION = "relay_fixed_ridge_preregistered_v5"
 MODEL_SPEC_CALIBRATED_THROUGH = "2026-07-30"
 MODEL_CANDIDATES = (FIXED_MODEL_PARAMETERS,)
 _DATE_COLUMNS = ("trade_date", "signal_date", "date")
@@ -75,7 +75,10 @@ FROZEN_MODEL_PAYLOAD_KEYS = (
 
 
 def _numeric_values(frame: pd.DataFrame, column: str) -> np.ndarray:
-    values = pd.to_numeric(frame[column], errors="coerce").to_numpy(dtype=float)
+    values = pd.to_numeric(frame[column], errors="coerce").to_numpy(
+        dtype=float,
+        copy=True,
+    )
     values[~np.isfinite(values)] = np.nan
     return values
 
@@ -111,8 +114,14 @@ def _spearman(left: np.ndarray, right: np.ndarray) -> float | None:
     if valid.sum() < 2:
         return None
 
-    left_rank = pd.Series(left[valid]).rank(method="average").to_numpy(dtype=float)
-    right_rank = pd.Series(right[valid]).rank(method="average").to_numpy(dtype=float)
+    left_rank = pd.Series(left[valid]).rank(method="average").to_numpy(
+        dtype=float,
+        copy=True,
+    )
+    right_rank = pd.Series(right[valid]).rank(method="average").to_numpy(
+        dtype=float,
+        copy=True,
+    )
     left_rank -= left_rank.mean()
     right_rank -= right_rank.mean()
     denominator = float(np.sqrt(np.dot(left_rank, left_rank) * np.dot(right_rank, right_rank)))
@@ -470,9 +479,15 @@ def factor_diagnostics(frame: pd.DataFrame, scores: pd.Series, target_col: str) 
         }
 
     if scores.index.equals(frame.index):
-        score_values = pd.to_numeric(scores, errors="coerce").to_numpy(dtype=float)
+        score_values = pd.to_numeric(scores, errors="coerce").to_numpy(
+            dtype=float,
+            copy=True,
+        )
     else:
-        score_values = pd.to_numeric(scores.reindex(frame.index), errors="coerce").to_numpy(dtype=float)
+        score_values = pd.to_numeric(
+            scores.reindex(frame.index),
+            errors="coerce",
+        ).to_numpy(dtype=float, copy=True)
     score_values[~np.isfinite(score_values)] = np.nan
 
     target = _numeric_values(frame, target_col)

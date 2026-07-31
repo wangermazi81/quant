@@ -153,7 +153,7 @@ def test_validation_reports_fixed_preregistered_model_diagnostics():
         "ridge_alpha": 5.0,
     }
     assert selection["model_spec_protocol_version"] == (
-        "relay_fixed_ridge_preregistered_v3"
+        "relay_fixed_ridge_preregistered_v5"
     )
     assert selection["model_spec_calibrated_through"] == "2026-07-30"
     assert selection["validation_stable"] is True

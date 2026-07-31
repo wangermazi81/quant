@@ -1,0 +1,301 @@
+{
+  "schema_version": 3,
+  "strategy_key": "relay_factor_mining_v2",
+  "protocol_version": "relay_fixed_ridge_preregistered_v4",
+  "registered_at": "2026-07-31T18:18:34+08:00",
+  "calibrated_through": "2026-07-30",
+  "oos_not_before": "2026-08-03",
+  "parameters": {
+    "max_factors": 6,
+    "ridge_alpha": 5.0
+  },
+  "candidate_factors": [
+    "ret_3",
+    "ret_5",
+    "ret_10",
+    "ret_20",
+    "volume_ratio_20",
+    "amount_ratio_20",
+    "near_high_20",
+    "drawdown_20",
+    "volatility_10",
+    "limit_count_20"
+  ],
+  "research_protocol": {
+    "protocol_version": "relay_locking_protocol_v2",
+    "config": {
+      "n_stocks": 800,
+      "days": 320,
+      "train_days": 60,
+      "test_days": 10,
+      "step_days": 10,
+      "hold_days": 2,
+      "stop_loss": -0.035,
+      "take_profit": 0.07,
+      "top_k": 10,
+      "candidate_pool_size": 100,
+      "include_market_signals": true,
+      "model_version": "relay_factor_mining_v4_fixed_ridge",
+      "universe_selection": "point_in_time_eligible_stable_sha256_sample",
+      "data_quality_policy": {
+        "discontinuous_price_history": "quarantine_from_first_detectable_break",
+        "max_abs_daily_return": 0.35,
+        "amount_without_real_cache": "proxy_for_legacy_rules_excluded_from_v2_model",
+        "minimum_real_amount_coverage": 0.98,
+        "st_status_source": "point_in_time_cache_is_st_then_name",
+        "st_status_unknown": "display_only_zero_position_and_reject_execution",
+        "universe_eligibility_missing": "research_data_status_degraded"
+      }
+    },
+    "mining_rules": {
+      "weights": {
+        "ret_5": 0.18,
+        "ret_10": 0.12,
+        "ret_20": 0.12,
+        "volume_ratio_20": 0.16,
+        "amount_ratio_20": 0.1,
+        "near_high_20": 0.16,
+        "limit_count_20": 0.1,
+        "volatility_10": -0.08,
+        "overheat_ret_3": -0.08
+      },
+      "risk_thresholds": {
+        "overextended_3d": 0.24,
+        "high_volatility": 0.08,
+        "weak_volume": 0.75,
+        "deep_drawdown": -0.18
+      },
+      "tier_thresholds": {
+        "strong_percentile": 0.97,
+        "watch_percentile": 0.9,
+        "strong_requires_no_risk": true
+      },
+      "filters": {
+        "min_relay_score": null,
+        "min_volume_ratio_20": null,
+        "min_near_high_20": null,
+        "exclude_high_risk": false
+      },
+      "market_gate": {
+        "enabled": true,
+        "emo_min": 20.0,
+        "emo_max": 70.0,
+        "require_cooling": true,
+        "calibrated_through": "2026-07-24",
+        "protocol_version": "market_emotion_gate_v1",
+        "calibration_source": "auto-20260724_90_session_research"
+      },
+      "descriptions": {
+        "weights": {
+          "ret_5": "5 day momentum rank weight",
+          "ret_10": "10 day momentum rank weight",
+          "ret_20": "20 day momentum rank weight",
+          "volume_ratio_20": "volume expansion rank weight versus 20 day average",
+          "amount_ratio_20": "turnover amount expansion rank weight versus 20 day average",
+          "near_high_20": "distance to 20 day high rank weight",
+          "limit_count_20": "recent limit-up count rank weight",
+          "volatility_10": "10 day volatility penalty weight",
+          "overheat_ret_3": "3 day overheated momentum penalty weight"
+        },
+        "risk_thresholds": {
+          "overextended_3d": "flag when 3 day return is above this value",
+          "high_volatility": "flag when 10 day volatility is above this value",
+          "weak_volume": "flag when volume ratio is below this value",
+          "deep_drawdown": "flag when 20 day drawdown is below this value"
+        },
+        "tier_thresholds": {
+          "strong_percentile": "minimum score percentile for strong tier",
+          "watch_percentile": "minimum score percentile for watch tier",
+          "strong_requires_no_risk": "strong tier requires an empty risk flag list"
+        },
+        "filters": {
+          "min_relay_score": "drop candidates below this relay score when set",
+          "min_volume_ratio_20": "drop candidates below this volume ratio when set",
+          "min_near_high_20": "drop candidates below this 20 day high proximity when set",
+          "exclude_high_risk": "drop candidates that have any risk flag"
+        },
+        "market_gate": {
+          "enabled": "skip entries on days that fail the market regime gate",
+          "emo_min": "minimum market emotion score (inclusive) to allow entries",
+          "emo_max": "maximum market emotion score (exclusive); above = overheated",
+          "require_cooling": "only enter when today's emotion <= previous trading day"
+        }
+      }
+    },
+    "execution_rules": {
+      "round_trip_cost_pct": 0.16,
+      "slippage_pct": 0.2,
+      "high_open_block_pct": 7.5,
+      "weak_open_block_pct": -4.0,
+      "near_limit_gap_pct": 9.2,
+      "low_amount_ratio": 0.55,
+      "path_policy": "t_plus_1_stop_first_on_same_bar_v1",
+      "limit_threshold_policy": "board_and_point_in_time_st_v1"
+    },
+    "backtest_policy": {
+      "purge": "exit_date_before_test_start",
+      "validation": "chronological_tail_20pct",
+      "entry": "next_session_open",
+      "same_bar_stop_target": "stop_first_conservative",
+      "blocked_slots": "remain_cash_without_redistribution",
+      "capital": "cash_aware_overlapping_positions",
+      "maximum_deferred_exit_sessions": 20,
+      "compounding": true
+    }
+  },
+  "research_validation_rules": {
+    "protocol_version": "relay_research_acceptance_preregistered_v1",
+    "calibrated_through": "2026-07-30",
+    "assessment_schedule": "complete_window_boundary_only_v1",
+    "require_complete_oos_windows": true,
+    "minimum_oos_windows": 12,
+    "evaluation_window_count": 12,
+    "window_sessions": 10,
+    "oos_session_count": 120,
+    "stop_rule": "first_fixed_prefix_only",
+    "minimum_positive_window_rate": 0.5,
+    "minimum_validation_acceptance_rate": 0.5,
+    "minimum_executed_trades": 100,
+    "maximum_drawdown_pct": -15.0,
+    "minimum_bootstrap_lower_return_pct": 0.0,
+    "prospective_sessions_required": 60
+  },
+  "prospective_acceptance_rules": {
+    "protocol_version": "prospective_60_session_bootstrap_v2",
+    "required_sessions": 60,
+    "minimum_total_return_pct": 2.0,
+    "maximum_drawdown_pct": -10.0,
+    "minimum_executed_trades": 60,
+    "minimum_bootstrap_lower_return_pct": 0.0,
+    "maximum_protocol_violations": 0,
+    "preregistered_at": "2026-07-31T18:18:34+08:00",
+    "calibrated_through": "2026-07-30"
+  },
+  "executable_model_sha256": "3ecb520d0479f26d6acb1541aa4800ae72fc4b212f942065e363ae6c0f8451b6",
+  "executable_model": {
+    "selected_factors": [
+      "volatility_10",
+      "volume_ratio_20",
+      "ret_10",
+      "ret_20",
+      "ret_5",
+      "limit_count_20"
+    ],
+    "coefficients": {
+      "volatility_10": -0.005540784578485183,
+      "volume_ratio_20": -0.006344744058917713,
+      "ret_10": 0.007672815592292694,
+      "ret_20": 0.007596631739067345,
+      "ret_5": 0.0045857065688300735,
+      "limit_count_20": -0.00486758899245507
+    },
+    "normalized_weights": {
+      "volatility_10": -0.1513533512211115,
+      "volume_ratio_20": -0.17331449406754823,
+      "ret_10": 0.2095924027987731,
+      "ret_20": 0.20751134706898214,
+      "ret_5": 0.1252642197287606,
+      "limit_count_20": -0.13296418511482444
+    },
+    "feature_means": {
+      "volatility_10": 0.500625,
+      "volume_ratio_20": 0.500625,
+      "ret_10": 0.500625,
+      "ret_20": 0.500625,
+      "ret_5": 0.500625,
+      "limit_count_20": 0.5006267612476921
+    },
+    "feature_scales": {
+      "volatility_10": 0.2886749084903447,
+      "volume_ratio_20": 0.28867490687756,
+      "ret_10": 0.2886748247041973,
+      "ret_20": 0.2886748784768121,
+      "ret_5": 0.28867468935477075,
+      "limit_count_20": 0.19060631973038256
+    },
+    "training_ic": {
+      "ret_3": -0.018605213302108257,
+      "ret_5": -0.03377076451030275,
+      "ret_10": -0.04074206626241162,
+      "ret_20": -0.04063814312697349,
+      "volume_ratio_20": -0.06760692534863479,
+      "amount_ratio_20": -0.06599334905066989,
+      "near_high_20": 0.0041227857894943305,
+      "drawdown_20": 0.00412199065647542,
+      "volatility_10": -0.07573007807867001,
+      "limit_count_20": -0.02464695042109162
+    },
+    "dropped_correlated_factors": {
+      "amount_ratio_20": "volume_ratio_20"
+    },
+    "target_col": "model_target_pct",
+    "ridge_alpha": 5.0,
+    "model_version": "relay_factor_mining_v4_fixed_ridge",
+    "amount_data_coverage": 0.9987,
+    "fallback": false,
+    "fallback_reason": null,
+    "strategy_key": "relay_factor_mining_v2",
+    "training_scope": "preregistered_calibration_only",
+    "selection_source": "repository_preregistered_executable_model",
+    "selected_parameters": {
+      "max_factors": 6,
+      "ridge_alpha": 5.0
+    },
+    "model_spec_protocol_version": "relay_fixed_ridge_preregistered_v4",
+    "model_spec_calibrated_through": "2026-07-30",
+    "validation_accepted": false,
+    "validation_rejection_reason": "validation_top_quantile_non_positive",
+    "validation_stable": false,
+    "validation_stability_reason": "validation_top_quantile_non_positive",
+    "selected_market_gate": {
+      "enabled": true,
+      "emo_min": 20.0,
+      "emo_max": 70.0,
+      "require_cooling": true,
+      "calibrated_through": "2026-07-24",
+      "protocol_version": "market_emotion_gate_v1",
+      "calibration_source": "auto-20260724_90_session_research"
+    },
+    "fit_start": "2025-07-04",
+    "fit_end": "2026-05-11",
+    "fit_sample_count": 162710,
+    "fit_label_max_exit": "2026-05-13",
+    "validation_start": "2026-05-14",
+    "validation_end": "2026-07-27",
+    "validation_sample_count": 41600,
+    "refit_start": "2025-07-04",
+    "refit_end": "2026-07-27",
+    "refit_sample_count": 206400,
+    "refit_label_max_exit": "2026-07-30",
+    "refit_policy": "fixed_registered_parameters_on_calibration_rows_only",
+    "frozen_model_candidate_eligible": false,
+    "frozen_model_candidate_reason": "validation_top_quantile_non_positive"
+  },
+  "calibration_evidence": {
+    "algorithm": "canonical_csv_sha256_v1",
+    "columns": [
+      "trade_date",
+      "ts_code",
+      "exit_date",
+      "model_target_pct",
+      "amount_data_real",
+      "market_data_trusted",
+      "research_evaluable",
+      "ret_3",
+      "ret_5",
+      "ret_10",
+      "ret_20",
+      "volume_ratio_20",
+      "amount_ratio_20",
+      "near_high_20",
+      "drawdown_20",
+      "volatility_10",
+      "limit_count_20"
+    ],
+    "row_count": 206400,
+    "trade_date_start": "2025-07-04",
+    "trade_date_end": "2026-07-27",
+    "label_max_exit": "2026-07-30",
+    "sha256": "f2709fb43fe9f67e5c091107a6632873db6990f2b9498d4c5cbd11828cea8f9b"
+  }
+}

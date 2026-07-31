@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import sqlite3
 from unittest.mock import patch
 
@@ -37,6 +37,25 @@ _JULY_2026_FIXED_SESSIONS = [
     "2026-07-28",
     "2026-07-29",
 ]
+
+
+@pytest.fixture(autouse=True)
+def _verified_test_calendar(monkeypatch):
+    from market import trading_calendar
+
+    monkeypatch.setattr(
+        trading_calendar,
+        "has_verified_calendar",
+        lambda _year: True,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "is_trading_day",
+        lambda value=None: (
+            value is not None
+            and value.weekday() < 5
+        ),
+    )
 
 
 def _manifest(*, required_sessions: int = 20, maximum_drawdown_pct: float = -15.0) -> dict:
@@ -106,7 +125,30 @@ class _ShortWindowExperimentStore(RelayFactorExperimentStore):
     def _require_verified_protocol(experiment) -> None:
         return None
 
+    def _latest_completed_session_date(self):
+        return self._test_completed_session_date
+
+    def record_verified_shadow_session(
+        self,
+        experiment_id,
+        signal_date,
+        *,
+        panel,
+    ):
+        self._test_completed_session_date = str(signal_date)[:10]
+        return super().record_verified_shadow_session(
+            experiment_id,
+            signal_date,
+            panel=panel,
+        )
+
     def create_locked_experiment(self, *args, **kwargs):
+        locked_at = kwargs.pop("locked_at", None)
+        if locked_at is not None:
+            parsed = datetime.fromisoformat(
+                str(locked_at).replace("Z", "+00:00")
+            )
+            self._clock = lambda: parsed
         experiment = super().create_locked_experiment(*args, **kwargs)
         with self._connect() as connection:
             connection.execute(
@@ -122,6 +164,11 @@ class _ShortWindowExperimentStore(RelayFactorExperimentStore):
 
 def _store(tmp_path) -> RelayFactorExperimentStore:
     return _ShortWindowExperimentStore(tmp_path / "prospective.sqlite3")
+
+
+def _clock(value: str):
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return lambda: parsed
 
 
 def _locked(store: RelayFactorExperimentStore, **kwargs) -> dict:
@@ -150,12 +197,32 @@ def _eligible_protocol_registration() -> dict:
     model_sha256 = relay_factor_mining.factor_model_digest(model)
     record["executable_model"] = model
     record["executable_model_sha256"] = model_sha256
+    record["prospective_acceptance_rules"] = {
+        "protocol_version": (
+            "prospective_60_session_paired_control_v3"
+        ),
+        "required_sessions": 60,
+        "minimum_total_return_pct": 2.0,
+        "minimum_excess_return_pct": 0.0,
+        "maximum_drawdown_pct": -10.0,
+        "minimum_executed_trades": 60,
+        "minimum_bootstrap_lower_return_pct": 0.0,
+        "minimum_excess_bootstrap_lower_return_pct": 0.0,
+        "maximum_protocol_violations": 0,
+        "preregistered_at": (
+            relay_factor_mining.MODEL_SPEC_REGISTERED_AT
+        ),
+        "calibrated_through": (
+            relay_factor_mining.MODEL_SPEC_CALIBRATED_THROUGH
+        ),
+    }
     return {
         "ok": True,
         "reason": "ok",
         "record": record,
         "sha256": "2" * 64,
         "model_sha256": model_sha256,
+        "current_protocol": True,
     }
 
 
@@ -170,6 +237,31 @@ def test_experiment_sqlite_uses_wal_and_busy_timeout(tmp_path):
     assert int(busy_timeout) >= 30_000
 
 
+def test_locked_experiment_uses_injected_trusted_clock(
+    tmp_path,
+):
+    locked_at = datetime.fromisoformat(
+        "2026-07-31T18:20:00+08:00"
+    )
+    store = RelayFactorExperimentStore(
+        tmp_path / "trusted-clock.sqlite3",
+        clock=lambda: locked_at,
+    )
+
+    experiment = store.create_locked_experiment(
+        "run-trusted-clock",
+        _manifest(required_sessions=60),
+    )
+
+    assert experiment["locked_at"] == locked_at.isoformat()
+    with pytest.raises(TypeError):
+        store.create_locked_experiment(
+            "run-backdated",
+            _manifest(required_sessions=60),
+            locked_at="2026-07-01T12:00:00+00:00",
+        )
+
+
 def test_production_protocol_requires_fixed_rules_and_post_cutoff_lock(
     tmp_path,
     monkeypatch,
@@ -181,43 +273,62 @@ def test_production_protocol_requires_fixed_rules_and_post_cutoff_lock(
         lambda: registration,
     )
     manifest = _manifest(required_sessions=60)
+    manifest["schema_version"] = 4
     manifest["acceptance_rules"] = dict(
-        relay_factor_mining.PROSPECTIVE_ACCEPTANCE_RULES
+        relay_factor_mining.PROSPECTIVE_DUAL_TRACK_ACCEPTANCE_RULES
     )
 
-    valid_store = RelayFactorExperimentStore(tmp_path / "valid.sqlite3")
+    valid_store = RelayFactorExperimentStore(
+        tmp_path / "valid.sqlite3",
+        clock=_clock("2026-08-01T00:10:00+08:00"),
+    )
     valid = valid_store.create_locked_experiment(
         "run-valid-protocol",
         manifest,
-        locked_at="2026-07-31T17:10:00+08:00",
     )
     assert valid["protocol_verified"] is True
 
+    legacy = deepcopy(manifest)
+    legacy["schema_version"] = 3
+    legacy_store = RelayFactorExperimentStore(
+        tmp_path / "legacy-schema.sqlite3",
+        clock=_clock("2026-07-31T18:20:00+08:00"),
+    )
+    legacy_experiment = legacy_store.create_locked_experiment(
+        "run-legacy-schema",
+        legacy,
+    )
+    assert legacy_experiment["protocol_verified"] is False
+
     retuned = deepcopy(manifest)
     retuned["acceptance_rules"]["minimum_total_return_pct"] = 0.0
-    retuned_store = RelayFactorExperimentStore(tmp_path / "retuned.sqlite3")
+    retuned_store = RelayFactorExperimentStore(
+        tmp_path / "retuned.sqlite3",
+        clock=_clock("2026-07-31T18:20:00+08:00"),
+    )
     retuned_experiment = retuned_store.create_locked_experiment(
         "run-retuned-protocol",
         retuned,
-        locked_at="2026-07-31T17:10:00+08:00",
     )
     assert retuned_experiment["protocol_verified"] is False
 
     pre_registration_store = RelayFactorExperimentStore(
-        tmp_path / "pre-registration.sqlite3"
+        tmp_path / "pre-registration.sqlite3",
+        clock=_clock("2026-07-30T17:10:00+08:00"),
     )
     pre_registration = pre_registration_store.create_locked_experiment(
         "run-pre-registration",
         manifest,
-        locked_at="2026-07-30T17:10:00+08:00",
     )
     assert pre_registration["protocol_verified"] is False
 
-    pre_cutoff_store = RelayFactorExperimentStore(tmp_path / "pre-cutoff.sqlite3")
+    pre_cutoff_store = RelayFactorExperimentStore(
+        tmp_path / "pre-cutoff.sqlite3",
+        clock=_clock("2026-07-29T17:10:00+08:00"),
+    )
     pre_cutoff = pre_cutoff_store.create_locked_experiment(
         "run-pre-cutoff",
         manifest,
-        locked_at="2026-07-29T17:10:00+08:00",
     )
     assert pre_cutoff["protocol_verified"] is False
 
@@ -236,18 +347,19 @@ def test_production_protocol_rejects_tampered_registration_sha(
     key,
 ):
     manifest = _manifest(required_sessions=60)
+    manifest["schema_version"] = 4
     manifest["acceptance_rules"] = dict(
-        relay_factor_mining.PROSPECTIVE_ACCEPTANCE_RULES
+        relay_factor_mining.PROSPECTIVE_DUAL_TRACK_ACCEPTANCE_RULES
     )
     manifest[section][key] = "0" * 64
     store = RelayFactorExperimentStore(
-        tmp_path / f"tampered-{section}.sqlite3"
+        tmp_path / f"tampered-{section}.sqlite3",
+        clock=_clock("2026-07-31T18:20:00+08:00"),
     )
 
     experiment = store.create_locked_experiment(
         f"run-tampered-{section}",
         manifest,
-        locked_at="2026-07-31T17:10:00+08:00",
     )
 
     assert experiment["protocol_verified"] is False
@@ -372,6 +484,365 @@ def _record_verified_session(
     assert experiment["protocol_verified"] is True
 
 
+def _dual_track_manifest(*, required_sessions: int = 20) -> dict:
+    manifest = _manifest(required_sessions=required_sessions)
+    manifest["schema_version"] = 4
+    manifest["acceptance_rules"].update(
+        {
+            "minimum_excess_return_pct": 0.0,
+            "minimum_excess_bootstrap_lower_return_pct": None,
+        }
+    )
+    return manifest
+
+
+def _dual_track_snapshot(manifest: dict, signal_date: str) -> dict:
+    bindings = {
+        "experiment_id": manifest["experiment_id"],
+        "model_instance_id": manifest["model_instance_id"],
+        "source_run_id": manifest["source_run_id"],
+        "research_status": "locked_shadow",
+        "deployment_eligible": False,
+        "research_only": True,
+        "gate_pass": True,
+        "position_pct": 0.0,
+    }
+    return {
+        "ok": True,
+        "data_status": "ok",
+        "reason": "ok",
+        "signal_date": signal_date,
+        "market_gate": {"enabled": False, "pass": True},
+        "data_quality": {
+            "latest_real_amount_coverage": 1.0,
+            "latest_st_status_coverage": 1.0,
+            "latest_market_data_trusted": True,
+        },
+        "control_policy_version": (
+            relay_factor_mining.BENCHMARK_POLICY_VERSION
+        ),
+        "control_universe_codes_sha256": "a" * 64,
+        "candidates": [
+            {
+                **bindings,
+                "code": "000001.SZ",
+                "ts_code": "000001.SZ",
+                "trade_date": signal_date,
+                "candidate_rank": 1,
+                "shadow_target_position_pct": 0.1,
+            }
+        ],
+        "control_candidates": [
+            {
+                **bindings,
+                "code": "000001.SZ",
+                "ts_code": "000001.SZ",
+                "trade_date": signal_date,
+                "candidate_rank": 1,
+                "shadow_target_position_pct": 1.0,
+                "prospective_track": "control",
+            }
+        ],
+    }
+
+
+def test_verified_dual_track_snapshot_is_recorded_atomically(
+    tmp_path,
+    monkeypatch,
+):
+    store = _store(tmp_path)
+    experiment = store.create_locked_experiment(
+        "run-dual-track",
+        _dual_track_manifest(required_sessions=1),
+        locked_at="2026-07-01T12:00:00+00:00",
+    )
+    snapshot = _dual_track_snapshot(
+        experiment["manifest"],
+        "2026-07-02",
+    )
+    monkeypatch.setattr(
+        relay_factor_mining,
+        "build_frozen_shadow_snapshot",
+        lambda _panel, _manifest: snapshot,
+    )
+
+    recorded = store.record_verified_shadow_session(
+        experiment["experiment_id"],
+        "2026-07-02",
+        panel={},
+    )
+
+    assert recorded["candidate_snapshot"]["inserted"] == 1
+    assert recorded["control_snapshot"]["inserted"] == 1
+    assert len(store.list_candidates(experiment["experiment_id"])) == 1
+    controls = store.list_control_candidates(
+        experiment["experiment_id"]
+    )
+    assert len(controls) == 1
+    assert controls[0]["code"] == "000001.SZ"
+    session = store.list_sessions(experiment["experiment_id"])[0]
+    assert session["controls_recorded"] is True
+    assert session["control_candidate_count"] == 1
+
+
+def test_dual_track_snapshot_rolls_back_both_tracks_on_control_insert_failure(
+    tmp_path,
+    monkeypatch,
+):
+    store = _store(tmp_path)
+    experiment = store.create_locked_experiment(
+        "run-dual-track-rollback",
+        _dual_track_manifest(required_sessions=1),
+        locked_at="2026-07-01T12:00:00+00:00",
+    )
+    snapshot = _dual_track_snapshot(
+        experiment["manifest"],
+        "2026-07-02",
+    )
+    monkeypatch.setattr(
+        relay_factor_mining,
+        "build_frozen_shadow_snapshot",
+        lambda _panel, _manifest: snapshot,
+    )
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER reject_prospective_control
+            BEFORE INSERT ON prospective_controls
+            BEGIN
+                SELECT RAISE(ABORT, 'forced control failure');
+            END
+            """
+        )
+
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="forced control failure",
+    ):
+        store.record_verified_shadow_session(
+            experiment["experiment_id"],
+            "2026-07-02",
+            panel={},
+        )
+
+    assert store.list_sessions(experiment["experiment_id"]) == []
+    assert store.list_candidates(experiment["experiment_id"]) == []
+    assert store.list_control_candidates(
+        experiment["experiment_id"]
+    ) == []
+
+
+def test_verified_dual_track_settlement_is_atomic(
+    tmp_path,
+    monkeypatch,
+):
+    store = _store(tmp_path)
+    experiment = store.create_locked_experiment(
+        "run-dual-settlement",
+        _dual_track_manifest(required_sessions=1),
+        locked_at="2026-07-01T12:00:00+00:00",
+    )
+    snapshot = _dual_track_snapshot(
+        experiment["manifest"],
+        "2026-07-02",
+    )
+    monkeypatch.setattr(
+        relay_factor_mining,
+        "build_frozen_shadow_snapshot",
+        lambda _panel, _manifest: snapshot,
+    )
+    store.record_verified_shadow_session(
+        experiment["experiment_id"],
+        "2026-07-02",
+        panel={},
+    )
+
+    def settlement(_panel, candidate, _manifest):
+        if candidate.get("prospective_track") == "control":
+            raise RuntimeError("forced control settlement failure")
+        return {
+            "status": "settled",
+            "execution_blocked": False,
+            "block_reasons": [],
+            "entry_date": "2026-07-03",
+            "exit_date": "2026-07-06",
+            "entry_price": 10.0,
+            "exit_price": 11.0,
+            "exit_reason": "take_profit",
+            "realized_return_pct": 9.64,
+            "valuation_path": [
+                {"date": "2026-07-03", "return_pct": -0.36},
+                {"date": "2026-07-06", "return_pct": 9.64},
+            ],
+        }
+
+    monkeypatch.setattr(
+        relay_factor_mining,
+        "settle_frozen_shadow_candidate",
+        settlement,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="forced control settlement failure",
+    ):
+        store.settle_verified_candidates(
+            experiment["experiment_id"],
+            panel={},
+        )
+
+    assert store.list_candidates(experiment["experiment_id"])[0][
+        "settlement_status"
+    ] == "pending"
+    assert store.list_control_candidates(
+        experiment["experiment_id"]
+    )[0]["settlement_status"] == "pending"
+
+
+def _record_verified_dual_session(
+    store: RelayFactorExperimentStore,
+    experiment_id: str,
+    signal_date: str,
+    *,
+    strategy_return_pct: float,
+    control_return_pct: float,
+) -> None:
+    experiment = store.get_experiment(experiment_id)
+    snapshot = _dual_track_snapshot(
+        experiment["manifest"],
+        signal_date,
+    )
+    strategy_code = f"STRATEGY-{signal_date}"
+    control_code = f"CONTROL-{signal_date}"
+    snapshot["candidates"][0].update(
+        {"code": strategy_code, "ts_code": strategy_code}
+    )
+    snapshot["control_candidates"][0].update(
+        {"code": control_code, "ts_code": control_code}
+    )
+    entry_date = _next_weekday(signal_date)
+    exit_date = _next_weekday(entry_date)
+
+    def settlement(_panel, candidate, _manifest):
+        realized = (
+            control_return_pct
+            if candidate.get("prospective_track") == "control"
+            else strategy_return_pct
+        )
+        entry_price = 10.0
+        exit_price = entry_price * (
+            1.0 + (realized + 0.36) / 100.0
+        )
+        return {
+            "status": "settled",
+            "execution_blocked": False,
+            "block_reasons": [],
+            "entry_date": entry_date,
+            "exit_date": exit_date,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "exit_reason": "max_holding_period",
+            "realized_return_pct": realized,
+            "valuation_path": [
+                {"date": entry_date, "return_pct": -0.36},
+                {"date": exit_date, "return_pct": realized},
+            ],
+        }
+
+    with (
+        patch.object(
+            relay_factor_mining,
+            "build_frozen_shadow_snapshot",
+            return_value=snapshot,
+        ),
+        patch.object(
+            relay_factor_mining,
+            "settle_frozen_shadow_candidate",
+            settlement,
+        ),
+    ):
+        store.record_verified_shadow_session(
+            experiment_id,
+            signal_date,
+            panel={},
+        )
+        assert store.settle_verified_candidates(
+            experiment_id,
+            panel={},
+        ) == {"settled": 2, "pending": 0}
+
+
+def test_dual_track_evaluation_rejects_positive_strategy_that_loses_to_control(
+    tmp_path,
+):
+    store = _store(tmp_path)
+    experiment = store.create_locked_experiment(
+        "run-relative-failure",
+        _dual_track_manifest(required_sessions=2),
+        locked_at="2026-07-01T12:00:00+00:00",
+    )
+    for signal_date in ("2026-07-02", "2026-07-03"):
+        _record_verified_dual_session(
+            store,
+            experiment["experiment_id"],
+            signal_date,
+            strategy_return_pct=1.0,
+            control_return_pct=2.0,
+        )
+
+    evaluation = store.evaluate_once(experiment["experiment_id"])
+
+    assert evaluation["status"] == "failed"
+    assert evaluation["metrics"]["total_return_pct"] > 0.0
+    assert evaluation["metrics"]["control_total_return_pct"] > (
+        evaluation["metrics"]["total_return_pct"]
+    )
+    assert evaluation["metrics"]["excess_return_pct"] < 0.0
+    assert (
+        "minimum_excess_return_pct_not_met"
+        in evaluation["failure_reasons"]
+    )
+
+
+def test_verified_shadow_session_rejects_historical_success_backfill(
+    tmp_path,
+    monkeypatch,
+):
+    store = _store(tmp_path)
+    experiment = _locked(store, required_sessions=3)
+    monkeypatch.setattr(
+        store,
+        "_latest_completed_session_date",
+        lambda: "2026-07-03",
+        raising=False,
+    )
+
+    with patch.object(
+        relay_factor_mining,
+        "build_frozen_shadow_snapshot",
+        return_value={
+            "ok": True,
+            "data_status": "ok",
+            "reason": "ok",
+            "signal_date": "2026-07-02",
+            "market_gate": {"enabled": False, "pass": True},
+            "data_quality": {},
+            "candidates": [],
+        },
+    ):
+        with pytest.raises(
+            ValueError,
+            match="historical success backfill",
+        ):
+            store.record_verified_shadow_session(
+                experiment["experiment_id"],
+                "2026-07-02",
+                panel={},
+            )
+
+    assert store.list_sessions(experiment["experiment_id"]) == []
+
+
 def test_canonical_manifest_hashes_are_key_order_stable_and_sensitive_to_key_fields():
     manifest = _manifest()
     reordered = {
@@ -486,11 +957,13 @@ def test_expected_session_window_is_persisted_when_calendar_changes(
         changing_calendar,
     )
     db_path = tmp_path / "persisted-window.sqlite3"
-    store = RelayFactorExperimentStore(db_path)
+    store = RelayFactorExperimentStore(
+        db_path,
+        clock=_clock("2026-07-01T12:00:00+00:00"),
+    )
     experiment = store.create_locked_experiment(
         "run-persisted-window",
         _manifest(required_sessions=2),
-        locked_at="2026-07-01T12:00:00+00:00",
     )
 
     reopened = RelayFactorExperimentStore(db_path)
@@ -504,6 +977,33 @@ def test_expected_session_window_is_persisted_when_calendar_changes(
         "2026-07-03",
     ]
     assert calls == [True]
+
+
+def test_fixed_session_window_rejects_unverified_cross_year_calendar(
+    monkeypatch,
+):
+    from analytics import relay_factor_experiment as experiment_module
+    from market import trading_calendar
+
+    monkeypatch.setattr(
+        trading_calendar,
+        "has_verified_calendar",
+        lambda year: int(year) == 2026,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "is_trading_day",
+        lambda _value=None: True,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="authoritative trade calendar unavailable",
+    ):
+        experiment_module._fixed_session_dates(
+            "2026-12-31T17:10:00+08:00",
+            2,
+        )
 
 
 def test_sessions_reject_prelock_and_untrusted_data_without_changing_counts(tmp_path):
@@ -1049,18 +1549,21 @@ def test_latest_validated_experiment_remains_deployable_while_challenger_is_acti
     store = _store(tmp_path)
     incumbent = store.create_locked_experiment(
         "run-incumbent",
-        _manifest(required_sessions=1),
+        _dual_track_manifest(required_sessions=1),
         locked_at="2026-07-01T12:00:00+00:00",
     )
-    _record_settled_session(
+    _record_verified_dual_session(
         store,
         incumbent["experiment_id"],
         "2026-07-02",
-        1.0,
+        strategy_return_pct=1.0,
+        control_return_pct=0.0,
     )
     assert store.evaluate_once(incumbent["experiment_id"])["status"] == "validated"
 
-    challenger_manifest = _manifest(required_sessions=1)
+    challenger_manifest = _dual_track_manifest(
+        required_sessions=1
+    )
     challenger_manifest["model"]["coefficients"]["ret_5"] = 0.3
     challenger = store.create_locked_experiment(
         "run-challenger",

@@ -1,6 +1,6 @@
 # 见微 Alpha 运维手册（RUNBOOK）
 
-> 最后更新：2026-06-14。本机 `D:\同花顺量化交易\ths_auto_trader`（Windows 实盘），
+> 最后更新：2026-07-31。本机 `D:\同花顺量化交易\ths_auto_trader`（Windows 实盘），
 > 云端 `/opt/quant`（阿里云 Ubuntu 24.04，1.6GB 内存，gunicorn + nginx）。
 
 ---
@@ -13,8 +13,8 @@
 | 服务器 | `root@47.100.109.173`（SSH 密钥登录，密钥 `C:\Users\张新春\.ssh\id_ed25519`） |
 | 应用目录 | `/opt/quant`，Python venv `/opt/quant/venv` |
 | systemd 服务 | `quant-platform`（gunicorn 单 worker 绑 `127.0.0.1:5000`，nginx 反代 443） |
-| 运行用户 | `quant`（非 root），数据库/日志/代码均 `quant:quant` |
-| Git 远端 | `origin`=gitee(SSH)、github 备份；服务器从 gitee pull |
+| 运行用户 | `quant`（非 root）；代码与 venv 为 `root:root` 只读，只有 `data/`、`logs/` 等运行数据由 `quant` 写入 |
+| Git 远端 | 本机 `origin`=GitHub、`gitee`=Gitee；服务器的 `origin` 指向 Gitee |
 
 ---
 
@@ -24,28 +24,63 @@
 # 本地：提交并推送
 git add <files>; git commit -m "..."; git push gitee main; git push origin main
 
-# 服务器：拉取 + 重启
+# 本地 PowerShell：从已审查 checkout 计算冻结研究源码 bundle（不要在服务器现算）
+$env:QUANT_TEST_IMPORT = "1"
+$RELAY_FACTOR_PROTOCOL_BUNDLE_SHA256 = python -c `
+  "from analytics.relay_factor_mining import build_current_frozen_protocol_binding as b; print(b()['bundle_sha256'])"
+$TARGET_SHA = git rev-parse HEAD
+$DEPLOY_TOOL_BUNDLE_SHA256 = python -c `
+  "from deploy.bootstrap_server_update import build_local_tool_bundle_sha256 as b; print(b('.'))"
+scp deploy/bootstrap_server_update.py `
+  "root@47.100.109.173:/root/jwalpha-bootstrap-$TARGET_SHA.py"
+
+# 服务器：先把仓库外信任锚写入私有环境文件
 ssh root@47.100.109.173
 cd /opt/quant
-git pull --ff-only origin main      # 注意：用这条，别用 git fetch --all（历史遗留远端会中止）
-chown -R quant:quant /opt/quant     # 拉取后归还属主（root pull 会改属主）
-systemctl restart quant-platform
+sed -i "/^RELAY_FACTOR_PROTOCOL_BUNDLE_SHA256=/d" .env
+printf '%s\n' \
+  "RELAY_FACTOR_PROTOCOL_BUNDLE_SHA256=<上一步本地输出>" >> .env
+chown root:quant .env
+chmod 640 .env
+
+# 服务器：用本地已审查且哈希锁定的 bootstrap 从 Gitee 安全自举更新
+chmod 0700 /root/jwalpha-bootstrap-<TARGET_SHA>.py
+/usr/bin/python3 -I /root/jwalpha-bootstrap-<TARGET_SHA>.py \
+  --app-dir /opt/quant \
+  --remote-url https://gitee.com/wangermazi81/quant.git \
+  --branch main \
+  --target-sha <TARGET_SHA> \
+  --tool-bundle-sha256 <DEPLOY_TOOL_BUNDLE_SHA256>
+rm -f /root/jwalpha-bootstrap-<TARGET_SHA>.py
 ```
 
+> 不要直接从旧 checkout 运行 `deploy/server_update.sh`。调度器锁协议迁移必须先运行远端
+> `bootstrap_server_update.py`；它会在更新工作树前停止旧调度线程、验证静默状态，再启动并
+> 检查独立的 `quant-scheduler` 服务。
+>
 > PowerShell 5.1 给远程 bash 传脚本会破坏引号 → 用 `脚本 base64 → ssh host "echo <b64> | base64 -d | bash"`。
 > 给 git 传多行提交信息：用文件 + `git commit -F file`（PowerShell here-string 含 `/` 会被沙箱误判）。
 
 ### 部署后验证（必查）
 ```bash
 systemctl is-active quant-platform                                  # active
+systemctl is-enabled quant-scheduler                                # enabled
+systemctl is-active quant-scheduler                                 # active
+SCHEDULER_PID=$(systemctl show quant-scheduler -p MainPID --value)
+/usr/bin/python3 -I /opt/quant/deploy/check_scheduler_health.py \
+  --app-dir /opt/quant --expected-pid "$SCHEDULER_PID"
 curl -s -o /dev/null -w "%{http_code}" https://jwalpha.top/ --resolve jwalpha.top:443:127.0.0.1   # 200
-grep "后台调度已启动" /opt/quant/logs/service-err.log | tail -1      # 证明调度器启动(gunicorn INFO 走 stderr)
-MASTER=$(systemctl show -p MainPID --value quant-platform); for W in $(pgrep -P $MASTER); do ls /proc/$W/task | wc -l; done  # worker 线程 >1 = 调度线程在跑
+journalctl -u quant-scheduler -n 50 --no-pager
+tr '\0' '\n' < "/proc/$SCHEDULER_PID/environ" \
+  | grep '^RELAY_FACTOR_PROTOCOL_BUNDLE_SHA256='
 ```
 
 ### 回滚
 ```bash
-cd /opt/quant && git reset --hard <上一个好的 commit> && chown -R quant:quant /opt/quant && systemctl restart quant-platform
+# 本地创建可审计的反向提交并推送两个远端，然后按上面的 bootstrap 流程重新部署。
+git revert <错误提交>
+git push origin main
+git push gitee main
 # nginx 配置回滚：备份在 /root/nginx-backup-*；证书迁移全量备份 /root/nginx-full-backup-*
 ```
 
@@ -71,6 +106,10 @@ cd /opt/quant && git reset --hard <上一个好的 commit> && chown -R quant:qua
 | `ENABLE_SWAGGER` | `0` | 生产关 Swagger（设 1 才暴露 /apidocs/） |
 | `THS_NO_SCHEDULER` | 未设 | 设 1 禁用后台调度线程（测试/纯导入） |
 | `QUANT_TEST_IMPORT` | 未设 | 设 1 让 main.py 可被纯导入（跳过建表/迁移/operator/调度）→ 供测试 |
+| `RELAY_FACTOR_PROTOCOL_BUNDLE_SHA256` | 每个已审查 release 必设 | 冻结研究源码 bundle 的仓库外 SHA-256 信任锚；缺失或不匹配时 OOS evidence fail-closed，严禁在服务器 checkout 上自动生成 |
+| `SCHEDULER_NOT_READY_GRACE_SECONDS` | `120` | 因子调度线程持续未 ready 的最大宽限；超时后独立调度主进程非零退出并由 systemd 重启 |
+| `SCHEDULER_FACTOR_MAX_PROGRESS_AGE_SECONDS` | `3600` | 没有任务运行时，因子调度普通循环允许的最大无进展时长 |
+| `SCHEDULER_FACTOR_MAX_JOB_AGE_SECONDS` | `21600` | 数据刷新/挖掘任务的独立最大运行时长；任务运行中不再被普通 1 小时阈值误杀 |
 | `BACKTEST_MAX_CODES` | 未设(=800) | 全市场回测 TDX 补充标的上限。**OOM 复发时设 400** 降内存 |
 | `LOGIN_MAX_FAILS` / `LOGIN_FAIL_WINDOW` / `LOGIN_LOCK_SECONDS` | 5 / 900 / 900 | 登录防爆破：15 分钟内失败 5 次锁 15 分钟 |
 | `APP_BASE_URL` | `https://jwalpha.top` | 找回密码链接根地址 |

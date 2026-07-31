@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from analytics import relay_factor_mining as relay
+from analytics.factors_zoo import scorer
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +68,12 @@ def test_feature_frame_is_point_in_time_and_has_required_fields():
 
     shocked = {key: value.copy() for key, value in panel.items()}
     for frame in shocked.values():
-        frame.iloc[-1] = frame.iloc[-1] * 100
+        numeric_columns = [
+            column
+            for column in frame.columns
+            if not pd.api.types.is_bool_dtype(frame[column].dtype)
+        ]
+        frame.loc[frame.index[-1], numeric_columns] *= 100
     changed = relay.build_feature_frame(shocked)
 
     compare_date = baseline["trade_date"].sort_values().unique()[-2]
@@ -836,6 +842,526 @@ def test_run_research_uses_reserve_then_selects_requested_daily_universe(
     assert result["summary"]["latest_universe_eligible_count"] == 3
 
 
+def test_universe_audit_rejects_equal_count_code_substitution():
+    dates = pd.to_datetime(["2026-07-29", "2026-07-30"])
+    panel = {
+        "close": pd.DataFrame(
+            {
+                "000001": [10.0, 10.1],
+                "000002": [20.0, 20.1],
+                "000003": [30.0, 30.1],
+            },
+            index=dates,
+        ),
+        "universe_eligible": pd.DataFrame(
+            {
+                "000001": [True, True],
+                "000002": [True, True],
+                "000003": [False, False],
+            },
+            index=dates,
+        ),
+    }
+    features = pd.DataFrame(
+        [
+            {"trade_date": trade_date, "ts_code": code}
+            for trade_date in ("2026-07-29", "2026-07-30")
+            for code in ("000001", "000003")
+        ]
+    )
+
+    audit = relay._universe_eligibility_audit(
+        panel,
+        features,
+        required_count=2,
+    )
+
+    assert audit["coverage"] == 0.0
+    assert audit["identity_coverage"] == 0.0
+    assert audit["latest_identity_match"] is False
+    assert all(
+        item["required_codes_sha256"]
+        != item["panel_codes_sha256"]
+        for item in audit["date_code_digests"]
+    )
+
+
+def _raw_fingerprint_fixture(days: int = 8):
+    panel = _panel(days=days)
+    panel["is_st"] = pd.DataFrame(
+        False,
+        index=panel["close"].index,
+        columns=panel["close"].columns,
+    )
+    panel["st_status_known"] = pd.DataFrame(
+        True,
+        index=panel["close"].index,
+        columns=panel["close"].columns,
+    )
+    for field in ("universe_eligible", "security_master_eligible"):
+        panel[field] = pd.DataFrame(
+            True,
+            index=panel["close"].index,
+            columns=panel["close"].columns,
+        )
+    codes = list(panel["close"].columns)
+    security_master = pd.DataFrame(
+        {
+            "code": codes,
+            "list_date": ["20200101"] * len(codes),
+            "delist_date": [""] * len(codes),
+            "snapshot_at": ["2026-07-31T17:10:00+08:00"] * len(codes),
+        }
+    )
+    trade_dates = [
+        value.strftime("%Y-%m-%d")
+        for value in panel["close"].index
+    ]
+    market_signals = pd.DataFrame(
+        {
+            "trade_date": trade_dates,
+            "market_data_trusted": [True] * len(trade_dates),
+            "market_data_status": ["ok"] * len(trade_dates),
+            "market_data_reason": [""] * len(trade_dates),
+            "market_emotion_score": [65.0] * len(trade_dates),
+            "up_count": list(range(100, 100 + len(trade_dates))),
+            "down_count": list(range(50, 50 + len(trade_dates))),
+            "turnover_amount_yi": [18000.0] * len(trade_dates),
+        }
+    )
+    calendar_snapshot = {
+        "snapshot_version": "test_calendar_v1",
+        "start_date": trade_dates[0],
+        "end_date": trade_dates[-1],
+        "open_days": trade_dates,
+    }
+    return panel, security_master, market_signals, calendar_snapshot
+
+
+def test_raw_panel_fingerprint_is_stable_across_frame_order():
+    panel, master, signals, calendar = _raw_fingerprint_fixture()
+    first = relay.build_raw_data_fingerprint(
+        panel,
+        security_master=master,
+        market_signal_frame=signals,
+        calendar_snapshot=calendar,
+        source_kind="trusted_cache",
+    )
+    reordered_panel = {
+        key: frame.iloc[::-1, ::-1]
+        for key, frame in reversed(list(panel.items()))
+    }
+    second = relay.build_raw_data_fingerprint(
+        reordered_panel,
+        security_master=master.iloc[::-1, ::-1],
+        market_signal_frame=signals.iloc[::-1, ::-1],
+        calendar_snapshot=json.loads(
+            json.dumps(calendar, sort_keys=True)
+        ),
+        source_kind="trusted_cache",
+    )
+
+    assert first["root_sha256"] == second["root_sha256"]
+    assert first["lock_eligible"] is True
+
+
+def test_raw_fingerprint_binds_market_signals_and_security_master():
+    panel, master, signals, calendar = _raw_fingerprint_fixture()
+    baseline = relay.build_raw_data_fingerprint(
+        panel,
+        security_master=master,
+        market_signal_frame=signals,
+        calendar_snapshot=calendar,
+        source_kind="trusted_cache",
+    )
+    changed_master = master.copy()
+    changed_master.loc[0, "list_date"] = "20210101"
+    master_result = relay.build_raw_data_fingerprint(
+        panel,
+        security_master=changed_master,
+        market_signal_frame=signals,
+        calendar_snapshot=calendar,
+        source_kind="trusted_cache",
+    )
+    changed_signals = signals.copy()
+    changed_signals.loc[0, "up_count"] += 1
+    signal_result = relay.build_raw_data_fingerprint(
+        panel,
+        security_master=master,
+        market_signal_frame=changed_signals,
+        calendar_snapshot=calendar,
+        source_kind="trusted_cache",
+    )
+
+    assert master_result["root_sha256"] != baseline["root_sha256"]
+    assert signal_result["root_sha256"] != baseline["root_sha256"]
+    assert (
+        master_result["blocks"]["security_master"]["sha256"]
+        != baseline["blocks"]["security_master"]["sha256"]
+    )
+    assert (
+        signal_result["blocks"]["market_signals"]["sha256"]
+        != baseline["blocks"]["market_signals"]["sha256"]
+    )
+
+
+def test_preregistered_oos_rejects_raw_panel_fingerprint_mismatch(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    panel, master, signals, calendar = _raw_fingerprint_fixture()
+    fingerprint = relay.build_raw_data_fingerprint(
+        panel,
+        security_master=master,
+        market_signal_frame=signals,
+        calendar_snapshot=calendar,
+        source_kind="trusted_cache",
+    )
+    walk_forward = _assessment_fixture(
+        0.001,
+        window_return=1.0,
+        registration=registration,
+    )
+    walk_forward["raw_data_fingerprint"] = fingerprint
+    preregistered = walk_forward["preregistered_oos"]
+    preregistered["raw_data_fingerprint"] = fingerprint
+    walk_forward["preregistered_oos"] = (
+        relay._seal_preregistered_oos_evidence(preregistered)
+    )
+    changed_signals = signals.copy()
+    changed_signals.loc[0, "up_count"] += 1
+    walk_forward["raw_data_fingerprint"] = (
+        relay.build_raw_data_fingerprint(
+            panel,
+            security_master=master,
+            market_signal_frame=changed_signals,
+            calendar_snapshot=calendar,
+            source_kind="trusted_cache",
+        )
+    )
+
+    assessment = relay.assess_research_result(walk_forward)
+
+    assert assessment["lock_eligible"] is False
+    assert assessment["preregistered_oos_evidence_verified"] is False
+    assert "raw_data_fingerprint_mismatch" in assessment["failure_reasons"]
+
+
+def test_injected_research_panel_is_never_lock_eligible(tmp_path):
+    result = relay.run_relay_research(
+        panel=_panel(days=100),
+        out_dir=tmp_path,
+        n_stocks=3,
+        train_days=40,
+        test_days=10,
+        top_k=2,
+        require_latest_data=False,
+        load_live_feedback=False,
+    )
+
+    assert result["raw_data_fingerprint"]["source_kind"] == "injected"
+    assert result["raw_data_fingerprint"]["lock_eligible"] is False
+    assert "injected_research_panel_not_lock_eligible" in (
+        result["research_assessment"]["failure_reasons"]
+    )
+
+
+def test_cache_loaded_research_panel_keeps_trusted_provenance(
+    tmp_path,
+    monkeypatch,
+):
+    panel, master, signals, calendar = _raw_fingerprint_fixture(days=100)
+    trusted_panel = scorer._TrustedCachePanel(
+        panel,
+        security_master_snapshot=master,
+        snapshot_reference="test-cache-snapshot",
+    )
+    monkeypatch.setattr(
+        relay,
+        "_build_raw_calendar_snapshot",
+        lambda _panel: calendar,
+    )
+
+    result = relay.run_relay_research(
+        panel=trusted_panel,
+        market_signal_frame=signals,
+        out_dir=tmp_path,
+        n_stocks=3,
+        train_days=40,
+        test_days=10,
+        top_k=2,
+        require_latest_data=False,
+        load_live_feedback=False,
+    )
+
+    assert result["raw_data_fingerprint"]["source_kind"] == "trusted_cache"
+    assert result["raw_data_fingerprint"]["lock_eligible"] is True
+
+
+def test_deterministic_benchmark_selection_is_row_order_invariant():
+    codes = ["AAA", "BBB", "CCC", "DDD", "EEE"]
+
+    first = relay._deterministic_benchmark_codes(
+        codes,
+        trade_date="2026-08-03",
+        top_k=2,
+    )
+    second = relay._deterministic_benchmark_codes(
+        list(reversed(codes)),
+        trade_date="2026-08-03",
+        top_k=2,
+    )
+
+    assert first == ["EEE", "DDD"]
+    assert second == first
+
+
+def test_preregistered_windows_use_observed_oos_diagnostics():
+    registration = relay.load_model_preregistration()
+    model = relay._registered_model_from_preregistration(registration)
+    assert model["validation_stable"] is False
+    dates = [
+        value.strftime("%Y-%m-%d")
+        for value in pd.bdate_range("2026-08-03", periods=4)
+    ]
+    trades = []
+    attempts = []
+    benchmark_attempts = []
+    diagnostics = []
+    for index, trade_date in enumerate(dates):
+        strategy_code = f"STRATEGY{index}"
+        benchmark_code = f"CONTROL{index}"
+        attempts.append(
+            {
+                "trade_date": trade_date,
+                "ts_code": strategy_code,
+                "entry_date": trade_date,
+                "exit_date": trade_date,
+                "execution_blocked": False,
+                "forward_return_pct": 1.0,
+                "live_adjusted_return_pct": 1.0,
+                "valuation_path": [
+                    {"date": trade_date, "return_pct": 1.0}
+                ],
+                "exit_reason": "take_profit",
+                "gate_pass": True,
+            }
+        )
+        benchmark_attempts.append(
+            {
+                "trade_date": trade_date,
+                "ts_code": benchmark_code,
+                "entry_date": trade_date,
+                "exit_date": trade_date,
+                "execution_blocked": False,
+                "forward_return_pct": 0.1,
+                "live_adjusted_return_pct": 0.1,
+                "valuation_path": [
+                    {"date": trade_date, "return_pct": 0.1}
+                ],
+                "exit_reason": "take_profit",
+                "gate_pass": True,
+            }
+        )
+        trades.append(
+            {
+                "trade_date": trade_date,
+                "codes": [strategy_code],
+                "return_pct": 1.0,
+                "live_adjusted_return_pct": 1.0,
+                "research_evaluable": True,
+                "gate_pass": True,
+                "gate_reason": "gate_disabled",
+                "model_sha256": relay.factor_model_digest(model),
+            }
+        )
+        diagnostics.append(
+            {
+                "trade_date": trade_date,
+                "universe_codes": [
+                    benchmark_code,
+                    strategy_code,
+                ],
+                "universe_codes_sha256": "0" * 64,
+                "sample_count": 100,
+                "rank_ic": 0.05,
+                "bottom_quantile_return_pct": -0.5,
+                "top_quantile_return_pct": 1.0,
+                "top_bottom_spread_pct": 1.5,
+                "benchmark_codes": [benchmark_code],
+                "benchmark_evaluable": True,
+            }
+        )
+
+    results = relay._build_preregistered_oos_results(
+        session_dates=dates,
+        trades=trades,
+        attempts=attempts,
+        benchmark_attempts=benchmark_attempts,
+        session_diagnostics=diagnostics,
+        model=model,
+        test_days=2,
+        top_k=1,
+        holding_sessions=1,
+        validation_rules={
+            "minimum_diagnostic_sample_count_per_session": 20,
+            "minimum_oos_mean_rank_ic": 0.01,
+            "minimum_positive_rank_ic_session_rate": 0.5,
+            "minimum_oos_mean_spread_pct": 0.0,
+            "minimum_positive_spread_session_rate": 0.5,
+        },
+    )
+
+    assert len(results["windows"]) == 2
+    assert len(
+        {window["window_id"] for window in results["windows"]}
+    ) == 2
+    assert all(
+        window["oos_diagnostic_pass"] is True
+        for window in results["windows"]
+    )
+    assert all(
+        "model_validation_stable" not in window
+        for window in results["windows"]
+    )
+    assert all(
+        window["live_excess_return_pct"] > 0.0
+        for window in results["windows"]
+    )
+
+
+def _fixed_window_sequence_fixture() -> tuple[
+    list[str],
+    list[dict],
+    str,
+]:
+    session_dates = [
+        value.strftime("%Y-%m-%d")
+        for value in pd.bdate_range("2026-08-03", periods=4)
+    ]
+    model_sha256 = "a" * 64
+    windows = []
+    for window_index in range(2):
+        window_dates = session_dates[
+            window_index * 2 : (window_index + 1) * 2
+        ]
+        material = {
+            "policy_version": relay.OOS_DIAGNOSTIC_POLICY_VERSION,
+            "model_sha256": model_sha256,
+            "window_index": window_index,
+            "session_dates": window_dates,
+        }
+        windows.append(
+            {
+                "window_id": hashlib.sha256(
+                    json.dumps(
+                        material,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
+                "window_index": window_index,
+                "test_start": window_dates[0],
+                "test_end": window_dates[-1],
+                "session_count": 2,
+                "complete": True,
+                "model_sha256": model_sha256,
+            }
+        )
+    return session_dates, windows, model_sha256
+
+
+def test_fixed_oos_window_sequence_accepts_exact_calendar_prefix():
+    session_dates, windows, model_sha256 = (
+        _fixed_window_sequence_fixture()
+    )
+
+    assert relay._validate_fixed_oos_window_sequence(
+        windows,
+        session_dates=session_dates,
+        expected_session_dates=session_dates,
+        model_sha256=model_sha256,
+        window_sessions=2,
+    )
+
+
+@pytest.mark.parametrize(
+    "tampering",
+    [
+        "missing_trading_day",
+        "duplicate_window_id",
+        "shifted_window_boundary",
+    ],
+)
+def test_fixed_oos_window_sequence_rejects_noncanonical_partition(
+    tampering,
+):
+    expected_dates, windows, model_sha256 = (
+        _fixed_window_sequence_fixture()
+    )
+    session_dates = list(expected_dates)
+    if tampering == "missing_trading_day":
+        session_dates[1] = "2026-08-10"
+    elif tampering == "duplicate_window_id":
+        windows[1]["window_id"] = windows[0]["window_id"]
+    else:
+        windows[1]["test_start"] = windows[0]["test_end"]
+
+    assert not relay._validate_fixed_oos_window_sequence(
+        windows,
+        session_dates=session_dates,
+        expected_session_dates=expected_dates,
+        model_sha256=model_sha256,
+        window_sessions=2,
+    )
+
+
+def test_excess_bootstrap_ci_is_deterministic_for_paired_curves():
+    dates = [
+        value.strftime("%Y-%m-%d")
+        for value in pd.bdate_range("2026-08-03", periods=25)
+    ]
+    strategy_equity = 1.0
+    strategy_curve = [
+        {"date": "initial", "equity": strategy_equity}
+    ]
+    benchmark_curve = [{"date": "initial", "equity": 1.0}]
+    for trade_date in dates:
+        strategy_equity *= 1.01
+        strategy_curve.append(
+            {"date": trade_date, "equity": strategy_equity}
+        )
+        benchmark_curve.append(
+            {"date": trade_date, "equity": 1.0}
+        )
+    strategy = {"equity_curve": strategy_curve}
+    benchmark = {"equity_curve": benchmark_curve}
+
+    first = relay._bootstrap_excess_return_ci(
+        strategy,
+        benchmark,
+        samples=500,
+        block_size=5,
+    )
+    second = relay._bootstrap_excess_return_ci(
+        strategy,
+        benchmark,
+        samples=500,
+        block_size=5,
+    )
+
+    assert first == second
+    assert first["samples"] == 500
+    assert first["paired_return_count"] == 25
+    assert first["lower"] > 0.0
+
+
 def test_run_research_stays_degraded_when_walkforward_exists_but_st_coverage_is_missing(tmp_path):
     result = relay.run_relay_research(
         panel=_panel(days=100),
@@ -880,7 +1406,7 @@ def test_run_research_lockable_report_preserves_frozen_model_digest(
     tmp_path,
     monkeypatch,
 ):
-    registration = _eligible_registration()
+    registration = _eligible_registration(n_stocks=3)
     monkeypatch.setattr(
         relay,
         "load_model_preregistration",
@@ -908,9 +1434,15 @@ def test_run_research_lockable_report_preserves_frozen_model_digest(
         preregistered["data_quality_assessment"] = kwargs[
             "data_quality_assessment"
         ]
+        preregistered["raw_data_fingerprint"] = kwargs[
+            "raw_data_fingerprint"
+        ]
         result["preregistered_oos"] = (
             relay._seal_preregistered_oos_evidence(preregistered)
         )
+        result["raw_data_fingerprint"] = kwargs[
+            "raw_data_fingerprint"
+        ]
         return result
 
     monkeypatch.setattr(
@@ -919,8 +1451,12 @@ def test_run_research_lockable_report_preserves_frozen_model_digest(
         frozen_walk_forward,
     )
     panel = _panel(days=55)
+    signed_cutoff = evidence["preregistered_oos"]["observation_cutoff"]
+    feature_cutoff = (
+        pd.Timestamp(signed_cutoff) + pd.offsets.BDay(3)
+    ).strftime("%Y-%m-%d")
     panel_dates = pd.bdate_range(
-        end=evidence["preregistered_oos"]["observation_cutoff"],
+        end=feature_cutoff,
         periods=len(panel["close"].index),
     )
     for frame in panel.values():
@@ -941,6 +1477,35 @@ def test_run_research_lockable_report_preserves_frozen_model_digest(
         True,
         index=index,
         columns=columns,
+    )
+    panel["security_master_eligible"] = pd.DataFrame(
+        True,
+        index=index,
+        columns=columns,
+    )
+    security_master = pd.DataFrame(
+        {
+            "code": list(columns),
+            "list_date": ["20200101"] * len(columns),
+            "delist_date": [""] * len(columns),
+            "snapshot_at": ["2026-07-31T17:10:00+08:00"] * len(columns),
+        }
+    )
+    panel = scorer._TrustedCachePanel(
+        panel,
+        security_master_snapshot=security_master,
+        snapshot_reference="test-cache-snapshot",
+    )
+    raw_calendar = {
+        "snapshot_version": "test_calendar_v1",
+        "start_date": index.min().strftime("%Y-%m-%d"),
+        "end_date": index.max().strftime("%Y-%m-%d"),
+        "open_days": index.strftime("%Y-%m-%d").tolist(),
+    }
+    monkeypatch.setattr(
+        relay,
+        "_build_raw_calendar_snapshot",
+        lambda _panel: raw_calendar,
     )
     market_signals = pd.DataFrame(
         {
@@ -968,10 +1533,15 @@ def test_run_research_lockable_report_preserves_frozen_model_digest(
 
     assert report["status"] == "ok"
     assert report["summary"]["amount_data_coverage"] == 1.0
+    assert report["summary"]["latest_trade_date"] == feature_cutoff
+    assert report["summary"]["latest_oos_observation_date"] == signed_cutoff
     assert relay.factor_model_digest(report["model"]) == (
         registration["model_sha256"]
     )
-    manifest = relay.build_frozen_experiment_manifest(report)
+    report["generated_at"] = pd.Timestamp(
+        report["preregistered_oos"]["feature_freshness"]["as_of"]
+    ).strftime("%Y-%m-%d %H:%M:%S")
+    manifest = _build_manifest_for_test(report)
     assert relay.factor_model_digest(manifest["model"]) == (
         registration["model_sha256"]
     )
@@ -1685,6 +2255,25 @@ def test_frozen_shadow_snapshot_scores_without_refitting_and_never_becomes_execu
         assert candidate["deployment_eligible"] is False
         assert candidate["research_only"] is True
         assert candidate["position_pct"] == 0.0
+    expected_control_codes = relay._deterministic_benchmark_codes(
+        list(panel["close"].columns),
+        trade_date=snapshot["signal_date"],
+        top_k=3,
+    )
+    assert snapshot["control_policy_version"] == (
+        relay.BENCHMARK_POLICY_VERSION
+    )
+    assert [
+        candidate["ts_code"]
+        for candidate in snapshot["control_candidates"]
+    ] == expected_control_codes
+    assert all(
+        candidate["prospective_track"] == "control"
+        and candidate["shadow_target_position_pct"]
+        == pytest.approx(1.0 / 3.0)
+        and candidate["position_pct"] == 0.0
+        for candidate in snapshot["control_candidates"]
+    )
 
 
 def test_frozen_shadow_snapshot_records_market_gate_as_zero_exposure(monkeypatch):
@@ -2170,7 +2759,13 @@ def test_run_research_rejects_boolean_or_coerced_config_before_data_access(
         )
 
 
-def _eligible_registration() -> dict:
+def _eligible_registration(
+    *,
+    n_stocks: int = 800,
+    top_k: int = 5,
+    hold_days: int = 2,
+    test_days: int = 2,
+) -> dict:
     source = relay.load_model_preregistration()
     assert source["ok"] is True
     model = {
@@ -2216,12 +2811,54 @@ def _eligible_registration() -> dict:
     record = json.loads(json.dumps(source["record"]))
     record["executable_model"] = model
     record["executable_model_sha256"] = model_sha256
+    record["research_protocol"] = _locking_protocol_fixture(
+        n_stocks=n_stocks,
+        top_k=top_k,
+        hold_days=hold_days,
+        test_days=test_days,
+    )
+    record["research_validation_rules"].update(
+        {
+            "evaluation_window_count": 12,
+            "window_sessions": test_days,
+            "oos_session_count": 12 * test_days,
+            "stop_rule": "first_fixed_prefix_only",
+            "minimum_diagnostic_sample_count_per_session": 20,
+            "minimum_diagnostic_window_acceptance_rate": 0.50,
+            "minimum_oos_mean_rank_ic": 0.02,
+            "minimum_positive_rank_ic_session_rate": 0.55,
+            "minimum_oos_mean_spread_pct": 0.20,
+            "minimum_positive_spread_session_rate": 0.55,
+            "minimum_excess_return_pct": 0.0,
+            "minimum_excess_bootstrap_lower_return_pct": 0.0,
+        }
+    )
+    record["research_validation_rules"].pop(
+        "minimum_validation_acceptance_rate",
+        None,
+    )
+    record["prospective_acceptance_rules"] = {
+        "protocol_version": (
+            "prospective_60_session_paired_control_v3"
+        ),
+        "required_sessions": 60,
+        "minimum_total_return_pct": 2.0,
+        "minimum_excess_return_pct": 0.0,
+        "maximum_drawdown_pct": -10.0,
+        "minimum_executed_trades": 60,
+        "minimum_bootstrap_lower_return_pct": 0.0,
+        "minimum_excess_bootstrap_lower_return_pct": 0.0,
+        "maximum_protocol_violations": 0,
+        "preregistered_at": relay.MODEL_SPEC_REGISTERED_AT,
+        "calibrated_through": relay.MODEL_SPEC_CALIBRATED_THROUGH,
+    }
     return {
         "ok": True,
         "reason": "ok",
         "record": record,
         "sha256": "1" * 64,
         "model_sha256": model_sha256,
+        "current_protocol": True,
     }
 
 
@@ -2380,6 +3017,7 @@ def _assessment_fixture(
     window_return: float,
     registration: dict | None = None,
     n_stocks: int = 800,
+    session_count: int = 24,
 ) -> dict:
     registration = registration or relay.load_model_preregistration()
     assert registration["ok"] is True
@@ -2387,6 +3025,16 @@ def _assessment_fixture(
         registration
     )
     registered_model["calibration_data_match"] = True
+    raw_panel, raw_master, raw_signals, raw_calendar = (
+        _raw_fingerprint_fixture()
+    )
+    raw_data_fingerprint = relay.build_raw_data_fingerprint(
+        raw_panel,
+        security_master=raw_master,
+        market_signal_frame=raw_signals,
+        calendar_snapshot=raw_calendar,
+        source_kind="trusted_cache",
+    )
     top_k = 5
     holding_sessions = 3
     window_sessions = 2
@@ -2394,10 +3042,16 @@ def _assessment_fixture(
         value.strftime("%Y-%m-%d")
         for value in pd.bdate_range(
             registration["record"]["oos_not_before"],
-            periods=24,
+            periods=session_count,
         )
     ]
+    latest_feature_date = (
+        pd.Timestamp(session_dates[-1])
+        + pd.offsets.BDay(holding_sessions)
+    ).strftime("%Y-%m-%d")
     attempts = []
+    benchmark_attempts = []
+    session_diagnostics = []
     trades = []
     for session_index, trade_date in enumerate(session_dates):
         signal_date = pd.Timestamp(trade_date)
@@ -2411,6 +3065,60 @@ def _assessment_fixture(
             f"TEST{session_index:02d}{rank:02d}"
             for rank in range(top_k)
         ]
+        universe_codes = sorted(
+            [
+                *codes,
+                *[
+                    f"CONTROL{session_index:02d}{rank:02d}"
+                    for rank in range(20)
+                ],
+            ]
+        )
+        benchmark_codes = relay._deterministic_benchmark_codes(
+            universe_codes,
+            trade_date=trade_date,
+            top_k=top_k,
+        )
+        session_diagnostics.append(
+            {
+                "trade_date": trade_date,
+                "universe_codes": universe_codes,
+                "universe_codes_sha256": (
+                    relay._canonical_codes_sha256(universe_codes)
+                ),
+                "sample_count": len(universe_codes),
+                "rank_ic": 0.05,
+                "bottom_quantile_return_pct": -0.5,
+                "top_quantile_return_pct": 1.0,
+                "top_bottom_spread_pct": 1.5,
+                "benchmark_codes": benchmark_codes,
+                "benchmark_evaluable": True,
+            }
+        )
+        for code in benchmark_codes:
+            benchmark_attempts.append(
+                {
+                    "trade_date": trade_date,
+                    "ts_code": code,
+                    "entry_date": entry_date,
+                    "exit_date": exit_date,
+                    "execution_blocked": False,
+                    "forward_return_pct": 0.0,
+                    "live_adjusted_return_pct": 0.0,
+                    "valuation_path": [
+                        {
+                            "date": entry_date,
+                            "return_pct": 0.0,
+                        },
+                        {
+                            "date": exit_date,
+                            "return_pct": 0.0,
+                        },
+                    ],
+                    "exit_reason": "max_holding_period",
+                    "gate_pass": True,
+                }
+            )
         for code in codes:
             attempts.append(
                 {
@@ -2454,10 +3162,15 @@ def _assessment_fixture(
         session_dates=session_dates,
         trades=trades,
         attempts=attempts,
+        benchmark_attempts=benchmark_attempts,
+        session_diagnostics=session_diagnostics,
         model=registered_model,
         test_days=window_sessions,
         top_k=top_k,
         holding_sessions=holding_sessions,
+        validation_rules=registration["record"][
+            "research_validation_rules"
+        ],
     )
     portfolio = results["portfolio"]
     windows = results["windows"]
@@ -2470,17 +3183,42 @@ def _assessment_fixture(
             "calibrated_through": relay.MODEL_SPEC_CALIBRATED_THROUGH,
             "oos_not_before": registration["record"]["oos_not_before"],
             "registration_sha256": registration["sha256"],
+            "protocol_binding": _current_protocol_binding(),
             "model_sha256": registration["model_sha256"],
+            "raw_data_fingerprint": raw_data_fingerprint,
+            "diagnostic_policy_version": (
+                relay.OOS_DIAGNOSTIC_POLICY_VERSION
+            ),
+            "benchmark_policy_version": (
+                relay.BENCHMARK_POLICY_VERSION
+            ),
             "window_count": len(windows),
             "window_sessions": window_sessions,
             "top_k": top_k,
             "holding_sessions": holding_sessions,
+            "feature_freshness": {
+                "policy_version": (
+                    "authoritative_completed_session_v2"
+                ),
+                "clock_source": "system",
+                "as_of": (
+                    f"{latest_feature_date}T17:10:00+08:00"
+                ),
+                "latest_feature_date": latest_feature_date,
+                "expected_latest_feature_date": (
+                    latest_feature_date
+                ),
+                "maturity_lag_sessions": holding_sessions,
+            },
             "calendar_snapshot": _calendar_snapshot_fixture(
                 registration["record"]["oos_not_before"],
-                max(
-                    str(attempt["exit_date"])
-                    for attempt in attempts
-                ),
+                max([
+                    latest_feature_date,
+                    *[
+                        str(attempt["exit_date"])
+                        for attempt in attempts
+                    ],
+                ]),
             ),
             "observation_cutoff": session_dates[-1],
             "pending_session_dates": [],
@@ -2497,16 +3235,29 @@ def _assessment_fixture(
             "windows": windows,
             "trades": trades,
             "attempts": attempts,
+            "session_diagnostics": session_diagnostics,
+            "benchmark_attempts": benchmark_attempts,
             "portfolio": portfolio,
             "gated_portfolio": results["gated_portfolio"],
+            "benchmark_portfolio": results[
+                "benchmark_portfolio"
+            ],
+            "gated_benchmark_portfolio": results[
+                "gated_benchmark_portfolio"
+            ],
         }
     )
     return {
         "windows": windows,
         "gated_portfolio": results["gated_portfolio"],
         "portfolio": portfolio,
+        "benchmark_portfolio": results["benchmark_portfolio"],
+        "gated_benchmark_portfolio": results[
+            "gated_benchmark_portfolio"
+        ],
         "registered_model": registered_model,
         "preregistered_oos": preregistered_oos,
+        "raw_data_fingerprint": raw_data_fingerprint,
     }
 
 
@@ -2519,10 +3270,13 @@ def _lockable_report_fixture(registration: dict) -> dict:
     assessment = relay.assess_research_result(evidence)
     assert assessment["lock_eligible"] is True
     protocol = evidence["preregistered_oos"]["locking_protocol"]
+    generated_at = pd.Timestamp(
+        evidence["preregistered_oos"]["feature_freshness"]["as_of"]
+    ).strftime("%Y-%m-%d %H:%M:%S")
     return {
         "status": "ok",
         "data_status": "ok",
-        "generated_at": "2026-07-30 17:10:00",
+        "generated_at": generated_at,
         "research_status": "exploratory",
         "research_assessment": assessment,
         "model": evidence["registered_model"],
@@ -2538,30 +3292,61 @@ def _lockable_report_fixture(registration: dict) -> dict:
             "latest_trade_date": evidence["preregistered_oos"][
                 "observation_cutoff"
             ],
+            "latest_oos_observation_date": (
+                evidence["preregistered_oos"]["observation_cutoff"]
+            ),
             **_data_quality_assessment_fixture(),
         },
         "windows": evidence["windows"],
         "portfolio": evidence["portfolio"],
         "gated_portfolio": evidence["gated_portfolio"],
         "preregistered_oos": evidence["preregistered_oos"],
+        "raw_data_fingerprint": evidence["raw_data_fingerprint"],
     }
+
+
+def _build_manifest_for_test(report: dict) -> dict:
+    try:
+        validation_now = pd.Timestamp(
+            report["preregistered_oos"][
+                "feature_freshness"
+            ]["as_of"]
+        ).to_pydatetime()
+    except (KeyError, TypeError, ValueError):
+        return relay.build_frozen_experiment_manifest(report)
+    return relay.build_frozen_experiment_manifest(
+        report,
+        _validation_now=validation_now,
+    )
 
 
 def _rebuild_and_seal_preregistered_oos(walk_forward: dict) -> None:
     preregistered = walk_forward["preregistered_oos"]
+    registration = relay.load_model_preregistration()
     results = relay._build_preregistered_oos_results(
         session_dates=preregistered["session_dates"],
         trades=preregistered["trades"],
         attempts=preregistered["attempts"],
+        benchmark_attempts=preregistered["benchmark_attempts"],
+        session_diagnostics=preregistered["session_diagnostics"],
         model=walk_forward["registered_model"],
         test_days=preregistered["window_sessions"],
         top_k=preregistered["top_k"],
         holding_sessions=preregistered["holding_sessions"],
+        validation_rules=registration["record"][
+            "research_validation_rules"
+        ],
     )
     preregistered["windows"] = results["windows"]
     preregistered["window_count"] = len(results["windows"])
     preregistered["portfolio"] = results["portfolio"]
     preregistered["gated_portfolio"] = results["gated_portfolio"]
+    preregistered["benchmark_portfolio"] = results[
+        "benchmark_portfolio"
+    ]
+    preregistered["gated_benchmark_portfolio"] = results[
+        "gated_benchmark_portfolio"
+    ]
     walk_forward["preregistered_oos"] = (
         relay._seal_preregistered_oos_evidence(preregistered)
     )
@@ -2597,6 +3382,14 @@ def test_research_assessment_can_only_make_an_exploratory_run_lock_eligible(
 
     assert assessment["metric_gate_passed"] is True
     assert assessment["bootstrap_total_return_ci_pct"]["lower"] > 0.0
+    assert assessment["diagnostic_window_acceptance_rate"] == 1.0
+    assert assessment["oos_mean_rank_ic"] == 0.05
+    assert assessment["oos_positive_rank_ic_session_rate"] == 1.0
+    assert assessment["oos_mean_top_bottom_spread_pct"] == 1.5
+    assert assessment["oos_positive_spread_session_rate"] == 1.0
+    assert assessment["assessment_benchmark_source"] == "gated"
+    assert assessment["oos_excess_return_pct"] > 0.0
+    assert assessment["bootstrap_excess_return_ci_pct"]["lower"] > 0.0
     assert assessment["research_status"] == "exploratory"
     assert assessment["lock_eligible"] is True
     assert assessment["prospective_sessions_required"] == 60
@@ -2628,6 +3421,68 @@ def test_preregistered_oos_evidence_seal_detects_aggregate_tampering(
     assert relay._verify_preregistered_oos_evidence_seal(sealed) is True
     sealed["portfolio"]["total_return_pct"] = 99.0
     assert relay._verify_preregistered_oos_evidence_seal(sealed) is False
+
+
+def test_research_assessment_rejects_forged_benchmark_selection(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    walk_forward = _assessment_fixture(
+        0.001,
+        window_return=1.0,
+        registration=registration,
+    )
+    assert relay.assess_research_result(walk_forward)[
+        "preregistered_oos_evidence_verified"
+    ] is True
+    evidence = walk_forward["preregistered_oos"]
+    evidence["session_diagnostics"][0][
+        "benchmark_codes"
+    ] = ["FORGED"]
+    walk_forward["preregistered_oos"] = (
+        relay._seal_preregistered_oos_evidence(evidence)
+    )
+
+    assessment = relay.assess_research_result(walk_forward)
+
+    assert assessment["preregistered_oos_evidence_verified"] is False
+    assert assessment["lock_eligible"] is False
+
+
+def test_research_assessment_rejects_benchmark_path_mismatch(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    walk_forward = _assessment_fixture(
+        0.001,
+        window_return=1.0,
+        registration=registration,
+    )
+    assert relay.assess_research_result(walk_forward)[
+        "preregistered_oos_evidence_verified"
+    ] is True
+    evidence = walk_forward["preregistered_oos"]
+    evidence["benchmark_attempts"][0][
+        "valuation_path"
+    ][-1]["return_pct"] = 99.0
+    walk_forward["preregistered_oos"] = (
+        relay._seal_preregistered_oos_evidence(evidence)
+    )
+
+    assessment = relay.assess_research_result(walk_forward)
+
+    assert assessment["preregistered_oos_evidence_verified"] is False
+    assert assessment["lock_eligible"] is False
 
 
 def test_research_assessment_rejects_signed_aggregates_without_raw_attempts(
@@ -2746,6 +3601,11 @@ def test_repository_model_preregistration_is_external_and_hashed():
     registration = relay.load_model_preregistration()
 
     assert registration["ok"] is True
+    assert registration["current_protocol"] is True
+    assert Path(registration["path"]).name == (
+        "relay_fixed_ridge_preregistered_v5.json"
+    )
+    assert registration["record"]["schema_version"] == 4
     assert registration["record"]["protocol_version"] == (
         relay.MODEL_SPEC_PROTOCOL_VERSION
     )
@@ -2755,7 +3615,76 @@ def test_repository_model_preregistration_is_external_and_hashed():
     assert registration["record"]["oos_not_before"] > (
         registration["record"]["calibrated_through"]
     )
+    research_protocol = registration["record"]["research_protocol"]
+    assert research_protocol["config"] == {
+        "n_stocks": 800,
+        "days": 320,
+        "train_days": 60,
+        "test_days": 10,
+        "step_days": 10,
+        "hold_days": 2,
+        "stop_loss": -0.035,
+        "take_profit": 0.07,
+        "top_k": 10,
+        "candidate_pool_size": 100,
+        "include_market_signals": True,
+        "model_version": relay.MODEL_VERSION,
+        "universe_selection": (
+            "point_in_time_eligible_stable_sha256_sample"
+        ),
+        "data_quality_policy": relay.FROZEN_DATA_QUALITY_POLICY,
+    }
+    assert research_protocol["mining_rules"] == (
+        relay.normalize_mining_rules(None)
+    )
+    assert research_protocol["execution_rules"] == (
+        relay.normalize_execution_rules()
+    )
+    assert research_protocol["backtest_policy"] == (
+        relay.FROZEN_BACKTEST_POLICY
+    )
+    assert registration["record"]["research_validation_rules"] == (
+        relay.RESEARCH_VALIDATION_RULES
+    )
+    assert (
+        "minimum_validation_acceptance_rate"
+        not in registration["record"]["research_validation_rules"]
+    )
+    assert registration["record"]["prospective_acceptance_rules"] == (
+        relay.PROSPECTIVE_DUAL_TRACK_ACCEPTANCE_RULES
+    )
     assert len(registration["sha256"]) == 64
+
+
+def test_legacy_v4_model_preregistration_remains_auditable():
+    path = (
+        Path(relay.__file__).parent
+        / "preregistrations"
+        / "relay_fixed_ridge_preregistered_v4.json"
+    )
+
+    registration = relay.load_model_preregistration(path)
+
+    assert registration["ok"] is True
+    assert registration["current_protocol"] is False
+    assert registration["record"]["schema_version"] == 3
+    assert registration["record"]["protocol_version"] == (
+        "relay_fixed_ridge_preregistered_v4"
+    )
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == (
+        "7b25a57f44a31e04c387771c0ef916ab584beda8dc7c6881e1ebe095ff8c2ab2"
+    )
+
+
+def test_legacy_v4_registration_cannot_make_a_model_deployable():
+    registration = _eligible_registration()
+    registration["current_protocol"] = False
+    model = relay._registered_model_from_preregistration(registration)
+
+    assert (
+        relay._registered_frozen_model_is_eligible(model, registration)
+        is False
+    )
 
 
 def test_repository_model_preregistration_rejects_tampered_content(tmp_path):
@@ -3326,6 +4255,330 @@ def test_research_assessment_rejects_resigned_oos_prefix_shift(
     assert assessment["lock_eligible"] is False
 
 
+def test_research_assessment_rejects_resigned_pending_oos_tail(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    walk_forward = _assessment_fixture(
+        0.001,
+        window_return=1.0,
+        registration=registration,
+    )
+    preregistered = walk_forward["preregistered_oos"]
+    pending_date = (
+        pd.Timestamp(preregistered["session_dates"][-1])
+        + pd.offsets.BDay(1)
+    ).strftime("%Y-%m-%d")
+    preregistered["observation_cutoff"] = pending_date
+    preregistered["pending_session_dates"] = [pending_date]
+    walk_forward["preregistered_oos"] = (
+        relay._seal_preregistered_oos_evidence(preregistered)
+    )
+
+    assessment = relay.assess_research_result(walk_forward)
+
+    assert assessment["preregistered_oos_evidence_verified"] is False
+    assert assessment["lock_eligible"] is False
+    assert (
+        "preregistered_oos_evidence_mismatch"
+        in assessment["failure_reasons"]
+    )
+
+
+def test_research_assessment_rejects_resigned_unregistered_research_parameters(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    walk_forward = _assessment_fixture(
+        0.001,
+        window_return=1.0,
+        registration=registration,
+    )
+    preregistered = walk_forward["preregistered_oos"]
+    preregistered["locking_protocol"]["config"]["days"] += 1
+    walk_forward["preregistered_oos"] = (
+        relay._seal_preregistered_oos_evidence(preregistered)
+    )
+
+    assessment = relay.assess_research_result(walk_forward)
+
+    assert assessment["preregistered_oos_evidence_verified"] is False
+    assert assessment["lock_eligible"] is False
+
+
+def test_research_assessment_rejects_resigned_evidence_from_other_source_bundle(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    walk_forward = _assessment_fixture(
+        0.001,
+        window_return=1.0,
+        registration=registration,
+    )
+    preregistered = walk_forward["preregistered_oos"]
+    protocol_binding = _current_protocol_binding()
+    first_path = next(iter(protocol_binding["source_sha256"]))
+    protocol_binding["source_sha256"][first_path] = "0" * 64
+    preregistered["protocol_binding"] = protocol_binding
+    walk_forward["preregistered_oos"] = (
+        relay._seal_preregistered_oos_evidence(preregistered)
+    )
+
+    assessment = relay.assess_research_result(walk_forward)
+
+    assert assessment["preregistered_oos_evidence_verified"] is False
+    assert assessment["lock_eligible"] is False
+
+
+def test_research_assessment_rejects_resigned_evidence_after_source_change(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    walk_forward = _assessment_fixture(
+        0.001,
+        window_return=1.0,
+        registration=registration,
+    )
+    changed_binding = _current_protocol_binding()
+    first_path = next(iter(changed_binding["source_sha256"]))
+    changed_binding["source_sha256"][first_path] = "0" * 64
+    material = {
+        key: changed_binding[key]
+        for key in (
+            "binding_version",
+            "source_hash_policy",
+            "protocol_versions",
+            "source_sha256",
+        )
+    }
+    changed_binding["bundle_sha256"] = hashlib.sha256(
+        json.dumps(
+            material,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    monkeypatch.setattr(
+        relay,
+        "build_current_frozen_protocol_binding",
+        lambda: json.loads(json.dumps(changed_binding)),
+    )
+    preregistered = walk_forward["preregistered_oos"]
+    preregistered["protocol_binding"] = changed_binding
+    walk_forward["preregistered_oos"] = (
+        relay._seal_preregistered_oos_evidence(preregistered)
+    )
+
+    assessment = relay.assess_research_result(walk_forward)
+
+    assert assessment["preregistered_oos_evidence_verified"] is False
+    assert assessment["lock_eligible"] is False
+
+
+def test_protocol_binding_normalizes_text_line_endings(monkeypatch):
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda _path: b"first\r\nsecond\r\n",
+    )
+    windows_binding = relay.build_current_frozen_protocol_binding()
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda _path: b"first\nsecond\n",
+    )
+    linux_binding = relay.build_current_frozen_protocol_binding()
+
+    assert windows_binding["source_sha256"] == (
+        linux_binding["source_sha256"]
+    )
+    assert windows_binding["bundle_sha256"] == (
+        linux_binding["bundle_sha256"]
+    )
+
+
+def test_research_assessment_rejects_resigned_truncated_oos_tail(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    walk_forward = _assessment_fixture(
+        0.001,
+        window_return=1.0,
+        registration=registration,
+        session_count=26,
+    )
+    preregistered = walk_forward["preregistered_oos"]
+    removed_date = preregistered["session_dates"][-1]
+    preregistered["session_dates"] = (
+        preregistered["session_dates"][:-1]
+    )
+    preregistered["observation_cutoff"] = (
+        preregistered["session_dates"][-1]
+    )
+    preregistered["trades"] = [
+        trade
+        for trade in preregistered["trades"]
+        if trade["trade_date"] != removed_date
+    ]
+    preregistered["attempts"] = [
+        attempt
+        for attempt in preregistered["attempts"]
+        if attempt["trade_date"] != removed_date
+    ]
+    _rebuild_and_seal_preregistered_oos(walk_forward)
+
+    assessment = relay.assess_research_result(walk_forward)
+
+    assert assessment["preregistered_oos_evidence_verified"] is False
+    assert assessment["lock_eligible"] is False
+
+
+def test_partial_oos_window_is_signed_but_cannot_pass_lock_gate(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    walk_forward = _assessment_fixture(
+        0.001,
+        window_return=1.0,
+        registration=registration,
+        session_count=25,
+    )
+
+    assessment = relay.assess_research_result(walk_forward)
+
+    assert assessment["lock_eligible"] is False
+    assert assessment["preregistered_oos_evidence_verified"] is False
+    assert assessment["oos_window_count"] == 0
+    assert assessment["oos_complete_window_count"] == 0
+    assert "fixed_oos_window_mismatch" in assessment["failure_reasons"]
+
+
+def test_fixed_oos_gate_rejects_thirteenth_complete_window(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    registration["record"]["research_validation_rules"].update(
+        {
+            "evaluation_window_count": 12,
+            "window_sessions": 2,
+            "oos_session_count": 24,
+            "stop_rule": "first_fixed_prefix_only",
+        }
+    )
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    walk_forward = _assessment_fixture(
+        0.001,
+        window_return=1.0,
+        registration=registration,
+        session_count=26,
+    )
+
+    assessment = relay.assess_research_result(walk_forward)
+
+    assert assessment["lock_eligible"] is False
+    assert assessment["preregistered_oos_evidence_verified"] is False
+    assert "fixed_oos_window_mismatch" in assessment["failure_reasons"]
+
+
+def test_preregistered_oos_builder_stops_at_fixed_window_count(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    walk_forward = _assessment_fixture(
+        0.001,
+        window_return=1.0,
+        registration=registration,
+        session_count=26,
+    )
+    evidence = walk_forward["preregistered_oos"]
+
+    results = relay._build_preregistered_oos_results(
+        session_dates=evidence["session_dates"],
+        trades=evidence["trades"],
+        attempts=evidence["attempts"],
+        model=walk_forward["registered_model"],
+        test_days=2,
+        top_k=5,
+        holding_sessions=3,
+        evaluation_window_count=12,
+    )
+
+    assert len(results["windows"]) == 12
+    assert results["windows"][-1]["test_end"] == (
+        evidence["session_dates"][23]
+    )
+    assert all(
+        attempt["trade_date"] <= evidence["session_dates"][23]
+        for attempt in results["attempts"]
+    )
+
+
+def test_injected_research_clock_cannot_grant_lock_eligibility(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    walk_forward = _assessment_fixture(
+        0.001,
+        window_return=1.0,
+        registration=registration,
+    )
+    preregistered = walk_forward["preregistered_oos"]
+    preregistered["feature_freshness"]["clock_source"] = "injected"
+    walk_forward["preregistered_oos"] = (
+        relay._seal_preregistered_oos_evidence(preregistered)
+    )
+
+    assessment = relay.assess_research_result(walk_forward)
+
+    assert assessment["lock_eligible"] is False
+    assert "non_system_research_clock" in assessment["failure_reasons"]
+
+
 @pytest.mark.parametrize(
     ("target", "field", "value"),
     [
@@ -3399,7 +4652,7 @@ def test_preregistered_oos_is_scored_by_registered_model_not_rolling_model(
     from market import trading_calendar
 
     calendar = _calendar_snapshot_fixture(
-        "2026-07-31",
+        "2026-08-03",
         "2026-08-31",
     )
     monkeypatch.setattr(
@@ -3414,7 +4667,7 @@ def test_preregistered_oos_is_scored_by_registered_model_not_rolling_model(
     )
     dates = [
         value.strftime("%Y-%m-%d")
-        for value in pd.bdate_range("2026-08-03", periods=8)
+        for value in pd.bdate_range("2026-08-03", periods=9)
     ]
     feature_rows = []
     label_rows = []
@@ -3465,6 +4718,21 @@ def test_preregistered_oos_is_scored_by_registered_model_not_rolling_model(
         "coefficients": {"ret_5": -1.0},
         "normalized_weights": {"ret_5": -1.0},
     }
+    registration = _eligible_registration(
+        top_k=1,
+        test_days=2,
+    )
+    registered_sha256 = relay.factor_model_digest(registered)
+    registration["record"]["executable_model"] = dict(registered)
+    registration["record"][
+        "executable_model_sha256"
+    ] = registered_sha256
+    registration["model_sha256"] = registered_sha256
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
     monkeypatch.setattr(
         relay,
         "_fit_preregistered_frozen_model",
@@ -3503,20 +4771,61 @@ def test_preregistered_oos_is_scored_by_registered_model_not_rolling_model(
         top_k=1,
         market_gate={"enabled": False},
         nested_gate_selection=False,
+        locking_protocol=_locking_protocol_fixture(
+            top_k=1,
+            test_days=2,
+        ),
+        data_quality_assessment=(
+            _data_quality_assessment_fixture()
+        ),
+        feature_freshness={
+            "policy_version": (
+                "authoritative_completed_session_v2"
+            ),
+            "clock_source": "system",
+            "as_of": "2026-08-13T17:10:00+08:00",
+            "latest_feature_date": "2026-08-13",
+            "expected_latest_feature_date": "2026-08-13",
+            "maturity_lag_sessions": 0,
+        },
     )
 
     oos = result["preregistered_oos"]
     assert oos["model_sha256"] == relay.factor_model_digest(registered)
-    assert oos["session_dates"][0] == "2026-07-31"
-    assert oos["observation_cutoff"] == "2026-08-12"
-    assert oos["pending_session_dates"] == ["2026-08-12"]
-    assert oos["trades"][0]["skip_reason"] == "missing_oos_session"
+    assert oos["session_dates"][0] == "2026-08-03"
+    assert oos["observation_cutoff"] == "2026-08-13"
+    assert oos["pending_session_dates"] == []
+    assert oos["session_dates"][-1] == "2026-08-13"
+    assert oos["windows"][-1]["test_start"] == "2026-08-13"
+    assert oos["windows"][-1]["test_end"] == "2026-08-13"
+    assert oos["trades"][0]["codes"] == ["AAA"]
     assert oos["trades"]
     assert {
         code
         for trade in oos["trades"]
         for code in trade["codes"]
     } == {"AAA"}
+    assert oos["diagnostic_policy_version"] == (
+        relay.OOS_DIAGNOSTIC_POLICY_VERSION
+    )
+    assert oos["benchmark_policy_version"] == (
+        relay.BENCHMARK_POLICY_VERSION
+    )
+    assert len(oos["session_diagnostics"]) == len(dates)
+    assert all(
+        diagnostic["rank_ic"] == 1.0
+        for diagnostic in oos["session_diagnostics"]
+    )
+    assert len(oos["benchmark_attempts"]) == len(dates)
+    benchmark_codes_by_date = {
+        diagnostic["trade_date"]: diagnostic["benchmark_codes"]
+        for diagnostic in oos["session_diagnostics"]
+    }
+    assert all(
+        [attempt["ts_code"]]
+        == benchmark_codes_by_date[attempt["trade_date"]]
+        for attempt in oos["benchmark_attempts"]
+    )
 
 
 def test_research_assessment_rejects_unstable_validation_windows(
@@ -3533,15 +4842,63 @@ def test_research_assessment_rejects_unstable_validation_windows(
         window_return=1.0,
         registration=registration,
     )
-    for window in walk_forward["preregistered_oos"]["windows"]:
-        window["model_validation_stable"] = False
+    for diagnostic in walk_forward["preregistered_oos"][
+        "session_diagnostics"
+    ]:
+        diagnostic.update(
+            {
+                "rank_ic": -0.05,
+                "bottom_quantile_return_pct": 1.0,
+                "top_quantile_return_pct": -0.5,
+                "top_bottom_spread_pct": -1.5,
+            }
+        )
+    _rebuild_and_seal_preregistered_oos(walk_forward)
 
     assessment = relay.assess_research_result(walk_forward)
 
     assert assessment["lock_eligible"] is False
-    assert assessment["validation_acceptance_rate"] == 0.0
+    assert assessment["diagnostic_window_acceptance_rate"] == 0.0
+    assert assessment["oos_mean_rank_ic"] == -0.05
     assert (
-        "validation_acceptance_rate_below_minimum"
+        "diagnostic_window_acceptance_rate_below_minimum"
+        in assessment["failure_reasons"]
+    )
+
+
+def test_research_assessment_rejects_unevaluable_benchmark_session(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    walk_forward = _assessment_fixture(
+        0.001,
+        window_return=1.0,
+        registration=registration,
+    )
+    preregistered = walk_forward["preregistered_oos"]
+    missing_date = preregistered["session_dates"][0]
+    preregistered["session_diagnostics"][0][
+        "benchmark_evaluable"
+    ] = False
+    preregistered["benchmark_attempts"] = [
+        attempt
+        for attempt in preregistered["benchmark_attempts"]
+        if attempt["trade_date"] != missing_date
+    ]
+    _rebuild_and_seal_preregistered_oos(walk_forward)
+
+    assessment = relay.assess_research_result(walk_forward)
+
+    assert assessment["preregistered_oos_evidence_verified"] is True
+    assert assessment["lock_eligible"] is False
+    assert assessment["benchmark_unevaluable_oos_days"] == 1
+    assert (
+        "incomplete_benchmark_outcomes"
         in assessment["failure_reasons"]
     )
 
@@ -3583,22 +4940,7 @@ def test_research_assessment_rejects_any_unevaluable_oos_slot(
         }
     )
     missing_trade.pop("gate_reason")
-    results = relay._build_preregistered_oos_results(
-        session_dates=preregistered["session_dates"],
-        trades=preregistered["trades"],
-        attempts=preregistered["attempts"],
-        model=walk_forward["registered_model"],
-        test_days=preregistered["window_sessions"],
-        top_k=preregistered["top_k"],
-        holding_sessions=preregistered["holding_sessions"],
-    )
-    preregistered["windows"] = results["windows"]
-    preregistered["window_count"] = len(results["windows"])
-    preregistered["portfolio"] = results["portfolio"]
-    preregistered["gated_portfolio"] = results["gated_portfolio"]
-    walk_forward["preregistered_oos"] = (
-        relay._seal_preregistered_oos_evidence(preregistered)
-    )
+    _rebuild_and_seal_preregistered_oos(walk_forward)
 
     assessment = relay.assess_research_result(walk_forward)
 
@@ -3651,24 +4993,32 @@ def test_frozen_experiment_manifest_uses_only_a_lock_eligible_server_report(
     )
     report = _lockable_report_fixture(registration)
 
-    manifest = relay.build_frozen_experiment_manifest(report)
+    manifest = _build_manifest_for_test(report)
 
-    assert manifest["schema_version"] == 3
+    assert manifest["schema_version"] == 4
     assert manifest["strategy_key"] == relay.STRATEGY_KEY
     assert manifest["protocol_binding"]["binding_version"] == (
-        "relay_frozen_protocol_binding_v1"
+        "relay_frozen_protocol_binding_v3"
+    )
+    assert manifest["protocol_binding"]["source_hash_policy"] == (
+        "text_lf_sha256_v1"
     )
     assert manifest["protocol_binding"]["protocol_versions"] == {
-        "candidate_selection": "relay_candidate_selection_v2",
+        "candidate_selection": "relay_candidate_selection_v3",
+        "control_selection": (
+            "same_pit_universe_sha256_equal_weight_v1"
+        ),
         "readiness": "relay_prospective_readiness_v3",
         "position_sizing": "relay_shadow_position_sizing_v1",
-        "trade_path_settlement": "relay_real_bar_settlement_v3",
+        "trade_path_settlement": (
+            "relay_real_bar_atomic_dual_track_settlement_v4"
+        ),
     }
     assert set(manifest["protocol_binding"]["source_sha256"]) == {
         "analytics/data_manager.py",
         "analytics/factors_zoo/scorer.py",
         "analytics/market_signal_quality.py",
-        "analytics/preregistrations/relay_fixed_ridge_preregistered_v3.json",
+        "analytics/preregistrations/relay_fixed_ridge_preregistered_v5.json",
         "analytics/relay_factor_experiment.py",
         "analytics/relay_factor_mining.py",
         "analytics/relay_factor_model.py",
@@ -3685,10 +5035,10 @@ def test_frozen_experiment_manifest_uses_only_a_lock_eligible_server_report(
     assert len(manifest["protocol_binding"]["bundle_sha256"]) == 64
     assert manifest["model"] == report["model"]
     assert manifest["model_specification"] == {
-        "protocol_version": "relay_fixed_ridge_preregistered_v3",
+        "protocol_version": "relay_fixed_ridge_preregistered_v5",
         "registered_at": registration["record"]["registered_at"],
         "calibrated_through": "2026-07-30",
-        "oos_not_before": "2026-07-31",
+        "oos_not_before": "2026-08-03",
         "registration_sha256": registration["sha256"],
         "model_sha256": registration["model_sha256"],
         "calibration_sha256": registration["record"][
@@ -3709,17 +5059,23 @@ def test_frozen_experiment_manifest_uses_only_a_lock_eligible_server_report(
     }
     assert manifest["market_gate"] == {"enabled": False}
     assert manifest["acceptance_rules"] == {
-        "protocol_version": "prospective_60_session_bootstrap_v2",
+        "protocol_version": (
+            "prospective_60_session_paired_control_v3"
+        ),
         "required_sessions": 60,
         "minimum_total_return_pct": 2.0,
+        "minimum_excess_return_pct": 0.0,
         "maximum_drawdown_pct": -10.0,
         "minimum_executed_trades": 60,
         "minimum_bootstrap_lower_return_pct": 0.0,
+        "minimum_excess_bootstrap_lower_return_pct": 0.0,
         "maximum_protocol_violations": 0,
         "preregistered_at": relay.MODEL_SPEC_REGISTERED_AT,
         "calibrated_through": "2026-07-30",
     }
-    assert manifest["historical_evidence"]["generated_at"] == "2026-07-30 17:10:00"
+    assert manifest["historical_evidence"]["generated_at"] == (
+        report["generated_at"]
+    )
     assert manifest["historical_evidence"]["scope"] == (
         "preregistered_frozen_model_oos"
     )
@@ -3728,7 +5084,7 @@ def test_frozen_experiment_manifest_uses_only_a_lock_eligible_server_report(
     )
 
 
-def test_frozen_manifest_rejects_latest_trade_date_not_bound_to_signed_oos_cutoff(
+def test_frozen_manifest_rejects_stale_report_selected_after_new_session(
     monkeypatch,
 ):
     registration = _eligible_registration()
@@ -3738,10 +5094,37 @@ def test_frozen_manifest_rejects_latest_trade_date_not_bound_to_signed_oos_cutof
         lambda: registration,
     )
     report = _lockable_report_fixture(registration)
-    report["summary"]["latest_trade_date"] = "2099-12-31"
+    as_of = pd.Timestamp(
+        report["preregistered_oos"]["feature_freshness"]["as_of"]
+    )
+    validation_now = (
+        as_of + pd.offsets.BDay(1)
+    ).to_pydatetime()
 
-    with pytest.raises(ValueError, match="latest trade date"):
-        relay.build_frozen_experiment_manifest(report)
+    with pytest.raises(
+        ValueError,
+        match="current completed trading session",
+    ):
+        relay.build_frozen_experiment_manifest(
+            report,
+            _validation_now=validation_now,
+        )
+
+
+def test_frozen_manifest_rejects_latest_oos_date_not_bound_to_signed_cutoff(
+    monkeypatch,
+):
+    registration = _eligible_registration()
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    report = _lockable_report_fixture(registration)
+    report["summary"]["latest_oos_observation_date"] = "2099-12-31"
+
+    with pytest.raises(ValueError, match="latest OOS observation date"):
+        _build_manifest_for_test(report)
 
 
 def test_frozen_manifest_rejects_unsigned_locking_protocol_change(
@@ -3757,7 +5140,7 @@ def test_frozen_manifest_rejects_unsigned_locking_protocol_change(
     report["config"]["top_k"] = 10
 
     with pytest.raises(ValueError, match="locking protocol"):
-        relay.build_frozen_experiment_manifest(report)
+        _build_manifest_for_test(report)
 
 
 @pytest.mark.parametrize(
@@ -3787,7 +5170,7 @@ def test_frozen_manifest_rejects_tampered_data_quality_result(
     report["summary"][field] = value
 
     with pytest.raises(ValueError, match="data quality"):
-        relay.build_frozen_experiment_manifest(report)
+        _build_manifest_for_test(report)
 
 
 def test_frozen_manifest_ignores_unsigned_backtest_policy_change(
@@ -3804,7 +5187,7 @@ def test_frozen_manifest_ignores_unsigned_backtest_policy_change(
         "entry": "same_day_close",
     }
 
-    manifest = relay.build_frozen_experiment_manifest(report)
+    manifest = _build_manifest_for_test(report)
 
     assert manifest["backtest_policy"] == {
         "purge": "exit_date_before_test_start",
@@ -3831,7 +5214,7 @@ def test_frozen_manifest_rejects_non_boolean_assessment_flags(
     report["research_assessment"]["metric_gate_passed"] = 1
 
     with pytest.raises(ValueError):
-        relay.build_frozen_experiment_manifest(report)
+        _build_manifest_for_test(report)
 
 
 def test_frozen_manifest_rejects_malformed_locking_config(
@@ -3847,7 +5230,7 @@ def test_frozen_manifest_rejects_malformed_locking_config(
     report["config"]["top_k"] = {"malformed": True}
 
     with pytest.raises(ValueError, match="locking protocol"):
-        relay.build_frozen_experiment_manifest(report)
+        _build_manifest_for_test(report)
 
 
 @pytest.mark.parametrize(
@@ -3996,7 +5379,7 @@ def test_frozen_experiment_manifest_rejects_untrusted_or_unvalidated_report():
     ):
         report = {**base, **patch}
         with pytest.raises(ValueError):
-            relay.build_frozen_experiment_manifest(report)
+            _build_manifest_for_test(report)
 
 
 def test_frozen_manifest_rejects_unbound_latest_rolling_model():
@@ -4027,7 +5410,7 @@ def test_frozen_manifest_rejects_unbound_latest_rolling_model():
         ValueError,
         match="preregistered frozen factor model",
     ):
-        relay.build_frozen_experiment_manifest(report)
+        _build_manifest_for_test(report)
 
 
 def test_frozen_manifest_recomputes_evidence_instead_of_trusting_flags(
@@ -4060,7 +5443,7 @@ def test_frozen_manifest_recomputes_evidence_instead_of_trusting_flags(
         ValueError,
         match="research evidence did not pass",
     ):
-        relay.build_frozen_experiment_manifest(report)
+        _build_manifest_for_test(report)
 
 
 def test_cli_passes_market_signal_flag(monkeypatch, tmp_path):

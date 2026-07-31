@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -21,7 +21,7 @@ DEFAULT_DB_PATH = _ROOT / "data" / "research" / "relay_factor" / "prospective.sq
 _ACTIVE_STATUS = "locked_shadow"
 _TERMINAL_STATUSES = {"validated", "failed", "cancelled"}
 _STATUSES = {"exploratory", _ACTIVE_STATUS, *_TERMINAL_STATUSES}
-_VERIFIED_SCHEMA_VERSION = 3
+_VERIFIED_SCHEMA_VERSION = 4
 _VERIFIED_STRATEGY_KEY = "relay_factor_mining_v2"
 _REGISTERED_MODEL_BINDING_KEYS = (
     "preregistration_record_sha256",
@@ -39,6 +39,16 @@ _EXECUTION_CONFIG_KEYS = (
     "include_market_signals",
     "universe_selection",
 )
+_TRACK_STORAGE = {
+    "strategy": (
+        "prospective_candidates",
+        "candidates_recorded",
+    ),
+    "control": (
+        "prospective_controls",
+        "controls_recorded",
+    ),
+}
 
 
 def normalize_json(value: Any) -> Any:
@@ -287,6 +297,11 @@ def _fixed_session_dates(
     sessions: list[str] = []
     max_scanned_days = max(366, required * 10)
     for _ in range(max_scanned_days):
+        if not trading_calendar.has_verified_calendar(cursor.year):
+            raise RuntimeError(
+                "authoritative trade calendar unavailable for "
+                f"{cursor.year}"
+            )
         if trading_calendar.is_trading_day(cursor):
             sessions.append(cursor.isoformat())
             if len(sessions) == required:
@@ -346,7 +361,7 @@ def _manifest_protocol_is_verified(manifest: Mapping[str, Any]) -> bool:
         }
         and manifest.get("preregistration") == expected_preregistration
         and manifest.get("acceptance_rules")
-        == relay_factor_mining.PROSPECTIVE_ACCEPTANCE_RULES
+        == relay_factor_mining.PROSPECTIVE_DUAL_TRACK_ACCEPTANCE_RULES
     )
 
 
@@ -440,10 +455,19 @@ def _validate_settlement_evidence(
 class RelayFactorExperimentStore:
     """SQLite-backed, append-only prospective experiment state machine."""
 
-    def __init__(self, db_path: str | Path | None = None):
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ):
         self.db_path = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
+        self._clock = clock or (lambda: datetime.now().astimezone())
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+
+    def _now(self) -> datetime:
+        return _as_datetime(self._clock())
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path, timeout=30)
@@ -483,6 +507,7 @@ class RelayFactorExperimentStore:
                     source_snapshot_json TEXT NOT NULL,
                     recorded_at TEXT NOT NULL,
                     candidates_recorded INTEGER NOT NULL DEFAULT 0 CHECK (candidates_recorded IN (0, 1)),
+                    controls_recorded INTEGER NOT NULL DEFAULT 0 CHECK (controls_recorded IN (0, 1)),
                     evidence_verified INTEGER NOT NULL DEFAULT 0 CHECK (evidence_verified IN (0, 1)),
                     PRIMARY KEY (experiment_id, signal_date),
                     FOREIGN KEY (experiment_id) REFERENCES experiments(experiment_id)
@@ -513,9 +538,41 @@ class RelayFactorExperimentStore:
                     FOREIGN KEY (experiment_id, signal_date)
                         REFERENCES prospective_sessions(experiment_id, signal_date)
                 );
+
+                CREATE TABLE IF NOT EXISTS prospective_controls (
+                    experiment_id TEXT NOT NULL,
+                    signal_date TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    candidate_rank INTEGER NOT NULL,
+                    target_position_pct REAL NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    selected INTEGER NOT NULL DEFAULT 1 CHECK (selected IN (0, 1)),
+                    settlement_status TEXT NOT NULL CHECK (settlement_status IN ('pending', 'settled')) DEFAULT 'pending',
+                    entry_price REAL,
+                    exit_price REAL,
+                    entry_date TEXT,
+                    exit_date TEXT,
+                    exit_reason TEXT,
+                    realized_return_pct REAL,
+                    blocked INTEGER NOT NULL DEFAULT 0 CHECK (blocked IN (0, 1)),
+                    block_reason TEXT,
+                    valuation_path_json TEXT,
+                    settled_at TEXT,
+                    snapshot_verified INTEGER NOT NULL DEFAULT 0 CHECK (snapshot_verified IN (0, 1)),
+                    settlement_verified INTEGER NOT NULL DEFAULT 0 CHECK (settlement_verified IN (0, 1)),
+                    PRIMARY KEY (experiment_id, signal_date, code),
+                    FOREIGN KEY (experiment_id, signal_date)
+                        REFERENCES prospective_sessions(experiment_id, signal_date)
+                );
                 """
             )
             self._ensure_column(connection, "prospective_sessions", "candidates_recorded", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(
+                connection,
+                "prospective_sessions",
+                "controls_recorded",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
             self._ensure_column(connection, "prospective_candidates", "selected", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(connection, "prospective_candidates", "entry_date", "TEXT")
             self._ensure_column(connection, "prospective_candidates", "exit_date", "TEXT")
@@ -657,9 +714,8 @@ class RelayFactorExperimentStore:
         self,
         source_run_id: str,
         manifest: Mapping[str, Any],
-        locked_at: str | datetime | None = None,
     ) -> dict[str, Any]:
-        locked_timestamp = _timestamp(locked_at)
+        locked_timestamp = self._now().isoformat(timespec="seconds")
         frozen = _without_derived_fields(manifest)
         model_instance_id = model_instance_id_for_manifest(frozen)
         protocol_id = experiment_id_for_manifest(frozen)
@@ -760,17 +816,28 @@ class RelayFactorExperimentStore:
 
     def get_latest_validated_experiment(self) -> dict[str, Any] | None:
         with self._connect() as connection:
-            row = connection.execute(
+            rows = connection.execute(
                 """
                 SELECT * FROM experiments
                 WHERE status = 'validated'
                   AND protocol_verified = 1
                   AND evidence_verified = 1
                 ORDER BY evaluated_at DESC, locked_at DESC, experiment_id DESC
-                LIMIT 1
                 """
-            ).fetchone()
-            return None if row is None else self._experiment_output(row)
+            ).fetchall()
+            for row in rows:
+                experiment = self._experiment_output(row)
+                if (
+                    int(
+                        experiment["manifest"].get(
+                            "schema_version"
+                        )
+                        or 0
+                    )
+                    == _VERIFIED_SCHEMA_VERSION
+                ):
+                    return experiment
+            return None
 
     def list_experiments(self, limit: int = 20) -> list[dict[str, Any]]:
         safe_limit = max(1, min(100, int(limit or 20)))
@@ -914,8 +981,9 @@ class RelayFactorExperimentStore:
             )
         return snapshots
 
-    @staticmethod
+    @classmethod
     def _finalize_candidate_snapshot(
+        cls,
         connection: sqlite3.Connection,
         experiment_id: str,
         signal_text: str,
@@ -923,9 +991,52 @@ class RelayFactorExperimentStore:
         *,
         evidence_verified: bool = False,
     ) -> dict[str, Any]:
+        return cls._finalize_track_snapshot(
+            connection,
+            experiment_id,
+            signal_text,
+            snapshots,
+            track="strategy",
+            evidence_verified=evidence_verified,
+        )
+
+    @classmethod
+    def _finalize_control_snapshot(
+        cls,
+        connection: sqlite3.Connection,
+        experiment_id: str,
+        signal_text: str,
+        snapshots: Mapping[str, tuple[int, float, bool, str]],
+        *,
+        evidence_verified: bool = False,
+    ) -> dict[str, Any]:
+        return cls._finalize_track_snapshot(
+            connection,
+            experiment_id,
+            signal_text,
+            snapshots,
+            track="control",
+            evidence_verified=evidence_verified,
+        )
+
+    @staticmethod
+    def _finalize_track_snapshot(
+        connection: sqlite3.Connection,
+        experiment_id: str,
+        signal_text: str,
+        snapshots: Mapping[str, tuple[int, float, bool, str]],
+        *,
+        track: str,
+        evidence_verified: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            table_name, recorded_column = _TRACK_STORAGE[track]
+        except KeyError:
+            raise ValueError("unsupported prospective track") from None
         session = connection.execute(
-            """
-            SELECT candidates_recorded FROM prospective_sessions
+            f"""
+            SELECT {recorded_column} AS track_recorded
+            FROM prospective_sessions
             WHERE experiment_id = ? AND signal_date = ?
             """,
             (experiment_id, signal_text),
@@ -936,9 +1047,9 @@ class RelayFactorExperimentStore:
             """
             SELECT code, candidate_rank, target_position_pct, selected,
                    snapshot_json, snapshot_verified
-            FROM prospective_candidates
+            FROM {table_name}
             WHERE experiment_id = ? AND signal_date = ?
-            """,
+            """.format(table_name=table_name),
             (experiment_id, signal_text),
         ).fetchall()
         existing_snapshot = {
@@ -955,12 +1066,16 @@ class RelayFactorExperimentStore:
             code: (*values, bool(evidence_verified))
             for code, values in snapshots.items()
         }
-        if bool(session["candidates_recorded"]):
+        if bool(session["track_recorded"]):
             if existing_snapshot == expected_snapshot:
                 return {"recorded": True, "inserted": 0, "idempotent": True}
-            raise ValueError("candidate snapshot is immutable after finalization")
+            raise ValueError(
+                f"{track} snapshot is immutable after finalization"
+            )
         if existing_snapshot and existing_snapshot != expected_snapshot:
-            raise ValueError("candidate snapshot is immutable after partial persistence")
+            raise ValueError(
+                f"{track} snapshot is immutable after partial persistence"
+            )
         inserted = 0
         if not existing_snapshot:
             for code, (
@@ -971,12 +1086,12 @@ class RelayFactorExperimentStore:
             ) in snapshots.items():
                 connection.execute(
                     """
-                    INSERT INTO prospective_candidates (
+                    INSERT INTO {table_name} (
                         experiment_id, signal_date, code, candidate_rank,
                         target_position_pct, snapshot_json, selected,
                         snapshot_verified
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                    """.format(table_name=table_name),
                     (
                         experiment_id,
                         signal_text,
@@ -991,9 +1106,9 @@ class RelayFactorExperimentStore:
                 inserted += 1
         connection.execute(
             """
-            UPDATE prospective_sessions SET candidates_recorded = 1
+            UPDATE prospective_sessions SET {recorded_column} = 1
             WHERE experiment_id = ? AND signal_date = ?
-            """,
+            """.format(recorded_column=recorded_column),
             (experiment_id, signal_text),
         )
         return {"recorded": True, "inserted": inserted, "idempotent": False}
@@ -1072,6 +1187,7 @@ class RelayFactorExperimentStore:
         data_complete: bool = True,
         data_trusted: bool | None = None,
         source_snapshot: Mapping[str, Any] | None = None,
+        control_candidates: Sequence[Mapping[str, Any]] | None = None,
         evidence_verified: bool,
     ) -> dict[str, Any]:
         signal_day = _as_date(signal_date)
@@ -1087,7 +1203,16 @@ class RelayFactorExperimentStore:
         )
         if (not complete or not trusted) and candidates:
             raise ValueError("untrusted or incomplete sessions cannot contain candidates")
+        if (not complete or not trusted) and control_candidates:
+            raise ValueError(
+                "untrusted or incomplete sessions cannot contain controls"
+            )
         snapshots = self._candidate_snapshots(candidates)
+        control_snapshots = (
+            None
+            if control_candidates is None
+            else self._candidate_snapshots(control_candidates)
+        )
         snapshot.setdefault("data_complete", complete)
         snapshot.setdefault("market_data_trusted", trusted)
         snapshot_json = canonical_json(snapshot)
@@ -1113,6 +1238,17 @@ class RelayFactorExperimentStore:
                     snapshots,
                     evidence_verified=evidence_verified,
                 )
+                control_result = (
+                    self._finalize_control_snapshot(
+                        connection,
+                        experiment_id,
+                        signal_text,
+                        control_snapshots,
+                        evidence_verified=evidence_verified,
+                    )
+                    if control_snapshots is not None
+                    else None
+                )
                 if (
                     bool(existing["data_complete"]) == complete
                     and bool(existing["data_trusted"]) == trusted
@@ -1125,12 +1261,24 @@ class RelayFactorExperimentStore:
                         "data_complete": complete,
                         "data_trusted": trusted,
                         "candidate_snapshot": candidate_result,
+                        **(
+                            {"control_snapshot": control_result}
+                            if control_result is not None
+                            else {}
+                        ),
                     }
                 raise ValueError("frozen session snapshot is immutable")
             if existing is not None:
                 connection.execute(
                     """
                     DELETE FROM prospective_candidates
+                    WHERE experiment_id = ? AND signal_date = ?
+                    """,
+                    (experiment_id, signal_text),
+                )
+                connection.execute(
+                    """
+                    DELETE FROM prospective_controls
                     WHERE experiment_id = ? AND signal_date = ?
                     """,
                     (experiment_id, signal_text),
@@ -1167,6 +1315,17 @@ class RelayFactorExperimentStore:
                 snapshots,
                 evidence_verified=evidence_verified,
             )
+            control_result = (
+                self._finalize_control_snapshot(
+                    connection,
+                    experiment_id,
+                    signal_text,
+                    control_snapshots,
+                    evidence_verified=evidence_verified,
+                )
+                if control_snapshots is not None
+                else None
+            )
             return {
                 "recorded": True,
                 "idempotent": False,
@@ -1174,6 +1333,11 @@ class RelayFactorExperimentStore:
                 "data_complete": complete,
                 "data_trusted": trusted,
                 "candidate_snapshot": candidate_result,
+                **(
+                    {"control_snapshot": control_result}
+                    if control_result is not None
+                    else {}
+                ),
             }
 
     @staticmethod
@@ -1185,6 +1349,13 @@ class RelayFactorExperimentStore:
             manifest
         ):
             raise ValueError("experiment frozen protocol no longer matches runtime")
+
+    def _latest_completed_session_date(self) -> str | None:
+        from analytics import relay_factor_mining
+
+        return relay_factor_mining._authoritative_completed_trade_date(
+            self._now()
+        )
 
     @staticmethod
     def _bound_verified_candidates(
@@ -1258,6 +1429,30 @@ class RelayFactorExperimentStore:
             raise ValueError("candidate ranks must be unique and contiguous")
         return rows
 
+    @classmethod
+    def _bound_verified_controls(
+        cls,
+        experiment: Mapping[str, Any],
+        signal_text: str,
+        controls: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        rows = cls._bound_verified_candidates(
+            experiment,
+            signal_text,
+            controls,
+        )
+        config = experiment["manifest"].get("config")
+        config = config if isinstance(config, Mapping) else {}
+        top_k = max(1, int(config.get("top_k") or 1))
+        if len(rows) != top_k:
+            raise ValueError(
+                "verified control count must equal frozen top_k"
+            )
+        for row in rows:
+            row["prospective_track"] = "control"
+            row["selected"] = True
+        return rows
+
     def record_verified_shadow_session(
         self,
         experiment_id: str,
@@ -1282,17 +1477,68 @@ class RelayFactorExperimentStore:
         if snapshot.get("ok") and snapshot.get("data_status") == "ok":
             if snapshot_date != signal_text:
                 raise ValueError("verified shadow snapshot signal_date mismatch")
+            if signal_text != self._latest_completed_session_date():
+                raise ValueError(
+                    "historical success backfill is not allowed"
+                )
             candidates = self._bound_verified_candidates(
                 experiment,
                 signal_text,
                 list(snapshot.get("candidates") or []),
             )
+            dual_track_required = int(
+                experiment["manifest"].get("schema_version") or 0
+            ) >= 4
+            raw_controls = snapshot.get("control_candidates")
+            if dual_track_required and not isinstance(
+                raw_controls,
+                list,
+            ):
+                raise ValueError(
+                    "verified dual-track snapshot controls are missing"
+                )
+            controls = (
+                self._bound_verified_controls(
+                    experiment,
+                    signal_text,
+                    raw_controls,
+                )
+                if isinstance(raw_controls, list)
+                else None
+            )
+            if dual_track_required:
+                if (
+                    snapshot.get("control_policy_version")
+                    != relay_factor_mining.BENCHMARK_POLICY_VERSION
+                    or not isinstance(
+                        snapshot.get(
+                            "control_universe_codes_sha256"
+                        ),
+                        str,
+                    )
+                    or len(
+                        snapshot["control_universe_codes_sha256"]
+                    )
+                    != 64
+                ):
+                    raise ValueError(
+                        "verified control provenance is invalid"
+                    )
             source_snapshot = {
                 "data_complete": True,
                 "market_data_trusted": True,
                 "data_quality": snapshot.get("data_quality") or {},
                 "market_gate": snapshot.get("market_gate") or {},
                 "candidate_count": len(candidates),
+                "control_candidate_count": (
+                    len(controls) if controls is not None else None
+                ),
+                "control_policy_version": snapshot.get(
+                    "control_policy_version"
+                ),
+                "control_universe_codes_sha256": snapshot.get(
+                    "control_universe_codes_sha256"
+                ),
                 "signal_date": signal_text,
                 "experiment_id": experiment_id,
                 "protocol_id": experiment["protocol_id"],
@@ -1310,6 +1556,7 @@ class RelayFactorExperimentStore:
                 data_trusted=True,
                 source_snapshot=source_snapshot,
                 candidates=candidates,
+                control_candidates=controls,
                 evidence_verified=True,
             )
         source_snapshot = {
@@ -1338,6 +1585,17 @@ class RelayFactorExperimentStore:
             data_trusted=False,
             source_snapshot=source_snapshot,
             candidates=[],
+            control_candidates=(
+                []
+                if int(
+                    experiment["manifest"].get(
+                        "schema_version"
+                    )
+                    or 0
+                )
+                >= 4
+                else None
+            ),
             evidence_verified=True,
         )
         return {
@@ -1380,6 +1638,17 @@ class RelayFactorExperimentStore:
                 "protocol_violation_count": 0,
             },
             candidates=[],
+            control_candidates=(
+                []
+                if int(
+                    experiment["manifest"].get(
+                        "schema_version"
+                    )
+                    or 0
+                )
+                >= 4
+                else None
+            ),
             evidence_verified=True,
         )
 
@@ -1395,7 +1664,22 @@ class RelayFactorExperimentStore:
         self._require_verified_protocol(experiment)
         settled = 0
         pending = 0
-        for stored in self.list_candidates(experiment_id):
+        stored_tracks = [
+            *[
+                ("strategy", item)
+                for item in self.list_candidates(experiment_id)
+            ],
+            *[
+                ("control", item)
+                for item in self.list_control_candidates(
+                    experiment_id
+                )
+            ],
+        ]
+        ready_settlements: list[
+            tuple[str, dict[str, Any], dict[str, Any]]
+        ] = []
+        for track, stored in stored_tracks:
             if (
                 not stored.get("selected")
                 or stored.get("settlement_status") == "settled"
@@ -1420,10 +1704,8 @@ class RelayFactorExperimentStore:
                 pending += 1
                 continue
             block_reasons = result.get("block_reasons") or []
-            self._settle_candidate(
-                experiment_id,
+            _signal_text, settlement = self._settlement_payload(
                 stored["signal_date"],
-                stored["code"],
                 entry_date=result.get("entry_date"),
                 exit_date=result.get("exit_date"),
                 entry_price=result.get("entry_price"),
@@ -1435,7 +1717,27 @@ class RelayFactorExperimentStore:
                 valuation_path=result.get("valuation_path") or [],
                 evidence_verified=True,
             )
-            settled += 1
+            ready_settlements.append((track, stored, settlement))
+        if ready_settlements:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                experiment_row = self._require_experiment(
+                    connection,
+                    experiment_id,
+                )
+                self._require_locked(experiment_row)
+                for track, stored, settlement in ready_settlements:
+                    self._settle_track_candidate(
+                        connection,
+                        experiment_row,
+                        track=track,
+                        experiment_id=experiment_id,
+                        signal_text=stored["signal_date"],
+                        code=stored["code"],
+                        settlement=settlement,
+                        settled_at=None,
+                    )
+                    settled += 1
         return {"settled": settled, "pending": pending}
 
     def record_candidates(
@@ -1460,7 +1762,36 @@ class RelayFactorExperimentStore:
     def list_candidates(
         self, experiment_id: str, signal_date: str | date | datetime | None = None
     ) -> list[dict[str, Any]]:
-        query = "SELECT * FROM prospective_candidates WHERE experiment_id = ?"
+        return self._list_track_candidates(
+            "strategy",
+            experiment_id,
+            signal_date,
+        )
+
+    def list_control_candidates(
+        self,
+        experiment_id: str,
+        signal_date: str | date | datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._list_track_candidates(
+            "control",
+            experiment_id,
+            signal_date,
+        )
+
+    def _list_track_candidates(
+        self,
+        track: str,
+        experiment_id: str,
+        signal_date: str | date | datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        try:
+            table_name, _recorded_column = _TRACK_STORAGE[track]
+        except KeyError:
+            raise ValueError("unsupported prospective track") from None
+        query = (
+            f"SELECT * FROM {table_name} WHERE experiment_id = ?"
+        )
         params: list[Any] = [experiment_id]
         if signal_date is not None:
             query += " AND signal_date = ?"
@@ -1490,6 +1821,7 @@ class RelayFactorExperimentStore:
                 "valuation_path": _json_loads(row["valuation_path_json"], None),
                 "settlement_verified": bool(row["settlement_verified"]),
                 "settled_at": row["settled_at"],
+                "prospective_track": track,
             }
             for row in rows
         ]
@@ -1546,6 +1878,52 @@ class RelayFactorExperimentStore:
         settled_at: str | datetime | None = None,
         evidence_verified: bool,
     ) -> dict[str, Any]:
+        signal_text, settlement = self._settlement_payload(
+            signal_date,
+            entry_date=entry_date,
+            exit_date=exit_date,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            exit_reason=exit_reason,
+            realized_return_pct=realized_return_pct,
+            blocked=blocked,
+            block_reason=block_reason,
+            valuation_path=valuation_path,
+            evidence_verified=evidence_verified,
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            experiment_row = self._require_experiment(
+                connection,
+                experiment_id,
+            )
+            self._require_locked(experiment_row)
+            return self._settle_track_candidate(
+                connection,
+                experiment_row,
+                track="strategy",
+                experiment_id=experiment_id,
+                signal_text=signal_text,
+                code=str(code),
+                settlement=settlement,
+                settled_at=settled_at,
+            )
+
+    @staticmethod
+    def _settlement_payload(
+        signal_date: str | date | datetime,
+        *,
+        entry_date: str | date | datetime | None,
+        exit_date: str | date | datetime | None,
+        entry_price: float | None,
+        exit_price: float | None,
+        exit_reason: str | None,
+        realized_return_pct: float | None,
+        blocked: bool,
+        block_reason: str | None,
+        valuation_path: Sequence[Mapping[str, Any]] | None,
+        evidence_verified: bool,
+    ) -> tuple[str, dict[str, Any]]:
         signal_text = _as_date(signal_date).isoformat()
         entry_text = None if entry_date is None else _as_date(entry_date).isoformat()
         exit_text = None if exit_date is None else _as_date(exit_date).isoformat()
@@ -1567,78 +1945,112 @@ class RelayFactorExperimentStore:
             "valuation_path_json": path_json,
             "settlement_verified": bool(evidence_verified),
         }
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            experiment_row = self._require_experiment(connection, experiment_id)
-            self._require_locked(experiment_row)
-            _validate_settlement_evidence(
-                signal_date=signal_text,
-                manifest=_json_loads(experiment_row["manifest_json"], {}),
-                settlement=settlement,
-            )
-            row = connection.execute(
-                """
-                SELECT * FROM prospective_candidates
-                WHERE experiment_id = ? AND signal_date = ? AND code = ?
-                """,
-                (experiment_id, signal_text, str(code)),
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"unknown candidate: {code}")
-            if row["settlement_status"] == "settled":
-                prior = {
-                    "entry_date": row["entry_date"],
-                    "exit_date": row["exit_date"],
-                    "entry_price": row["entry_price"],
-                    "exit_price": row["exit_price"],
-                    "exit_reason": row["exit_reason"],
-                    "realized_return_pct": row["realized_return_pct"],
-                    "blocked": bool(row["blocked"]),
-                    "block_reason": row["block_reason"],
-                    "valuation_path_json": row["valuation_path_json"],
-                    "settlement_verified": bool(row["settlement_verified"]),
-                }
-                comparable = {
-                    key: value
-                    for key, value in settlement.items()
-                    if key != "valuation_path"
-                }
-                if prior == comparable:
-                    return {"settled": True, "idempotent": True}
-                raise ValueError("candidate settlement is immutable once settled")
-            connection.execute(
-                """
-                UPDATE prospective_candidates
-                SET settlement_status = 'settled', entry_date = ?, exit_date = ?,
-                    entry_price = ?, exit_price = ?, exit_reason = ?, realized_return_pct = ?, blocked = ?, block_reason = ?,
-                    valuation_path_json = ?, settled_at = ?,
-                    settlement_verified = ?
-                WHERE experiment_id = ? AND signal_date = ? AND code = ?
-                """,
-                (
-                    settlement["entry_date"],
-                    settlement["exit_date"],
-                    settlement["entry_price"],
-                    settlement["exit_price"],
-                    settlement["exit_reason"],
-                    settlement["realized_return_pct"],
-                    int(settlement["blocked"]),
-                    settlement["block_reason"],
-                    settlement["valuation_path_json"],
-                    _timestamp(settled_at),
-                    int(settlement["settlement_verified"]),
-                    experiment_id,
-                    signal_text,
-                    str(code),
+        return signal_text, settlement
+
+    @staticmethod
+    def _settle_track_candidate(
+        connection: sqlite3.Connection,
+        experiment_row: sqlite3.Row,
+        *,
+        track: str,
+        experiment_id: str,
+        signal_text: str,
+        code: str,
+        settlement: Mapping[str, Any],
+        settled_at: str | datetime | None,
+    ) -> dict[str, Any]:
+        try:
+            table_name, _recorded_column = _TRACK_STORAGE[track]
+        except KeyError:
+            raise ValueError("unsupported prospective track") from None
+        _validate_settlement_evidence(
+            signal_date=signal_text,
+            manifest=_json_loads(
+                experiment_row["manifest_json"],
+                {},
+            ),
+            settlement=settlement,
+        )
+        row = connection.execute(
+            """
+            SELECT * FROM {table_name}
+            WHERE experiment_id = ? AND signal_date = ? AND code = ?
+            """.format(table_name=table_name),
+            (experiment_id, signal_text, str(code)),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown {track} candidate: {code}")
+        if row["settlement_status"] == "settled":
+            prior = {
+                "entry_date": row["entry_date"],
+                "exit_date": row["exit_date"],
+                "entry_price": row["entry_price"],
+                "exit_price": row["exit_price"],
+                "exit_reason": row["exit_reason"],
+                "realized_return_pct": row["realized_return_pct"],
+                "blocked": bool(row["blocked"]),
+                "block_reason": row["block_reason"],
+                "valuation_path_json": row["valuation_path_json"],
+                "settlement_verified": bool(
+                    row["settlement_verified"]
                 ),
+            }
+            comparable = {
+                key: value
+                for key, value in settlement.items()
+                if key != "valuation_path"
+            }
+            if prior == comparable:
+                return {"settled": True, "idempotent": True}
+            raise ValueError(
+                f"{track} settlement is immutable once settled"
             )
-            return {"settled": True, "idempotent": False}
+        connection.execute(
+            """
+            UPDATE {table_name}
+            SET settlement_status = 'settled', entry_date = ?,
+                exit_date = ?, entry_price = ?, exit_price = ?,
+                exit_reason = ?, realized_return_pct = ?, blocked = ?,
+                block_reason = ?, valuation_path_json = ?,
+                settled_at = ?, settlement_verified = ?
+            WHERE experiment_id = ? AND signal_date = ? AND code = ?
+            """.format(table_name=table_name),
+            (
+                settlement["entry_date"],
+                settlement["exit_date"],
+                settlement["entry_price"],
+                settlement["exit_price"],
+                settlement["exit_reason"],
+                settlement["realized_return_pct"],
+                int(bool(settlement["blocked"])),
+                settlement["block_reason"],
+                settlement["valuation_path_json"],
+                _timestamp(settled_at),
+                int(bool(settlement["settlement_verified"])),
+                experiment_id,
+                signal_text,
+                str(code),
+            ),
+        )
+        return {"settled": True, "idempotent": False}
 
     update_candidate_settlement = settle_candidate
 
     def list_sessions(self, experiment_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
-            self._require_experiment(connection, experiment_id)
+            experiment_row = self._require_experiment(
+                connection,
+                experiment_id,
+            )
+            manifest = _json_loads(
+                experiment_row["manifest_json"],
+                {},
+            )
+            dual_track_required = (
+                int(manifest.get("schema_version") or 0) >= 4
+                if isinstance(manifest, Mapping)
+                else False
+            )
             sessions = connection.execute(
                 """
                 SELECT * FROM prospective_sessions
@@ -1663,6 +2075,46 @@ class RelayFactorExperimentStore:
                 settled_count = int(counts["settled_count"] or 0)
                 selected_candidate_count = int(counts["selected_candidate_count"] or 0)
                 selected_settled_count = int(counts["selected_settled_count"] or 0)
+                control_counts = connection.execute(
+                    """
+                    SELECT COUNT(*) AS control_count,
+                           SUM(
+                               CASE WHEN selected = 1 THEN 1 ELSE 0 END
+                           ) AS selected_control_count,
+                           SUM(
+                               CASE
+                                   WHEN selected = 1
+                                        AND settlement_status = 'settled'
+                                   THEN 1
+                                   ELSE 0
+                               END
+                           ) AS selected_control_settled_count
+                    FROM prospective_controls
+                    WHERE experiment_id = ? AND signal_date = ?
+                    """,
+                    (experiment_id, row["signal_date"]),
+                ).fetchone()
+                control_count = int(
+                    control_counts["control_count"] or 0
+                )
+                selected_control_count = int(
+                    control_counts["selected_control_count"] or 0
+                )
+                selected_control_settled_count = int(
+                    control_counts[
+                        "selected_control_settled_count"
+                    ]
+                    or 0
+                )
+                strategy_settled = (
+                    selected_candidate_count
+                    == selected_settled_count
+                )
+                control_settled = (
+                    bool(row["controls_recorded"])
+                    and selected_control_count
+                    == selected_control_settled_count
+                )
                 output.append(
                     {
                         "experiment_id": experiment_id,
@@ -1673,14 +2125,28 @@ class RelayFactorExperimentStore:
                         "evidence_verified": bool(row["evidence_verified"]),
                         "recorded_at": row["recorded_at"],
                         "candidates_recorded": bool(row["candidates_recorded"]),
+                        "controls_recorded": bool(
+                            row["controls_recorded"]
+                        ),
                         "candidate_count": candidate_count,
                         "settled_candidate_count": settled_count,
                         "selected_candidate_count": selected_candidate_count,
                         "selected_settled_count": selected_settled_count,
+                        "control_candidate_count": control_count,
+                        "selected_control_count": (
+                            selected_control_count
+                        ),
+                        "selected_control_settled_count": (
+                            selected_control_settled_count
+                        ),
                         "settlement_status": (
                             "settled"
                             if bool(row["candidates_recorded"])
-                            and selected_candidate_count == selected_settled_count
+                            and strategy_settled
+                            and (
+                                not dual_track_required
+                                or control_settled
+                            )
                             else "pending"
                         ),
                     }
@@ -1716,26 +2182,46 @@ class RelayFactorExperimentStore:
         experiment_id = experiment["experiment_id"]
         required = self._required_sessions(experiment)
         expected_dates = self._persisted_session_dates(experiment)
+        dual_track_required = int(
+            experiment["manifest"].get("schema_version") or 0
+        ) >= 4
         session_rows = connection.execute(
             """
             SELECT s.signal_date,
                    s.candidates_recorded,
-                   SUM(CASE WHEN c.selected = 1 THEN 1 ELSE 0 END)
-                       AS selected_candidate_count,
-                   SUM(
-                       CASE
-                           WHEN c.selected = 1
-                                AND c.settlement_status = 'settled'
-                           THEN 1
-                           ELSE 0
-                       END
-                   ) AS selected_settled_count
+                   s.controls_recorded,
+                   (
+                       SELECT COUNT(*)
+                       FROM prospective_candidates AS c
+                       WHERE c.experiment_id = s.experiment_id
+                         AND c.signal_date = s.signal_date
+                         AND c.selected = 1
+                   ) AS selected_candidate_count,
+                   (
+                       SELECT COUNT(*)
+                       FROM prospective_candidates AS c
+                       WHERE c.experiment_id = s.experiment_id
+                         AND c.signal_date = s.signal_date
+                         AND c.selected = 1
+                         AND c.settlement_status = 'settled'
+                   ) AS selected_settled_count,
+                   (
+                       SELECT COUNT(*)
+                       FROM prospective_controls AS c
+                       WHERE c.experiment_id = s.experiment_id
+                         AND c.signal_date = s.signal_date
+                         AND c.selected = 1
+                   ) AS selected_control_count,
+                   (
+                       SELECT COUNT(*)
+                       FROM prospective_controls AS c
+                       WHERE c.experiment_id = s.experiment_id
+                         AND c.signal_date = s.signal_date
+                         AND c.selected = 1
+                         AND c.settlement_status = 'settled'
+                   ) AS selected_control_settled_count
             FROM prospective_sessions AS s
-            LEFT JOIN prospective_candidates AS c
-              ON c.experiment_id = s.experiment_id
-             AND c.signal_date = s.signal_date
             WHERE s.experiment_id = ?
-            GROUP BY s.signal_date, s.candidates_recorded
             ORDER BY s.signal_date
             """,
             (experiment_id,),
@@ -1755,6 +2241,16 @@ class RelayFactorExperimentStore:
             bool(row["candidates_recorded"])
             and int(row["selected_candidate_count"] or 0)
             == int(row["selected_settled_count"] or 0)
+            and (
+                not dual_track_required
+                or (
+                    bool(row["controls_recorded"])
+                    and int(row["selected_control_count"] or 0)
+                    == int(
+                        row["selected_control_settled_count"] or 0
+                    )
+                )
+            )
             for row in sessions
         )
         return {
@@ -1807,6 +2303,9 @@ class RelayFactorExperimentStore:
             experiment = self._experiment_output(row)
             required = self._required_sessions(experiment)
             expected_dates = self._persisted_session_dates(experiment)
+            dual_track_required = int(
+                experiment["manifest"].get("schema_version") or 0
+            ) >= 4
             session_rows = connection.execute(
                 """
                 SELECT * FROM prospective_sessions
@@ -1841,6 +2340,7 @@ class RelayFactorExperimentStore:
             protocol_violation_count = 0
             evidence_verified = bool(row["protocol_verified"])
             attempts: list[dict[str, Any]] = []
+            control_attempts: list[dict[str, Any]] = []
             for session in sessions:
                 evidence_verified = evidence_verified and bool(
                     session["evidence_verified"]
@@ -1850,6 +2350,14 @@ class RelayFactorExperimentStore:
                         "evaluated": False,
                         "status": _ACTIVE_STATUS,
                         "reason": "insufficient_settled_sessions",
+                    }
+                if dual_track_required and not bool(
+                    session["controls_recorded"]
+                ):
+                    return {
+                        "evaluated": False,
+                        "status": _ACTIVE_STATUS,
+                        "reason": "insufficient_settled_controls",
                     }
                 candidates = connection.execute(
                     """
@@ -1868,6 +2376,34 @@ class RelayFactorExperimentStore:
                         "evaluated": False,
                         "status": _ACTIVE_STATUS,
                         "reason": "insufficient_settled_sessions",
+                    }
+                controls = (
+                    connection.execute(
+                        """
+                        SELECT * FROM prospective_controls
+                        WHERE experiment_id = ? AND signal_date = ?
+                        ORDER BY candidate_rank, code
+                        """,
+                        (
+                            experiment_id,
+                            session["signal_date"],
+                        ),
+                    ).fetchall()
+                    if dual_track_required
+                    else []
+                )
+                if dual_track_required and (
+                    not controls
+                    or any(
+                        bool(control["selected"])
+                        and control["settlement_status"] != "settled"
+                        for control in controls
+                    )
+                ):
+                    return {
+                        "evaluated": False,
+                        "status": _ACTIVE_STATUS,
+                        "reason": "insufficient_settled_controls",
                     }
                 snapshot = _json_loads(session["source_snapshot_json"], {})
                 protocol_violation_count += int(
@@ -1904,6 +2440,34 @@ class RelayFactorExperimentStore:
                             candidate["target_position_pct"]
                         )
                     attempts.append(attempt)
+                for control in controls:
+                    if not bool(control["selected"]):
+                        continue
+                    evidence_verified = (
+                        evidence_verified
+                        and bool(control["snapshot_verified"])
+                        and bool(control["settlement_verified"])
+                    )
+                    control_attempt = {
+                        "trade_date": session["signal_date"],
+                        "ts_code": control["code"],
+                        "entry_date": control["entry_date"],
+                        "exit_date": control["exit_date"],
+                        "live_adjusted_return_pct": float(
+                            control["realized_return_pct"] or 0.0
+                        ),
+                        "execution_blocked": bool(
+                            control["blocked"]
+                        ),
+                        "valuation_path": _json_loads(
+                            control["valuation_path_json"],
+                            [],
+                        ),
+                        "target_position_pct": float(
+                            control["target_position_pct"]
+                        ),
+                    }
+                    control_attempts.append(control_attempt)
 
             rules = experiment["manifest"].get("acceptance_rules") or {}
             config = experiment["manifest"].get("config") or {}
@@ -1919,7 +2483,38 @@ class RelayFactorExperimentStore:
                 holding_sessions=max(1, int(holding_sessions)),
                 session_dates=expected_dates,
             )
+            control_portfolio = (
+                simulate_portfolio(
+                    control_attempts,
+                    top_k=top_k,
+                    holding_sessions=max(
+                        1,
+                        int(holding_sessions),
+                    ),
+                    session_dates=expected_dates,
+                )
+                if dual_track_required
+                else {}
+            )
             confidence_interval = _bootstrap_total_return_ci(portfolio)
+            if dual_track_required:
+                from analytics import relay_factor_mining
+
+                excess_return = (
+                    relay_factor_mining._relative_total_return_pct(
+                        portfolio,
+                        control_portfolio,
+                    )
+                )
+                excess_confidence_interval = (
+                    relay_factor_mining._bootstrap_excess_return_ci(
+                        portfolio,
+                        control_portfolio,
+                    )
+                )
+            else:
+                excess_return = None
+                excess_confidence_interval = None
             metrics = {
                 "total_return_pct": float(portfolio["total_return_pct"]),
                 "max_drawdown_pct": float(portfolio["max_drawdown_pct"]),
@@ -1927,6 +2522,20 @@ class RelayFactorExperimentStore:
                 "protocol_violation_count": protocol_violation_count,
                 "bootstrap_total_return_ci_pct": confidence_interval,
                 "portfolio": portfolio,
+                "control_total_return_pct": (
+                    float(control_portfolio["total_return_pct"])
+                    if dual_track_required
+                    else None
+                ),
+                "excess_return_pct": excess_return,
+                "bootstrap_excess_return_ci_pct": (
+                    excess_confidence_interval
+                ),
+                "control_portfolio": (
+                    control_portfolio
+                    if dual_track_required
+                    else None
+                ),
             }
             failures = []
             if metrics["total_return_pct"] <= float(rules.get("minimum_total_return_pct", 0.0)):
@@ -1942,6 +2551,42 @@ class RelayFactorExperimentStore:
                     failures.append("bootstrap_confidence_unavailable")
                 elif float(lower_bound) <= float(minimum_lower_bound):
                     failures.append("bootstrap_lower_bound_not_positive")
+            if dual_track_required:
+                minimum_excess_return = rules.get(
+                    "minimum_excess_return_pct"
+                )
+                if minimum_excess_return is None:
+                    failures.append(
+                        "prospective_control_rules_incomplete"
+                    )
+                elif float(excess_return or 0.0) <= float(
+                    minimum_excess_return
+                ):
+                    failures.append(
+                        "minimum_excess_return_pct_not_met"
+                    )
+                minimum_excess_lower = rules.get(
+                    "minimum_excess_bootstrap_lower_return_pct"
+                )
+                if minimum_excess_lower is not None:
+                    excess_lower = (
+                        excess_confidence_interval.get("lower")
+                        if isinstance(
+                            excess_confidence_interval,
+                            Mapping,
+                        )
+                        else None
+                    )
+                    if excess_lower is None:
+                        failures.append(
+                            "excess_bootstrap_confidence_unavailable"
+                        )
+                    elif float(excess_lower) <= float(
+                        minimum_excess_lower
+                    ):
+                        failures.append(
+                            "excess_bootstrap_lower_bound_not_positive"
+                        )
             if metrics["protocol_violation_count"] != 0:
                 failures.append("protocol_violation_count_nonzero")
             if not evidence_verified:
@@ -1981,8 +2626,10 @@ ProspectiveExperimentStore = RelayFactorExperimentStore
 def create_locked_experiment(
     source_run_id: str,
     manifest: Mapping[str, Any],
-    locked_at: str | datetime | None = None,
     *,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    return RelayFactorExperimentStore(db_path).create_locked_experiment(source_run_id, manifest, locked_at)
+    return RelayFactorExperimentStore(db_path).create_locked_experiment(
+        source_run_id,
+        manifest,
+    )

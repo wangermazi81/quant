@@ -371,12 +371,14 @@ def important_digest(day: str, limit: int = 40) -> list:
 # ──────────────────────────────────────────────────────────────
 # 后台调度线程
 # ──────────────────────────────────────────────────────────────
-def run_news_scheduler():
+def run_news_scheduler(progress_callback=None):
     logger.info("[news] 新闻聚合调度器启动")
     last_quick = 0.0
     last_evening_day = ""
     last_purge_day = ""
     while True:
+        if progress_callback:
+            progress_callback()
         try:
             now   = datetime.now()
             today = now.strftime("%Y-%m-%d")
@@ -395,4 +397,6 @@ def run_news_scheduler():
                 purge_old()
         except Exception as e:
             logger.warning(f"[news] 调度异常: {e}")
+        if progress_callback:
+            progress_callback()
         time.sleep(30)

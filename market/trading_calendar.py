@@ -256,7 +256,7 @@ def has_verified_calendar(year: int | str) -> bool:
 
 
 def is_trading_day(d: date | datetime | None = None) -> bool:
-    """d 是否为 A 股交易日。无日历数据时退回「周中即交易日」。"""
+    """d 是否为 A 股交易日；缺少可信日历时停止自动交易。"""
     if d is None:
         d = date.today()
     if isinstance(d, datetime):
@@ -269,10 +269,10 @@ def is_trading_day(d: date | datetime | None = None) -> bool:
         if year_key not in _warned_years:
             _warned_years.add(year_key)
             logger.warning(
-                "[calendar] 缺少 %s 年交易日历，暂按「周中即交易日」处理"
-                "（法定休市日会被误判为交易日）。可运行 tools/refresh_trading_calendar.py 拉取。",
+                "[calendar] 缺少 %s 年交易日历，自动交易已停止。"
+                "可运行 tools/refresh_trading_calendar.py 拉取。",
                 year_key)
-        return True
+        return False
     return d.isoformat() not in holidays
 
 

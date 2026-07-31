@@ -6,37 +6,36 @@
 #   bash init.sh
 
 set -euo pipefail
+umask 077
 
 APP_DIR="${APP_DIR:-/opt/quant}"
 SERVICE="${SERVICE:-quant-platform}"
+RUN_USER="${RUN_USER:-quant}"
 GITEE_REPO="${GITEE_REPO:-https://gitee.com/wangermazi81/quant.git}"
 BRANCH="${BRANCH:-main}"
 PORT="${PORT:-5000}"
+PUBLIC_HTTPS_READY="${PUBLIC_HTTPS_READY:-0}"
+DEPLOY_PYTHON="${DEPLOY_PYTHON:-/usr/bin/python3}"
+PERMISSIONS_HELPER="${PERMISSIONS_HELPER:-$APP_DIR/deploy/harden_runtime_permissions.py}"
 
 secure_runtime_secrets() {
     local owner="$1"
-    local files=(
-        ".env"
-        "data/.secret_key"
-        "data/ai_config.json"
-        "data/ai_trader_config.json"
-        "data/ai_research.db"
-        "data/ai_research.db-wal"
-        "data/ai_research.db-shm"
-        "data/users.db"
-        "data/users.db-wal"
-        "data/users.db-shm"
-        "data/search_config.json"
-        "data/notify_config.json"
-        "tools/bridge_config.json"
-    )
+    "$DEPLOY_PYTHON" -I "$PERMISSIONS_HELPER" \
+        --app-dir "$APP_DIR" \
+        --run-user "$owner" \
+        --runtime-only
+}
 
-    for file in "${files[@]}"; do
-        if [ -e "$file" ]; then
-            chown "$owner:$owner" "$file" 2>/dev/null || true
-            chmod 600 "$file" 2>/dev/null || true
-        fi
-    done
+secure_application_ownership() {
+    local owner="$1"
+    if [ ! -f "$PERMISSIONS_HELPER" ]; then
+        echo "ERROR: permission hardening helper is unavailable: $PERMISSIONS_HELPER"
+        return 1
+    fi
+    "$DEPLOY_PYTHON" -I "$PERMISSIONS_HELPER" \
+        --app-dir "$APP_DIR" \
+        --run-user "$owner" \
+        --include-venv
 }
 
 echo
@@ -53,27 +52,68 @@ apt-get install -y \
     python3 python3-pip python3-venv python3-dev \
     git curl unzip build-essential \
     nginx sqlite3 nodejs npm
+if ! getent group "$RUN_USER" >/dev/null; then
+    groupadd --system "$RUN_USER"
+fi
+if ! id "$RUN_USER" >/dev/null 2>&1; then
+    useradd --system \
+        --gid "$RUN_USER" \
+        --home-dir "$APP_DIR" \
+        --no-create-home \
+        --shell /usr/sbin/nologin \
+        "$RUN_USER"
+fi
 
 echo
 echo "[2/9] Clone code from Gitee"
 if [ -d "$APP_DIR/.git" ]; then
-    echo "$APP_DIR is already a git repository; skip clone."
-else
-    mkdir -p "$(dirname "$APP_DIR")"
-    git clone --branch "$BRANCH" "$GITEE_REPO" "$APP_DIR"
+    echo "ERROR: existing checkout must be updated with the trusted bootstrap."
+    exit 1
 fi
+if [[ "$GITEE_REPO" != https://* ]]; then
+    echo "ERROR: GITEE_REPO must use HTTPS."
+    exit 1
+fi
+mkdir -p "$(dirname "$APP_DIR")"
+env -i \
+    HOME="/root" \
+    PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    GIT_CONFIG_NOSYSTEM="1" \
+    GIT_CONFIG_SYSTEM="/dev/null" \
+    GIT_CONFIG_GLOBAL="/dev/null" \
+    GIT_TERMINAL_PROMPT="0" \
+    git \
+    -c core.hooksPath=/dev/null \
+    -c credential.helper= \
+    -c protocol.file.allow=never \
+    clone --branch "$BRANCH" --single-branch \
+    "$GITEE_REPO" "$APP_DIR"
 cd "$APP_DIR"
 mkdir -p logs data data/daily
 
 echo
 echo "[3/9] Configure Python virtualenv"
-if [ ! -d venv ]; then
-    python3 -m venv venv
+if [ -e venv ]; then
+    echo "ERROR: a first-time install must not contain an existing venv."
+    exit 1
 fi
-# shellcheck disable=SC1091
-source venv/bin/activate
-pip install --upgrade pip wheel
-pip install -r requirements.txt
+install -d -o "$RUN_USER" -g "$RUN_USER" -m 0700 "$APP_DIR/venv"
+sudo -u "$RUN_USER" env -i \
+    HOME="$APP_DIR/data" \
+    PATH="/usr/local/bin:/usr/bin:/bin" \
+    PIP_CONFIG_FILE="/dev/null" \
+    "$DEPLOY_PYTHON" -I -m venv --copies "$APP_DIR/venv"
+sudo -u "$RUN_USER" env -i \
+    HOME="$APP_DIR/data" \
+    PATH="/usr/local/bin:/usr/bin:/bin" \
+    PIP_CONFIG_FILE="/dev/null" \
+    "$APP_DIR/venv/bin/python" -I -m pip install --upgrade pip wheel
+sudo -u "$RUN_USER" env -i \
+    HOME="$APP_DIR/data" \
+    PATH="/usr/local/bin:/usr/bin:/bin" \
+    PIP_CONFIG_FILE="/dev/null" \
+    "$APP_DIR/venv/bin/python" -I -m pip install \
+    -r "$APP_DIR/requirements.txt"
 
 echo
 echo "[4/9] Frontend build no longer needed"
@@ -82,20 +122,27 @@ echo "Frontend is served from static/app (no build step since 工单7c)."
 
 echo
 echo "[5/9] Configure environment"
+if [ "$PUBLIC_HTTPS_READY" != "0" ] \
+    && [ "$PUBLIC_HTTPS_READY" != "1" ]; then
+    echo "ERROR: PUBLIC_HTTPS_READY must be 0 or 1."
+    exit 1
+fi
 if [ ! -f .env ]; then
     cp .env.example .env
+    chmod 600 .env
     SK=$(python3 -c "import secrets; print(secrets.token_hex(32))")
     sed -i "s|^SECRET_KEY=.*|SECRET_KEY=$SK|" .env
     sed -i 's|^AI_API_KEY=|# AI_API_KEY=|; s|^AI_BASE_URL=|# AI_BASE_URL=|; s|^AI_MODEL=|# AI_MODEL=|' .env
-    # 云端一律走 HTTPS：强制开 Secure Cookie + HSTS。
-    # .env.example 里默认是 0（照顾本机 http://127.0.0.1 开发），直接 cp 过来会让
-    # 线上 session cookie 明文可截、且 HSTS 不下发 —— 这里必须覆盖成 1。
-    sed -i "s|^SESSION_COOKIE_SECURE=.*|SESSION_COOKIE_SECURE=1|" .env
+    SESSION_COOKIE_SECURE=$PUBLIC_HTTPS_READY
+    sed -i \
+        "s|^SESSION_COOKIE_SECURE=.*|SESSION_COOKIE_SECURE=$PUBLIC_HTTPS_READY|" \
+        .env
     echo "Generated random SECRET_KEY."
-    echo "Forced SESSION_COOKIE_SECURE=1 (server is HTTPS-only)."
+    echo "SESSION_COOKIE_SECURE=$PUBLIC_HTTPS_READY"
     echo "Commented AI_* placeholders; use web settings or synced private config."
 else
-    echo ".env already exists; skip."
+    echo "ERROR: unexpected .env in a first-time checkout."
+    exit 1
 fi
 
 echo
@@ -107,17 +154,14 @@ echo "Then upload to server:"
 echo "  scp _private_bundle_*.zip root@<server-ip>:$APP_DIR/"
 echo "Then run on server:"
 echo "  cd $APP_DIR && unzip -o _private_bundle_*.zip && rm _private_bundle_*.zip"
-echo
-read -r -p "Have private files been uploaded and extracted? [y/N] " ANS
-if [ "$ANS" != "y" ] && [ "$ANS" != "Y" ]; then
-    echo "Upload private bundle first, then rerun this script or continue manually."
-    exit 0
-fi
+echo "Private files are optional during first boot; upload them through the audited deployment flow."
 
 echo
 echo "[7/9] Run database migration"
-python3 core/db_migration.py || true
-secure_runtime_secrets root
+secure_application_ownership "$RUN_USER"
+sudo -u "$RUN_USER" "$APP_DIR/venv/bin/python" \
+    core/db_migration.py
+secure_runtime_secrets "$RUN_USER"
 
 echo
 echo "[8/9] Configure systemd service"
@@ -128,10 +172,11 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=$RUN_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$APP_DIR/.env
 Environment=THS_EMBED_SCHEDULER=0
+UMask=0077
 ExecStart=$APP_DIR/venv/bin/gunicorn -c deploy/gunicorn.conf.py main:app
 Restart=always
 RestartSec=5
@@ -143,7 +188,7 @@ WantedBy=multi-user.target
 EOF
 cp "$APP_DIR/deploy/quant-scheduler.service" /etc/systemd/system/quant-scheduler.service
 sed -i \
-    -e "s|^User=.*|User=root|" \
+    -e "s|^User=.*|User=$RUN_USER|" \
     -e "s|/opt/quant|$APP_DIR|g" \
     /etc/systemd/system/quant-scheduler.service
 systemctl daemon-reload
@@ -152,6 +197,11 @@ systemctl enable quant-scheduler
 systemctl restart "$SERVICE"
 systemctl restart quant-scheduler
 sleep 3
+/usr/bin/python3 -I \
+    "$APP_DIR/deploy/check_scheduler_health.py" \
+    --app-dir "$APP_DIR" \
+    --expected-pid "$(systemctl show quant-scheduler -p MainPID --value)" \
+    --wait-seconds 20
 systemctl --no-pager status "$SERVICE" || true
 systemctl --no-pager status quant-scheduler || true
 
@@ -191,6 +241,6 @@ echo "Deployment complete"
 echo "URL     : http://$PUBLIC_IP"
 echo "Service : $SERVICE"
 echo "Logs    : journalctl -u $SERVICE -f"
-echo "Update  : bash $APP_DIR/deploy/server_update.sh"
+echo "Update  : follow docs/RUNBOOK.md bootstrap deployment flow"
 echo
 echo "Note: live Windows THS trading cannot run on Linux. Cloud supports paper trading, backtests, AI analysis, scans, and strategy management."

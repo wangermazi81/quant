@@ -78,6 +78,38 @@ def _eligible_factor_registration(relay):
     source = relay.load_model_preregistration()
     assert source["ok"] is True
     record = json.loads(json.dumps(source["record"]))
+    record["research_protocol"] = relay._build_locking_protocol(
+        config={
+            "n_stocks": 800,
+            "days": 180,
+            "train_days": 60,
+            "test_days": 2,
+            "step_days": 2,
+            "hold_days": 2,
+            "stop_loss": -0.035,
+            "take_profit": 0.07,
+            "top_k": 5,
+            "candidate_pool_size": 100,
+            "include_market_signals": False,
+            "model_version": relay.MODEL_VERSION,
+            "universe_selection": (
+                "point_in_time_eligible_stable_sha256_sample"
+            ),
+            "data_quality_policy": dict(
+                relay.FROZEN_DATA_QUALITY_POLICY
+            ),
+        },
+        mining_rules=relay.normalize_mining_rules(None),
+        execution_rules=relay.normalize_execution_rules(),
+    )
+    record["research_validation_rules"].update(
+        {
+            "evaluation_window_count": 12,
+            "window_sessions": 2,
+            "oos_session_count": 24,
+            "minimum_diagnostic_sample_count_per_session": 20,
+        }
+    )
     executable_model = record["executable_model"]
     executable_model.update(
         {
@@ -103,6 +135,7 @@ def _eligible_factor_registration(relay):
         "record": record,
         "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
         "model_sha256": model_sha256,
+        "current_protocol": True,
     }
     registered_model = relay._registered_model_from_preregistration(
         registration
@@ -116,9 +149,11 @@ def _signed_factor_oos_evidence(
     registration,
     registered_model,
 ):
-    top_k = 5
-    holding_sessions = 3
-    window_sessions = 2
+    locking_protocol = registration["record"]["research_protocol"]
+    locking_config = locking_protocol["config"]
+    top_k = locking_config["top_k"]
+    holding_sessions = locking_config["hold_days"] + 1
+    window_sessions = locking_config["test_days"]
     session_dates = [
         value.strftime("%Y-%m-%d")
         for value in pd.bdate_range(
@@ -126,7 +161,13 @@ def _signed_factor_oos_evidence(
             periods=24,
         )
     ]
+    latest_feature_date = (
+        pd.Timestamp(session_dates[-1])
+        + pd.offsets.BDay(holding_sessions)
+    ).strftime("%Y-%m-%d")
     attempts = []
+    benchmark_attempts = []
+    session_diagnostics = []
     trades = []
     for session_index, trade_date in enumerate(session_dates):
         signal_date = pd.Timestamp(trade_date)
@@ -140,6 +181,60 @@ def _signed_factor_oos_evidence(
             f"ADMIN{session_index:02d}{rank:02d}"
             for rank in range(top_k)
         ]
+        universe_codes = sorted(
+            [
+                *codes,
+                *[
+                    f"CONTROL{session_index:02d}{rank:02d}"
+                    for rank in range(20)
+                ],
+            ]
+        )
+        benchmark_codes = relay._deterministic_benchmark_codes(
+            universe_codes,
+            trade_date=trade_date,
+            top_k=top_k,
+        )
+        session_diagnostics.append(
+            {
+                "trade_date": trade_date,
+                "universe_codes": universe_codes,
+                "universe_codes_sha256": (
+                    relay._canonical_codes_sha256(universe_codes)
+                ),
+                "sample_count": len(universe_codes),
+                "rank_ic": 0.05,
+                "bottom_quantile_return_pct": -0.5,
+                "top_quantile_return_pct": 1.0,
+                "top_bottom_spread_pct": 1.5,
+                "benchmark_codes": benchmark_codes,
+                "benchmark_evaluable": True,
+            }
+        )
+        for code in benchmark_codes:
+            benchmark_attempts.append(
+                {
+                    "trade_date": trade_date,
+                    "ts_code": code,
+                    "entry_date": entry_date,
+                    "exit_date": exit_date,
+                    "execution_blocked": False,
+                    "forward_return_pct": 0.0,
+                    "live_adjusted_return_pct": 0.0,
+                    "valuation_path": [
+                        {
+                            "date": entry_date,
+                            "return_pct": 0.0,
+                        },
+                        {
+                            "date": exit_date,
+                            "return_pct": 0.0,
+                        },
+                    ],
+                    "exit_reason": "max_holding_period",
+                    "gate_pass": True,
+                }
+            )
         for code in codes:
             attempts.append(
                 {
@@ -180,34 +275,15 @@ def _signed_factor_oos_evidence(
         session_dates=session_dates,
         trades=trades,
         attempts=attempts,
+        benchmark_attempts=benchmark_attempts,
+        session_diagnostics=session_diagnostics,
         model=registered_model,
         test_days=window_sessions,
         top_k=top_k,
         holding_sessions=holding_sessions,
-    )
-    locking_protocol = relay._build_locking_protocol(
-        config={
-            "n_stocks": 800,
-            "days": 180,
-            "train_days": 60,
-            "test_days": window_sessions,
-            "step_days": window_sessions,
-            "hold_days": holding_sessions - 1,
-            "stop_loss": -0.035,
-            "take_profit": 0.07,
-            "top_k": top_k,
-            "candidate_pool_size": 100,
-            "include_market_signals": False,
-            "model_version": relay.MODEL_VERSION,
-            "universe_selection": (
-                "point_in_time_eligible_stable_sha256_sample"
-            ),
-            "data_quality_policy": dict(
-                relay.FROZEN_DATA_QUALITY_POLICY
-            ),
-        },
-        mining_rules=relay.normalize_mining_rules(None),
-        execution_rules=relay.normalize_execution_rules(),
+        validation_rules=registration["record"][
+            "research_validation_rules"
+        ],
     )
     data_quality_assessment = {
         "assessment_version": "relay_data_quality_assessment_v1",
@@ -254,7 +330,13 @@ def _signed_factor_oos_evidence(
     ]
     calendar_snapshot = relay._build_evidence_calendar_snapshot(
         registration["record"]["oos_not_before"],
-        max(attempt["exit_date"] for attempt in attempts),
+        max([
+            latest_feature_date,
+            *[
+                str(attempt["exit_date"])
+                for attempt in attempts
+            ],
+        ]),
         closed_days_by_year={"2026": closed_2026},
         provenance_by_year={
             "2026": {
@@ -276,6 +358,50 @@ def _signed_factor_oos_evidence(
         },
     )
     assert calendar_snapshot is not None
+    fingerprint_dates = pd.to_datetime(session_dates[:2])
+    fingerprint_codes = ["RAW0001", "RAW0002"]
+    numeric_frame = pd.DataFrame(
+        [[10.0, 20.0], [10.1, 20.1]],
+        index=fingerprint_dates,
+        columns=fingerprint_codes,
+    )
+    boolean_frame = pd.DataFrame(
+        True,
+        index=fingerprint_dates,
+        columns=fingerprint_codes,
+    )
+    raw_panel = {
+        "open": numeric_frame,
+        "high": numeric_frame + 0.2,
+        "low": numeric_frame - 0.2,
+        "close": numeric_frame + 0.1,
+        "volume": numeric_frame * 1000.0,
+        "amount": numeric_frame * 10000.0,
+        "amount_real": boolean_frame,
+        "is_st": ~boolean_frame,
+        "st_status_known": boolean_frame,
+        "universe_eligible": boolean_frame,
+        "security_master_eligible": boolean_frame,
+    }
+    raw_data_fingerprint = relay.build_raw_data_fingerprint(
+        raw_panel,
+        security_master=pd.DataFrame(
+            {
+                "code": fingerprint_codes,
+                "list_date": ["20200101", "20200101"],
+                "delist_date": ["", ""],
+            }
+        ),
+        market_signal_frame=pd.DataFrame(
+            {
+                "trade_date": session_dates[:2],
+                "market_data_trusted": [True, True],
+                "market_emotion_score": [60.0, 60.0],
+            }
+        ),
+        calendar_snapshot=calendar_snapshot,
+        source_kind="trusted_cache",
+    )
     preregistered_oos = relay._seal_preregistered_oos_evidence(
         {
             "evidence_version": (
@@ -287,11 +413,35 @@ def _signed_factor_oos_evidence(
             ),
             "oos_not_before": registration["record"]["oos_not_before"],
             "registration_sha256": registration["sha256"],
+            "protocol_binding": (
+                relay.build_current_frozen_protocol_binding()
+            ),
             "model_sha256": registration["model_sha256"],
+            "raw_data_fingerprint": raw_data_fingerprint,
+            "diagnostic_policy_version": (
+                relay.OOS_DIAGNOSTIC_POLICY_VERSION
+            ),
+            "benchmark_policy_version": (
+                relay.BENCHMARK_POLICY_VERSION
+            ),
             "window_count": len(results["windows"]),
             "window_sessions": window_sessions,
             "top_k": top_k,
             "holding_sessions": holding_sessions,
+            "feature_freshness": {
+                "policy_version": (
+                    "authoritative_completed_session_v2"
+                ),
+                "clock_source": "system",
+                "as_of": (
+                    f"{latest_feature_date}T17:10:00+08:00"
+                ),
+                "latest_feature_date": latest_feature_date,
+                "expected_latest_feature_date": (
+                    latest_feature_date
+                ),
+                "maturity_lag_sessions": holding_sessions,
+            },
             "calendar_snapshot": calendar_snapshot,
             "observation_cutoff": session_dates[-1],
             "pending_session_dates": [],
@@ -301,17 +451,30 @@ def _signed_factor_oos_evidence(
             "windows": results["windows"],
             "trades": trades,
             "attempts": attempts,
+            "session_diagnostics": session_diagnostics,
+            "benchmark_attempts": benchmark_attempts,
             "portfolio": results["portfolio"],
             "gated_portfolio": results["gated_portfolio"],
+            "benchmark_portfolio": results[
+                "benchmark_portfolio"
+            ],
+            "gated_benchmark_portfolio": results[
+                "gated_benchmark_portfolio"
+            ],
         }
     )
     return {
         "windows": results["windows"],
         "portfolio": results["portfolio"],
         "gated_portfolio": results["gated_portfolio"],
+        "benchmark_portfolio": results["benchmark_portfolio"],
+        "gated_benchmark_portfolio": results[
+            "gated_benchmark_portfolio"
+        ],
         "registered_model": registered_model,
         "preregistered_oos": preregistered_oos,
         "data_quality_assessment": data_quality_assessment,
+        "raw_data_fingerprint": raw_data_fingerprint,
     }
 
 
@@ -661,6 +824,43 @@ def test_factor_mining_run_rejects_invalid_numeric_json(
         assert admin_api._factor_mining_jobs == {}
 
 
+def test_factor_mining_run_rejects_malformed_json_without_starting_job(
+    isolated_app,
+    monkeypatch,
+):
+    app, _um, _main = isolated_app
+    import web.admin as admin_api
+
+    started = []
+
+    class DeferredThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            started.append(True)
+
+    monkeypatch.setattr(admin_api.threading, "Thread", DeferredThread)
+    with admin_api._factor_mining_jobs_lock:
+        admin_api._factor_mining_jobs.clear()
+        admin_api._factor_mining_active_task_id = None
+        admin_api._factor_mining_last_task_id = None
+
+    client = app.test_client()
+    _login_session(client, 1, "admin")
+    response = client.post(
+        "/api/admin/factor-mining/run",
+        data='{"n_stocks":',
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["ok"] is False
+    assert started == []
+    with admin_api._factor_mining_jobs_lock:
+        assert admin_api._factor_mining_jobs == {}
+
+
 def test_factor_mining_float_bounds_reject_non_finite_values():
     import web.admin as admin_api
 
@@ -689,6 +889,21 @@ def test_root_admin_can_lock_query_and_cancel_a_prospective_factor_experiment(
     ops_uid = _create_admin(um, permissions=["strategy_manage"])
     import web.admin as admin_api
     from analytics import relay_factor_mining as relay
+    from market import trading_calendar
+
+    monkeypatch.setattr(
+        trading_calendar,
+        "has_verified_calendar",
+        lambda _year: True,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "is_trading_day",
+        lambda value=None: (
+            value is not None
+            and value.weekday() < 5
+        ),
+    )
 
     registration, registered_model = _eligible_factor_registration(relay)
     monkeypatch.setattr(
@@ -715,15 +930,30 @@ def test_root_admin_can_lock_query_and_cancel_a_prospective_factor_experiment(
         registration,
         registered_model,
     )
+    preregistered_oos = evidence["preregistered_oos"]
+    validation_now = pd.Timestamp(
+        preregistered_oos["feature_freshness"]["as_of"]
+    ).to_pydatetime()
+    original_china_datetime = relay._china_datetime
+    monkeypatch.setattr(
+        relay,
+        "_china_datetime",
+        lambda value=None: (
+            validation_now
+            if value is None
+            else original_china_datetime(value)
+        ),
+    )
     assessment = relay.assess_research_result(evidence)
     assert assessment["lock_eligible"] is True
     windows = evidence["windows"]
     portfolio = evidence["portfolio"]
-    preregistered_oos = evidence["preregistered_oos"]
     report = {
         "status": "ok",
         "data_status": "ok",
-        "generated_at": "2026-07-30 23:50:00",
+        "generated_at": pd.Timestamp(
+            preregistered_oos["feature_freshness"]["as_of"]
+        ).strftime("%Y-%m-%d %H:%M:%S"),
         "research_status": "exploratory",
         "research_assessment": assessment,
         "model": registered_model,
@@ -738,11 +968,17 @@ def test_root_admin_can_lock_query_and_cancel_a_prospective_factor_experiment(
             "latest_trade_date": preregistered_oos[
                 "observation_cutoff"
             ],
+            "latest_oos_observation_date": preregistered_oos[
+                "observation_cutoff"
+            ],
             **evidence["data_quality_assessment"],
         },
         "windows": windows,
         "portfolio": portfolio,
         "gated_portfolio": portfolio,
+        "raw_data_fingerprint": evidence[
+            "raw_data_fingerprint"
+        ],
         "preregistered_oos": preregistered_oos,
     }
     (run_dir / "walkforward_report.json").write_text(

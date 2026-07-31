@@ -488,8 +488,9 @@ def is_trading_time() -> bool:
         from market import trading_calendar
         if not trading_calendar.is_trading_day(now):
             return False
-    except Exception as e:                  # 日历模块异常绝不能把交易全停掉
-        logger.debug(f"[market] 交易日历判断失败，按周中处理: {e}")
+    except Exception as e:
+        logger.error(f"[market] 交易日历判断失败，自动交易已停止: {e}")
+        return False
     second = now.hour * 3600 + now.minute * 60 + now.second
     return (
         9 * 3600 + 30 * 60 <= second < 11 * 3600 + 30 * 60

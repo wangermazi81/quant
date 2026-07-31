@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+import os
 from pathlib import Path
 
 import pytest
@@ -8,6 +10,81 @@ from deploy.check_scheduler_quiescence import ProcessInfo, find_unsafe_processes
 
 APP_DIR = "/opt/quant"
 WEB_CGROUP = "/system.slice/quant-platform.service"
+
+
+def test_guard_open_uses_nofollow_and_private_creation(
+    tmp_path,
+    monkeypatch,
+):
+    backing_path = tmp_path / "backing"
+    real_open = os.open
+    backing_fd = real_open(
+        backing_path,
+        os.O_RDWR | os.O_CREAT,
+        0o600,
+    )
+    opened = {}
+    nofollow = 1 << 28
+
+    def capture_open(path, flags, mode):
+        opened.update(
+            {
+                "path": os.fspath(path),
+                "flags": flags,
+                "mode": mode,
+            }
+        )
+        return os.dup(backing_fd)
+
+    monkeypatch.setattr(quiescence.sys, "platform", "linux")
+    monkeypatch.setattr(
+        quiescence.os,
+        "O_NOFOLLOW",
+        nofollow,
+        raising=False,
+    )
+    monkeypatch.setattr(quiescence.os, "open", capture_open)
+    try:
+        with quiescence._open_scheduler_guard(
+            tmp_path / "guard"
+        ):
+            pass
+    finally:
+        os.close(backing_fd)
+
+    assert opened["path"] == os.fspath(tmp_path / "guard")
+    assert opened["flags"] & nofollow
+    assert opened["mode"] == 0o600
+
+
+def test_guard_open_rejects_non_regular_file(
+    tmp_path,
+    monkeypatch,
+):
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setattr(quiescence.sys, "platform", "linux")
+    monkeypatch.setattr(
+        quiescence.os,
+        "O_NOFOLLOW",
+        1 << 28,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        quiescence.os,
+        "open",
+        lambda _path, _flags, _mode: read_fd,
+    )
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match="regular file",
+        ):
+            quiescence._open_scheduler_guard(tmp_path / "guard")
+    finally:
+        os.close(write_fd)
+
+    with pytest.raises(OSError):
+        os.close(read_fd)
 
 
 def test_manual_scheduler_process_blocks_protocol_migration():
@@ -183,3 +260,97 @@ def test_proc_permission_error_fails_closed_for_candidate_process(
 
     with pytest.raises(RuntimeError, match="pid 4242"):
         quiescence.read_processes(tmp_path)
+
+
+def test_quiescence_explicitly_cleans_old_lock_after_process_check(
+    tmp_path,
+    monkeypatch,
+):
+    lock_path = (
+        tmp_path
+        / "data"
+        / "research"
+        / "relay_factor"
+        / "auto_scheduler.lock"
+    )
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text("{half-written", encoding="utf-8")
+    monkeypatch.setattr(
+        quiescence,
+        "systemd_control_group",
+        lambda _service: WEB_CGROUP,
+    )
+    monkeypatch.setattr(
+        quiescence,
+        "read_processes",
+        lambda _proc_root: [],
+    )
+
+    result = quiescence.main(
+        [
+            "--app-dir",
+            str(tmp_path),
+            "--web-service",
+            "quant-platform",
+            "--cleanup-lock",
+        ]
+    )
+
+    assert result == 0
+    assert not lock_path.exists()
+
+
+def test_cleanup_holds_kernel_guard_across_final_scan_and_unlink(
+    tmp_path,
+    monkeypatch,
+):
+    state = {"guarded": False}
+
+    @contextmanager
+    def fake_guard(_app_dir):
+        state["guarded"] = True
+        try:
+            yield
+        finally:
+            state["guarded"] = False
+
+    def guarded_scan(_proc_root):
+        assert state["guarded"] is True
+        return []
+
+    def guarded_cleanup(_app_dir):
+        assert state["guarded"] is True
+        return tmp_path / "auto_scheduler.lock"
+
+    monkeypatch.setattr(
+        quiescence,
+        "_exclusive_scheduler_guard",
+        fake_guard,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        quiescence,
+        "systemd_control_group",
+        lambda _service: WEB_CGROUP,
+    )
+    monkeypatch.setattr(
+        quiescence,
+        "read_processes",
+        guarded_scan,
+    )
+    monkeypatch.setattr(
+        quiescence,
+        "cleanup_scheduler_lock",
+        guarded_cleanup,
+    )
+
+    assert quiescence.main(
+        [
+            "--app-dir",
+            str(tmp_path),
+            "--web-service",
+            "quant-platform",
+            "--cleanup-lock",
+        ]
+    ) == 0
+    assert state["guarded"] is False

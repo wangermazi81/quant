@@ -84,6 +84,13 @@ def _isolate_persistent_state(tmp_path_factory):
     except Exception:                       # pragma: no cover - 依赖缺失时不阻断
         pass
 
+    from analytics import relay_factor_mining as relay
+    protocol_binding = relay.build_current_frozen_protocol_binding()
+    mp.setenv(
+        "RELAY_FACTOR_PROTOCOL_BUNDLE_SHA256",
+        protocol_binding["bundle_sha256"],
+    )
+
     # 真实密钥主要来自 .env → os.environ（ai_analyst.load_config 的第一优先级），
     # 只隔离配置文件是不够的：断言失败时仍会把真 key 明文打进测试输出。
     # 注意：不要删 SECRET_KEY —— main._load_or_create_secret_key 在缺失时会往

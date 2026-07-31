@@ -10,6 +10,7 @@ from __future__ import annotations
 import errno
 import json
 import logging
+import math
 import os
 import sys
 import threading
@@ -31,6 +32,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 ROOT = BASE_DIR / "data" / "research" / "relay_factor"
 STATUS_PATH = ROOT / "auto_scheduler_status.json"
 LOCK_PATH = ROOT / "auto_scheduler.lock"
+RUNTIME_PATH = ROOT / "auto_scheduler_runtime.json"
 SCHEDULER_GUARD_PROTOCOL_VERSION = "scheduler_kernel_guard_v1"
 
 DEFAULT_CONFIG = {
@@ -57,6 +59,11 @@ DEFAULT_CONFIG = {
 
 _thread_lock = threading.Lock()
 _started = False
+_scheduler_thread: threading.Thread | None = None
+_scheduler_ready_event = threading.Event()
+_runtime_lock = threading.RLock()
+_last_scheduler_progress_at: str | None = None
+_heartbeat_thread: threading.Thread | None = None
 
 
 def _scheduler_guard_path() -> Path:
@@ -159,6 +166,286 @@ def _write_json(path: Path, data: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
+
+
+def _calendar_readiness(
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    from market import trading_calendar
+
+    current = now or datetime.now()
+    try:
+        verified = trading_calendar.has_verified_calendar(
+            current.year
+        )
+    except Exception:
+        verified = False
+    if not verified:
+        return (
+            False,
+            "authoritative_trade_calendar_unavailable",
+        )
+    return True, "ok"
+
+
+def _ensure_calendar_readiness(
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    from market import trading_calendar
+
+    current = now or datetime.now()
+    ready, reason = _calendar_readiness(current)
+    if ready:
+        return ready, reason
+    try:
+        trading_calendar.refresh_from_tushare(current.year)
+    except Exception:
+        return False, "authoritative_trade_calendar_refresh_error"
+    ready, _reason = _calendar_readiness(current)
+    if not ready:
+        return (
+            False,
+            "authoritative_trade_calendar_unavailable_after_refresh",
+        )
+    return True, "ok"
+
+
+def _write_runtime_status(
+    *,
+    ready: bool,
+    thread_alive: bool,
+    calendar_ready: bool,
+    calendar_reason: str,
+    error: str | None = None,
+) -> dict[str, Any]:
+    with _runtime_lock:
+        pid = os.getpid()
+        process_start_token = _process_start_token(pid)
+        previous = _read_json(RUNTIME_PATH, {})
+        if (
+            not isinstance(previous, dict)
+            or previous.get("pid") != pid
+            or not _process_tokens_match(
+                _normalize_process_start_token(
+                    previous.get("process_start_token")
+                ),
+                _normalize_process_start_token(process_start_token),
+            )
+        ):
+            previous = {}
+        now = _runtime_now()
+        progress_at = (
+            _last_scheduler_progress_at
+            or previous.get("progress_at")
+        )
+        scheduler_status = _read_json(STATUS_PATH, {})
+        if not isinstance(scheduler_status, dict):
+            scheduler_status = {}
+        job_running = scheduler_status.get("running") is True
+        current_job = (
+            str(scheduler_status.get("current_job") or "")
+            if job_running
+            else ""
+        )
+        job_started_at = (
+            scheduler_status.get("current_job_started_at")
+            if job_running
+            else None
+        )
+        payload = {
+            "ready": bool(ready),
+            "pid": pid,
+            "process_start_token": process_start_token,
+            "thread_alive": bool(thread_alive),
+            "started_at": previous.get("started_at") or now,
+            "heartbeat_at": now,
+            "progress_at": progress_at,
+            "progress_age_seconds": _timestamp_age_seconds(
+                progress_at
+            ),
+            "job_running": job_running,
+            "current_job": current_job or None,
+            "job_started_at": job_started_at,
+            "job_age_seconds": _timestamp_age_seconds(
+                job_started_at
+            ),
+            "calendar_ready": bool(calendar_ready),
+            "calendar_reason": str(calendar_reason or "unknown"),
+            "error": str(error or "")[:300],
+        }
+        _write_json(RUNTIME_PATH, payload)
+        return payload
+
+
+def _runtime_now() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _timestamp_age_seconds(value: Any) -> float | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(
+            value.strip().replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return max(
+        0.0,
+        (
+            datetime.now().astimezone()
+            - parsed.astimezone()
+        ).total_seconds(),
+    )
+
+
+def _mark_scheduler_progress() -> str:
+    global _last_scheduler_progress_at
+    with _runtime_lock:
+        _last_scheduler_progress_at = _runtime_now()
+        return _last_scheduler_progress_at
+
+
+def refresh_runtime_heartbeat() -> dict[str, Any]:
+    with _runtime_lock:
+        previous = _read_json(RUNTIME_PATH, {})
+        if not isinstance(previous, dict):
+            previous = {}
+        thread = _scheduler_thread
+        thread_alive = bool(
+            thread is not None and thread.is_alive()
+        )
+        return _write_runtime_status(
+            ready=bool(previous.get("ready") is True and thread_alive),
+            thread_alive=thread_alive,
+            calendar_ready=previous.get("calendar_ready") is True,
+            calendar_reason=str(
+                previous.get("calendar_reason") or "unknown"
+            ),
+            error=(
+                str(previous.get("error") or "")
+                if thread_alive
+                else "factor scheduler thread exited"
+            ),
+        )
+
+
+def _heartbeat_loop(interval_seconds: int = 10) -> None:
+    while True:
+        runtime = refresh_runtime_heartbeat()
+        if runtime.get("thread_alive") is not True:
+            return
+        time.sleep(max(1, int(interval_seconds)))
+
+
+def _schedule_time(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be HH:MM")
+    text = value.strip()
+    try:
+        parsed = datetime.strptime(text, "%H:%M")
+    except ValueError as exc:
+        raise ValueError(f"{field} must be HH:MM") from exc
+    if parsed.strftime("%H:%M") != text:
+        raise ValueError(f"{field} must be HH:MM")
+    return text
+
+
+def _config_int(
+    value: Any,
+    field: str,
+    *,
+    minimum: int = 1,
+    maximum: int = 20_000,
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field} must be an integer")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{field} is out of range")
+    return int(value)
+
+
+def _config_float(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be numeric")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{field} must be finite")
+    return number
+
+
+def _validated_scheduler_config() -> dict[str, Any]:
+    raw = get_config()
+    if not isinstance(raw, dict):
+        raise ValueError("scheduler config must be an object")
+    enabled = raw.get("enabled")
+    execute_paper = raw.get("execute_paper")
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled must be boolean")
+    if not isinstance(execute_paper, bool):
+        raise ValueError("execute_paper must be boolean")
+
+    normalized = dict(raw)
+    for field in ("data_refresh_times", "ai_decision_times"):
+        values = raw.get(field)
+        if not isinstance(values, list):
+            raise ValueError(f"{field} must be a list")
+        normalized[field] = [
+            _schedule_time(value, f"{field}[{index}]")
+            for index, value in enumerate(values)
+        ]
+    normalized["factor_mining_time"] = _schedule_time(
+        raw.get("factor_mining_time"),
+        "factor_mining_time",
+    )
+    normalized["window_minutes"] = _config_int(
+        raw.get("window_minutes"),
+        "window_minutes",
+        maximum=1_440,
+    )
+    normalized["retry_cooldown_minutes"] = _config_int(
+        raw.get("retry_cooldown_minutes"),
+        "retry_cooldown_minutes",
+        maximum=1_440,
+    )
+    normalized["max_candidates"] = _config_int(
+        raw.get("max_candidates"),
+        "max_candidates",
+    )
+
+    mining = raw.get("mining")
+    if not isinstance(mining, dict):
+        raise ValueError("mining must be an object")
+    normalized_mining = dict(mining)
+    for field in (
+        "n_stocks",
+        "days",
+        "train_days",
+        "test_days",
+        "hold_days",
+        "top_k",
+        "candidate_pool_size",
+    ):
+        normalized_mining[field] = _config_int(
+            mining.get(field),
+            f"mining.{field}",
+        )
+    for field in ("stop_loss", "take_profit"):
+        normalized_mining[field] = _config_float(
+            mining.get(field),
+            f"mining.{field}",
+        )
+    if (
+        normalized_mining["candidate_pool_size"]
+        < normalized_mining["top_k"]
+    ):
+        raise ValueError(
+            "mining.candidate_pool_size must be at least mining.top_k"
+        )
+    normalized["mining"] = normalized_mining
+    return normalized
 
 
 def get_config() -> dict:
@@ -388,13 +675,19 @@ def _structured_lock_identity(
     except (TypeError, ValueError):
         return None
     nonce = lock.get("nonce")
-    if pid <= 0 or not isinstance(nonce, str) or not nonce:
+    process_start_token = _normalize_process_start_token(
+        lock.get("process_start_token")
+    )
+    if (
+        pid <= 0
+        or process_start_token is None
+        or not isinstance(nonce, str)
+        or not nonce
+    ):
         return None
     return (
         pid,
-        _normalize_process_start_token(
-            lock.get("process_start_token")
-        ),
+        process_start_token,
         nonce,
     )
 
@@ -409,12 +702,13 @@ def _read_lock_record() -> dict[str, Any] | None:
         payload = json.loads(text)
     except Exception:
         payload = None
-    if (
-        isinstance(payload, dict)
-        and _structured_lock_identity(payload) is not None
-    ):
+    identity = _structured_lock_identity(payload)
+    if isinstance(payload, dict) and identity is not None:
         return {
             **payload,
+            "pid": identity[0],
+            "process_start_token": identity[1],
+            "nonce": identity[2],
             "_format": "json",
             "_raw": text,
         }
@@ -583,6 +877,8 @@ def _lock_is_stale(
         record = _read_lock_record()
     if record is None:
         return False
+    if record.get("_format") in {"legacy", "unknown"}:
+        return False
 
     pid = record.get("pid")
     pid_exists = _pid_exists(pid)
@@ -624,9 +920,16 @@ def _unlink_stale_lock_locked(max_age_seconds: int = 7200) -> bool:
         and observed.get("guard_protocol")
         == SCHEDULER_GUARD_PROTOCOL_VERSION
     )
-    if not current_guard_orphan and not _lock_is_stale(
-        max_age_seconds=max_age_seconds,
-        record=observed,
+    if (
+        not current_guard_orphan
+        and (
+            not isinstance(observed, dict)
+            or observed.get("_format") != "json"
+            or not _lock_is_stale(
+                max_age_seconds=max_age_seconds,
+                record=observed,
+            )
+        )
     ):
         return False
     if not _same_lock(observed, _read_lock_record()):
@@ -662,6 +965,7 @@ def _recover_stale_runtime_state(status: dict) -> dict:
         job = str(status.get("current_job") or "unknown")
         status["running"] = False
         status.pop("current_job", None)
+        status.pop("current_job_started_at", None)
         status.setdefault("jobs", {})
         _append_history(
             status,
@@ -683,6 +987,62 @@ def _lock_file_identity(path: Path) -> tuple[int, int] | None:
     return int(stat_result.st_dev), int(stat_result.st_ino)
 
 
+def _atomic_hard_link(source: Path, destination: Path) -> None:
+    try:
+        os.link(source, destination)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        unsupported_errnos = {
+            value
+            for value in (
+                getattr(errno, "EACCES", None),
+                getattr(errno, "EPERM", None),
+                getattr(errno, "EXDEV", None),
+                getattr(errno, "ENOTSUP", None),
+                getattr(errno, "EOPNOTSUPP", None),
+            )
+            if value is not None
+        }
+        if (
+            exc.errno in unsupported_errnos
+            or getattr(exc, "winerror", None) in {1, 50}
+        ):
+            raise OSError(
+                exc.errno,
+                "scheduler lock requires atomic hard-link support "
+                f"and permission in {destination.parent}",
+            ) from exc
+        raise
+
+
+def _probe_lock_capability() -> None:
+    ROOT.mkdir(parents=True, exist_ok=True)
+    nonce = uuid.uuid4().hex
+    source = ROOT / f".scheduler-lock-probe-{nonce}.source"
+    destination = ROOT / f".scheduler-lock-probe-{nonce}.link"
+    try:
+        with _scheduler_guard() as acquired:
+            if not acquired:
+                raise RuntimeError(
+                    "scheduler kernel guard is held by another process"
+                )
+            source.write_bytes(b"probe")
+            _atomic_hard_link(source, destination)
+            if _lock_file_identity(source) != _lock_file_identity(
+                destination
+            ):
+                raise OSError(
+                    "scheduler hard-link probe identity mismatch"
+                )
+    finally:
+        for path in (destination, source):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def _publish_lock_metadata(
     owner: dict[str, Any],
 ) -> tuple[int, int]:
@@ -696,32 +1056,7 @@ def _publish_lock_metadata(
         identity = _lock_file_identity(prepared)
         if identity is None:
             raise OSError("scheduler lock metadata is unavailable")
-        try:
-            os.link(prepared, LOCK_PATH)
-        except FileExistsError:
-            raise
-        except OSError as exc:
-            unsupported_errnos = {
-                value
-                for value in (
-                    getattr(errno, "EACCES", None),
-                    getattr(errno, "EPERM", None),
-                    getattr(errno, "EXDEV", None),
-                    getattr(errno, "ENOTSUP", None),
-                    getattr(errno, "EOPNOTSUPP", None),
-                )
-                if value is not None
-            }
-            if (
-                exc.errno in unsupported_errnos
-                or getattr(exc, "winerror", None) in {1, 50}
-            ):
-                raise OSError(
-                    exc.errno,
-                    "scheduler lock requires atomic hard-link support "
-                    f"and permission in {LOCK_PATH.parent}",
-                ) from exc
-            raise
+        _atomic_hard_link(prepared, LOCK_PATH)
         return identity
     finally:
         for path in (prepared, staging):
@@ -760,9 +1095,14 @@ def _file_lock(max_age_seconds: int = 7200):
             yield False
             return
         pid = os.getpid()
+        process_start_token = _process_start_token(pid)
+        if process_start_token is None:
+            raise RuntimeError(
+                "scheduler process start identity is unavailable"
+            )
         owner = {
             "pid": pid,
-            "process_start_token": _process_start_token(pid),
+            "process_start_token": process_start_token,
             "nonce": uuid.uuid4().hex,
             "created_at": _now_text(),
             "guard_protocol": SCHEDULER_GUARD_PROTOCOL_VERSION,
@@ -814,7 +1154,12 @@ def _in_window(now: datetime, hhmm: str, minutes: int) -> bool:
 def _is_weekday(now: datetime | None = None) -> bool:
     from market import trading_calendar
 
-    return trading_calendar.is_trading_day((now or datetime.now()).date())
+    current = now or datetime.now()
+    calendar_ready, _reason = _calendar_readiness(current)
+    return bool(
+        calendar_ready
+        and trading_calendar.is_trading_day(current.date())
+    )
 
 
 def next_runs(now: datetime | None = None) -> dict:
@@ -831,6 +1176,14 @@ def next_runs(now: datetime | None = None) -> dict:
     }
     for name, times in schedule.items():
         for d in dates:
+            try:
+                calendar_ready = (
+                    trading_calendar.has_verified_calendar(d.year)
+                )
+            except Exception:
+                calendar_ready = False
+            if not calendar_ready:
+                continue
             if not trading_calendar.is_trading_day(d):
                 continue
             for hhmm in times:
@@ -1434,43 +1787,61 @@ def run_job(job: str, slot: str | None = None, force: bool = False) -> dict:
     if not force and not get_config().get("enabled", True):
         return {"ok": False, "error": "auto scheduler disabled"}
     with _thread_lock:
-        with _file_lock() as acquired:
-            if not acquired:
-                return {"ok": False, "error": "auto scheduler is already running"}
-            status = get_status()
-            status["running"] = True
-            status["current_job"] = job
-            _save_status(status)
-            date_text = _today_text()
-            key = _job_key(job, slot, date_text)
-            try:
-                if job == "data_refresh":
-                    result = _run_data_refresh(date_text)
-                elif job == "factor_mining":
-                    result = _run_factor_mining(date_text)
-                elif job == "ai_decision":
-                    result = _run_ai_decision(date_text)
-                else:
-                    refresh_result = _run_data_refresh(date_text)
-                    result = {"ok": False, "steps": {"data_refresh": refresh_result}}
-                    if refresh_result.get("ok"):
-                        mining_result = _run_factor_mining(date_text)
-                        result["steps"]["factor_mining"] = mining_result
-                        result["ok"] = bool(mining_result.get("ok"))
+        date_text = _today_text()
+        key = _job_key(job, slot, date_text)
+        try:
+            with _file_lock() as acquired:
+                if not acquired:
+                    return {
+                        "ok": False,
+                        "error": "auto scheduler is already running",
+                    }
+                status = get_status()
+                status["running"] = True
+                status["current_job"] = job
+                status["current_job_started_at"] = _runtime_now()
+                _save_status(status)
+                try:
+                    if job == "data_refresh":
+                        result = _run_data_refresh(date_text)
+                    elif job == "factor_mining":
+                        result = _run_factor_mining(date_text)
+                    elif job == "ai_decision":
+                        result = _run_ai_decision(date_text)
                     else:
-                        result["steps"]["factor_mining"] = {
+                        refresh_result = _run_data_refresh(date_text)
+                        result = {
                             "ok": False,
-                            "skipped": True,
-                            "reason": "data_refresh_failed",
-                            "prospective": _record_failed_prospective_session(
-                                date_text,
-                                reason="data_refresh_failed",
-                                details=refresh_result.get("details"),
-                            ),
+                            "steps": {"data_refresh": refresh_result},
                         }
+                        if refresh_result.get("ok"):
+                            mining_result = _run_factor_mining(date_text)
+                            result["steps"]["factor_mining"] = mining_result
+                            result["ok"] = bool(mining_result.get("ok"))
+                        else:
+                            result["steps"]["factor_mining"] = {
+                                "ok": False,
+                                "skipped": True,
+                                "reason": "data_refresh_failed",
+                                "prospective": _record_failed_prospective_session(
+                                    date_text,
+                                    reason="data_refresh_failed",
+                                    details=refresh_result.get("details"),
+                                ),
+                            }
+                except Exception as exc:
+                    logger.exception(
+                        "[auto_factor_scheduler] job %s failed",
+                        job,
+                    )
+                    result = {
+                        "ok": False,
+                        "error": str(exc)[:300],
+                    }
                 status = get_status()
                 status["running"] = False
                 status.pop("current_job", None)
+                status.pop("current_job_started_at", None)
                 status.setdefault("jobs", {})[key] = {
                     "job": job,
                     "slot": slot,
@@ -1482,23 +1853,24 @@ def run_job(job: str, slot: str | None = None, force: bool = False) -> dict:
                 _append_history(status, {"job": job, "slot": slot, "ok": bool(result.get("ok")), "result": result})
                 _save_status(status)
                 return result
-            except Exception as exc:
-                logger.exception("[auto_factor_scheduler] job %s failed", job)
-                result = {"ok": False, "error": str(exc)[:300]}
-                status = get_status()
-                status["running"] = False
-                status.pop("current_job", None)
-                status.setdefault("jobs", {})[key] = {
-                    "job": job,
-                    "slot": slot,
-                    "date": date_text,
-                    "ok": False,
-                    "finished_at": _now_text(),
-                    "result": result,
-                }
-                _append_history(status, {"job": job, "slot": slot, "ok": False, "error": result["error"]})
-                _save_status(status)
-                return result
+        except Exception as exc:
+            logger.exception("[auto_factor_scheduler] job %s failed", job)
+            result = {"ok": False, "error": str(exc)[:300]}
+            status = get_status()
+            status["running"] = False
+            status.pop("current_job", None)
+            status.pop("current_job_started_at", None)
+            status.setdefault("jobs", {})[key] = {
+                "job": job,
+                "slot": slot,
+                "date": date_text,
+                "ok": False,
+                "finished_at": _now_text(),
+                "result": result,
+            }
+            _append_history(status, {"job": job, "slot": slot, "ok": False, "error": result["error"]})
+            _save_status(status)
+            return result
 
 
 def _already_ran(status: dict, job: str, slot: str, date_text: str) -> bool:
@@ -1530,11 +1902,29 @@ def _attempt_blocked(
 
 def run_scheduler_loop(interval_seconds: int = 30) -> None:
     logger.info("[auto_factor_scheduler] started")
+    first_cycle = True
     while True:
+        _mark_scheduler_progress()
         try:
-            cfg = get_config()
+            cfg = _validated_scheduler_config()
             now = datetime.now()
-            if cfg.get("enabled", True) and _is_weekday(now):
+            calendar_ready, calendar_reason = (
+                _calendar_readiness(now)
+            )
+            _write_runtime_status(
+                ready=calendar_ready,
+                thread_alive=True,
+                calendar_ready=calendar_ready,
+                calendar_reason=calendar_reason,
+            )
+            if first_cycle:
+                _scheduler_ready_event.set()
+                first_cycle = False
+            if (
+                cfg.get("enabled", True)
+                and calendar_ready
+                and _is_weekday(now)
+            ):
                 status = get_status()
                 date_text = now.strftime("%Y-%m-%d")
                 window = int(cfg.get("window_minutes", 90) or 90)
@@ -1544,31 +1934,110 @@ def run_scheduler_loop(interval_seconds: int = 30) -> None:
                     if _in_window(now, slot, window) and not _attempt_blocked(
                         status, "data_refresh", slot, date_text, now=now, retry_cooldown_minutes=retry_cooldown
                     ):
+                        _mark_scheduler_progress()
                         run_job("data_refresh", slot=slot)
+                        _mark_scheduler_progress()
                         status = get_status()
                 slot = str(cfg.get("factor_mining_time") or DEFAULT_CONFIG["factor_mining_time"])
                 if _in_window(now, slot, window) and not _attempt_blocked(
                     status, "factor_mining", slot, date_text, now=now, retry_cooldown_minutes=retry_cooldown
                 ):
+                    _mark_scheduler_progress()
                     run_job("factor_mining", slot=slot)
+                    _mark_scheduler_progress()
                     status = get_status()
                 for slot in cfg.get("ai_decision_times") or []:
                     slot = str(slot)
                     if _in_window(now, slot, 20) and not _attempt_blocked(
                         status, "ai_decision", slot, date_text, now=now, retry_cooldown_minutes=retry_cooldown
                     ):
+                        _mark_scheduler_progress()
                         run_job("ai_decision", slot=slot)
+                        _mark_scheduler_progress()
                         status = get_status()
         except Exception as exc:
             logger.warning(f"[auto_factor_scheduler] loop error: {exc}")
+            if first_cycle:
+                try:
+                    _write_runtime_status(
+                        ready=False,
+                        thread_alive=False,
+                        calendar_ready=False,
+                        calendar_reason="scheduler_startup_error",
+                        error=str(exc),
+                    )
+                finally:
+                    _scheduler_ready_event.set()
+                return
+            _write_runtime_status(
+                ready=False,
+                thread_alive=True,
+                calendar_ready=False,
+                calendar_reason="scheduler_loop_error",
+                error=str(exc),
+            )
+            if not _scheduler_ready_event.is_set():
+                _scheduler_ready_event.set()
+        _mark_scheduler_progress()
         time.sleep(max(5, int(interval_seconds)))
 
 
 def start_background_scheduler() -> bool:
-    global _started
+    global _started, _scheduler_thread, _heartbeat_thread
+    global _last_scheduler_progress_at
     with _thread_lock:
         if _started:
-            return False
+            if (
+                _scheduler_thread is not None
+                and _scheduler_thread.is_alive()
+            ):
+                return False
+            _started = False
+        _probe_lock_capability()
+        calendar_ready, calendar_reason = (
+            _ensure_calendar_readiness()
+        )
+        if not calendar_ready:
+            raise RuntimeError(calendar_reason)
+        _scheduler_ready_event.clear()
+        _last_scheduler_progress_at = None
+        thread = threading.Thread(
+            target=run_scheduler_loop,
+            daemon=True,
+            name="auto-factor-scheduler",
+        )
+        _scheduler_thread = thread
+        thread.start()
+        if not _scheduler_ready_event.wait(timeout=5):
+            _scheduler_thread = None
+            raise RuntimeError(
+                "auto factor scheduler readiness timed out"
+            )
+        runtime = _read_json(RUNTIME_PATH, {})
+        if (
+            not thread.is_alive()
+            or not isinstance(runtime, dict)
+            or runtime.get("ready") is not True
+            or runtime.get("pid") != os.getpid()
+            or not _process_tokens_match(
+                _normalize_process_start_token(
+                    runtime.get("process_start_token")
+                ),
+                _normalize_process_start_token(
+                    _process_start_token(os.getpid())
+                ),
+            )
+        ):
+            _scheduler_thread = None
+            raise RuntimeError(
+                "auto factor scheduler failed readiness check"
+            )
         _started = True
-        threading.Thread(target=run_scheduler_loop, daemon=True, name="auto-factor-scheduler").start()
+        heartbeat = threading.Thread(
+            target=_heartbeat_loop,
+            daemon=True,
+            name="auto-factor-heartbeat",
+        )
+        _heartbeat_thread = heartbeat
+        heartbeat.start()
         return True

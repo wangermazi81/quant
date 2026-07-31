@@ -12,6 +12,25 @@ import pandas as pd
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _verified_test_calendar(monkeypatch):
+    from market import trading_calendar
+
+    monkeypatch.setattr(
+        trading_calendar,
+        "has_verified_calendar",
+        lambda _year: True,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "is_trading_day",
+        lambda value=None: (
+            value is not None
+            and value.weekday() < 5
+        ),
+    )
+
+
 def _isolate_scheduler(monkeypatch, tmp_path):
     from analytics import auto_factor_scheduler as scheduler
 
@@ -19,6 +38,12 @@ def _isolate_scheduler(monkeypatch, tmp_path):
     monkeypatch.setattr(scheduler, "ROOT", root)
     monkeypatch.setattr(scheduler, "STATUS_PATH", root / "auto_scheduler_status.json")
     monkeypatch.setattr(scheduler, "LOCK_PATH", root / "auto_scheduler.lock")
+    monkeypatch.setattr(
+        scheduler,
+        "RUNTIME_PATH",
+        root / "auto_scheduler_runtime.json",
+        raising=False,
+    )
     return scheduler, root
 
 
@@ -159,6 +184,27 @@ def test_structured_lock_detects_reused_pid(monkeypatch, tmp_path):
     assert not scheduler.LOCK_PATH.exists()
 
 
+def test_structured_lock_normalizes_string_pid_before_process_probe(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    _write_structured_lock(
+        scheduler,
+        _structured_lock(pid="1234"),
+    )
+    observed = []
+    monkeypatch.setattr(
+        scheduler,
+        "_pid_exists",
+        lambda pid: observed.append(pid) or False,
+    )
+
+    assert scheduler._lock_is_stale() is True
+    assert observed == [1234]
+
+
 def test_live_structured_lock_is_preserved_even_when_old(
     monkeypatch,
     tmp_path,
@@ -216,7 +262,10 @@ def test_stale_cleanup_rechecks_lock_identity_before_unlink(
 ):
     scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
     root.mkdir(parents=True)
-    scheduler.LOCK_PATH.write_text("4321", encoding="utf-8")
+    _write_structured_lock(
+        scheduler,
+        _structured_lock(pid=4321),
+    )
     replacement = _structured_lock(
         pid=9876,
         nonce="replacement-nonce",
@@ -474,10 +523,9 @@ def test_recovery_holds_guard_while_clearing_stale_status(
 ):
     scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
     root.mkdir(parents=True)
-    scheduler.LOCK_PATH.write_text(
-        "999999 2026-07-10 17:05:00",
-        encoding="utf-8",
-    )
+    lock = _structured_lock(pid=999999)
+    lock["guard_protocol"] = scheduler.SCHEDULER_GUARD_PROTOCOL_VERSION
+    _write_structured_lock(scheduler, lock)
     status = {
         "ok": True,
         "enabled": True,
@@ -520,6 +568,7 @@ def test_recovery_holds_guard_while_clearing_stale_status(
     "payload",
     [
         "4321 2026-07-10 17:05:00",
+        "{",
         json.dumps(
             _structured_lock(
                 pid=4321,
@@ -529,7 +578,7 @@ def test_recovery_holds_guard_while_clearing_stale_status(
         ),
     ],
 )
-def test_legacy_or_tokenless_lock_detects_reused_pid_by_start_time(
+def test_legacy_or_incomplete_lock_is_not_reclaimed_during_normal_run(
     monkeypatch,
     tmp_path,
     payload,
@@ -537,26 +586,11 @@ def test_legacy_or_tokenless_lock_detects_reused_pid_by_start_time(
     scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
     root.mkdir(parents=True)
     scheduler.LOCK_PATH.write_text(payload, encoding="utf-8")
-    monkeypatch.setattr(
-        scheduler,
-        "_pid_exists",
-        lambda pid: True,
-    )
-    monkeypatch.setattr(
-        scheduler,
-        "_process_start_epoch",
-        lambda pid: datetime(
-            2026,
-            7,
-            11,
-            9,
-            30,
-        ).timestamp(),
-        raising=False,
-    )
+    monkeypatch.setattr(scheduler, "_pid_exists", lambda pid: False)
 
-    assert scheduler._unlink_stale_lock() is True
-    assert not scheduler.LOCK_PATH.exists()
+    assert scheduler._lock_is_stale() is False
+    assert scheduler._unlink_stale_lock() is False
+    assert scheduler.LOCK_PATH.exists()
 
 
 def test_unknown_pid_state_never_reclaims_lock(monkeypatch, tmp_path):
@@ -621,6 +655,394 @@ def test_unsupported_hard_link_fails_closed_with_actionable_error(
 
     assert scheduler._scheduler_guard_path().exists()
     assert not scheduler.LOCK_PATH.exists()
+
+
+def test_run_job_records_lock_capability_failure(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    def reject_hard_link(source, destination):
+        raise OSError(errno.EOPNOTSUPP, "not supported")
+
+    monkeypatch.setattr(scheduler.os, "link", reject_hard_link)
+    monkeypatch.setattr(
+        scheduler,
+        "_today_text",
+        lambda: "2026-07-31",
+    )
+
+    result = scheduler.run_job(
+        "factor_mining",
+        slot="17:10",
+        force=True,
+    )
+
+    assert result["ok"] is False
+    assert "hard-link support" in result["error"]
+    status = scheduler.get_status()
+    record = status["jobs"]["2026-07-31:factor_mining:1710"]
+    assert record["ok"] is False
+    assert "hard-link support" in record["result"]["error"]
+
+
+def test_background_scheduler_fails_before_started_when_lock_probe_fails(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    started_threads = []
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            started_threads.append(True)
+
+    def fail_probe():
+        raise OSError("lock capability unavailable")
+
+    monkeypatch.setattr(scheduler, "_started", False)
+    monkeypatch.setattr(scheduler.threading, "Thread", FakeThread)
+    monkeypatch.setattr(
+        scheduler,
+        "_probe_lock_capability",
+        fail_probe,
+        raising=False,
+    )
+
+    with pytest.raises(
+        OSError,
+        match="lock capability unavailable",
+    ):
+        scheduler.start_background_scheduler()
+
+    assert scheduler._started is False
+    assert started_threads == []
+
+
+def test_scheduler_refreshes_missing_authoritative_calendar(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    from market import trading_calendar
+
+    checks = iter([False, True])
+    refreshes = []
+    monkeypatch.setattr(
+        trading_calendar,
+        "has_verified_calendar",
+        lambda year: next(checks),
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "refresh_from_tushare",
+        lambda year: refreshes.append(year)
+        or {"ok": True, "year": year},
+    )
+
+    ready, reason = scheduler._ensure_calendar_readiness(
+        datetime(2026, 7, 31, 9, 0)
+    )
+
+    assert ready is True
+    assert reason == "ok"
+    assert refreshes == [2026]
+
+
+def test_background_scheduler_does_not_start_without_verified_calendar(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    started_threads = []
+
+    class FakeEvent:
+        @staticmethod
+        def clear():
+            return None
+
+        @staticmethod
+        def wait(_timeout):
+            return False
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            started_threads.append((args, kwargs))
+
+    monkeypatch.setattr(scheduler, "_started", False)
+    monkeypatch.setattr(
+        scheduler,
+        "_scheduler_ready_event",
+        FakeEvent(),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_probe_lock_capability",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_ensure_calendar_readiness",
+        lambda: (
+            False,
+            "authoritative_trade_calendar_unavailable_after_refresh",
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(scheduler.threading, "Thread", FakeThread)
+
+    with pytest.raises(
+        RuntimeError,
+        match="authoritative_trade_calendar_unavailable_after_refresh",
+    ):
+        scheduler.start_background_scheduler()
+
+    assert scheduler._started is False
+    assert started_threads == []
+
+
+def test_scheduler_first_cycle_rejects_invalid_config_before_ready(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    writes = []
+    monkeypatch.setattr(
+        scheduler,
+        "get_config",
+        lambda: {
+            **scheduler.DEFAULT_CONFIG,
+            "window_minutes": "not-an-integer",
+        },
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_write_runtime_status",
+        lambda **kwargs: writes.append(kwargs) or kwargs,
+    )
+    monkeypatch.setattr(
+        scheduler.time,
+        "sleep",
+        lambda _seconds: pytest.fail(
+            "invalid first-cycle config must terminate the thread"
+        ),
+    )
+    scheduler._scheduler_ready_event.clear()
+
+    scheduler.run_scheduler_loop(interval_seconds=5)
+
+    assert scheduler._scheduler_ready_event.is_set()
+    assert writes == [
+        {
+            "ready": False,
+            "thread_alive": False,
+            "calendar_ready": False,
+            "calendar_reason": "scheduler_startup_error",
+            "error": "window_minutes must be an integer",
+        }
+    ]
+
+
+def test_scheduler_calendar_failure_is_published_as_not_ready(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    writes = []
+
+    class StopLoop(Exception):
+        pass
+
+    monkeypatch.setattr(
+        scheduler,
+        "_validated_scheduler_config",
+        lambda: dict(scheduler.DEFAULT_CONFIG),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_calendar_readiness",
+        lambda _now: (
+            False,
+            "authoritative_trade_calendar_unavailable",
+        ),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_write_runtime_status",
+        lambda **kwargs: writes.append(kwargs) or kwargs,
+    )
+    monkeypatch.setattr(
+        scheduler.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(StopLoop()),
+    )
+    scheduler._scheduler_ready_event.clear()
+
+    with pytest.raises(StopLoop):
+        scheduler.run_scheduler_loop(interval_seconds=5)
+
+    assert writes[0]["ready"] is False
+    assert writes[0]["calendar_ready"] is False
+    assert scheduler._scheduler_ready_event.is_set()
+
+
+def test_runtime_status_binds_process_start_token(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_token",
+        lambda pid: f"boot-token:{pid}",
+    )
+
+    payload = scheduler._write_runtime_status(
+        ready=True,
+        thread_alive=True,
+        calendar_ready=True,
+        calendar_reason="ok",
+    )
+
+    assert payload["process_start_token"] == (
+        f"boot-token:{os.getpid()}"
+    )
+    assert json.loads(
+        scheduler.RUNTIME_PATH.read_text(encoding="utf-8")
+    )["process_start_token"] == payload["process_start_token"]
+
+
+def test_runtime_heartbeat_refreshes_while_job_thread_is_alive(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    class AliveThread:
+        @staticmethod
+        def is_alive():
+            return True
+
+    monkeypatch.setattr(scheduler, "_scheduler_thread", AliveThread())
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_token",
+        lambda _pid: "boot-token:123",
+    )
+    scheduler._write_runtime_status(
+        ready=True,
+        thread_alive=True,
+        calendar_ready=True,
+        calendar_reason="ok",
+    )
+    first = json.loads(
+        scheduler.RUNTIME_PATH.read_text(encoding="utf-8")
+    )
+    first_progress = first.get("progress_at")
+    monkeypatch.setattr(
+        scheduler,
+        "_runtime_now",
+        lambda: "2026-07-31T17:10:30+08:00",
+        raising=False,
+    )
+
+    refreshed = scheduler.refresh_runtime_heartbeat()
+
+    assert refreshed["ready"] is True
+    assert refreshed["thread_alive"] is True
+    assert refreshed["heartbeat_at"] == "2026-07-31T17:10:30+08:00"
+    assert refreshed.get("progress_at") == first_progress
+    assert refreshed["started_at"] == first["started_at"]
+    assert refreshed["process_start_token"] == "boot-token:123"
+
+
+def test_runtime_heartbeat_does_not_forge_scheduler_progress(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    class AliveThread:
+        @staticmethod
+        def is_alive():
+            return True
+
+    monkeypatch.setattr(scheduler, "_scheduler_thread", AliveThread())
+    monkeypatch.setattr(
+        scheduler,
+        "_last_scheduler_progress_at",
+        "2026-07-31T16:00:00+08:00",
+        raising=False,
+    )
+    scheduler._write_runtime_status(
+        ready=True,
+        thread_alive=True,
+        calendar_ready=True,
+        calendar_reason="ok",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_runtime_now",
+        lambda: "2026-07-31T17:10:30+08:00",
+    )
+
+    refreshed = scheduler.refresh_runtime_heartbeat()
+
+    assert refreshed["heartbeat_at"] == "2026-07-31T17:10:30+08:00"
+    assert refreshed["progress_at"] == "2026-07-31T16:00:00+08:00"
+
+
+def test_runtime_heartbeat_reports_active_job_without_forging_progress(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    scheduler.STATUS_PATH.write_text(
+        json.dumps(
+            {
+                "running": True,
+                "current_job": "factor_mining",
+                "current_job_started_at": (
+                    "2026-07-31T17:10:00+08:00"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_timestamp_age_seconds",
+        lambda value: (
+            30.0
+            if value == "2026-07-31T17:10:00+08:00"
+            else 4200.0
+        ),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_last_scheduler_progress_at",
+        "2026-07-31T16:00:00+08:00",
+    )
+
+    payload = scheduler._write_runtime_status(
+        ready=True,
+        thread_alive=True,
+        calendar_ready=True,
+        calendar_reason="ok",
+    )
+
+    assert payload["job_running"] is True
+    assert payload["current_job"] == "factor_mining"
+    assert payload["job_started_at"] == (
+        "2026-07-31T17:10:00+08:00"
+    )
+    assert payload["job_age_seconds"] == 30.0
+    assert payload["progress_age_seconds"] == 4200.0
 
 
 def test_windows_unsupported_hard_link_has_actionable_error(
@@ -943,8 +1365,14 @@ def test_kernel_guard_excludes_real_subprocess(
             process.terminate()
         process.wait(timeout=10)
 
-    with scheduler._file_lock() as acquired:
-        assert acquired is True
+    deadline = time.monotonic() + 1.0
+    while True:
+        with scheduler._file_lock() as acquired:
+            if acquired:
+                break
+        if time.monotonic() >= deadline:
+            pytest.fail("kernel guard was not released after subprocess exit")
+        time.sleep(0.01)
 
 
 def test_kernel_guard_recovers_after_subprocess_os_exit(
@@ -979,7 +1407,9 @@ def test_pid_probe_does_not_terminate_the_target_process(monkeypatch, tmp_path):
 def test_status_recovers_dead_pid_lock(monkeypatch, tmp_path):
     scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
     root.mkdir(parents=True)
-    scheduler.LOCK_PATH.write_text("999999 2026-07-10 17:05:00", encoding="utf-8")
+    lock = _structured_lock(pid=999999)
+    lock["guard_protocol"] = scheduler.SCHEDULER_GUARD_PROTOCOL_VERSION
+    _write_structured_lock(scheduler, lock)
     scheduler.STATUS_PATH.write_text(
         json.dumps(
             {
@@ -1027,7 +1457,9 @@ def test_live_pid_lock_is_not_reclaimed_only_because_it_is_old(monkeypatch, tmp_
 def test_run_job_ignores_dead_pid_lock(monkeypatch, tmp_path):
     scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
     root.mkdir(parents=True)
-    scheduler.LOCK_PATH.write_text("999999 2026-07-10 17:05:00", encoding="utf-8")
+    lock = _structured_lock(pid=999999)
+    lock["guard_protocol"] = scheduler.SCHEDULER_GUARD_PROTOCOL_VERSION
+    _write_structured_lock(scheduler, lock)
     scheduler.STATUS_PATH.write_text(
         json.dumps(
             {
@@ -1053,6 +1485,89 @@ def test_run_job_ignores_dead_pid_lock(monkeypatch, tmp_path):
     assert status["running"] is False
     assert status["jobs"]
     assert not scheduler.LOCK_PATH.exists()
+
+
+def test_run_job_publishes_and_clears_active_job_start_time(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        scheduler,
+        "_runtime_now",
+        lambda: "2026-07-31T17:10:00+08:00",
+    )
+    observed = {}
+
+    def run_factor_mining(_date_text):
+        observed.update(
+            json.loads(
+                scheduler.STATUS_PATH.read_text(encoding="utf-8")
+            )
+        )
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        scheduler,
+        "_run_factor_mining",
+        run_factor_mining,
+    )
+
+    assert scheduler.run_job(
+        "factor_mining",
+        slot="17:10",
+        force=True,
+    ) == {"ok": True}
+
+    assert observed["running"] is True
+    assert observed["current_job"] == "factor_mining"
+    assert observed["current_job_started_at"] == (
+        "2026-07-31T17:10:00+08:00"
+    )
+    finished = json.loads(
+        scheduler.STATUS_PATH.read_text(encoding="utf-8")
+    )
+    assert finished["running"] is False
+    assert "current_job_started_at" not in finished
+
+
+def test_run_job_records_execution_failure_before_releasing_file_lock(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        scheduler,
+        "_today_text",
+        lambda: "2026-07-31",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_run_factor_mining",
+        lambda _date: (_ for _ in ()).throw(
+            RuntimeError("research failed")
+        ),
+    )
+    real_save = scheduler._save_status
+    completion_lock_states = []
+
+    def capture_save(status):
+        if status.get("jobs"):
+            completion_lock_states.append(
+                scheduler.LOCK_PATH.exists()
+            )
+        real_save(status)
+
+    monkeypatch.setattr(scheduler, "_save_status", capture_save)
+
+    result = scheduler.run_job(
+        "factor_mining",
+        slot="17:10",
+        force=True,
+    )
+
+    assert result == {"ok": False, "error": "research failed"}
+    assert completion_lock_states == [True]
 
 
 def test_default_factor_mining_next_run_is_1710(monkeypatch, tmp_path):
@@ -1090,10 +1605,46 @@ def test_scheduler_uses_trade_calendar_and_finds_next_open_session(monkeypatch, 
         "is_trading_day",
         lambda value=None: getattr(value, "isoformat", lambda: "")() == "2026-07-13",
     )
+    monkeypatch.setattr(
+        trading_calendar,
+        "has_verified_calendar",
+        lambda _year: True,
+    )
 
     assert scheduler._is_weekday(datetime(2026, 7, 10, 17, 10)) is False
     next_runs = scheduler.next_runs(datetime(2026, 7, 10, 16, 59))
     assert next_runs["factor_mining"] == "2026-07-13 17:10"
+
+
+def test_scheduler_blocks_when_authoritative_calendar_is_unavailable(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    from market import trading_calendar
+
+    monkeypatch.setattr(
+        trading_calendar,
+        "has_verified_calendar",
+        lambda _year: False,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "is_trading_day",
+        lambda _value=None: True,
+    )
+
+    assert scheduler._is_weekday(
+        datetime(2026, 7, 10, 17, 10)
+    ) is False
+    next_runs = scheduler.next_runs(
+        datetime(2026, 7, 10, 16, 59)
+    )
+    assert next_runs == {
+        "data_refresh": None,
+        "factor_mining": None,
+        "ai_decision": None,
+    }
 
 
 def test_data_refresh_reports_failure_when_factor_cache_is_incomplete(monkeypatch, tmp_path):
@@ -1557,7 +2108,30 @@ def _short_window_store(db_path):
         def _require_verified_protocol(experiment) -> None:
             return None
 
+        def _latest_completed_session_date(self):
+            return self._test_completed_session_date
+
+        def record_verified_shadow_session(
+            self,
+            experiment_id,
+            signal_date,
+            *,
+            panel,
+        ):
+            self._test_completed_session_date = str(signal_date)[:10]
+            return super().record_verified_shadow_session(
+                experiment_id,
+                signal_date,
+                panel=panel,
+            )
+
         def create_locked_experiment(self, *args, **kwargs):
+            locked_at = kwargs.pop("locked_at", None)
+            if locked_at is not None:
+                parsed = datetime.fromisoformat(
+                    str(locked_at).replace("Z", "+00:00")
+                )
+                self._clock = lambda: parsed
             experiment = super().create_locked_experiment(*args, **kwargs)
             with self._connect() as connection:
                 connection.execute(
@@ -1575,7 +2149,7 @@ def _short_window_store(db_path):
 
 def _shadow_snapshot(signal_date, manifest=None):
     manifest = manifest or {}
-    return {
+    snapshot = {
         "ok": True,
         "data_status": "ok",
         "reason": "ok",
@@ -1604,6 +2178,42 @@ def _shadow_snapshot(signal_date, manifest=None):
             }
         ],
     }
+    if int(manifest.get("schema_version") or 0) >= 4:
+        snapshot.update(
+            {
+                "control_candidates": [
+                    {
+                        "ts_code": "000002.SZ",
+                        "code": "000002",
+                        "trade_date": signal_date,
+                        "candidate_rank": 1,
+                        "experiment_id": manifest.get(
+                            "experiment_id",
+                            "",
+                        ),
+                        "model_instance_id": manifest.get(
+                            "model_instance_id",
+                            "",
+                        ),
+                        "source_run_id": manifest.get(
+                            "source_run_id",
+                            "",
+                        ),
+                        "shadow_target_position_pct": 0.1,
+                        "position_pct": 0.0,
+                        "research_status": "locked_shadow",
+                        "deployment_eligible": False,
+                        "research_only": True,
+                        "gate_pass": True,
+                    }
+                ],
+                "control_policy_version": (
+                    "same_pit_universe_sha256_equal_weight_v1"
+                ),
+                "control_universe_codes_sha256": "a" * 64,
+            }
+        )
+    return snapshot
 
 
 def test_prospective_cycle_records_one_immutable_shadow_session(monkeypatch, tmp_path):
@@ -1762,9 +2372,26 @@ def test_prospective_cycle_imports_only_latest_validated_frozen_model(
     from core import factor_watchlist
 
     store = _short_window_store(tmp_path / "prospective.sqlite3")
+    manifest = _frozen_manifest(required_sessions=1)
+    manifest["schema_version"] = 4
+    manifest["acceptance_rules"] = {
+        "protocol_version": "prospective_60_session_paired_control_v3",
+        "required_sessions": 1,
+        "minimum_total_return_pct": 0.0,
+        "minimum_excess_return_pct": 0.0,
+        "maximum_drawdown_pct": -10.0,
+        "minimum_executed_trades": 1,
+        "minimum_bootstrap_lower_return_pct": None,
+        "minimum_excess_bootstrap_lower_return_pct": None,
+        "maximum_protocol_violations": 0,
+        "preregistered_at": (
+            "2026-07-31T23:38:02+08:00"
+        ),
+        "calibrated_through": "2026-07-30",
+    }
     experiment = store.create_locked_experiment(
         "run-validated",
-        _frozen_manifest(required_sessions=1),
+        manifest,
         locked_at="2026-07-01 17:10:00",
     )
     experiment_id = experiment["experiment_id"]
@@ -1773,24 +2400,35 @@ def test_prospective_cycle_imports_only_latest_validated_frozen_model(
         "build_frozen_shadow_snapshot",
         lambda panel, manifest: _shadow_snapshot("2026-07-02", manifest),
     )
-    monkeypatch.setattr(
-        scheduler.relay_factor_mining,
-        "settle_frozen_shadow_candidate",
-        lambda panel, candidate, manifest: {
+    def settle_candidate(panel, candidate, manifest):
+        is_control = candidate.get("prospective_track") == "control"
+        realized_return = -0.36 if is_control else 9.64
+        exit_price = 10.0 if is_control else 11.0
+        return {
             "status": "settled",
             "execution_blocked": False,
             "block_reasons": [],
             "entry_date": "2026-07-03",
             "exit_date": "2026-07-06",
             "entry_price": 10.0,
-            "exit_price": 11.0,
-            "exit_reason": "take_profit",
-            "realized_return_pct": 9.64,
+            "exit_price": exit_price,
+            "exit_reason": (
+                "holding_period" if is_control else "take_profit"
+            ),
+            "realized_return_pct": realized_return,
             "valuation_path": [
                 {"date": "2026-07-03", "return_pct": -0.36},
-                {"date": "2026-07-06", "return_pct": 9.64},
+                {
+                    "date": "2026-07-06",
+                    "return_pct": realized_return,
+                },
             ],
-        },
+        }
+
+    monkeypatch.setattr(
+        scheduler.relay_factor_mining,
+        "settle_frozen_shadow_candidate",
+        settle_candidate,
     )
     store.record_verified_shadow_session(
         experiment_id,
