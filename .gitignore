@@ -37,6 +37,7 @@ data/.secret_key
 data/paper_trading.db
 data/paper_trading.db-wal
 data/paper_trading.db-shm
+data/paper_trading.schema.lock
 
 # ── 历史行情数据（体积大）───────────────────────────
 data/daily/
