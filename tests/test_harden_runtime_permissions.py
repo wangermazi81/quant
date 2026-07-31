@@ -126,6 +126,11 @@ def test_git_config_payload_disables_hooks_and_binds_remote():
     assert "hooksPath = /dev/null" in payload
     assert "url = https://gitee.com/example/quant.git" in payload
     assert "merge = refs/heads/main" in payload
+    ssh_payload = hardener._git_config_payload(
+        "ssh://git@gitee.com/example/quant.git",
+        "main",
+    ).decode("utf-8")
+    assert "url = ssh://git@gitee.com/example/quant.git" in ssh_payload
     with pytest.raises(ValueError, match="HTTPS"):
         hardener._git_config_payload("file:///tmp/quant.git", "main")
 

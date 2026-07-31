@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import os
 import re
+import shlex
 import stat
 import subprocess
 import tempfile
@@ -60,22 +61,117 @@ def build_local_tool_bundle_sha256(
 def _validate_remote_url(remote_url: str) -> str:
     value = str(remote_url or "").strip()
     parsed = urlsplit(value)
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("remote_url contains an invalid port") from error
+    valid_https = bool(
+        parsed.scheme == "https"
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+    )
+    valid_ssh = bool(
+        parsed.scheme == "ssh"
+        and parsed.hostname
+        and parsed.username == "git"
+        and parsed.password is None
+        and port in {None, 22}
+        and parsed.path not in {"", "/"}
+    )
     if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
+        not (valid_https or valid_ssh)
         or parsed.query
         or parsed.fragment
+        or any(char in value for char in "\r\n\0")
     ):
         raise ValueError(
-            "remote_url must be an HTTPS URL without credentials"
+            "remote_url must be credential-free HTTPS or "
+            "ssh://git@host/path"
         )
     return value
 
 
-def _trusted_git_environment(staging: Path) -> dict[str, str]:
-    return {
+def _validated_ssh_file(
+    value: str | Path | None,
+    *,
+    field: str,
+    private: bool,
+) -> Path:
+    if value is None:
+        raise ValueError(f"{field} is required for an SSH remote")
+    path = Path(os.path.abspath(os.fspath(value)))
+    if not Path(value).is_absolute():
+        raise ValueError(f"{field} must be an absolute path")
+    try:
+        details = os.lstat(path)
+    except OSError as error:
+        raise RuntimeError(f"{field} is unavailable: {error}") from error
+    mode = stat.S_IMODE(details.st_mode)
+    posix_permissions_invalid = bool(
+        os.name == "posix"
+        and (
+            details.st_uid != os.geteuid()
+            or mode & (0o077 if private else 0o022)
+        )
+    )
+    if (
+        stat.S_ISLNK(details.st_mode)
+        or not stat.S_ISREG(details.st_mode)
+        or details.st_nlink != 1
+        or posix_permissions_invalid
+    ):
+        raise RuntimeError(
+            f"{field} must be owner-controlled regular file"
+        )
+    return path
+
+
+def _git_ssh_command(
+    *,
+    ssh_key_path: str | Path | None,
+    ssh_known_hosts_path: str | Path | None,
+) -> str:
+    key = _validated_ssh_file(
+        ssh_key_path,
+        field="ssh_key_path",
+        private=True,
+    )
+    known_hosts = _validated_ssh_file(
+        ssh_known_hosts_path,
+        field="ssh_known_hosts_path",
+        private=False,
+    )
+    arguments = [
+        "/usr/bin/ssh",
+        "-F",
+        "/dev/null",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "PasswordAuthentication=no",
+        "-o",
+        "KbdInteractiveAuthentication=no",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "GlobalKnownHostsFile=/dev/null",
+        "-o",
+        f"UserKnownHostsFile={known_hosts}",
+        "-i",
+        str(key),
+    ]
+    return " ".join(shlex.quote(value) for value in arguments)
+
+
+def _trusted_git_environment(
+    staging: Path,
+    *,
+    git_ssh_command: str | None = None,
+) -> dict[str, str]:
+    environment = {
         "PATH": os.environ.get(
             "PATH",
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -86,6 +182,9 @@ def _trusted_git_environment(staging: Path) -> dict[str, str]:
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_TERMINAL_PROMPT": "0",
     }
+    if git_ssh_command:
+        environment["GIT_SSH_COMMAND"] = git_ssh_command
+    return environment
 
 
 def _git_command(
@@ -147,8 +246,9 @@ def _deployment_environment(
     target_sha: str,
     bundle_sha256: str,
     staged_paths: Mapping[str, Path],
+    git_ssh_command: str | None = None,
 ) -> dict[str, str]:
-    return {
+    environment = {
         "PATH": (
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         ),
@@ -171,6 +271,9 @@ def _deployment_environment(
         "DEPLOY_TARGET_SHA": target_sha,
         "DEPLOY_TOOL_BUNDLE_SHA256": bundle_sha256,
     }
+    if git_ssh_command:
+        environment["DEPLOY_GIT_SSH_COMMAND"] = git_ssh_command
+    return environment
 
 
 def bootstrap(
@@ -180,6 +283,8 @@ def bootstrap(
     branch: str,
     target_sha: str,
     expected_bundle_sha256: str,
+    ssh_key_path: str | Path | None = None,
+    ssh_known_hosts_path: str | Path | None = None,
     runner: Runner = subprocess.run,
 ) -> int:
     root = Path(os.path.abspath(os.fspath(app_dir)))
@@ -193,6 +298,18 @@ def bootstrap(
         raise RuntimeError("app_dir must be a real directory")
 
     trusted_remote = _validate_remote_url(remote_url)
+    remote_scheme = urlsplit(trusted_remote).scheme
+    if remote_scheme == "ssh":
+        git_ssh_command = _git_ssh_command(
+            ssh_key_path=ssh_key_path,
+            ssh_known_hosts_path=ssh_known_hosts_path,
+        )
+    else:
+        if ssh_key_path is not None or ssh_known_hosts_path is not None:
+            raise ValueError(
+                "SSH identity paths require an SSH remote"
+            )
+        git_ssh_command = None
     trusted_branch = str(branch or "").strip()
     trusted_target = str(target_sha or "").strip().lower()
     trusted_bundle = str(expected_bundle_sha256 or "").strip().lower()
@@ -215,7 +332,10 @@ def bootstrap(
     ) as temp_dir:
         staging = Path(temp_dir)
         git_dir = staging / "remote.git"
-        git_environment = _trusted_git_environment(staging)
+        git_environment = _trusted_git_environment(
+            staging,
+            git_ssh_command=git_ssh_command,
+        )
         runner(
             [
                 "git",
@@ -231,23 +351,31 @@ def bootstrap(
             env=git_environment,
         )
         remote_ref = f"refs/remotes/deploy/{trusted_branch}"
-        runner(
-            _git_command(
-                git_dir,
-                "fetch",
-                "--depth=1",
-                "--no-tags",
-                trusted_remote,
-                (
-                    f"+refs/heads/{trusted_branch}:"
-                    f"{remote_ref}"
-                ),
-            ),
-            cwd=staging,
-            check=True,
-            capture_output=True,
-            env=git_environment,
+        fetch_command = _git_command(
+            git_dir,
+            "fetch",
+            "--depth=1",
+            "--no-tags",
+            trusted_remote,
+            f"+refs/heads/{trusted_branch}:{remote_ref}",
         )
+        try:
+            runner(
+                fetch_command,
+                cwd=staging,
+                check=True,
+                capture_output=True,
+                env=git_environment,
+            )
+        except subprocess.CalledProcessError as error:
+            detail = error.stderr
+            if isinstance(detail, bytes):
+                detail = detail.decode("utf-8", errors="replace")
+            detail = str(detail or "").strip()[:500]
+            raise RuntimeError(
+                "remote fetch failed"
+                + (f": {detail}" if detail else "")
+            ) from error
         resolved = _command_stdout_ascii(
             runner(
                 _git_command(
@@ -308,6 +436,7 @@ def bootstrap(
                 target_sha=trusted_target,
                 bundle_sha256=trusted_bundle,
                 staged_paths=staged_paths,
+                git_ssh_command=git_ssh_command,
             ),
         )
         return int(result.returncode)
@@ -320,6 +449,8 @@ def main() -> int:
     parser.add_argument("--branch", required=True)
     parser.add_argument("--target-sha", required=True)
     parser.add_argument("--tool-bundle-sha256", required=True)
+    parser.add_argument("--ssh-key-path")
+    parser.add_argument("--ssh-known-hosts-path")
     args = parser.parse_args()
     return bootstrap(
         app_dir=args.app_dir,
@@ -327,6 +458,8 @@ def main() -> int:
         branch=args.branch,
         target_sha=args.target_sha,
         expected_bundle_sha256=args.tool_bundle_sha256,
+        ssh_key_path=args.ssh_key_path,
+        ssh_known_hosts_path=args.ssh_known_hosts_path,
     )
 
 

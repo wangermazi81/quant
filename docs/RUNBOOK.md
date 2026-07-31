@@ -47,10 +47,12 @@ chmod 640 .env
 chmod 0700 /root/jwalpha-bootstrap-<TARGET_SHA>.py
 /usr/bin/python3 -I /root/jwalpha-bootstrap-<TARGET_SHA>.py \
   --app-dir /opt/quant \
-  --remote-url https://gitee.com/wangermazi81/quant.git \
+  --remote-url ssh://git@gitee.com/wangermazi81/quant.git \
   --branch main \
   --target-sha <TARGET_SHA> \
-  --tool-bundle-sha256 <DEPLOY_TOOL_BUNDLE_SHA256>
+  --tool-bundle-sha256 <DEPLOY_TOOL_BUNDLE_SHA256> \
+  --ssh-key-path /root/.ssh/id_ed25519 \
+  --ssh-known-hosts-path /root/.ssh/known_hosts
 rm -f /root/jwalpha-bootstrap-<TARGET_SHA>.py
 ```
 

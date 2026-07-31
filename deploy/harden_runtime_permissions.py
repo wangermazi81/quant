@@ -300,17 +300,33 @@ def _git_config_payload(remote_url: str, branch: str) -> bytes:
     trusted_url = str(remote_url or "").strip()
     trusted_branch = str(branch or "").strip()
     parsed = urlsplit(trusted_url)
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("remote_url contains an invalid port") from error
+    valid_https = bool(
+        parsed.scheme == "https"
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+    )
+    valid_ssh = bool(
+        parsed.scheme == "ssh"
+        and parsed.hostname
+        and parsed.username == "git"
+        and parsed.password is None
+        and port in {None, 22}
+        and parsed.path not in {"", "/"}
+    )
     if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
+        not (valid_https or valid_ssh)
         or parsed.query
         or parsed.fragment
         or any(char in trusted_url for char in "\r\n\0")
     ):
         raise ValueError(
-            "remote_url must be an HTTPS URL without credentials"
+            "remote_url must be credential-free HTTPS or "
+            "ssh://git@host/path"
         )
     if (
         not _BRANCH_RE.fullmatch(trusted_branch)

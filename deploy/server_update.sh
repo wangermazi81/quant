@@ -16,6 +16,7 @@ DEPLOY_REMOTE_URL="${DEPLOY_REMOTE_URL:-}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-}"
 DEPLOY_TARGET_SHA="${DEPLOY_TARGET_SHA:-}"
 DEPLOY_TOOL_BUNDLE_SHA256="${DEPLOY_TOOL_BUNDLE_SHA256:-}"
+DEPLOY_GIT_SSH_COMMAND="${DEPLOY_GIT_SSH_COMMAND:-}"
 DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-/run/lock/jwalpha-deploy.lock}"
 DEPLOY_COMPLETED=0
 CODE_UPDATED=0
@@ -44,13 +45,21 @@ RUN_USER=$(systemctl show "$SERVICE" -p User --value 2>/dev/null)
 RUN_USER="${RUN_USER:-root}"
 
 trusted_git() {
+    local -a trusted_environment=(
+        "HOME=/root"
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        "GIT_CONFIG_NOSYSTEM=1"
+        "GIT_CONFIG_SYSTEM=/dev/null"
+        "GIT_CONFIG_GLOBAL=/dev/null"
+        "GIT_TERMINAL_PROMPT=0"
+    )
+    if [ -n "$DEPLOY_GIT_SSH_COMMAND" ]; then
+        trusted_environment+=(
+            "GIT_SSH_COMMAND=$DEPLOY_GIT_SSH_COMMAND"
+        )
+    fi
     env -i \
-        HOME="/root" \
-        PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-        GIT_CONFIG_NOSYSTEM="1" \
-        GIT_CONFIG_SYSTEM="/dev/null" \
-        GIT_CONFIG_GLOBAL="/dev/null" \
-        GIT_TERMINAL_PROMPT="0" \
+        "${trusted_environment[@]}" \
         git \
         -c core.hooksPath=/dev/null \
         -c credential.helper= \
@@ -379,7 +388,8 @@ if [ "${SCHEDULER_MIGRATION_BOOTSTRAPPED:-}" != "1" ]; then
     echo "ERROR: deployment must run through deploy/bootstrap_server_update.py."
     exit 1
 fi
-if [[ "$DEPLOY_REMOTE_URL" != https://* ]] \
+if [[ "$DEPLOY_REMOTE_URL" != https://* \
+        && "$DEPLOY_REMOTE_URL" != ssh://git@* ]] \
     || [ -z "$DEPLOY_BRANCH" ] \
     || ! [[ "$DEPLOY_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] \
     || [[ "$DEPLOY_BRANCH" == *".."* ]] \
