@@ -66,7 +66,7 @@ def test_fit_selects_predictive_directions_and_excludes_constant_factor():
     assert model["coefficients"]["ret_5"] > 0.0
     assert model["coefficients"]["volatility_10"] < 0.0
     assert np.isclose(sum(abs(value) for value in model["normalized_weights"].values()), 1.0)
-    assert model["model_version"] == "relay_factor_mining_v3_nested_ridge"
+    assert model["model_version"] == "relay_factor_mining_v4_fixed_ridge"
     assert model["ridge_alpha"] == 5.0
 
 
@@ -92,6 +92,23 @@ def test_fit_keeps_amount_factor_when_real_coverage_meets_quality_gate():
 
     assert "amount_ratio_20" in model["training_ic"]
     assert model["amount_data_coverage"] == 0.98
+
+
+def test_fit_ignores_proxy_amount_values_row_by_row():
+    frame = _predictive_frame(dates=10)
+    frame["amount_ratio_20"] = frame["ret_5"]
+    frame["amount_data_real"] = True
+    frame.loc[frame.index[0], "amount_data_real"] = False
+    frame.loc[frame.index[0], "amount_ratio_20"] = 1_000_000.0
+    expected = frame.copy()
+    expected.loc[expected.index[0], "amount_ratio_20"] = np.nan
+
+    actual_model = fit_factor_model(frame, max_factors=10)
+    expected_model = fit_factor_model(expected, max_factors=10)
+
+    assert actual_model["training_ic"] == expected_model["training_ic"]
+    assert actual_model["selected_factors"] == expected_model["selected_factors"]
+    assert actual_model["coefficients"] == pytest.approx(expected_model["coefficients"])
 
 
 def test_fit_does_not_select_two_perfectly_correlated_factors():
@@ -122,21 +139,29 @@ def test_ridge_coefficients_do_not_change_when_training_rows_are_duplicated():
     assert duplicated["coefficients"] == pytest.approx(baseline["coefficients"])
 
 
-def test_validation_selects_a_preregistered_model_and_records_diagnostics():
+def test_validation_reports_fixed_preregistered_model_diagnostics():
     fit_frame = _predictive_frame(dates=10)
     validation_frame = _predictive_frame(dates=4)
 
     selection = model_module.select_factor_model(fit_frame, validation_frame)
 
-    assert selection["selection_source"] == "chronological_validation"
+    assert selection["selection_source"] == "fixed_preregistered_parameters"
     assert selection["validation_accepted"] is True
     assert selection["validation_rejection_reason"] is None
-    assert selection["selected_parameters"] in model_module.MODEL_CANDIDATES
+    assert selection["selected_parameters"] == {
+        "max_factors": 6,
+        "ridge_alpha": 5.0,
+    }
+    assert selection["model_spec_protocol_version"] == (
+        "relay_fixed_ridge_preregistered_v3"
+    )
+    assert selection["model_spec_calibrated_through"] == "2026-07-30"
+    assert selection["validation_stable"] is True
     assert selection["validation_diagnostics"]["rank_ic"] > 0.0
-    assert len(selection["candidates"]) == len(model_module.MODEL_CANDIDATES)
+    assert len(selection["candidates"]) == 1
 
 
-def test_validation_rejects_model_when_out_of_sample_rank_ic_is_negative():
+def test_negative_validation_rejects_fixed_model_without_reselecting_it():
     fit_frame = _predictive_frame(dates=10)
     validation_frame = _predictive_frame(dates=4)
     validation_frame["model_target_pct"] *= -1.0
@@ -144,7 +169,15 @@ def test_validation_rejects_model_when_out_of_sample_rank_ic_is_negative():
     selection = model_module.select_factor_model(fit_frame, validation_frame)
 
     assert selection["validation_accepted"] is False
-    assert selection["validation_rejection_reason"] == "validation_rank_ic_below_minimum"
+    assert selection["validation_rejection_reason"] == (
+        "validation_rank_ic_below_minimum"
+    )
+    assert selection["validation_stable"] is False
+    assert selection["validation_stability_reason"] == "validation_rank_ic_below_minimum"
+    assert selection["selected_parameters"] == {
+        "max_factors": 6,
+        "ridge_alpha": 5.0,
+    }
     assert selection["validation_diagnostics"]["rank_ic"] < 0.0
 
 
@@ -171,6 +204,75 @@ def test_frozen_model_scores_are_finite_aligned_and_ignore_held_out_labels():
     assert np.isfinite(first_scores.to_numpy()).all()
     pdt.assert_series_equal(first_scores, second_scores)
     assert first_bytes == second_bytes
+
+
+def test_strict_frozen_scoring_rejects_incomplete_model_instead_of_fallback():
+    frame = pd.DataFrame(
+        {
+            "trade_date": ["2026-08-03", "2026-08-03"],
+            "relay_score": [99.0, 1.0],
+            "ret_5": [0.9, 0.1],
+        }
+    )
+    incomplete = {
+        "fallback": False,
+        "selected_factors": ["ret_5"],
+        "coefficients": {"ret_5": 1.0},
+        "feature_means": {},
+        "feature_scales": {"ret_5": 0.25},
+    }
+
+    with pytest.raises(ValueError, match="frozen factor model"):
+        score_factor_model(frame, incomplete, strict=True)
+
+
+def test_strict_frozen_scoring_rejects_missing_feature_instead_of_fallback():
+    frame = pd.DataFrame(
+        {
+            "trade_date": ["2026-08-03", "2026-08-03"],
+            "relay_score": [99.0, 1.0],
+        }
+    )
+    frozen = {
+        "fallback": False,
+        "selected_factors": ["ret_5"],
+        "coefficients": {"ret_5": 1.0},
+        "feature_means": {"ret_5": 0.5},
+        "feature_scales": {"ret_5": 0.25},
+    }
+
+    with pytest.raises(ValueError, match="missing frozen factor columns"):
+        score_factor_model(frame, frozen, strict=True)
+
+
+def test_factor_model_digest_is_order_stable_and_coefficient_sensitive():
+    frozen = {
+        "model_version": model_module.MODEL_VERSION,
+        "fallback": False,
+        "selected_factors": ["ret_5"],
+        "coefficients": {"ret_5": 1.0},
+        "feature_means": {"ret_5": 0.5},
+        "feature_scales": {"ret_5": 0.25},
+    }
+    reordered = {
+        "feature_scales": {"ret_5": 0.25},
+        "coefficients": {"ret_5": 1.0},
+        "selected_factors": ["ret_5"],
+        "fallback": False,
+        "model_version": model_module.MODEL_VERSION,
+        "feature_means": {"ret_5": 0.5},
+    }
+    changed = {
+        **frozen,
+        "coefficients": {"ret_5": -1.0},
+    }
+
+    assert model_module.factor_model_digest(
+        frozen
+    ) == model_module.factor_model_digest(reordered)
+    assert model_module.factor_model_digest(
+        frozen
+    ) != model_module.factor_model_digest(changed)
 
 
 def test_factor_diagnostics_reports_daily_rank_ic_and_five_return_groups():

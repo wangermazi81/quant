@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 # 项目根 = ths_auto_trader/
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _DATA_DIR = _ROOT / "data" / "daily"
+_SECURITY_MASTER_PATH = _ROOT / "data" / "security_master.csv"
 _OUT_BASE = _ROOT / "logs" / "factor_scores"
 
 # 默认评估前瞻期（天）
@@ -65,6 +66,184 @@ _TH_DEAD_IR  = 0.1
 
 
 # ============================== 数据加载 ==============================
+
+def _security_code(value: Any) -> str:
+    digits = str(value or "").strip().upper().split(".", 1)[0]
+    return digits if len(digits) == 6 and digits.isdigit() else ""
+
+
+def _load_security_master(path: Path = _SECURITY_MASTER_PATH) -> pd.DataFrame:
+    if not path.is_file():
+        return pd.DataFrame()
+    try:
+        master = pd.read_csv(path, dtype={"code": "string", "ts_code": "string"})
+    except Exception:
+        return pd.DataFrame()
+    code_source = master.get("code", master.get("ts_code"))
+    if code_source is None:
+        return pd.DataFrame()
+    out = master.copy()
+    out["code"] = code_source.map(_security_code)
+    out = out[out["code"].str.len().eq(6)].drop_duplicates("code", keep="last")
+    for column in ("list_date", "delist_date"):
+        if column not in out.columns:
+            out[column] = None
+        out[column] = pd.to_datetime(
+            out[column].astype("string").str.replace(r"\.0$", "", regex=True),
+            format="%Y%m%d",
+            errors="coerce",
+        )
+    return out.set_index("code", drop=False)
+
+
+def _security_master_lifecycle_trusted(
+    master: pd.DataFrame,
+    minimum_snapshot_date: pd.Timestamp | None = None,
+) -> bool:
+    required = {
+        "list_status",
+        "lifecycle_snapshot_complete",
+        "lifecycle_source",
+        "universe_scope",
+        "snapshot_at",
+        "security_master_pagination_complete",
+        "security_master_page_requests",
+        "security_master_row_count",
+        "security_master_snapshot_complete",
+        "security_master_snapshot_trade_date",
+    }
+    if master.empty or not required.issubset(master.columns):
+        return False
+    def trusted_marker(value: Any) -> bool:
+        return str(value).strip().lower() in {"1", "true", "yes"}
+
+    complete = master["lifecycle_snapshot_complete"].map(
+        trusted_marker
+    )
+    pagination_complete = master[
+        "security_master_pagination_complete"
+    ].map(trusted_marker)
+    snapshot_complete = master[
+        "security_master_snapshot_complete"
+    ].map(trusted_marker)
+    if not (
+        bool(complete.all())
+        and bool(pagination_complete.all())
+        and bool(snapshot_complete.all())
+    ):
+        return False
+    page_requests = pd.to_numeric(
+        master["security_master_page_requests"],
+        errors="coerce",
+    )
+    row_counts = pd.to_numeric(
+        master["security_master_row_count"],
+        errors="coerce",
+    )
+    if (
+        page_requests.isna().any()
+        or page_requests.le(0).any()
+        or row_counts.isna().any()
+        or row_counts.nunique() != 1
+        or int(row_counts.iloc[0]) != len(master)
+    ):
+        return False
+    snapshot_trade_dates = pd.to_datetime(
+        master["security_master_snapshot_trade_date"]
+        .astype("string")
+        .str.replace(r"\.0$", "", regex=True),
+        format="%Y%m%d",
+        errors="coerce",
+    )
+    if snapshot_trade_dates.isna().any():
+        return False
+    if (
+        minimum_snapshot_date is not None
+        and snapshot_trade_dates.min().normalize()
+        < pd.Timestamp(minimum_snapshot_date).normalize()
+    ):
+        return False
+    statuses = master["list_status"].astype("string").str.upper()
+    if not {"L", "D"}.issubset(set(statuses.dropna())):
+        return False
+    delisted = master.loc[statuses.eq("D")]
+    if delisted.empty or delisted["delist_date"].isna().any():
+        return False
+    if not (
+        master["lifecycle_source"]
+        .astype("string")
+        .str.strip()
+        .eq("baostock_stock_basic")
+        .all()
+    ):
+        return False
+    scopes = set(
+        master["universe_scope"].astype("string").str.strip().dropna()
+    )
+    if scopes != {"sh_sz_a_share"}:
+        return False
+    snapshots = pd.to_datetime(master["snapshot_at"], errors="coerce")
+    return bool(snapshots.notna().all())
+
+
+def _point_in_time_pool_size(n_stocks: int | None) -> int | None:
+    if n_stocks is None:
+        return None
+    sample_size = max(0, int(n_stocks))
+    if sample_size == 0:
+        return 0
+    reserve = max(1, (sample_size + 19) // 20)
+    return sample_size + reserve
+
+
+def _master_sample_mask(
+    master: pd.DataFrame,
+    dates: pd.DatetimeIndex,
+    n_stocks: int | None,
+    *,
+    minimum_history: int = 0,
+) -> pd.DataFrame:
+    if master.empty or dates.empty:
+        return pd.DataFrame(False, index=dates, columns=master.index)
+    unique_master = master.loc[~master.index.duplicated(keep="last")]
+    stable_order = sorted(
+        unique_master.index.astype(str).tolist(),
+        key=lambda code: hashlib.sha256(code.encode("ascii", errors="ignore")).hexdigest(),
+    )
+    lifecycle = [
+        (
+            unique_master.at[code, "list_date"]
+            if "list_date" in unique_master.columns
+            else pd.NaT,
+            unique_master.at[code, "delist_date"]
+            if "delist_date" in unique_master.columns
+            else pd.NaT,
+        )
+        for code in stable_order
+    ]
+    selected = np.zeros((len(dates), len(stable_order)), dtype=bool)
+    sample_size = None if n_stocks is None else max(0, int(n_stocks))
+    warmup_sessions = max(0, int(minimum_history))
+    for row_index, trade_date in enumerate(dates):
+        chosen = 0
+        for column_index, (list_date, delist_date) in enumerate(lifecycle):
+            if pd.isna(list_date) or pd.Timestamp(list_date) > trade_date:
+                continue
+            if (
+                warmup_sessions > 1
+                and pd.Timestamp(list_date)
+                + pd.offsets.BDay(warmup_sessions - 1)
+                > trade_date
+            ):
+                continue
+            if pd.notna(delist_date) and trade_date > pd.Timestamp(delist_date):
+                continue
+            if sample_size is not None and chosen >= sample_size:
+                break
+            selected[row_index, column_index] = True
+            chosen += 1
+    return pd.DataFrame(selected, index=dates, columns=stable_order)
+
 
 def _has_discontinuous_price_history(frame: pd.DataFrame) -> bool:
     """Reject cache slices that cannot represent a continuous tradable price series."""
@@ -154,6 +333,7 @@ def build_panel_from_cache(
     min_history: Optional[int] = None,
     require_latest: bool = False,
     point_in_time: bool = False,
+    require_security_master: bool = False,
 ) -> tuple[dict[str, pd.DataFrame], list[str]]:
     """从 data/daily/*.csv 拼一个 wide OHLCV panel。
 
@@ -184,6 +364,62 @@ def build_panel_from_cache(
             continue
         ranked_csvs.append((parsed.max().normalize(), len(dates), csv.stem, csv))
 
+    security_master = (
+        _load_security_master(_SECURITY_MASTER_PATH)
+        if point_in_time
+        else pd.DataFrame()
+    )
+    if require_security_master and security_master.empty:
+        raise ValueError("point-in-time security master unavailable")
+    newest_cache_date = (
+        max(item[0] for item in ranked_csvs)
+        if ranked_csvs
+        else None
+    )
+    if (
+        require_security_master
+        and not _security_master_lifecycle_trusted(
+            security_master,
+            minimum_snapshot_date=newest_cache_date,
+        )
+    ):
+        raise ValueError("point-in-time security master lifecycle snapshot is untrusted")
+    if not security_master.empty and ranked_csvs:
+        newest_master_date = max(item[0] for item in ranked_csvs)
+        sample_start = newest_master_date - pd.offsets.BDay(
+            max(int(days), int(min_history)) + 5
+        )
+        sample_dates = pd.bdate_range(sample_start, newest_master_date)
+        master_sample = _master_sample_mask(
+            security_master,
+            sample_dates,
+            _point_in_time_pool_size(n_stocks),
+            minimum_history=int(min_history),
+        )
+        required_codes = {
+            str(code)
+            for code in master_sample.columns
+            if bool(master_sample[code].any())
+        }
+        cached_codes = {item[2] for item in ranked_csvs}
+        missing_histories = sorted(required_codes - cached_codes)
+        usable_history_count = len(required_codes & cached_codes)
+        missing_blocks_target = (
+            n_stocks is None
+            or usable_history_count < max(0, int(n_stocks))
+        )
+        if (
+            require_security_master
+            and missing_histories
+            and missing_blocks_target
+        ):
+            preview = ",".join(missing_histories[:10])
+            raise ValueError(
+                "point-in-time security master histories missing: "
+                f"{len(missing_histories)} codes ({preview})"
+            )
+        ranked_csvs = [item for item in ranked_csvs if item[2] in required_codes]
+
     if n_stocks is not None and ranked_csvs:
         latest_counts: dict[pd.Timestamp, int] = {}
         for latest, _rows, _code, _csv in ranked_csvs:
@@ -202,7 +438,7 @@ def build_panel_from_cache(
                 ranked_csvs = [item for item in ranked_csvs if item[0] == target_latest]
                 logger.info(f"[scorer] 选用覆盖率满足 {n_stocks} 只的最新截面: {target_latest.date()}")
 
-    if n_stocks is not None:
+    if n_stocks is not None and security_master.empty:
         ranked_csvs.sort(key=lambda item: hashlib.sha256(item[2].encode("ascii", errors="ignore")).hexdigest())
     else:
         ranked_csvs.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
@@ -300,6 +536,15 @@ def build_panel_from_cache(
     history_ready = panel["close"].notna().cumsum() >= int(min_history)
     eligible = continuity & required_valid & history_ready
 
+    security_master_eligible = pd.DataFrame(True, index=index, columns=columns)
+    if not security_master.empty:
+        security_master_eligible = _master_sample_mask(
+            security_master,
+            pd.DatetimeIndex(index),
+            _point_in_time_pool_size(n_stocks),
+            minimum_history=int(min_history),
+        ).reindex(index=index, columns=columns, fill_value=False)
+        eligible &= security_master_eligible
     if n_stocks is not None:
         stable_order = sorted(
             columns,
@@ -326,6 +571,7 @@ def build_panel_from_cache(
         if field in {"open", "high", "low", "close", "volume", "amount"}:
             panel[field] = panel[field].where(continuity.loc[:, used_codes])
     panel["universe_eligible"] = eligible.loc[:, used_codes]
+    panel["security_master_eligible"] = security_master_eligible.loc[:, used_codes]
     return panel, sorted(used_codes)
 
 

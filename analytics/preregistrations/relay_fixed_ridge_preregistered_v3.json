@@ -1,0 +1,151 @@
+{
+  "schema_version": 2,
+  "strategy_key": "relay_factor_mining_v2",
+  "protocol_version": "relay_fixed_ridge_preregistered_v3",
+  "registered_at": "2026-07-31T03:30:00+08:00",
+  "calibrated_through": "2026-07-30",
+  "oos_not_before": "2026-07-31",
+  "parameters": {
+    "max_factors": 6,
+    "ridge_alpha": 5.0
+  },
+  "candidate_factors": [
+    "ret_3",
+    "ret_5",
+    "ret_10",
+    "ret_20",
+    "volume_ratio_20",
+    "amount_ratio_20",
+    "near_high_20",
+    "drawdown_20",
+    "volatility_10",
+    "limit_count_20"
+  ],
+  "executable_model_sha256": "10577621fb63d6db37e3b4274a72ee5e4af17a33e78ff18a99f8e7c83e285730",
+  "executable_model": {
+    "selected_factors": [
+      "volatility_10",
+      "volume_ratio_20",
+      "ret_10",
+      "ret_20",
+      "ret_5",
+      "limit_count_20"
+    ],
+    "coefficients": {
+      "volatility_10": -0.005540784578485183,
+      "volume_ratio_20": -0.006344744058917713,
+      "ret_10": 0.007672815592292694,
+      "ret_20": 0.007596631739067345,
+      "ret_5": 0.0045857065688300735,
+      "limit_count_20": -0.00486758899245507
+    },
+    "normalized_weights": {
+      "volatility_10": -0.1513533512211115,
+      "volume_ratio_20": -0.17331449406754823,
+      "ret_10": 0.2095924027987731,
+      "ret_20": 0.20751134706898214,
+      "ret_5": 0.1252642197287606,
+      "limit_count_20": -0.13296418511482444
+    },
+    "feature_means": {
+      "volatility_10": 0.500625,
+      "volume_ratio_20": 0.500625,
+      "ret_10": 0.500625,
+      "ret_20": 0.500625,
+      "ret_5": 0.500625,
+      "limit_count_20": 0.5006267612476921
+    },
+    "feature_scales": {
+      "volatility_10": 0.2886749084903447,
+      "volume_ratio_20": 0.28867490687756,
+      "ret_10": 0.2886748247041973,
+      "ret_20": 0.2886748784768121,
+      "ret_5": 0.28867468935477075,
+      "limit_count_20": 0.19060631973038256
+    },
+    "training_ic": {
+      "ret_3": -0.018605213302108257,
+      "ret_5": -0.03377076451030275,
+      "ret_10": -0.04074206626241162,
+      "ret_20": -0.04063814312697349,
+      "volume_ratio_20": -0.06760692534863479,
+      "amount_ratio_20": -0.06599334905066989,
+      "near_high_20": 0.0041227857894943305,
+      "drawdown_20": 0.00412199065647542,
+      "volatility_10": -0.07573007807867001,
+      "limit_count_20": -0.02464695042109162
+    },
+    "dropped_correlated_factors": {
+      "amount_ratio_20": "volume_ratio_20"
+    },
+    "target_col": "model_target_pct",
+    "ridge_alpha": 5.0,
+    "model_version": "relay_factor_mining_v4_fixed_ridge",
+    "amount_data_coverage": 0.9987,
+    "fallback": false,
+    "fallback_reason": null,
+    "strategy_key": "relay_factor_mining_v2",
+    "training_scope": "preregistered_calibration_only",
+    "selection_source": "repository_preregistered_executable_model",
+    "selected_parameters": {
+      "max_factors": 6,
+      "ridge_alpha": 5.0
+    },
+    "model_spec_protocol_version": "relay_fixed_ridge_preregistered_v3",
+    "model_spec_calibrated_through": "2026-07-30",
+    "validation_accepted": false,
+    "validation_rejection_reason": "validation_top_quantile_non_positive",
+    "validation_stable": false,
+    "validation_stability_reason": "validation_top_quantile_non_positive",
+    "selected_market_gate": {
+      "enabled": true,
+      "emo_min": 20.0,
+      "emo_max": 70.0,
+      "require_cooling": true,
+      "calibrated_through": "2026-07-24",
+      "protocol_version": "market_emotion_gate_v1",
+      "calibration_source": "auto-20260724_90_session_research"
+    },
+    "fit_start": "2025-07-04",
+    "fit_end": "2026-05-11",
+    "fit_sample_count": 162710,
+    "fit_label_max_exit": "2026-05-13",
+    "validation_start": "2026-05-14",
+    "validation_end": "2026-07-27",
+    "validation_sample_count": 41600,
+    "refit_start": "2025-07-04",
+    "refit_end": "2026-07-27",
+    "refit_sample_count": 206400,
+    "refit_label_max_exit": "2026-07-30",
+    "refit_policy": "fixed_registered_parameters_on_calibration_rows_only",
+    "frozen_model_candidate_eligible": false,
+    "frozen_model_candidate_reason": "validation_top_quantile_non_positive"
+  },
+  "calibration_evidence": {
+    "algorithm": "canonical_csv_sha256_v1",
+    "columns": [
+      "trade_date",
+      "ts_code",
+      "exit_date",
+      "model_target_pct",
+      "amount_data_real",
+      "market_data_trusted",
+      "research_evaluable",
+      "ret_3",
+      "ret_5",
+      "ret_10",
+      "ret_20",
+      "volume_ratio_20",
+      "amount_ratio_20",
+      "near_high_20",
+      "drawdown_20",
+      "volatility_10",
+      "limit_count_20"
+    ],
+    "row_count": 206400,
+    "trade_date_start": "2025-07-04",
+    "trade_date_end": "2026-07-27",
+    "label_max_exit": "2026-07-30",
+    "sha256": "f2709fb43fe9f67e5c091107a6632873db6990f2b9498d4c5cbd11828cea8f9b"
+  }
+}

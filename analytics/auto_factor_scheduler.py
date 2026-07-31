@@ -7,11 +7,14 @@ for model calls.
 """
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
+import sys
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -28,6 +31,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 ROOT = BASE_DIR / "data" / "research" / "relay_factor"
 STATUS_PATH = ROOT / "auto_scheduler_status.json"
 LOCK_PATH = ROOT / "auto_scheduler.lock"
+SCHEDULER_GUARD_PROTOCOL_VERSION = "scheduler_kernel_guard_v1"
 
 DEFAULT_CONFIG = {
     "enabled": True,
@@ -53,6 +57,86 @@ DEFAULT_CONFIG = {
 
 _thread_lock = threading.Lock()
 _started = False
+
+
+def _scheduler_guard_path() -> Path:
+    return LOCK_PATH.with_name(f"{LOCK_PATH.name}.guard")
+
+
+def _try_acquire_kernel_guard(handle) -> str | None:
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+            os.fsync(handle.fileno())
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            if exc.errno in {
+                errno.EACCES,
+                errno.EAGAIN,
+                errno.EDEADLK,
+            } or getattr(exc, "winerror", None) in {33, 36}:
+                return None
+            raise
+        return "windows"
+
+    if sys.platform.startswith("linux"):
+        import fcntl
+
+        try:
+            fcntl.flock(
+                handle.fileno(),
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
+            )
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                return None
+            raise
+        return "linux"
+
+    raise RuntimeError(
+        f"unsupported scheduler lock platform: {sys.platform}"
+    )
+
+
+def _release_kernel_guard(handle, lock_kind: str) -> None:
+    if lock_kind == "windows":
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+
+    if lock_kind != "linux":
+        raise RuntimeError(
+            f"unsupported scheduler lock kind: {lock_kind}"
+        )
+
+    import fcntl
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _scheduler_guard():
+    ROOT.mkdir(parents=True, exist_ok=True)
+    handle = _scheduler_guard_path().open("a+b")
+    lock_kind = _try_acquire_kernel_guard(handle)
+    if lock_kind is None:
+        handle.close()
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        try:
+            _release_kernel_guard(handle, lock_kind)
+        finally:
+            handle.close()
 
 
 def _now_text() -> str:
@@ -124,43 +208,428 @@ def _append_history(status: dict, event: dict) -> None:
     del history[50:]
 
 
-def _lock_pid() -> int | None:
+def _read_linux_process_stat(
+    pid: int,
+) -> tuple[str, str] | None:
     try:
-        text = LOCK_PATH.read_text(encoding="utf-8").strip()
-        first = text.split()[0] if text else ""
-        return int(first)
+        text = Path(f"/proc/{int(pid)}/stat").read_text(
+            encoding="utf-8"
+        )
+        closing_paren = text.rfind(")")
+        if closing_paren < 0:
+            return None
+        fields_3_onward = text[closing_paren + 1 :].split()
+        if len(fields_3_onward) < 20:
+            return None
+        return fields_3_onward[0], fields_3_onward[19]
     except Exception:
         return None
 
 
-def _pid_exists(pid: int | None) -> bool:
+def _linux_process_start_token(pid: int) -> str | None:
+    process_stat = _read_linux_process_stat(pid)
+    if process_stat is None:
+        return None
+    start_ticks = process_stat[1]
+    try:
+        boot_id = Path(
+            "/proc/sys/kernel/random/boot_id"
+        ).read_text(encoding="utf-8").strip()
+    except Exception:
+        boot_id = ""
+    return (
+        f"{boot_id}:{start_ticks}"
+        if boot_id
+        else start_ticks
+    )
+
+
+def _windows_process_start_token(
+    pid: int,
+    kernel32=None,
+) -> str | None:
+    if not isinstance(pid, int) or isinstance(pid, bool) or not 0 < pid <= 0xFFFFFFFF:
+        return None
+    try:
+        import ctypes
+
+        class FileTime(ctypes.Structure):
+            _fields_ = [
+                ("dwLowDateTime", ctypes.c_uint32),
+                ("dwHighDateTime", ctypes.c_uint32),
+            ]
+
+        if kernel32 is None:
+            kernel32 = ctypes.WinDLL(
+                "kernel32",
+                use_last_error=True,
+            )
+            kernel32.OpenProcess.argtypes = [
+                ctypes.c_uint32,
+                ctypes.c_int,
+                ctypes.c_uint32,
+            ]
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            file_time_pointer = ctypes.POINTER(FileTime)
+            kernel32.GetProcessTimes.argtypes = [
+                ctypes.c_void_p,
+                file_time_pointer,
+                file_time_pointer,
+                file_time_pointer,
+                file_time_pointer,
+            ]
+            kernel32.GetProcessTimes.restype = ctypes.c_int
+            kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            kernel32.CloseHandle.restype = ctypes.c_int
+
+        handle = kernel32.OpenProcess(
+            0x1000,
+            False,
+            int(pid),
+        )
+        if not handle:
+            return None
+        try:
+            creation = FileTime()
+            exit_time = FileTime()
+            kernel = FileTime()
+            user = FileTime()
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(creation),
+                ctypes.byref(exit_time),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ):
+                return None
+            return str(
+                (int(creation.dwHighDateTime) << 32)
+                | int(creation.dwLowDateTime)
+            )
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def _process_start_token(pid: int | None) -> str | None:
     if not pid or pid <= 0:
+        return None
+    if sys.platform.startswith("linux"):
+        return _linux_process_start_token(pid)
+    if os.name == "nt":
+        return _windows_process_start_token(pid)
+    return None
+
+
+def _process_start_epoch(pid: int | None) -> float | None:
+    if not pid or pid <= 0:
+        return None
+    token = _process_start_token(pid)
+    try:
+        raw_value = int(str(token).rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        return None
+
+    if sys.platform.startswith("linux"):
+        try:
+            clock_ticks = float(os.sysconf("SC_CLK_TCK"))
+            if clock_ticks <= 0:
+                return None
+            boot_time = None
+            for line in Path("/proc/stat").read_text(
+                encoding="utf-8"
+            ).splitlines():
+                key, _, value = line.partition(" ")
+                if key == "btime":
+                    boot_time = float(value.strip())
+                    break
+            if boot_time is None:
+                return None
+            return boot_time + raw_value / clock_ticks
+        except Exception:
+            return None
+
+    if sys.platform.startswith("win"):
+        return raw_value / 10_000_000 - 11_644_473_600
+    return None
+
+
+def _normalize_process_start_token(value: Any) -> str | None:
+    if value is None:
+        return None
+    token = str(value).strip()
+    return token or None
+
+
+def _process_tokens_match(
+    expected: str | None,
+    current: str | None,
+) -> bool:
+    if expected is None or current is None:
         return False
+    if expected == current:
+        return True
+    return (
+        ":" not in expected
+        and current.rsplit(":", 1)[-1] == expected
+    )
+
+
+def _structured_lock_identity(
+    lock: dict[str, Any] | None,
+) -> tuple[int, str | None, str] | None:
+    if not isinstance(lock, dict):
+        return None
+    if "process_start_token" not in lock:
+        return None
+    try:
+        pid = int(lock.get("pid"))
+    except (TypeError, ValueError):
+        return None
+    nonce = lock.get("nonce")
+    if pid <= 0 or not isinstance(nonce, str) or not nonce:
+        return None
+    return (
+        pid,
+        _normalize_process_start_token(
+            lock.get("process_start_token")
+        ),
+        nonce,
+    )
+
+
+def _read_lock_record() -> dict[str, Any] | None:
+    try:
+        text = LOCK_PATH.read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+
+    try:
+        payload = json.loads(text)
+    except Exception:
+        payload = None
+    if (
+        isinstance(payload, dict)
+        and _structured_lock_identity(payload) is not None
+    ):
+        return {
+            **payload,
+            "_format": "json",
+            "_raw": text,
+        }
+
+    try:
+        first = text.split()[0] if text else ""
+        pid = int(first)
+    except (TypeError, ValueError, IndexError):
+        pid = None
+    if pid and pid > 0:
+        record = {
+            "pid": pid,
+            "_format": "legacy",
+            "_raw": text,
+        }
+        created_at = text[len(first) :].strip()
+        if created_at:
+            record["created_at"] = created_at
+        return record
+    return {
+        "_format": "unknown",
+        "_raw": text,
+    }
+
+
+def _same_lock(
+    left: dict[str, Any] | None,
+    right: dict[str, Any] | None,
+) -> bool:
+    left_identity = _structured_lock_identity(left)
+    right_identity = _structured_lock_identity(right)
+    if left_identity is not None or right_identity is not None:
+        return (
+            left_identity is not None
+            and left_identity == right_identity
+        )
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    return bool(
+        left.get("_format") == right.get("_format")
+        and left.get("_raw") == right.get("_raw")
+    )
+
+
+def _lock_pid() -> int | None:
+    record = _read_lock_record()
+    try:
+        return int(record["pid"]) if record else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _windows_pid_exists(
+    pid: int,
+    *,
+    kernel32=None,
+) -> bool | None:
+    if not isinstance(pid, int) or isinstance(pid, bool) or not 0 < pid <= 0xFFFFFFFF:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        if kernel32 is None:
+            kernel32 = ctypes.WinDLL(
+                "kernel32",
+                use_last_error=True,
+            )
+            kernel32.OpenProcess.argtypes = [
+                wintypes.DWORD,
+                wintypes.BOOL,
+                wintypes.DWORD,
+            ]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.WaitForSingleObject.argtypes = [
+                wintypes.HANDLE,
+                wintypes.DWORD,
+            ]
+            kernel32.WaitForSingleObject.restype = wintypes.DWORD
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.OpenProcess(0x00100000, False, int(pid))
+        if not handle:
+            error_code = ctypes.get_last_error()
+            if error_code == 87:
+                return False
+            if error_code == 5:
+                return True
+            return None
+        try:
+            wait_result = int(
+                kernel32.WaitForSingleObject(handle, 0)
+            )
+            if wait_result == 0:
+                return False
+            if wait_result == 258:
+                return True
+            return None
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def _linux_pid_exists(pid: int) -> bool | None:
+    process_stat = _read_linux_process_stat(pid)
+    if process_stat is not None:
+        if process_stat[0].upper() in {"Z", "X"}:
+            return False
+        return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    except OSError:
+    except (OverflowError, ValueError):
         return False
+    except OSError:
+        return None
     return True
 
 
-def _lock_is_stale(max_age_seconds: int = 7200) -> bool:
-    if not LOCK_PATH.exists():
+def _pid_exists(pid: int | None) -> bool | None:
+    if not pid or pid <= 0:
         return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        return _windows_pid_exists(pid)
+    if sys.platform.startswith("linux"):
+        return _linux_pid_exists(pid)
+    return None
+
+
+def _lock_created_epoch(record: dict[str, Any]) -> float | None:
+    created_at = record.get("created_at")
+    if isinstance(created_at, str) and created_at.strip():
+        try:
+            return datetime.fromisoformat(created_at.strip()).timestamp()
+        except ValueError:
+            pass
     try:
-        if time.time() - LOCK_PATH.stat().st_mtime > max_age_seconds:
-            return True
+        return LOCK_PATH.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _process_started_after_lock(
+    pid: int | None,
+    record: dict[str, Any],
+) -> bool:
+    process_started_at = _process_start_epoch(pid)
+    lock_created_at = _lock_created_epoch(record)
+    if process_started_at is None or lock_created_at is None:
+        return False
+    return process_started_at > lock_created_at + 1.0
+
+
+def _lock_is_stale(
+    max_age_seconds: int = 7200,
+    record: dict[str, Any] | None = None,
+) -> bool:
+    if record is None:
+        record = _read_lock_record()
+    if record is None:
+        return False
+
+    pid = record.get("pid")
+    pid_exists = _pid_exists(pid)
+    if pid_exists is False:
+        return True
+    if pid_exists is not True:
+        return False
+
+    if record.get("_format") == "legacy":
+        return _process_started_after_lock(pid, record)
+    if _structured_lock_identity(record) is not None:
+        expected_token = _normalize_process_start_token(
+            record.get("process_start_token")
+        )
+        current_token = _process_start_token(pid)
+        normalized_current = _normalize_process_start_token(current_token)
+        if expected_token is not None and normalized_current is not None:
+            tokens_match = _process_tokens_match(
+                expected_token,
+                normalized_current,
+            )
+            if not tokens_match:
+                return True
+            if ":" not in expected_token:
+                return _process_started_after_lock(pid, record)
+            return False
+        return _process_started_after_lock(pid, record)
+
+    try:
+        return time.time() - LOCK_PATH.stat().st_mtime > max_age_seconds
     except Exception:
         return False
-    pid = _lock_pid()
-    return pid is not None and not _pid_exists(pid)
 
 
-def _unlink_stale_lock(max_age_seconds: int = 7200) -> bool:
-    if not _lock_is_stale(max_age_seconds=max_age_seconds):
+def _unlink_stale_lock_locked(max_age_seconds: int = 7200) -> bool:
+    observed = _read_lock_record()
+    current_guard_orphan = bool(
+        isinstance(observed, dict)
+        and observed.get("guard_protocol")
+        == SCHEDULER_GUARD_PROTOCOL_VERSION
+    )
+    if not current_guard_orphan and not _lock_is_stale(
+        max_age_seconds=max_age_seconds,
+        record=observed,
+    ):
+        return False
+    if not _same_lock(observed, _read_lock_record()):
         return False
     try:
         LOCK_PATH.unlink(missing_ok=True)
@@ -169,52 +638,147 @@ def _unlink_stale_lock(max_age_seconds: int = 7200) -> bool:
         return False
 
 
+def _unlink_stale_lock(max_age_seconds: int = 7200) -> bool:
+    with _scheduler_guard() as acquired:
+        if not acquired:
+            return False
+        return _unlink_stale_lock_locked(
+            max_age_seconds=max_age_seconds
+        )
+
+
 def _recover_stale_runtime_state(status: dict) -> dict:
-    stale_lock_removed = _unlink_stale_lock()
-    if not status.get("running"):
+    with _scheduler_guard() as acquired:
+        if not acquired:
+            return status
+        latest = _read_json(STATUS_PATH, None)
+        if isinstance(latest, dict):
+            status = latest
+        stale_lock_removed = _unlink_stale_lock_locked()
+        if not status.get("running"):
+            return status
+        if LOCK_PATH.exists() and not stale_lock_removed:
+            return status
+        job = str(status.get("current_job") or "unknown")
+        status["running"] = False
+        status.pop("current_job", None)
+        status.setdefault("jobs", {})
+        _append_history(
+            status,
+            {
+                "job": job,
+                "ok": False,
+                "error": "stale scheduler lock recovered",
+            },
+        )
+        _save_status(status)
         return status
-    if LOCK_PATH.exists() and not stale_lock_removed:
-        return status
-    job = str(status.get("current_job") or "unknown")
-    status["running"] = False
-    status.pop("current_job", None)
-    status.setdefault("jobs", {})
-    _append_history(
-        status,
-        {
-            "job": job,
-            "ok": False,
-            "error": "stale scheduler lock recovered",
-        },
+
+
+def _lock_file_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return None
+    return int(stat_result.st_dev), int(stat_result.st_ino)
+
+
+def _publish_lock_metadata(
+    owner: dict[str, Any],
+) -> tuple[int, int]:
+    nonce = str(owner["nonce"])
+    prepared = LOCK_PATH.with_name(
+        f".{LOCK_PATH.name}.{nonce}.owner"
     )
-    _save_status(status)
-    return status
+    staging = prepared.with_suffix(prepared.suffix + ".tmp")
+    try:
+        _write_json(prepared, owner)
+        identity = _lock_file_identity(prepared)
+        if identity is None:
+            raise OSError("scheduler lock metadata is unavailable")
+        try:
+            os.link(prepared, LOCK_PATH)
+        except FileExistsError:
+            raise
+        except OSError as exc:
+            unsupported_errnos = {
+                value
+                for value in (
+                    getattr(errno, "EACCES", None),
+                    getattr(errno, "EPERM", None),
+                    getattr(errno, "EXDEV", None),
+                    getattr(errno, "ENOTSUP", None),
+                    getattr(errno, "EOPNOTSUPP", None),
+                )
+                if value is not None
+            }
+            if (
+                exc.errno in unsupported_errnos
+                or getattr(exc, "winerror", None) in {1, 50}
+            ):
+                raise OSError(
+                    exc.errno,
+                    "scheduler lock requires atomic hard-link support "
+                    f"and permission in {LOCK_PATH.parent}",
+                ) from exc
+            raise
+        return identity
+    finally:
+        for path in (prepared, staging):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _unlink_owned_lock(
+    identity: tuple[int, int] | None,
+    owner: dict[str, Any],
+) -> bool:
+    if identity is None or _lock_file_identity(LOCK_PATH) != identity:
+        return False
+    current = _read_lock_record()
+    if current is not None and not _same_lock(owner, current):
+        return False
+    try:
+        LOCK_PATH.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
 
 
 @contextmanager
 def _file_lock(max_age_seconds: int = 7200):
-    ROOT.mkdir(parents=True, exist_ok=True)
-    fd = None
-    try:
+    with _scheduler_guard() as acquired:
+        if not acquired:
+            yield False
+            return
+        _unlink_stale_lock_locked(
+            max_age_seconds=max_age_seconds
+        )
+        if LOCK_PATH.exists():
+            yield False
+            return
+        pid = os.getpid()
+        owner = {
+            "pid": pid,
+            "process_start_token": _process_start_token(pid),
+            "nonce": uuid.uuid4().hex,
+            "created_at": _now_text(),
+            "guard_protocol": SCHEDULER_GUARD_PROTOCOL_VERSION,
+        }
         try:
-            _unlink_stale_lock(max_age_seconds=max_age_seconds)
-        except Exception:
-            pass
-        fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, f"{os.getpid()} {_now_text()}".encode("utf-8"))
-        yield True
-    except FileExistsError:
-        yield False
-    finally:
-        if fd is not None:
-            try:
-                os.close(fd)
-            except Exception:
-                pass
-            try:
-                LOCK_PATH.unlink(missing_ok=True)
-            except Exception:
-                pass
+            owner_identity = _publish_lock_metadata(owner)
+        except FileExistsError:
+            yield False
+            return
+        try:
+            if not _same_lock(owner, _read_lock_record()):
+                yield False
+                return
+            yield True
+        finally:
+            _unlink_owned_lock(owner_identity, owner)
 
 
 def _root_admin_uid() -> int | None:
@@ -288,9 +852,16 @@ def _run_data_refresh(date_text: str) -> dict:
         names = dm.refresh_name_cache()
         details["name_cache_count"] = len(names or {})
         mining_cfg = get_config().get("mining", {})
+        target_stocks = int(mining_cfg.get("n_stocks", 800))
+        candidate_stocks = (
+            relay_factor_mining.research_candidate_pool_size(
+                target_stocks
+            )
+        )
         details["factor_cache"] = dm.refresh_factor_daily_cache(
             days=int(mining_cfg.get("days", 320)),
-            min_required=int(mining_cfg.get("n_stocks", 800)),
+            min_required=candidate_stocks,
+            refresh_security_master=True,
         )
         factor_cache_ok = bool(details["factor_cache"].get("ok"))
     except Exception as exc:
@@ -303,12 +874,18 @@ def _run_data_refresh(date_text: str) -> dict:
             from analytics.factors_zoo import scorer
 
             mining_cfg = get_config().get("mining", {})
+            target_stocks = int(mining_cfg.get("n_stocks", 800))
             _panel, factor_codes = scorer.build_panel_from_cache(
-                n_stocks=int(mining_cfg.get("n_stocks", 800)),
+                n_stocks=(
+                    relay_factor_mining.research_candidate_pool_size(
+                        target_stocks
+                    )
+                ),
                 days=int(mining_cfg.get("days", 320)),
                 min_history=min(int(mining_cfg.get("days", 320)), 60),
                 require_latest=True,
                 point_in_time=True,
+                require_security_master=True,
             )
             details["st_status"] = st_status_history.refresh_cache(factor_codes)
             factor_cache_ok = bool(details["st_status"].get("ok"))
@@ -363,20 +940,13 @@ def _reconcile_missed_fixed_sessions(
     ]
     recorded_dates = []
     for signal_date in missing_overdue:
-        store.record_frozen_snapshot(
+        store.record_verified_failure_session(
             experiment_id,
             signal_date,
-            data_complete=False,
-            data_trusted=False,
-            source_snapshot={
-                "data_complete": False,
-                "market_data_trusted": False,
-                "failure_reason": "scheduler_missed_fixed_window_session",
+            reason="scheduler_missed_fixed_window_session",
+            details={
                 "reconciled_on": through_date,
-                "model_instance_id": experiment["model_instance_id"],
-                "protocol_violation_count": 0,
             },
-            candidates=[],
         )
         recorded_dates.append(signal_date)
     return {
@@ -460,20 +1030,11 @@ def _record_failed_prospective_session(
             "evaluation": evaluation,
         }
     try:
-        frozen = store.record_frozen_snapshot(
+        frozen = store.record_verified_failure_session(
             experiment_id,
             date_text,
-            data_complete=False,
-            data_trusted=False,
-            source_snapshot={
-                "data_complete": False,
-                "market_data_trusted": False,
-                "failure_reason": str(reason),
-                "failure_details": details,
-                "model_instance_id": experiment["model_instance_id"],
-                "protocol_violation_count": 0,
-            },
-            candidates=[],
+            reason=str(reason),
+            details=details,
         )
     except ValueError as exc:
         if "after locked_at" in str(exc):
@@ -496,41 +1057,10 @@ def _settle_pending_shadow_candidates(
     experiment: dict[str, Any],
     panel: dict[str, Any],
 ) -> dict[str, Any]:
-    experiment_id = str(experiment["experiment_id"])
-    manifest = experiment["manifest"]
-    settled = 0
-    pending = 0
-    for stored in store.list_candidates(experiment_id):
-        if not stored.get("selected") or stored.get("settlement_status") == "settled":
-            continue
-        candidate = dict(stored.get("snapshot") or {})
-        candidate.setdefault("ts_code", stored.get("code"))
-        candidate.setdefault("trade_date", stored.get("signal_date"))
-        result = relay_factor_mining.settle_frozen_shadow_candidate(
-            panel,
-            candidate,
-            manifest,
-        )
-        if result.get("status") != "settled":
-            pending += 1
-            continue
-        block_reasons = result.get("block_reasons") or []
-        store.settle_candidate(
-            experiment_id,
-            stored["signal_date"],
-            stored["code"],
-            entry_date=result.get("entry_date"),
-            exit_date=result.get("exit_date"),
-            entry_price=result.get("entry_price"),
-            exit_price=result.get("exit_price"),
-            exit_reason=result.get("exit_reason"),
-            realized_return_pct=float(result.get("realized_return_pct") or 0.0),
-            blocked=bool(result.get("execution_blocked")),
-            block_reason=",".join(str(item) for item in block_reasons),
-            valuation_path=result.get("valuation_path") or [],
-        )
-        settled += 1
-    return {"settled": settled, "pending": pending}
+    return store.settle_verified_candidates(
+        str(experiment["experiment_id"]),
+        panel=panel,
+    )
 
 
 def _record_locked_shadow_session(
@@ -562,89 +1092,11 @@ def _record_locked_shadow_session(
             "signal_date": date_text,
         }
 
-    snapshot = relay_factor_mining.build_frozen_shadow_snapshot(
-        panel,
-        experiment["manifest"],
-    )
-    if (
-        not snapshot.get("ok")
-        or snapshot.get("data_status") != "ok"
-        or str(snapshot.get("signal_date") or "") != date_text
-    ):
-        source_snapshot = {
-            "data_complete": False,
-            "market_data_trusted": False,
-            "data_quality": snapshot.get("data_quality") or {},
-            "failure_reason": (
-                snapshot.get("reason") or "shadow_snapshot_not_trusted"
-            ),
-            "snapshot_signal_date": snapshot.get("signal_date"),
-            "data_status": snapshot.get("data_status"),
-            "model_instance_id": experiment["model_instance_id"],
-            "protocol_violation_count": 0,
-        }
-        try:
-            session_result = store.record_frozen_snapshot(
-                experiment_id,
-                date_text,
-                data_complete=False,
-                data_trusted=False,
-                source_snapshot=source_snapshot,
-                candidates=[],
-            )
-        except ValueError as exc:
-            if "after locked_at" in str(exc):
-                return {
-                    "recorded": False,
-                    "idempotent": False,
-                    "signal_date": date_text,
-                    "reason": "waiting_for_first_post_lock_session",
-                }
-            raise
-        return {
-            **session_result,
-            "reason": source_snapshot["failure_reason"],
-            "data_status": snapshot.get("data_status"),
-        }
-
-    source_snapshot = {
-        "data_complete": True,
-        "market_data_trusted": True,
-        "data_quality": snapshot.get("data_quality") or {},
-        "market_gate": snapshot.get("market_gate") or {},
-        "candidate_count": len(snapshot.get("candidates") or []),
-        "model_instance_id": experiment["model_instance_id"],
-        "protocol_violation_count": 0,
-    }
-    top_k = max(
-        1,
-        int((experiment["manifest"].get("config") or {}).get("top_k") or 1),
-    )
-    frozen_candidates = []
-    for candidate in snapshot.get("candidates") or []:
-        row = dict(candidate)
-        rank = int(row.get("candidate_rank") or 0)
-        row.update(
-            {
-                "code": str(row.get("ts_code") or row.get("code") or ""),
-                "experiment_id": experiment_id,
-                "model_instance_id": experiment["model_instance_id"],
-                "source_run_id": experiment["source_run_id"],
-                "selected": 0 < rank <= top_k,
-                "target_position_pct": float(
-                    row.get("shadow_target_position_pct") or 0.0
-                ),
-            }
-        )
-        frozen_candidates.append(row)
     try:
-        session_result = store.record_frozen_snapshot(
+        session_result = store.record_verified_shadow_session(
             experiment_id,
             date_text,
-            data_complete=True,
-            data_trusted=True,
-            source_snapshot=source_snapshot,
-            candidates=frozen_candidates,
+            panel=panel,
         )
     except ValueError as exc:
         if "after locked_at" in str(exc):
@@ -655,10 +1107,9 @@ def _record_locked_shadow_session(
                 "reason": "waiting_for_first_post_lock_session",
             }
         raise
-    immediate = _settle_pending_shadow_candidates(
-        store,
-        experiment,
-        panel,
+    immediate = store.settle_verified_candidates(
+        experiment_id,
+        panel=panel,
     )
     return {
         **session_result,
@@ -815,6 +1266,7 @@ def _run_prospective_cycle(
             validated,
             panel,
         )
+    result["ok"] = bool(result["production"].get("ok"))
     return result
 
 
@@ -824,16 +1276,21 @@ def _run_factor_mining(date_text: str) -> dict:
     from analytics.factors_zoo import scorer
 
     cfg = get_config().get("mining", {})
+    target_stocks = int(cfg.get("n_stocks", 800))
+    candidate_stocks = relay_factor_mining.research_candidate_pool_size(
+        target_stocks
+    )
     run_id = datetime.now().strftime("auto-%Y%m%d-%H%M%S")
     out_dir = ROOT / run_id
     requested_at = datetime.strptime(date_text, "%Y-%m-%d").replace(hour=17, minute=10)
     expected_trade_date = dm.expected_completed_trade_date(requested_at)
     panel, _factor_codes = scorer.build_panel_from_cache(
-        n_stocks=int(cfg.get("n_stocks", 800)),
+        n_stocks=candidate_stocks,
         days=int(cfg.get("days", 320)),
         min_history=min(int(cfg.get("days", 320)), 60),
         require_latest=True,
         point_in_time=True,
+        require_security_master=True,
     )
     close_frame = panel.get("close") if isinstance(panel, dict) else None
     latest_index = getattr(close_frame, "index", [])
@@ -881,7 +1338,7 @@ def _run_factor_mining(date_text: str) -> dict:
     report = relay_factor_mining.run_relay_research(
         out_dir=out_dir,
         panel=panel,
-        n_stocks=int(cfg.get("n_stocks", 800)),
+        n_stocks=target_stocks,
         days=int(cfg.get("days", 320)),
         train_days=int(cfg.get("train_days", 60)),
         test_days=int(cfg.get("test_days", 10)),
@@ -892,6 +1349,7 @@ def _run_factor_mining(date_text: str) -> dict:
         candidate_pool_size=int(cfg.get("candidate_pool_size", 100)),
         include_market_signals=True,
         feedback_user_id=feedback_user_id,
+        load_live_feedback=feedback_user_id is not None,
     )
     candidates = report.get("latest_candidates", []) if isinstance(report, dict) else []
     data_status = (

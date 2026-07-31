@@ -6,6 +6,7 @@
 2. 没有日历数据时必须**退回原行为**而不是把交易全停掉 —— 拿不到日历
    不能成为停机理由。
 """
+import hashlib
 import json
 import sys
 from datetime import date, datetime
@@ -190,6 +191,24 @@ class TestRefreshSanity:
         assert r["ok"] is True
         assert r["closed"] == 12
         assert f.exists()
+        saved = json.loads(f.read_text(encoding="utf-8"))
+        provenance = saved["provenance"][str(year)]
+        expected_digest = hashlib.sha256(
+            json.dumps(
+                sorted(opens),
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        assert provenance == {
+            "provenance_version": "tushare_trade_cal_provenance_v1",
+            "source": "tushare_trade_cal",
+            "provider_mode": "replay",
+            "fetched_at": provenance["fetched_at"],
+            "open_days_count": len(opens),
+            "open_days_sha256": expected_digest,
+        }
+        assert provenance["fetched_at"].endswith(("+08:00", "Z"))
         for h in holidays:
             assert trading_calendar.is_trading_day(date.fromisoformat(h)) is False
 
@@ -213,6 +232,42 @@ def test_fetch_trade_calendar_filters_by_is_open(monkeypatch):
 
     got = tp.fetch_trade_calendar("20261001", "20261010")
     assert got == ["2026-10-08", "2026-10-09"], f"未按 is_open 过滤：{got}"
+
+
+def test_verified_calendar_rejects_invalid_or_naive_fetch_timestamp(
+    monkeypatch,
+):
+    year = 2026
+    closed = {
+        "2026-01-01",
+        "2026-01-02",
+        "2026-02-16",
+        "2026-02-17",
+        "2026-02-18",
+    }
+    open_days = trading_calendar._open_days_from_closed(year, closed)
+    provenance = {
+        "provenance_version": "tushare_trade_cal_provenance_v1",
+        "source": "tushare_trade_cal",
+        "provider_mode": "replay",
+        "fetched_at": "not-a-timestamp",
+        "open_days_count": len(open_days),
+        "open_days_sha256": trading_calendar._open_days_digest(open_days),
+    }
+    monkeypatch.setattr(
+        trading_calendar,
+        "closed_days",
+        lambda _year: closed,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "calendar_provenance",
+        lambda _year: provenance,
+    )
+
+    assert trading_calendar.has_verified_calendar(year) is False
+    provenance["fetched_at"] = "2026-07-30T16:10:00"
+    assert trading_calendar.has_verified_calendar(year) is False
 
 
 def test_now_uses_shanghai_wall_clock():

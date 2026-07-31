@@ -4,6 +4,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from analytics import ai_trader
@@ -548,6 +550,8 @@ def test_watchlist_decision_returns_identity_at_source_and_result_top_level(monk
                     "research_status": "validated",
                     "deployment_eligible": True,
                     "research_only": False,
+                    "is_st": False,
+                    "st_status_known": True,
                     "live_readiness_status": "ready",
                     "position_pct": 0.1,
                 }
@@ -591,6 +595,55 @@ def test_watchlist_decision_rejects_direct_market_gate_bypass(monkeypatch):
                 "live_warning_keys": ["market_gate_blocked"],
             }
         ],
+        max_candidates=1,
+    )
+
+    assert result == {"ok": False, "error": "no usable watchlist candidates"}
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        {"is_st": False, "st_status_known": False},
+        {"is_st": False},
+        {"is_st": True, "st_status_known": True},
+    ],
+)
+def test_watchlist_decision_defensively_rejects_unsafe_st_status(
+    monkeypatch,
+    candidate,
+):
+    from core import factor_watchlist
+
+    monkeypatch.setattr(
+        ai_trader,
+        "load_user_trader_config",
+        lambda uid: {"enabled": True, "api_key": "test"},
+    )
+    monkeypatch.setattr(
+        factor_watchlist,
+        "authoritative_watchlist_candidates",
+        lambda requested, max_candidates=6: [
+            {
+                "id": "watchlist-1",
+                "ts_code": "000005.SZ",
+                "code": "000005",
+                "name": "Epsilon",
+                **candidate,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        ai_trader._Engine,
+        "_team_decide",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unsafe ST candidate must not reach the model")
+        ),
+    )
+
+    engine = ai_trader._Engine(101)
+    result = engine.decide_watchlist_candidates(
+        [{"id": "watchlist-1"}],
         max_candidates=1,
     )
 

@@ -36,7 +36,7 @@ _factor_mining_last_task_id: str | None = None
 def _bounded_int_value(raw, default: int, min_value: int, max_value: int) -> int:
     try:
         value = int(raw)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         value = default
     return max(min_value, min(max_value, value))
 
@@ -44,12 +44,52 @@ def _bounded_int_value(raw, default: int, min_value: int, max_value: int) -> int
 def _bounded_float_value(raw, default: float, min_value: float, max_value: float) -> float:
     try:
         value = float(raw)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return float(default)
     if not math.isfinite(value):
         return float(default)
     if value < min_value or value > max_value:
         return float(default)
+    return value
+
+
+def _strict_bounded_int_value(
+    raw,
+    default: int,
+    min_value: int,
+    max_value: int,
+) -> int:
+    if raw is None:
+        return int(default)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError("integer parameter must be a JSON integer")
+    if raw < min_value or raw > max_value:
+        raise ValueError(
+            f"integer parameter must be between {min_value} and {max_value}"
+        )
+    return int(raw)
+
+
+def _strict_bounded_float_value(
+    raw,
+    default: float,
+    min_value: float,
+    max_value: float,
+) -> float:
+    if raw is None:
+        return float(default)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError("numeric parameter must be a JSON number")
+    try:
+        value = float(raw)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError("numeric parameter is out of range") from exc
+    if not math.isfinite(value):
+        raise ValueError("numeric parameter must be finite")
+    if value < min_value or value > max_value:
+        raise ValueError(
+            f"numeric parameter must be between {min_value} and {max_value}"
+        )
     return value
 
 
@@ -567,16 +607,73 @@ def admin_factor_mining_status():
 def admin_factor_mining_run():
     global _factor_mining_active_task_id, _factor_mining_last_task_id
 
-    body = request.json or {}
-    n_stocks = _bounded_int_value(body.get("n_stocks"), 800, 5, 2000)
-    days = _bounded_int_value(body.get("days"), 320, 60, 320)
-    train_days = _bounded_int_value(body.get("train_days"), 60, 10, 160)
-    test_days = _bounded_int_value(body.get("test_days"), 10, 5, 60)
-    hold_days = _bounded_int_value(body.get("hold_days"), 2, 1, 10)
-    stop_loss = _bounded_float_value(body.get("stop_loss"), -0.035, -0.20, -0.005)
-    take_profit = _bounded_float_value(body.get("take_profit"), 0.07, 0.005, 0.30)
-    top_k = _bounded_int_value(body.get("top_k"), 10, 1, 50)
-    candidate_pool_size = _bounded_int_value(body.get("candidate_pool_size"), 100, top_k, 300)
+    body = request.get_json(silent=True)
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        return jsonify(
+            {
+                "ok": False,
+                "error": "请求体必须是 JSON 对象",
+            }
+        ), 400
+    try:
+        n_stocks = _strict_bounded_int_value(
+            body.get("n_stocks"),
+            800,
+            5,
+            2000,
+        )
+        days = _strict_bounded_int_value(
+            body.get("days"),
+            320,
+            60,
+            320,
+        )
+        train_days = _strict_bounded_int_value(
+            body.get("train_days"),
+            60,
+            10,
+            160,
+        )
+        test_days = _strict_bounded_int_value(
+            body.get("test_days"),
+            10,
+            5,
+            60,
+        )
+        hold_days = _strict_bounded_int_value(
+            body.get("hold_days"),
+            2,
+            1,
+            10,
+        )
+        stop_loss = _strict_bounded_float_value(
+            body.get("stop_loss"),
+            -0.035,
+            -0.20,
+            -0.005,
+        )
+        take_profit = _strict_bounded_float_value(
+            body.get("take_profit"),
+            0.07,
+            0.005,
+            0.30,
+        )
+        top_k = _strict_bounded_int_value(
+            body.get("top_k"),
+            10,
+            1,
+            50,
+        )
+        candidate_pool_size = _strict_bounded_int_value(
+            body.get("candidate_pool_size"),
+            100,
+            top_k,
+            300,
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
     mining_rules = body.get("mining_rules") if isinstance(body.get("mining_rules"), dict) else None
 
     with _factor_mining_jobs_lock:

@@ -10,6 +10,9 @@ import numpy as np
 import pandas as pd
 
 
+MAX_DEFERRED_EXIT_SESSIONS = 20
+
+
 def _date_text(value: Any) -> str:
     if isinstance(value, (pd.Timestamp, datetime, date)):
         return value.strftime("%Y-%m-%d")
@@ -57,13 +60,28 @@ def _has_tradable_bar(row: pd.Series) -> bool:
     return True
 
 
-def _is_locked_limit_down(code: str, bars: pd.DataFrame, index: int) -> bool:
+def _last_tradable_close(bars: pd.DataFrame, index: int) -> float | None:
+    for previous_index in range(int(index) - 1, -1, -1):
+        previous = bars.iloc[previous_index]
+        if not _has_tradable_bar(previous):
+            continue
+        previous_close = _price(previous, "close")
+        if previous_close is not None:
+            return previous_close
+    return None
+
+
+def _is_locked_limit_down(
+    code: str,
+    bars: pd.DataFrame,
+    index: int,
+) -> bool | None:
     if index <= 0:
-        return False
+        return None
     row = bars.iloc[index]
-    previous_close = _price(bars.iloc[index - 1], "close")
+    previous_close = _last_tradable_close(bars, index)
     if previous_close is None:
-        return False
+        return None
     prices = [_price(row, field) for field in ("open", "high", "low", "close")]
     if any(value is None for value in prices):
         return False
@@ -86,6 +104,7 @@ def build_trade_path(
     take_profit: float = 0.07,
     round_trip_cost_pct: float = 0.16,
     slippage_pct: float = 0.20,
+    max_deferred_exit_sessions: int = MAX_DEFERRED_EXIT_SESSIONS,
 ) -> dict[str, Any]:
     """Simulate a next-open long trade using only daily bars.
 
@@ -94,6 +113,14 @@ def build_trade_path(
     """
     if hold_days < 1:
         raise ValueError("hold_days must be positive")
+    if (
+        isinstance(max_deferred_exit_sessions, bool)
+        or not isinstance(max_deferred_exit_sessions, int)
+        or not 0 <= max_deferred_exit_sessions <= 1_000
+    ):
+        raise ValueError(
+            "max_deferred_exit_sessions must be between 0 and 1000"
+        )
     if stop_loss >= 0 or take_profit <= 0:
         raise ValueError("stop_loss must be negative and take_profit must be positive")
     required = {"open", "high", "low", "close"}
@@ -108,7 +135,7 @@ def build_trade_path(
     entry_row = bars.iloc[entry_index]
     if "volume" in entry_row.index and _price(entry_row, "volume") is None:
         return {}
-    entry_price = _price(entry_row, "open", _price(entry_row, "close"))
+    entry_price = _price(entry_row, "open")
     if entry_price is None:
         return {}
 
@@ -120,7 +147,11 @@ def build_trade_path(
     missing_bar_seen = False
     locked_limit_down_seen = False
 
-    for index in range(entry_index + 1, len(bars)):
+    latest_exit_index = min(
+        len(bars) - 1,
+        max_exit_index + max_deferred_exit_sessions,
+    )
+    for index in range(entry_index + 1, latest_exit_index + 1):
         row = bars.iloc[index]
         if not _has_tradable_bar(row):
             missing_bar_seen = True
@@ -129,7 +160,11 @@ def build_trade_path(
         low_price = _price(row, "low")
         high_price = _price(row, "high")
         assert open_price is not None and low_price is not None and high_price is not None
-        if _is_locked_limit_down(code, bars, index):
+        locked_limit_down = _is_locked_limit_down(code, bars, index)
+        if locked_limit_down is None:
+            missing_bar_seen = True
+            continue
+        if locked_limit_down:
             locked_limit_down_seen = True
             continue
         if index > max_exit_index:
@@ -220,6 +255,7 @@ def simulate_portfolio(
     top_k: int,
     holding_sessions: int,
     initial_equity: float = 1.0,
+    session_dates: Sequence[Any] | None = None,
 ) -> dict[str, Any]:
     """Simulate cash and overlapping positions without slot redistribution."""
     if top_k <= 0 or holding_sessions <= 0 or initial_equity <= 0:
@@ -227,7 +263,11 @@ def simulate_portfolio(
 
     clean_attempts = [dict(item) for item in attempts if isinstance(item, dict)]
     by_entry: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    all_dates: set[str] = set()
+    all_dates = {
+        date_text
+        for item in (session_dates or [])
+        if (date_text := _date_text(item))
+    }
     for attempt in clean_attempts:
         entry_date = _date_text(attempt.get("entry_date"))
         exit_date = _date_text(attempt.get("exit_date"))

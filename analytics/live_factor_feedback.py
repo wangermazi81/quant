@@ -8,6 +8,7 @@ look good in historical bars but repeatedly fail in the user's execution path.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -164,6 +165,41 @@ def _quote_metrics(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _decision_record_key(record: dict[str, Any]) -> str:
+    identity = {
+        key: record.get(key)
+        for key in (
+            "generated_at",
+            "decision_id",
+            "decision_date",
+            "code",
+            "user_id",
+            "strategy_key",
+            "model_version",
+            "experiment_id",
+            "model_instance_id",
+            "watchlist_id",
+            "source_run_id",
+            "trade_date",
+            "action",
+            "risk_ok",
+            "blocked",
+            "executed",
+            "price",
+            "confidence",
+            "reason",
+        )
+    }
+    return hashlib.sha256(
+        json.dumps(
+            identity,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def record_ai_decision(decision: dict[str, Any]) -> dict[str, Any]:
     """Append AI watchlist decision feedback and quote snapshots."""
     if not isinstance(decision, dict):
@@ -196,6 +232,7 @@ def record_ai_decision(decision: dict[str, Any]) -> dict[str, Any]:
             {
                 "recorded_at": _now_text(),
                 "generated_at": generated_at,
+                "decision_id": str(result.get("id") or ""),
                 "decision_date": generated_at[:10] if len(generated_at) >= 10 else _today_text(),
                 "code": code,
                 "name": str(result.get("name") or ""),
@@ -226,11 +263,31 @@ def record_ai_decision(decision: dict[str, Any]) -> dict[str, Any]:
     with _feedback_file_lock():
         store = _load_store_unlocked()
         decisions = [x for x in store.get("decisions", []) if isinstance(x, dict)]
-        decisions.extend(records)
+        existing_keys = set()
+        for existing in decisions:
+            decision_key = str(existing.get("decision_key") or "")
+            if not decision_key:
+                decision_key = _decision_record_key(existing)
+                existing["decision_key"] = decision_key
+            existing_keys.add(decision_key)
+        inserted = []
+        for record in records:
+            decision_key = _decision_record_key(record)
+            record["decision_key"] = decision_key
+            if decision_key in existing_keys:
+                continue
+            existing_keys.add(decision_key)
+            inserted.append(record)
+        decisions.extend(inserted)
         store["decisions"] = decisions[-MAX_DECISIONS:]
         store["updated_at"] = _now_text()
         _write_json_unlocked(FEEDBACK_PATH, store)
-    return {"ok": True, "recorded": len(records), "path": str(FEEDBACK_PATH)}
+    return {
+        "ok": True,
+        "recorded": len(inserted),
+        "idempotent": not inserted,
+        "path": str(FEEDBACK_PATH),
+    }
 
 
 def sync_paper_trades(days: int = 180) -> dict[str, Any]:
@@ -260,8 +317,13 @@ def sync_paper_trades(days: int = 180) -> dict[str, Any]:
             column if column in table_columns else f"'' AS {column}"
             for column in attribution_columns
         ]
+        owner_user_select = (
+            "owner_user_id"
+            if "owner_user_id" in table_columns
+            else "NULL AS owner_user_id"
+        )
         select_columns = [
-            "id", "user_id", "code", "name", "buy_time", "sell_time",
+            "id", "user_id", owner_user_select, "code", "name", "buy_time", "sell_time",
             "buy_price", "sell_price", "shares", "pnl", "pnl_pct",
             "hold_days", "sell_reason", *attribution_select,
         ]
@@ -271,9 +333,12 @@ def sync_paper_trades(days: int = 180) -> dict[str, Any]:
             (since, MAX_PAPER_TRADES),
         ).fetchall():
             data = dict(row)
+            paper_account_user_id = int(data.get("user_id") or 0)
+            owner_user_id = int(data.get("owner_user_id") or 0)
             rows.append({
                 "trade_id": int(data.get("id") or 0),
-                "user_id": int(data.get("user_id") or 0),
+                "user_id": owner_user_id or paper_account_user_id,
+                "paper_account_user_id": paper_account_user_id,
                 "code": _clean_code(data.get("code")),
                 "name": str(data.get("name") or ""),
                 "buy_time": str(data.get("buy_time") or ""),

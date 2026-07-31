@@ -97,6 +97,22 @@ def test_trade_path_rejects_zero_volume_entry_bar():
     assert result == {}
 
 
+def test_trade_path_does_not_fallback_missing_entry_open_to_close():
+    bars = _bars(evaluation_low=9.8, evaluation_high=10.6, evaluation_close=10.4)
+    bars.loc[bars.index[1], "open"] = None
+
+    result = build_trade_path(
+        code="000001.SZ",
+        bars=bars,
+        signal_index=0,
+        hold_days=1,
+        stop_loss=-0.035,
+        take_profit=0.07,
+    )
+
+    assert result == {}
+
+
 def test_trade_path_defers_exit_while_one_price_limit_down_is_locked():
     dates = pd.bdate_range("2026-07-01", periods=5)
     bars = pd.DataFrame(
@@ -159,6 +175,71 @@ def test_trade_path_defers_exit_when_holding_deadline_has_no_bar():
     }
 
 
+def test_trade_path_defers_exit_after_suspension_then_locked_limit_down():
+    dates = pd.bdate_range("2026-07-01", periods=5)
+    bars = pd.DataFrame(
+        {
+            "open": [10.0, 10.0, None, 9.05, 8.80],
+            "high": [10.1, 10.2, None, 9.05, 9.00],
+            "low": [9.9, 9.8, None, 9.05, 8.70],
+            "close": [10.0, 10.0, None, 9.05, 8.90],
+            "volume": [1000.0, 1000.0, None, 1000.0, 1000.0],
+        },
+        index=dates,
+    )
+
+    result = build_trade_path(
+        code="000001.SZ",
+        bars=bars,
+        signal_index=0,
+        hold_days=1,
+        stop_loss=-0.035,
+        take_profit=0.07,
+        round_trip_cost_pct=0.0,
+        slippage_pct=0.0,
+    )
+
+    assert result["exit_date"] == dates[4].strftime("%Y-%m-%d")
+    assert result["exit_reason"] == "deferred_limit_down_exit"
+    assert result["exit_price"] == 8.8
+    assert result["plan_return_pct"] == pytest.approx(-12.0)
+
+
+def test_trade_path_fails_closed_after_deferred_exit_limit():
+    dates = pd.bdate_range("2026-07-01", periods=8)
+    bars = pd.DataFrame(
+        {
+            "open": [10.0, 10.0, None, None, None, None, None, 8.8],
+            "high": [10.1, 10.2, None, None, None, None, None, 9.0],
+            "low": [9.9, 9.8, None, None, None, None, None, 8.7],
+            "close": [10.0, 10.0, None, None, None, None, None, 8.9],
+            "volume": [
+                1000.0,
+                1000.0,
+                None,
+                None,
+                None,
+                None,
+                None,
+                1000.0,
+            ],
+        },
+        index=dates,
+    )
+
+    result = build_trade_path(
+        code="000001.SZ",
+        bars=bars,
+        signal_index=0,
+        hold_days=1,
+        stop_loss=-0.035,
+        take_profit=0.07,
+        max_deferred_exit_sessions=3,
+    )
+
+    assert result == {}
+
+
 def _attempt(
     code: str,
     entry_date: str,
@@ -217,3 +298,30 @@ def test_portfolio_caps_allocation_at_frozen_target_position_pct():
     assert result["executed_trades"][0]["allocation"] == pytest.approx(0.1)
     assert result["executed_trades"][0]["target_position_pct"] == 0.1
     assert result["total_return_pct"] == pytest.approx(1.0)
+
+
+def test_portfolio_preserves_explicit_empty_session_dates_as_zero_return_days():
+    sessions = [
+        "2026-07-02",
+        "2026-07-03",
+        "2026-07-06",
+    ]
+
+    result = simulate_portfolio(
+        [],
+        top_k=1,
+        holding_sessions=1,
+        initial_equity=1.0,
+        session_dates=sessions,
+    )
+
+    assert [item["date"] for item in result["equity_curve"]] == [
+        "initial",
+        *sessions,
+    ]
+    assert [item["equity"] for item in result["equity_curve"]] == [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+    ]

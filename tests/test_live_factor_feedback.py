@@ -71,6 +71,39 @@ def test_record_ai_decision_and_build_code_feedback(tmp_path, monkeypatch):
     assert by_code["000001"]["paper_avg_pnl_pct"] == 0.25
 
 
+def test_record_ai_decision_is_idempotent_for_the_same_payload(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(feedback, "FEEDBACK_PATH", tmp_path / "live_feedback.json")
+    payload = {
+        "generated_at": "2026-07-15 09:31:00",
+        "results": [
+            {
+                "id": "decision-1",
+                "code": "000001",
+                "action": "BUY",
+                "risk_ok": True,
+                "executed": False,
+                "source": {
+                    "user_id": 101,
+                    "strategy_key": "relay_factor_mining_v2",
+                    "watchlist_id": "watch-1",
+                },
+            }
+        ],
+    }
+
+    first = feedback.record_ai_decision(payload)
+    repeated = feedback.record_ai_decision(payload)
+
+    assert first["recorded"] == 1
+    assert repeated["recorded"] == 0
+    assert repeated["idempotent"] is True
+    decisions = feedback.load_store()["decisions"]
+    assert len(decisions) == 1
+    assert len(decisions[0]["decision_key"]) == 64
+
+
 def test_build_code_feedback_excludes_same_code_from_other_strategies(tmp_path, monkeypatch):
     monkeypatch.setattr(feedback, "FEEDBACK_PATH", tmp_path / "live_feedback.json")
     feedback._write_json(
@@ -347,3 +380,66 @@ def test_sync_paper_trades_supports_legacy_table_without_attribution_columns(
     assert row["model_instance_id"] == ""
     assert row["watchlist_id"] == ""
     assert row["source_run_id"] == ""
+
+
+def test_sync_paper_trades_maps_ai_virtual_account_to_real_owner(
+    tmp_path, monkeypatch
+):
+    from broker import paper_broker
+
+    db_path = tmp_path / "ai_paper.db"
+    con = sqlite3.connect(db_path)
+    con.execute(
+        """
+        CREATE TABLE paper_trades (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            owner_user_id INTEGER,
+            code TEXT NOT NULL,
+            name TEXT,
+            buy_time TEXT NOT NULL,
+            sell_time TEXT,
+            buy_price REAL NOT NULL,
+            sell_price REAL,
+            shares INTEGER NOT NULL,
+            pnl REAL,
+            pnl_pct REAL,
+            hold_days INTEGER,
+            sell_reason TEXT,
+            strategy_key TEXT,
+            model_version TEXT,
+            experiment_id TEXT,
+            model_instance_id TEXT,
+            watchlist_id TEXT,
+            source_run_id TEXT
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO paper_trades
+        (id,user_id,owner_user_id,code,name,buy_time,sell_time,buy_price,
+         sell_price,shares,pnl,pnl_pct,hold_days,sell_reason,strategy_key)
+        VALUES(1,9000101,101,'000001','AI Paper','2026-07-28 09:31:00',
+               '2026-07-29 14:00:00',10,11,100,95,9.5,1,'target',
+               'relay_factor_mining_v2')
+        """
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setattr(paper_broker, "DB_PATH", db_path)
+    monkeypatch.setattr(feedback, "FEEDBACK_PATH", tmp_path / "live_feedback.json")
+
+    result = feedback.sync_paper_trades(days=30)
+    by_code = feedback.build_code_feedback(
+        days=30,
+        user_id=101,
+        strategy_key="relay_factor_mining_v2",
+    )
+
+    assert result["ok"] is True
+    row = feedback.load_store()["paper_trades"][0]
+    assert row["user_id"] == 101
+    assert row["paper_account_user_id"] == 9000101
+    assert by_code["000001"]["paper_trade_count"] == 1
+    assert by_code["000001"]["paper_avg_pnl_pct"] == 9.5

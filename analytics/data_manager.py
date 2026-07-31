@@ -54,6 +54,7 @@ def _allow_current_sources() -> bool:
 DATA_DIR       = Path(__file__).parent.parent / "data" / "daily"
 META_FILE      = Path(__file__).parent.parent / "data" / "metadata.json"
 NAME_CACHE_FILE= Path(__file__).parent.parent / "data" / "stock_names.json"
+SECURITY_MASTER_FILE = Path(__file__).parent.parent / "data" / "security_master.csv"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 _progress: dict = {}
@@ -749,10 +750,457 @@ def _same_daily_row(old_frame: pd.DataFrame, new_frame: pd.DataFrame, source_dat
     return True
 
 
-def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: datetime | None = None) -> dict:
+def _factor_history_cache_complete(
+    cache_path: Path,
+    *,
+    security_start: pd.Timestamp,
+    security_end: pd.Timestamp,
+    minimum_rows: int,
+    require_end_coverage: bool,
+) -> bool:
+    if not cache_path.is_file():
+        return False
+    try:
+        cached = pd.read_csv(cache_path)
+    except Exception:
+        return False
+    required = {"date", "close", "amount"}
+    if not required.issubset(cached.columns):
+        return False
+    cached = cached.copy()
+    cached["date"] = pd.to_datetime(cached["date"], errors="coerce")
+    cached["close"] = pd.to_numeric(cached["close"], errors="coerce")
+    cached["amount"] = pd.to_numeric(cached["amount"], errors="coerce")
+    cached = (
+        cached.dropna(subset=["date", "close"])
+        .drop_duplicates("date", keep="last")
+        .sort_values("date")
+    )
+    tolerance = pd.Timedelta(days=14)
+    relevant = cached[
+        (cached["date"] >= security_start - tolerance)
+        & (cached["date"] <= security_end)
+    ]
+    if len(relevant) < max(1, int(minimum_rows)):
+        return False
+    if pd.Timestamp(relevant["date"].min()) > security_start + tolerance:
+        return False
+    if (
+        require_end_coverage
+        and pd.Timestamp(relevant["date"].max()) < security_end - tolerance
+    ):
+        return False
+    if bool(relevant["close"].pct_change(fill_method=None).abs().gt(0.35).any()):
+        return False
+    from analytics.relay_factor_model import MIN_REAL_AMOUNT_COVERAGE
+
+    amount_is_real = relevant["amount"].notna() & (relevant["amount"] > 0)
+    if float(amount_is_real.mean()) < MIN_REAL_AMOUNT_COVERAGE:
+        return False
+    return True
+
+
+def _security_master_validation_error(
+    master: pd.DataFrame,
+) -> str | None:
+    required = {
+        "code",
+        "ts_code",
+        "list_date",
+        "delist_date",
+        "list_status",
+        "lifecycle_source",
+        "lifecycle_snapshot_complete",
+        "universe_scope",
+        "snapshot_at",
+        "security_master_pagination_complete",
+        "security_master_page_requests",
+        "security_master_row_count",
+        "security_master_snapshot_complete",
+        "security_master_snapshot_trade_date",
+    }
+    if master.empty or not required.issubset(master.columns):
+        return "security master lifecycle metadata is incomplete"
+
+    codes = (
+        master["code"]
+        .astype("string")
+        .str.replace(r"\.0$", "", regex=True)
+        .str.strip()
+    )
+    ts_codes = master["ts_code"].astype("string").str.strip().str.upper()
+    if (
+        not codes.str.fullmatch(r"\d{6}", na=False).all()
+        or codes.duplicated().any()
+        or ts_codes.duplicated().any()
+        or not (
+            ts_codes
+            == codes
+            + "."
+            + ts_codes.str.rsplit(".", n=1).str[-1]
+        ).all()
+    ):
+        return "security master contains invalid or repeated codes"
+
+    exchanges = ts_codes.str.rsplit(".", n=1).str[-1]
+    if not exchanges.isin(["SH", "SZ"]).all():
+        return "security master contains unsupported exchange"
+    statuses = master["list_status"].astype("string").str.strip().str.upper()
+    if not statuses.isin(["L", "D"]).all():
+        return "security master contains invalid lifecycle status"
+    coverage = set(zip(exchanges.tolist(), statuses.tolist()))
+    if not {
+        ("SH", "L"),
+        ("SH", "D"),
+        ("SZ", "L"),
+        ("SZ", "D"),
+    }.issubset(coverage):
+        return "security master lifecycle coverage is incomplete"
+
+    list_text = (
+        master["list_date"]
+        .astype("string")
+        .fillna("")
+        .str.replace(r"\.0$", "", regex=True)
+        .str.strip()
+    )
+    delist_text = (
+        master["delist_date"]
+        .astype("string")
+        .fillna("")
+        .str.replace(r"\.0$", "", regex=True)
+        .str.strip()
+    )
+    list_dates = pd.to_datetime(
+        list_text,
+        format="%Y%m%d",
+        errors="coerce",
+    )
+    delist_dates = pd.to_datetime(
+        delist_text.where(delist_text.ne("")),
+        format="%Y%m%d",
+        errors="coerce",
+    )
+    delisted = statuses.eq("D")
+    if (
+        list_dates.isna().any()
+        or delist_text.loc[~delisted].ne("").any()
+        or delist_text.loc[delisted].eq("").any()
+        or delist_dates.loc[delisted].isna().any()
+        or (
+            delist_dates.loc[delisted]
+            < list_dates.loc[delisted]
+        ).any()
+    ):
+        return "security master contains invalid lifecycle dates"
+
+    trusted_marker = lambda value: (
+        str(value).strip().lower() in {"1", "true", "yes"}
+    )
+    if not (
+        master["lifecycle_snapshot_complete"].map(trusted_marker).all()
+        and master["security_master_pagination_complete"]
+        .map(trusted_marker)
+        .all()
+        and master["security_master_snapshot_complete"]
+        .map(trusted_marker)
+        .all()
+    ):
+        return "security master lifecycle snapshot is incomplete"
+    if (
+        not master["lifecycle_source"]
+        .astype("string")
+        .str.strip()
+        .eq("baostock_stock_basic")
+        .all()
+        or not master["universe_scope"]
+        .astype("string")
+        .str.strip()
+        .eq("sh_sz_a_share")
+        .all()
+    ):
+        return "security master lifecycle source is untrusted"
+
+    page_requests = pd.to_numeric(
+        master["security_master_page_requests"],
+        errors="coerce",
+    )
+    row_counts = pd.to_numeric(
+        master["security_master_row_count"],
+        errors="coerce",
+    )
+    if (
+        page_requests.isna().any()
+        or page_requests.le(0).any()
+        or row_counts.isna().any()
+        or row_counts.nunique() != 1
+        or int(row_counts.iloc[0]) != len(master)
+    ):
+        return "security master completeness counters are invalid"
+    if pd.to_datetime(
+        master["snapshot_at"],
+        errors="coerce",
+    ).isna().any():
+        return "security master snapshot timestamp is invalid"
+    if pd.to_datetime(
+        master["security_master_snapshot_trade_date"]
+        .astype("string")
+        .str.replace(r"\.0$", "", regex=True),
+        format="%Y%m%d",
+        errors="coerce",
+    ).isna().any():
+        return "security master snapshot trade date is invalid"
+    return None
+
+
+def refresh_factor_security_master_history(
+    days: int = 180,
+    n_stocks: int | None = None,
+    now: datetime | None = None,
+    token: str | None = None,
+    mode: str | None = None,
+) -> dict:
+    current = now or datetime.now()
+    cfg = datasource_config.get_internal_config()
+    resolved_token = token or cfg.get("tushare_token") or datasource_config.resolve_tushare_token(
+        cfg,
+        mode=mode or cfg.get("tushare_mode"),
+    )
+    resolved_mode = mode or cfg.get("tushare_mode")
+    try:
+        rows = tushare_provider.fetch_security_master(
+            token=resolved_token,
+            mode=resolved_mode,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"security master provider failed: {str(exc)[:200]}",
+            "master_count": 0,
+            "history_required": 0,
+            "history_backfilled": 0,
+        }
+    if not rows:
+        return {
+            "ok": False,
+            "error": "Tushare security master is empty",
+            "master_count": 0,
+            "history_required": 0,
+            "history_backfilled": 0,
+        }
+
+    master = pd.DataFrame(rows).copy()
+    validation_error = _security_master_validation_error(master)
+    if validation_error:
+        return {
+            "ok": False,
+            "error": validation_error,
+            "master_count": int(len(master)),
+            "history_required": 0,
+            "history_backfilled": 0,
+        }
+    master["code"] = (
+        master["code"]
+        .astype("string")
+        .str.replace(r"\.0$", "", regex=True)
+        .str.strip()
+    )
+    master = master.sort_values("code")
+    SECURITY_MASTER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = SECURITY_MASTER_FILE.with_suffix(SECURITY_MASTER_FILE.suffix + ".tmp")
+    master.to_csv(temp_path, index=False, encoding="utf-8-sig")
+    temp_path.replace(SECURITY_MASTER_FILE)
+
+    end_date = pd.Timestamp(current.date())
+    history_calendar_days = max(365, int(days) * 2 + 120)
+    window_start = end_date - pd.Timedelta(days=history_calendar_days)
+    list_dates = pd.to_datetime(
+        master.get("list_date", pd.Series(index=master.index, dtype="string"))
+        .astype("string")
+        .str.replace(r"\.0$", "", regex=True),
+        format="%Y%m%d",
+        errors="coerce",
+    )
+    delist_dates = pd.to_datetime(
+        master.get("delist_date", pd.Series(index=master.index, dtype="string"))
+        .astype("string")
+        .str.replace(r"\.0$", "", regex=True),
+        format="%Y%m%d",
+        errors="coerce",
+    )
+    relevant = (list_dates.isna() | (list_dates <= end_date)) & (
+        delist_dates.isna() | (delist_dates >= window_start)
+    )
+    if n_stocks is not None:
+        from analytics.factors_zoo.scorer import (
+            _master_sample_mask,
+            _point_in_time_pool_size,
+        )
+
+        minimum_history = min(max(1, int(days)), 60)
+        sample_start = end_date - pd.offsets.BDay(
+            max(int(days), minimum_history) + 5
+        )
+        sample_master = master.copy()
+        sample_master["list_date"] = list_dates
+        sample_master["delist_date"] = delist_dates
+        sample_master = sample_master.set_index("code", drop=False)
+        sample_mask = _master_sample_mask(
+            sample_master,
+            pd.bdate_range(sample_start, end_date),
+            _point_in_time_pool_size(n_stocks),
+            minimum_history=minimum_history,
+        )
+        required_codes = {
+            str(code)
+            for code in sample_mask.columns
+            if bool(sample_mask[code].any())
+        }
+        relevant = master["code"].isin(required_codes)
+
+    required_count = int(relevant.sum())
+    minimum_usable = (
+        required_count
+        if n_stocks is None
+        else min(max(0, int(n_stocks)), required_count)
+    )
+    entries = []
+    for index, row in master.loc[relevant].iterrows():
+        code = str(row["code"])
+        cache_path = DATA_DIR / f"{code}.csv"
+        security_end = min(
+            end_date,
+            pd.Timestamp(delist_dates.loc[index])
+            if pd.notna(delist_dates.loc[index])
+            else end_date,
+        )
+        security_start = max(
+            window_start,
+            pd.Timestamp(list_dates.loc[index])
+            if pd.notna(list_dates.loc[index])
+            else window_start,
+        )
+        require_end_coverage = pd.notna(delist_dates.loc[index])
+        complete = _factor_history_cache_complete(
+            cache_path,
+            security_start=security_start,
+            security_end=security_end,
+            minimum_rows=min(max(1, int(days)), 60),
+            require_end_coverage=require_end_coverage,
+        )
+        entries.append(
+            (
+                code,
+                cache_path,
+                security_start,
+                security_end,
+                require_end_coverage,
+                complete,
+            )
+        )
+
+    backfilled = 0
+    failed = 0
+    usable = sum(1 for *_, complete in entries if complete)
+    errors: list[str] = []
+    if usable < minimum_usable:
+        for (
+            code,
+            cache_path,
+            security_start,
+            security_end,
+            require_end_coverage,
+            complete,
+        ) in entries:
+            if complete:
+                continue
+            try:
+                try:
+                    history = tushare_provider.fetch_kline_qfq(
+                        code,
+                        security_start.strftime("%Y%m%d"),
+                        security_end.strftime("%Y%m%d"),
+                        token=resolved_token,
+                        mode=resolved_mode,
+                    )
+                except Exception:
+                    history = None
+                history = _standardize_kline_for_cache(history)
+                if history.empty:
+                    history = _standardize_kline_for_cache(
+                        _fetch_kline_baostock(
+                            code,
+                            security_start.strftime("%Y-%m-%d"),
+                            security_end.strftime("%Y-%m-%d"),
+                        )
+                    )
+                if history is None or history.empty:
+                    raise ValueError("empty qfq history")
+                merged = merge_kline_cache(code, history)
+                if merged.empty:
+                    raise ValueError("cache merge produced no rows")
+                if not _factor_history_cache_complete(
+                    cache_path,
+                    security_start=security_start,
+                    security_end=security_end,
+                    minimum_rows=min(max(1, int(days)), 60),
+                    require_end_coverage=require_end_coverage,
+                ):
+                    raise ValueError("history remains incomplete after backfill")
+                backfilled += 1
+                usable += 1
+            except Exception as exc:
+                failed += 1
+                if len(errors) < 20:
+                    errors.append(f"{code}: {str(exc)[:160]}")
+
+    return {
+        "ok": usable >= minimum_usable,
+        "master_count": int(len(master)),
+        "history_required": required_count,
+        "history_backfilled": backfilled,
+        "history_failed": failed,
+        "history_usable": usable,
+        "history_incomplete": required_count - usable,
+        "minimum_usable": minimum_usable,
+        "errors": errors,
+        "path": str(SECURITY_MASTER_FILE),
+    }
+
+
+def refresh_factor_daily_cache(
+    days: int = 180,
+    min_required: int = 800,
+    now: datetime | None = None,
+    refresh_security_master: bool = False,
+) -> dict:
     """Refresh factor daily bars with Tushare primary and TDX fallback."""
     current = now or datetime.now()
     config = datasource_config.get_internal_config()
+    security_master_result: dict | None = None
+    if refresh_security_master:
+        if not _factor_tushare_enabled(config):
+            return {
+                "ok": False,
+                "error": "point-in-time security master requires Tushare",
+                "security_master": {"ok": False, "error": "Tushare unavailable"},
+            }
+        try:
+            security_master_result = refresh_factor_security_master_history(
+                days=days,
+                n_stocks=min_required,
+                now=current,
+                token=config.get("tushare_token"),
+                mode=config.get("tushare_mode"),
+            )
+        except Exception as exc:
+            security_master_result = {"ok": False, "error": str(exc)[:200]}
+        if not security_master_result.get("ok"):
+            return {
+                "ok": False,
+                "error": "point-in-time security master refresh failed",
+                "security_master": security_master_result,
+            }
     if not _factor_tushare_enabled(config):
         result = _refresh_factor_daily_cache_tdx(days=days, min_required=min_required, now=current)
         result.setdefault("primary_source", "tdx_daily")
@@ -879,6 +1327,47 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
             result["tushare_errors"] = tushare_errors
         return result
 
+    if refresh_security_master:
+        from analytics.factors_zoo.scorer import (
+            _load_security_master,
+            _master_sample_mask,
+            _point_in_time_pool_size,
+            _security_master_lifecycle_trusted,
+        )
+
+        security_master = _load_security_master(SECURITY_MASTER_FILE)
+        if not _security_master_lifecycle_trusted(security_master):
+            return {
+                "ok": False,
+                "error": "point-in-time security master is unavailable or untrusted",
+                "security_master": security_master_result,
+            }
+        min_history = min(max(1, int(days)), 60)
+        sample_start = source_date - pd.offsets.BDay(
+            max(int(days), min_history) + 5
+        )
+        sample_mask = _master_sample_mask(
+            security_master,
+            pd.bdate_range(sample_start, source_date),
+            _point_in_time_pool_size(min_required),
+            minimum_history=min_history,
+        )
+        required_codes = {
+            str(code)
+            for code in sample_mask.columns
+            if bool(sample_mask[code].any())
+        }
+        if not required_codes:
+            return {
+                "ok": False,
+                "error": "point-in-time security master produced an empty factor sample",
+                "security_master": security_master_result,
+            }
+        csv_paths = [
+            DATA_DIR / f"{code}.csv"
+            for code in sorted(required_codes)
+        ]
+
     source_frame = source_frame.copy()
     if "code" not in source_frame.columns:
         return {
@@ -908,10 +1397,22 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
             source_date.strftime("%Y%m%d"), token=token, mode=mode
         )
         if factor_frame is not None and not factor_frame.empty:
+            factor_frame = factor_frame.copy()
+            factor_frame["date"] = pd.to_datetime(
+                factor_frame.get("date"),
+                errors="coerce",
+            ).dt.normalize()
+            factor_frame["adj_factor"] = pd.to_numeric(
+                factor_frame.get("adj_factor"),
+                errors="coerce",
+            )
+            factor_frame = factor_frame[
+                (factor_frame["date"] == source_date)
+                & (factor_frame["adj_factor"] > 0)
+            ]
             current_factors = {
                 str(row.code): float(row.adj_factor)
                 for row in factor_frame.itertuples()
-                if pd.notna(row.adj_factor)
             }
             for compact_date in _completed_date_candidates(
                 datetime.combine((source_date - timedelta(days=1)).date(), datetime.min.time()).replace(hour=23),
@@ -928,27 +1429,48 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
                 candidate_previous_date = pd.Timestamp(previous_dates.max()).normalize()
                 if str(candidate_previous_date.date()) != previous_expected_date:
                     continue
+                previous = previous.copy()
+                previous["date"] = pd.to_datetime(
+                    previous.get("date"),
+                    errors="coerce",
+                ).dt.normalize()
+                previous["adj_factor"] = pd.to_numeric(
+                    previous.get("adj_factor"),
+                    errors="coerce",
+                )
+                previous = previous[
+                    (previous["date"] == candidate_previous_date)
+                    & (previous["adj_factor"] > 0)
+                ]
+                if previous.empty:
+                    continue
                 previous_trade_date = candidate_previous_date
                 previous_factors = {
                     str(row.code): float(row.adj_factor)
                     for row in previous.itertuples()
-                    if pd.notna(row.adj_factor)
                 }
                 break
     except Exception as exc:
         tushare_errors.append(f"adj_factor: {str(exc)[:200]}")
 
     min_history = min(max(1, int(days)), 60)
+    from analytics.factors_zoo.scorer import _has_discontinuous_price_history
+
     metadata = _load_meta()
     refreshed = 0
     already_current = 0
     failed = 0
     tushare_count = 0
     tushare_qfq_count = 0
+    baostock_qfq_count = 0
     tdx_fallback_count = 0
     adjustment_fallback_count = 0
     adjustment_repair_failed_count = 0
     gap_repair_failed_count = 0
+    continuity_repair_count = 0
+    continuity_repair_failed_count = 0
+    factor_coverage_repair_count = 0
+    factor_coverage_repair_failed_count = 0
     errors: list[str] = []
     tdx_client = None
 
@@ -975,52 +1497,143 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
             basis_date = pd.Timestamp(basis_dates.max()).normalize() if not basis_dates.empty else old_latest
             current_factor = current_factors.get(code)
             previous_factor = previous_factors.get(code)
+            factor_coverage_missing = bool(
+                current_factor is None
+                or current_factor <= 0
+                or previous_factor is None
+                or previous_factor <= 0
+            )
             factor_changed = bool(
                 current_factor
                 and previous_factor
                 and abs(current_factor - previous_factor) > max(1e-8, abs(previous_factor) * 1e-10)
             )
             has_gap = bool(previous_trade_date is not None and basis_date is not None and basis_date < previous_trade_date)
+            has_discontinuity = bool(
+                len(old_frame) >= min_history
+                and _has_discontinuous_price_history(
+                    old_frame.tail(max(int(days), min_history))
+                )
+            )
             primary_slice = source_by_code.get(code, pd.DataFrame())
+            requires_full_qfq_repair = bool(
+                factor_changed
+                or factor_coverage_missing
+                or has_discontinuity
+            )
 
-            if factor_changed or has_gap or primary_slice.empty:
+            if (
+                requires_full_qfq_repair
+                or has_gap
+                or primary_slice.empty
+            ):
                 start_date = (
                     pd.Timestamp(old_dates.min()).strftime("%Y%m%d")
-                    if factor_changed and not old_dates.empty
+                    if requires_full_qfq_repair and not old_dates.empty
                     else (
                         (old_latest + timedelta(days=1)).strftime("%Y%m%d")
                         if old_latest is not None
                         else (source_date - timedelta(days=max(365, int(days) * 2))).strftime("%Y%m%d")
                     )
                 )
-                try:
-                    qfq_frame = tushare_provider.fetch_kline_qfq(
-                        code,
-                        start_date,
-                        source_date.strftime("%Y%m%d"),
-                        token=token,
-                        mode=mode,
+                replay_mode = str(mode).lower() == "replay"
+                qfq_frame = pd.DataFrame()
+                qfq_source = ""
+                if replay_mode and fallback_enabled:
+                    qfq_frame = _standardize_kline_for_cache(
+                        _fetch_kline_baostock(
+                            code,
+                            datetime.strptime(start_date, "%Y%m%d").strftime("%Y-%m-%d"),
+                            source_date.strftime("%Y-%m-%d"),
+                        )
                     )
-                except Exception as exc:
-                    qfq_frame = None
-                    if len(errors) < 20:
-                        errors.append(f"{code} tushare qfq: {str(exc)[:120]}")
-                qfq_frame = _standardize_kline_for_cache(qfq_frame)
+                    if not qfq_frame.empty:
+                        qfq_source = "baostock_qfq"
+                if qfq_frame.empty:
+                    try:
+                        qfq_frame = tushare_provider.fetch_kline_qfq(
+                            code,
+                            start_date,
+                            source_date.strftime("%Y%m%d"),
+                            token=token,
+                            mode=mode,
+                        )
+                    except Exception as exc:
+                        qfq_frame = None
+                        if len(errors) < 20:
+                            errors.append(f"{code} tushare qfq: {str(exc)[:120]}")
+                    qfq_frame = _standardize_kline_for_cache(qfq_frame)
+                    if not qfq_frame.empty:
+                        qfq_source = (
+                            "tushare_replay_qfq"
+                            if replay_mode
+                            else "tushare_sdk_qfq"
+                        )
+                if qfq_frame.empty and fallback_enabled and not replay_mode:
+                    qfq_frame = _standardize_kline_for_cache(
+                        _fetch_kline_baostock(
+                            code,
+                            datetime.strptime(start_date, "%Y%m%d").strftime("%Y-%m-%d"),
+                            source_date.strftime("%Y-%m-%d"),
+                        )
+                    )
+                    if not qfq_frame.empty:
+                        qfq_source = "baostock_qfq"
                 if qfq_frame is not None and not qfq_frame.empty:
                     qfq_frame = qfq_frame[qfq_frame["date"] <= source_date]
+                    if requires_full_qfq_repair:
+                        qfq_dates = pd.to_datetime(
+                            qfq_frame["date"],
+                            errors="coerce",
+                        ).dropna()
+                        covers_history = bool(
+                            not qfq_dates.empty
+                            and (
+                                old_dates.empty
+                                or pd.Timestamp(qfq_dates.min()).normalize()
+                                <= pd.Timestamp(old_dates.min()).normalize()
+                            )
+                        )
+                        qfq_is_continuous = bool(
+                            len(qfq_frame) >= min_history
+                            and not _has_discontinuous_price_history(
+                                qfq_frame.tail(max(int(days), min_history))
+                            )
+                        )
+                        if not covers_history or not qfq_is_continuous:
+                            qfq_frame = pd.DataFrame()
                     if not qfq_frame.empty and pd.to_datetime(qfq_frame["date"]).max().normalize() == source_date:
                         merged = merge_kline_cache(code, qfq_frame, update_metadata=False)
-                        final_source = "tushare_replay_qfq" if str(mode).lower() == "replay" else "tushare_sdk_qfq"
+                        final_source = qfq_source
                         updated = not merged.empty
 
-            if (factor_changed or has_gap) and merged.empty:
+            if (
+                requires_full_qfq_repair
+                or has_gap
+            ) and merged.empty:
                 if factor_changed:
                     adjustment_repair_failed_count += 1
+                if factor_coverage_missing:
+                    factor_coverage_repair_failed_count += 1
                 if has_gap:
                     gap_repair_failed_count += 1
+                if has_discontinuity:
+                    continuity_repair_failed_count += 1
                 failed += 1
                 if len(errors) < 20:
-                    reason = "adjustment change" if factor_changed else "history gap"
+                    reason = (
+                        "adjustment change"
+                        if factor_changed
+                        else (
+                            "adjustment factor coverage"
+                            if factor_coverage_missing
+                            else (
+                                "history gap"
+                                if has_gap
+                                else "price discontinuity"
+                            )
+                        )
+                    )
                     errors.append(f"{code}: QFQ repair unavailable for {reason}")
                 continue
 
@@ -1079,10 +1692,20 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
 
             if final_source == "tdx_daily_fallback":
                 tdx_fallback_count += 1
+            elif final_source == "baostock_qfq":
+                baostock_qfq_count += 1
+                if factor_coverage_missing:
+                    factor_coverage_repair_count += 1
+                if has_discontinuity:
+                    continuity_repair_count += 1
             else:
                 tushare_count += 1
                 if final_source.endswith("_qfq"):
                     tushare_qfq_count += 1
+                    if factor_coverage_missing:
+                        factor_coverage_repair_count += 1
+                    if has_discontinuity:
+                        continuity_repair_count += 1
             if current_without_write:
                 already_current += 1
             elif updated:
@@ -1128,12 +1751,31 @@ def refresh_factor_daily_cache(days: int = 180, min_required: int = 800, now: da
         "failed": failed,
         "tushare_count": tushare_count,
         "tushare_qfq_count": tushare_qfq_count,
+        "baostock_qfq_count": baostock_qfq_count,
         "tdx_fallback_count": tdx_fallback_count,
         "adjustment_fallback_count": adjustment_fallback_count,
         "adjustment_repair_failed_count": adjustment_repair_failed_count,
         "gap_repair_failed_count": gap_repair_failed_count,
+        "continuity_repair_count": continuity_repair_count,
+        "continuity_repair_failed_count": continuity_repair_failed_count,
+        "factor_coverage_repair_count": factor_coverage_repair_count,
+        "factor_coverage_repair_failed_count": factor_coverage_repair_failed_count,
+        "current_factor_coverage": (
+            len(set(current_factors).intersection(path.stem for path in csv_paths))
+            / len(csv_paths)
+            if csv_paths
+            else 0.0
+        ),
+        "previous_factor_coverage": (
+            len(set(previous_factors).intersection(path.stem for path in csv_paths))
+            / len(csv_paths)
+            if csv_paths
+            else 0.0
+        ),
         "tushare_market_rows": len(source_frame),
     }
+    if security_master_result is not None:
+        result["security_master"] = security_master_result
     if tushare_errors:
         result["tushare_errors"] = tushare_errors
     if errors:
@@ -1419,7 +2061,7 @@ def _fetch_kline_baostock(code: str, start: str, end: str):
                 if lg.error_code != "0":
                     return None
                 rs = bs.query_history_k_data_plus(
-                    prefix + code, "date,open,high,low,close,volume",
+                    prefix + code, "date,open,high,low,close,volume,amount",
                     start_date=start, end_date=end,
                     frequency="d", adjustflag="2")   # 2=前复权，与腾讯源口径一致
                 rows = []
@@ -1429,9 +2071,15 @@ def _fetch_kline_baostock(code: str, start: str, end: str):
                 bs.logout()
         if not rows:
             return None
-        df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
-        for c in ("open", "high", "low", "close", "volume"):
+        df = pd.DataFrame(
+            rows,
+            columns=["date", "open", "high", "low", "close", "volume", "amount"],
+        )
+        for c in ("open", "high", "low", "close", "volume", "amount"):
             df[c] = pd.to_numeric(df[c], errors="coerce")
+        # Baostock uses shares/yuan; the cache follows Tushare lots/thousand-yuan units.
+        df["volume"] = df["volume"] / 100.0
+        df["amount"] = df["amount"] / 1000.0
         df = df.dropna(subset=["close"])
         return df if not df.empty else None
     except Exception as e:

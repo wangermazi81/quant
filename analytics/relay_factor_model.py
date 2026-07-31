@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -20,18 +22,56 @@ CANDIDATE_FACTORS = [
     "limit_count_20",
 ]
 
-MODEL_VERSION = "relay_factor_mining_v3_nested_ridge"
+MODEL_VERSION = "relay_factor_mining_v4_fixed_ridge"
 MIN_REAL_AMOUNT_COVERAGE = 0.98
 MAX_ABS_FACTOR_CORRELATION = 0.98
 MIN_VALIDATION_SAMPLE_COUNT = 10
 MIN_VALIDATION_RANK_IC = 0.01
-MODEL_CANDIDATES = (
-    {"max_factors": 3, "ridge_alpha": 0.5},
-    {"max_factors": 5, "ridge_alpha": 1.0},
-    {"max_factors": 5, "ridge_alpha": 5.0},
-)
+FIXED_MODEL_PARAMETERS = {"max_factors": 6, "ridge_alpha": 5.0}
+MODEL_SPEC_PROTOCOL_VERSION = "relay_fixed_ridge_preregistered_v3"
+MODEL_SPEC_CALIBRATED_THROUGH = "2026-07-30"
+MODEL_CANDIDATES = (FIXED_MODEL_PARAMETERS,)
 _DATE_COLUMNS = ("trade_date", "signal_date", "date")
 _EPSILON = np.finfo(float).eps
+
+FROZEN_MODEL_PAYLOAD_KEYS = (
+    "model_version",
+    "fallback",
+    "fallback_reason",
+    "selected_factors",
+    "coefficients",
+    "normalized_weights",
+    "feature_means",
+    "feature_scales",
+    "target_col",
+    "ridge_alpha",
+    "amount_data_coverage",
+    "strategy_key",
+    "training_scope",
+    "selection_source",
+    "selected_parameters",
+    "model_spec_protocol_version",
+    "model_spec_calibrated_through",
+    "validation_accepted",
+    "validation_rejection_reason",
+    "validation_stable",
+    "validation_stability_reason",
+    "selected_market_gate",
+    "fit_start",
+    "fit_end",
+    "fit_sample_count",
+    "fit_label_max_exit",
+    "validation_start",
+    "validation_end",
+    "validation_sample_count",
+    "refit_start",
+    "refit_end",
+    "refit_sample_count",
+    "refit_label_max_exit",
+    "refit_policy",
+    "frozen_model_candidate_eligible",
+    "frozen_model_candidate_reason",
+)
 
 
 def _numeric_values(frame: pd.DataFrame, column: str) -> np.ndarray:
@@ -134,11 +174,13 @@ def _prepare_factor_training(frame: pd.DataFrame, target_col: str) -> dict[str, 
 
     available_factors = [factor for factor in CANDIDATE_FACTORS if factor in frame.columns]
     amount_data_coverage = None
+    real_amount_mask: np.ndarray | None = None
     if "amount_data_real" in frame.columns:
         real_amount = frame["amount_data_real"].map(
             lambda value: value is True
             or (isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "y"})
         )
+        real_amount_mask = real_amount.to_numpy(dtype=bool)
         amount_data_coverage = float(real_amount.mean()) if len(real_amount) else 0.0
         if amount_data_coverage < MIN_REAL_AMOUNT_COVERAGE:
             available_factors = [factor for factor in available_factors if factor != "amount_ratio_20"]
@@ -161,7 +203,10 @@ def _prepare_factor_training(frame: pd.DataFrame, target_col: str) -> dict[str, 
     ranked_features: dict[str, np.ndarray] = {}
     training_ic: dict[str, float] = {}
     for factor in available_factors:
-        ranked = _percentile_by_date(_numeric_values(frame, factor), dates)
+        factor_values = _numeric_values(frame, factor)
+        if factor == "amount_ratio_20" and real_amount_mask is not None:
+            factor_values = np.where(real_amount_mask, factor_values, np.nan)
+        ranked = _percentile_by_date(factor_values, dates)
         factor_ic = _mean_daily_spearman(dates, ranked, target)
         if factor_ic is None:
             continue
@@ -298,8 +343,79 @@ def _relay_scores(frame: pd.DataFrame) -> pd.Series:
     return pd.Series(values, index=frame.index, name="factor_score", dtype=float)
 
 
-def score_factor_model(frame: pd.DataFrame, model: dict) -> pd.Series:
+def factor_model_payload(model: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(model, Mapping):
+        raise TypeError("factor model must be an object")
+    return {
+        key: model[key]
+        for key in FROZEN_MODEL_PAYLOAD_KEYS
+        if key in model
+    }
+
+
+def factor_model_digest(model: Mapping[str, Any]) -> str:
+    payload = factor_model_payload(model)
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+        default=lambda value: value.item(),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _strict_model_error(
+    frame: pd.DataFrame,
+    model: Mapping[str, Any],
+) -> str | None:
+    selected = model.get("selected_factors")
+    if (
+        model.get("fallback") is not False
+        or not isinstance(selected, (list, tuple))
+        or not selected
+        or len(set(selected)) != len(selected)
+        or any(factor not in CANDIDATE_FACTORS for factor in selected)
+    ):
+        return "frozen factor model is incomplete"
+    missing_columns = [factor for factor in selected if factor not in frame.columns]
+    if missing_columns:
+        return "missing frozen factor columns: " + ",".join(missing_columns)
+    for field in ("coefficients", "feature_means", "feature_scales"):
+        values = model.get(field)
+        if not isinstance(values, Mapping) or any(
+            factor not in values for factor in selected
+        ):
+            return "frozen factor model is incomplete"
+    for factor in selected:
+        try:
+            coefficient = float(model["coefficients"][factor])
+            mean = float(model["feature_means"][factor])
+            scale = float(model["feature_scales"][factor])
+        except (TypeError, ValueError):
+            return "frozen factor model contains invalid parameters"
+        if (
+            not np.isfinite(coefficient)
+            or not np.isfinite(mean)
+            or not np.isfinite(scale)
+            or scale <= _EPSILON
+        ):
+            return "frozen factor model contains invalid parameters"
+    return None
+
+
+def score_factor_model(
+    frame: pd.DataFrame,
+    model: dict,
+    *,
+    strict: bool = False,
+) -> pd.Series:
     """Apply a frozen model without consulting labels in the scoring frame."""
+    if strict:
+        error = _strict_model_error(frame, model)
+        if error:
+            raise ValueError(error)
     selected = list(model.get("selected_factors") or [])
     if model.get("fallback", False) or not selected:
         return _relay_scores(frame)
@@ -313,6 +429,15 @@ def score_factor_model(frame: pd.DataFrame, model: dict) -> pd.Series:
         return _relay_scores(frame)
 
     dates = _date_values(frame)
+    real_amount_mask: np.ndarray | None = None
+    if "amount_data_real" in frame.columns:
+        real_amount_mask = frame["amount_data_real"].map(
+            lambda value: value is True
+            or (
+                isinstance(value, str)
+                and value.strip().lower() in {"1", "true", "yes", "y"}
+            )
+        ).to_numpy(dtype=bool)
     scores = np.zeros(len(frame), dtype=float)
     for factor in selected:
         mean = float(means[factor])
@@ -321,7 +446,10 @@ def score_factor_model(frame: pd.DataFrame, model: dict) -> pd.Series:
         if not np.isfinite(mean) or not np.isfinite(scale) or scale <= _EPSILON or not np.isfinite(coefficient):
             return _relay_scores(frame)
 
-        ranked = _percentile_by_date(_numeric_values(frame, factor), dates)
+        factor_values = _numeric_values(frame, factor)
+        if factor == "amount_ratio_20" and real_amount_mask is not None:
+            factor_values = np.where(real_amount_mask, factor_values, np.nan)
+        ranked = _percentile_by_date(factor_values, dates)
         ranked = np.where(np.isfinite(ranked), ranked, mean)
         scores += ((ranked - mean) / scale) * coefficient
 
@@ -379,77 +507,56 @@ def select_factor_model(
     validation_frame: pd.DataFrame,
     target_col: str = "model_target_pct",
 ) -> dict[str, Any]:
-    """Select a small preregistered model family using chronological validation only."""
-    candidate_results = []
-    fitted_models = []
+    """Fit the preregistered model and report chronological validation stability."""
+    parameters = dict(FIXED_MODEL_PARAMETERS)
     prepared = _prepare_factor_training(fit_frame, target_col)
-    for parameters in MODEL_CANDIDATES:
-        model = fit_factor_model(
-            fit_frame,
-            target_col=target_col,
-            max_factors=parameters["max_factors"],
-            ridge_alpha=parameters["ridge_alpha"],
-            _prepared=prepared,
-        )
-        scores = score_factor_model(validation_frame, model)
-        diagnostics = factor_diagnostics(validation_frame, scores, target_col=target_col)
-        rank_ic = diagnostics.get("rank_ic")
-        top_return = (diagnostics.get("quantile_returns") or {}).get("5")
-        rank_value = float(rank_ic) if rank_ic is not None and np.isfinite(rank_ic) else float("-inf")
-        top_value = float(top_return) if top_return is not None and np.isfinite(top_return) else float("-inf")
-        candidate_results.append(
+    model = fit_factor_model(
+        fit_frame,
+        target_col=target_col,
+        max_factors=parameters["max_factors"],
+        ridge_alpha=parameters["ridge_alpha"],
+        _prepared=prepared,
+    )
+    scores = score_factor_model(validation_frame, model)
+    diagnostics = factor_diagnostics(validation_frame, scores, target_col=target_col)
+    sample_count = int(diagnostics.get("sample_count") or 0)
+    rank_ic = diagnostics.get("rank_ic")
+    top_return = (diagnostics.get("quantile_returns") or {}).get("5")
+    if model.get("fallback"):
+        stable = False
+        stability_reason = "validation_model_fallback"
+    elif sample_count < MIN_VALIDATION_SAMPLE_COUNT:
+        stable = False
+        stability_reason = "insufficient_validation_samples"
+    elif rank_ic is None or not np.isfinite(rank_ic) or float(rank_ic) < MIN_VALIDATION_RANK_IC:
+        stable = False
+        stability_reason = "validation_rank_ic_below_minimum"
+    elif top_return is None or not np.isfinite(top_return) or float(top_return) <= 0.0:
+        stable = False
+        stability_reason = "validation_top_quantile_non_positive"
+    else:
+        stable = True
+        stability_reason = None
+
+    return {
+        "selection_source": "fixed_preregistered_parameters",
+        "selected_parameters": parameters,
+        "model_spec_protocol_version": MODEL_SPEC_PROTOCOL_VERSION,
+        "model_spec_calibrated_through": MODEL_SPEC_CALIBRATED_THROUGH,
+        "validation_accepted": stable,
+        "validation_rejection_reason": stability_reason,
+        "validation_stable": stable,
+        "validation_stability_reason": stability_reason,
+        "validation_diagnostics": diagnostics,
+        "model": model,
+        "candidates": [
             {
-                "parameters": dict(parameters),
+                "parameters": parameters,
                 "fallback": bool(model.get("fallback")),
                 "selected_factors": list(model.get("selected_factors") or []),
                 "validation_diagnostics": diagnostics,
             }
-        )
-        fitted_models.append(
-            (
-                (
-                    rank_value,
-                    top_value,
-                    -int(parameters["max_factors"]),
-                    float(parameters["ridge_alpha"]),
-                ),
-                model,
-                dict(parameters),
-                diagnostics,
-            )
-        )
-
-    _, selected_model, selected_parameters, selected_diagnostics = max(
-        fitted_models,
-        key=lambda item: item[0],
-    )
-    sample_count = int(selected_diagnostics.get("sample_count") or 0)
-    rank_ic = selected_diagnostics.get("rank_ic")
-    top_return = (selected_diagnostics.get("quantile_returns") or {}).get("5")
-    if selected_model.get("fallback"):
-        accepted = False
-        rejection_reason = "validation_model_fallback"
-    elif sample_count < MIN_VALIDATION_SAMPLE_COUNT:
-        accepted = False
-        rejection_reason = "insufficient_validation_samples"
-    elif rank_ic is None or not np.isfinite(rank_ic) or float(rank_ic) < MIN_VALIDATION_RANK_IC:
-        accepted = False
-        rejection_reason = "validation_rank_ic_below_minimum"
-    elif top_return is None or not np.isfinite(top_return) or float(top_return) <= 0.0:
-        accepted = False
-        rejection_reason = "validation_top_quantile_non_positive"
-    else:
-        accepted = True
-        rejection_reason = None
-
-    return {
-        "selection_source": "chronological_validation",
-        "selected_parameters": selected_parameters,
-        "validation_accepted": accepted,
-        "validation_rejection_reason": rejection_reason,
-        "validation_diagnostics": selected_diagnostics,
-        "model": selected_model,
-        "candidates": candidate_results,
+        ],
     }
 
 

@@ -29,6 +29,7 @@ from web._params import _int_value
 
 
 _watchlist_guard = threading.RLock()
+WATCHLIST_BUSINESS_KEY_VERSION = 2
 
 
 def factor_mining_root() -> Path:
@@ -47,6 +48,25 @@ def _read_json_file(path: Path, default):
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return default
+
+
+def _atomic_write_json_file(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 def factor_watchlist_path() -> Path:
@@ -97,28 +117,38 @@ def _load_factor_watchlist_unlocked() -> dict:
         if isinstance(data.get("latest_scope"), dict)
         else None
     )
-    return {
+    normalized_items = []
+    migration_required = False
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        item = enrich_watchlist_identity(raw)
+        current_business_key = watchlist_business_key(item)
+        if (
+            item.get("business_key") != current_business_key
+            or item.get("business_key_version") != WATCHLIST_BUSINESS_KEY_VERSION
+        ):
+            migration_required = True
+        item["business_key"] = current_business_key
+        item["business_key_version"] = WATCHLIST_BUSINESS_KEY_VERSION
+        if not item.get("id"):
+            item["id"] = watchlist_item_id(item)
+            migration_required = True
+        normalized_items.append(item)
+    normalized = {
         "updated_at": data.get("updated_at"),
         "latest_scope": latest_scope,
-        "items": [enrich_watchlist_identity(item) for item in items if isinstance(item, dict)],
+        "items": normalized_items,
     }
+    if migration_required:
+        _save_factor_watchlist_unlocked(normalized)
+    return normalized
 
 
 def _save_factor_watchlist_unlocked(data: dict) -> None:
     path = factor_watchlist_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, path)
-    finally:
-        if temp_path.exists():
-            temp_path.unlink()
+    _atomic_write_json_file(path, data)
 
 
 @contextmanager
@@ -313,6 +343,8 @@ def sanitize_watchlist_item(raw: dict, run_id: str | None = None,
         "research_status": clean_watchlist_text(raw.get("research_status"), 20),
         "deployment_eligible": _strict_optional_bool(raw.get("deployment_eligible")),
         "research_only": _strict_optional_bool(raw.get("research_only")),
+        "is_st": _strict_optional_bool(raw.get("is_st")),
+        "st_status_known": _strict_optional_bool(raw.get("st_status_known")),
         "strategy_name": clean_watchlist_text(strategy_name or raw.get("strategy_name") or "AI因子挖掘候选", 60),
         "candidate_rank": _int_value(raw.get("candidate_rank"), None),
         "candidate_tier": clean_watchlist_text(raw.get("candidate_tier"), 20),
@@ -339,6 +371,7 @@ def sanitize_watchlist_item(raw: dict, run_id: str | None = None,
         "note": clean_watchlist_text(raw.get("note"), 240),
     }
     item["business_key"] = watchlist_business_key(item)
+    item["business_key_version"] = WATCHLIST_BUSINESS_KEY_VERSION
     item["id"] = watchlist_item_id(item)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     item["created_at"] = clean_watchlist_text(raw.get("created_at") or now, 30)
@@ -497,8 +530,7 @@ def save_ai_trade_decision(data: dict) -> None:
         if isinstance(payload, dict):
             payload = {**payload, "live_feedback_record": {"ok": False, "error": str(exc)[:160]}}
     path = ai_trade_decision_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_json_file(path, payload)
 
 
 def is_deployable_factor_candidate(item: dict) -> bool:
@@ -515,6 +547,8 @@ def is_deployable_factor_candidate(item: dict) -> bool:
         and str(item.get("research_status") or "") == "validated"
         and item.get("deployment_eligible") is True
         and item.get("research_only") is False
+        and item.get("st_status_known") is True
+        and item.get("is_st") is False
         and position_pct > 0.0
     )
 

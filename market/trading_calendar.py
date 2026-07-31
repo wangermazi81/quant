@@ -21,19 +21,25 @@ today_trades / hold_days 全按错误口径累计。
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import logging
 import threading
-from datetime import date, datetime
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 CALENDAR_FILE = Path(__file__).resolve().parent.parent / "data" / "trading_calendar.json"
+CALENDAR_COMMITMENTS_DIR = Path(__file__).resolve().parent / "calendar_commitments"
 
 _lock = threading.Lock()
 _cache: dict | None = None
 _cache_sig: tuple | None = None
 _warned_years: set[str] = set()
+CALENDAR_PROVENANCE_VERSION = "tushare_trade_cal_provenance_v1"
+CALENDAR_COMMITMENT_VERSION = "tushare_trade_calendar_commitment_v1"
 
 
 def _signature() -> tuple:
@@ -73,6 +79,180 @@ def closed_days(year: int | str) -> set[str] | None:
 
 def has_calendar(year: int | str) -> bool:
     return closed_days(year) is not None
+
+
+def calendar_provenance(year: int | str) -> dict | None:
+    raw = (load().get("provenance") or {}).get(str(year))
+    return dict(raw) if isinstance(raw, dict) else None
+
+
+def _open_days_from_closed(year: int, closed: set[str]) -> list[str]:
+    current = date(year, 1, 1)
+    end = date(year, 12, 31)
+    values: list[str] = []
+    while current <= end:
+        text = current.isoformat()
+        if current.weekday() < 5 and text not in closed:
+            values.append(text)
+        current = date.fromordinal(current.toordinal() + 1)
+    return values
+
+
+def _open_days_digest(open_days: list[str]) -> str:
+    payload = json.dumps(
+        sorted(open_days),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+@dataclass(frozen=True)
+class AuthoritativeCalendarYear:
+    year: int
+    closed_days: frozenset[str]
+    open_days_count: int
+    open_days_sha256: str
+
+
+def authoritative_year(
+    year: int | str,
+) -> AuthoritativeCalendarYear | None:
+    if isinstance(year, bool):
+        return None
+    try:
+        target = int(year)
+    except (TypeError, ValueError):
+        return None
+    path = (
+        CALENDAR_COMMITMENTS_DIR
+        / f"tushare_sse_{target}_v1.json"
+    )
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    expected_keys = {
+        "schema_version",
+        "source",
+        "exchange",
+        "year",
+        "verified_at",
+        "closed_days",
+        "open_days_count",
+        "open_days_sha256",
+    }
+    if (
+        not isinstance(raw, dict)
+        or set(raw) != expected_keys
+        or raw.get("schema_version") != CALENDAR_COMMITMENT_VERSION
+        or raw.get("source") != "tushare_trade_cal"
+        or raw.get("exchange") != "SSE"
+        or raw.get("year") != target
+    ):
+        return None
+    verified_at = raw.get("verified_at")
+    try:
+        parsed_verified_at = datetime.fromisoformat(
+            str(verified_at).replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    raw_closed_days = raw.get("closed_days")
+    if (
+        not isinstance(verified_at, str)
+        or parsed_verified_at.tzinfo is None
+        or parsed_verified_at.utcoffset() is None
+        or not isinstance(raw_closed_days, list)
+    ):
+        return None
+    closed_days: set[str] = set()
+    for value in raw_closed_days:
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.year != target or parsed.weekday() >= 5:
+            return None
+        closed_days.add(value)
+    if (
+        raw_closed_days != sorted(closed_days)
+        or not 5 <= len(closed_days) <= 40
+    ):
+        return None
+    open_days = _open_days_from_closed(target, closed_days)
+    open_days_count = raw.get("open_days_count")
+    open_days_sha256 = raw.get("open_days_sha256")
+    if (
+        isinstance(open_days_count, bool)
+        or not isinstance(open_days_count, int)
+        or open_days_count != len(open_days)
+        or not isinstance(open_days_sha256, str)
+        or not hmac.compare_digest(
+            open_days_sha256,
+            _open_days_digest(open_days),
+        )
+    ):
+        return None
+    return AuthoritativeCalendarYear(
+        year=target,
+        closed_days=frozenset(closed_days),
+        open_days_count=open_days_count,
+        open_days_sha256=open_days_sha256,
+    )
+
+
+def has_verified_calendar(year: int | str) -> bool:
+    try:
+        target = int(year)
+    except (TypeError, ValueError):
+        return False
+    closed = closed_days(target)
+    provenance = calendar_provenance(target)
+    authority = authoritative_year(target)
+    if (
+        closed is None
+        or provenance is None
+        or authority is None
+        or not 5 <= len(closed) <= 40
+        or frozenset(closed) != authority.closed_days
+    ):
+        return False
+    fetched_at = provenance.get("fetched_at")
+    if not isinstance(fetched_at, str) or not fetched_at.strip():
+        return False
+    try:
+        parsed_fetched_at = datetime.fromisoformat(
+            fetched_at.replace("Z", "+00:00")
+        )
+    except ValueError:
+        return False
+    if (
+        parsed_fetched_at.tzinfo is None
+        or parsed_fetched_at.utcoffset() is None
+    ):
+        return False
+    open_days = _open_days_from_closed(target, closed)
+    open_days_sha256 = _open_days_digest(open_days)
+    return bool(
+        provenance.get("provenance_version")
+        == CALENDAR_PROVENANCE_VERSION
+        and provenance.get("source") == "tushare_trade_cal"
+        and provenance.get("provider_mode") in {"replay", "sdk"}
+        and provenance.get("open_days_count") == len(open_days)
+        and isinstance(provenance.get("open_days_sha256"), str)
+        and hmac.compare_digest(
+            provenance["open_days_sha256"],
+            open_days_sha256,
+        )
+        and len(open_days) == authority.open_days_count
+        and hmac.compare_digest(
+            open_days_sha256,
+            authority.open_days_sha256,
+        )
+    )
 
 
 def is_trading_day(d: date | datetime | None = None) -> bool:
@@ -137,6 +317,35 @@ def refresh_from_tushare(year: int | None = None) -> dict:
     days = dict(data.get("closed_days") or {})
     days[str(target)] = closed
     data["closed_days"] = days
+    provenance = dict(data.get("provenance") or {})
+    normalized_open_days = _open_days_from_closed(target, set(closed))
+    try:
+        provider_mode = str(
+            tp.datasource_config.get_internal_config().get(
+                "tushare_mode",
+                "",
+            )
+        ).strip().lower()
+    except Exception:
+        provider_mode = ""
+    if provider_mode not in {"replay", "sdk"}:
+        return {
+            "ok": False,
+            "year": target,
+            "closed": len(closed),
+            "msg": "Tushare provider mode is unavailable",
+        }
+    provenance[str(target)] = {
+        "provenance_version": CALENDAR_PROVENANCE_VERSION,
+        "source": "tushare_trade_cal",
+        "provider_mode": provider_mode,
+        "fetched_at": datetime.now(
+            timezone(timedelta(hours=8))
+        ).isoformat(timespec="seconds"),
+        "open_days_count": len(normalized_open_days),
+        "open_days_sha256": _open_days_digest(normalized_open_days),
+    }
+    data["provenance"] = provenance
     data["updated"] = date.today().isoformat()
 
     CALENDAR_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -154,7 +363,7 @@ def refresh_from_tushare(year: int | None = None) -> dict:
 def ensure_fresh() -> None:
     """当年日历缺失时尝试补一次。供调度器启动/每日调用，失败不抛异常。"""
     year = date.today().year
-    if has_calendar(year):
+    if has_verified_calendar(year):
         return
     try:
         refresh_from_tushare(year)

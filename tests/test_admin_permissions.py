@@ -1,10 +1,12 @@
-﻿import os
-import sys
+﻿import hashlib
 import json
+import os
+import sys
 import threading
 import time
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -70,6 +72,247 @@ def _login_session(client, uid, username, is_admin=True):
         sess["user_id"] = uid
         sess["username"] = username
         sess["is_admin"] = is_admin
+
+
+def _eligible_factor_registration(relay):
+    source = relay.load_model_preregistration()
+    assert source["ok"] is True
+    record = json.loads(json.dumps(source["record"]))
+    executable_model = record["executable_model"]
+    executable_model.update(
+        {
+            "validation_accepted": True,
+            "validation_rejection_reason": None,
+            "validation_stable": True,
+            "validation_stability_reason": "ok",
+            "frozen_model_candidate_eligible": True,
+            "frozen_model_candidate_reason": "ok",
+        }
+    )
+    model_sha256 = relay.factor_model_digest(executable_model)
+    record["executable_model_sha256"] = model_sha256
+    canonical = json.dumps(
+        record,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    registration = {
+        "ok": True,
+        "reason": "ok",
+        "record": record,
+        "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "model_sha256": model_sha256,
+    }
+    registered_model = relay._registered_model_from_preregistration(
+        registration
+    )
+    registered_model["calibration_data_match"] = True
+    return registration, registered_model
+
+
+def _signed_factor_oos_evidence(
+    relay,
+    registration,
+    registered_model,
+):
+    top_k = 5
+    holding_sessions = 3
+    window_sessions = 2
+    session_dates = [
+        value.strftime("%Y-%m-%d")
+        for value in pd.bdate_range(
+            registration["record"]["oos_not_before"],
+            periods=24,
+        )
+    ]
+    attempts = []
+    trades = []
+    for session_index, trade_date in enumerate(session_dates):
+        signal_date = pd.Timestamp(trade_date)
+        entry_date = (
+            signal_date + pd.offsets.BDay(1)
+        ).strftime("%Y-%m-%d")
+        exit_date = (
+            signal_date + pd.offsets.BDay(2)
+        ).strftime("%Y-%m-%d")
+        codes = [
+            f"ADMIN{session_index:02d}{rank:02d}"
+            for rank in range(top_k)
+        ]
+        for code in codes:
+            attempts.append(
+                {
+                    "trade_date": trade_date,
+                    "ts_code": code,
+                    "entry_date": entry_date,
+                    "exit_date": exit_date,
+                    "execution_blocked": False,
+                    "forward_return_pct": 1.0,
+                    "live_adjusted_return_pct": 1.0,
+                    "valuation_path": [
+                        {
+                            "date": entry_date,
+                            "return_pct": 0.5,
+                        },
+                        {
+                            "date": exit_date,
+                            "return_pct": 1.0,
+                        },
+                    ],
+                    "exit_reason": "take_profit",
+                    "gate_pass": True,
+                }
+            )
+        trades.append(
+            {
+                "trade_date": trade_date,
+                "codes": codes,
+                "return_pct": 1.0,
+                "live_adjusted_return_pct": 1.0,
+                "research_evaluable": True,
+                "gate_pass": True,
+                "gate_reason": "gate_disabled",
+                "model_sha256": registration["model_sha256"],
+            }
+        )
+    results = relay._build_preregistered_oos_results(
+        session_dates=session_dates,
+        trades=trades,
+        attempts=attempts,
+        model=registered_model,
+        test_days=window_sessions,
+        top_k=top_k,
+        holding_sessions=holding_sessions,
+    )
+    locking_protocol = relay._build_locking_protocol(
+        config={
+            "n_stocks": 800,
+            "days": 180,
+            "train_days": 60,
+            "test_days": window_sessions,
+            "step_days": window_sessions,
+            "hold_days": holding_sessions - 1,
+            "stop_loss": -0.035,
+            "take_profit": 0.07,
+            "top_k": top_k,
+            "candidate_pool_size": 100,
+            "include_market_signals": False,
+            "model_version": relay.MODEL_VERSION,
+            "universe_selection": (
+                "point_in_time_eligible_stable_sha256_sample"
+            ),
+            "data_quality_policy": dict(
+                relay.FROZEN_DATA_QUALITY_POLICY
+            ),
+        },
+        mining_rules=relay.normalize_mining_rules(None),
+        execution_rules=relay.normalize_execution_rules(),
+    )
+    data_quality_assessment = {
+        "assessment_version": "relay_data_quality_assessment_v1",
+        "amount_data_coverage": 1.0,
+        "latest_amount_data_coverage": 1.0,
+        "st_status_coverage": 1.0,
+        "latest_st_status_coverage": 1.0,
+        "universe_eligibility_coverage": 1.0,
+        "latest_universe_eligibility_coverage": 1.0,
+        "panel_max_abs_close_return": 0.10,
+        "panel_stock_count": 800,
+        "universe_required_count": 800,
+        "status": "ok",
+        "failure_reasons": [],
+    }
+    closed_2026 = [
+        "2026-01-01",
+        "2026-01-02",
+        "2026-02-16",
+        "2026-02-17",
+        "2026-02-18",
+        "2026-02-19",
+        "2026-02-20",
+        "2026-02-23",
+        "2026-04-06",
+        "2026-05-01",
+        "2026-05-04",
+        "2026-05-05",
+        "2026-06-19",
+        "2026-09-25",
+        "2026-10-01",
+        "2026-10-02",
+        "2026-10-05",
+        "2026-10-06",
+        "2026-10-07",
+    ]
+    open_days = [
+        value.strftime("%Y-%m-%d")
+        for value in pd.bdate_range(
+            "2026-01-01",
+            "2026-12-31",
+        )
+        if value.strftime("%Y-%m-%d") not in closed_2026
+    ]
+    calendar_snapshot = relay._build_evidence_calendar_snapshot(
+        registration["record"]["oos_not_before"],
+        max(attempt["exit_date"] for attempt in attempts),
+        closed_days_by_year={"2026": closed_2026},
+        provenance_by_year={
+            "2026": {
+                "provenance_version": (
+                    "tushare_trade_cal_provenance_v1"
+                ),
+                "source": "tushare_trade_cal",
+                "provider_mode": "replay",
+                "fetched_at": "2026-07-30T16:10:00+08:00",
+                "open_days_count": len(open_days),
+                "open_days_sha256": hashlib.sha256(
+                    json.dumps(
+                        open_days,
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
+            }
+        },
+    )
+    assert calendar_snapshot is not None
+    preregistered_oos = relay._seal_preregistered_oos_evidence(
+        {
+            "evidence_version": (
+                relay.PREREGISTERED_OOS_EVIDENCE_VERSION
+            ),
+            "protocol_version": relay.MODEL_SPEC_PROTOCOL_VERSION,
+            "calibrated_through": (
+                relay.MODEL_SPEC_CALIBRATED_THROUGH
+            ),
+            "oos_not_before": registration["record"]["oos_not_before"],
+            "registration_sha256": registration["sha256"],
+            "model_sha256": registration["model_sha256"],
+            "window_count": len(results["windows"]),
+            "window_sessions": window_sessions,
+            "top_k": top_k,
+            "holding_sessions": holding_sessions,
+            "calendar_snapshot": calendar_snapshot,
+            "observation_cutoff": session_dates[-1],
+            "pending_session_dates": [],
+            "data_quality_assessment": data_quality_assessment,
+            "locking_protocol": locking_protocol,
+            "session_dates": session_dates,
+            "windows": results["windows"],
+            "trades": trades,
+            "attempts": attempts,
+            "portfolio": results["portfolio"],
+            "gated_portfolio": results["gated_portfolio"],
+        }
+    )
+    return {
+        "windows": results["windows"],
+        "portfolio": results["portfolio"],
+        "gated_portfolio": results["gated_portfolio"],
+        "registered_model": registered_model,
+        "preregistered_oos": preregistered_oos,
+        "data_quality_assessment": data_quality_assessment,
+    }
 
 
 def test_admin_page_shell_is_public_but_admin_api_still_requires_login(isolated_app):
@@ -369,11 +612,72 @@ def test_factor_mining_run_is_root_only_and_invokes_research(isolated_app, monke
         release.set()
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"n_stocks": True},
+        {"hold_days": False},
+        {"take_profit": True},
+        {"n_stocks": 10**400},
+        {"take_profit": 10**400},
+        {"days": 321},
+        ["not", "an", "object"],
+    ],
+)
+def test_factor_mining_run_rejects_invalid_numeric_json(
+    isolated_app,
+    monkeypatch,
+    body,
+):
+    app, _um, _main = isolated_app
+    import web.admin as admin_api
+
+    started = []
+
+    class DeferredThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            started.append(True)
+
+    monkeypatch.setattr(admin_api.threading, "Thread", DeferredThread)
+    with admin_api._factor_mining_jobs_lock:
+        admin_api._factor_mining_jobs.clear()
+        admin_api._factor_mining_active_task_id = None
+        admin_api._factor_mining_last_task_id = None
+
+    client = app.test_client()
+    _login_session(client, 1, "admin")
+    response = client.post(
+        "/api/admin/factor-mining/run",
+        json=body,
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["ok"] is False
+    assert started == []
+    with admin_api._factor_mining_jobs_lock:
+        assert admin_api._factor_mining_jobs == {}
+
+
 def test_factor_mining_float_bounds_reject_non_finite_values():
     import web.admin as admin_api
 
-    assert admin_api._bounded_float_value(float("nan"), -0.035, -0.20, -0.005) == -0.035
-    assert admin_api._bounded_float_value(float("inf"), 0.07, 0.005, 0.30) == 0.07
+    with pytest.raises(ValueError, match="finite"):
+        admin_api._strict_bounded_float_value(
+            float("nan"),
+            -0.035,
+            -0.20,
+            -0.005,
+        )
+    with pytest.raises(ValueError, match="finite"):
+        admin_api._strict_bounded_float_value(
+            float("inf"),
+            0.07,
+            0.005,
+            0.30,
+        )
 
 
 def test_root_admin_can_lock_query_and_cancel_a_prospective_factor_experiment(
@@ -386,6 +690,17 @@ def test_root_admin_can_lock_query_and_cancel_a_prospective_factor_experiment(
     import web.admin as admin_api
     from analytics import relay_factor_mining as relay
 
+    registration, registered_model = _eligible_factor_registration(relay)
+    monkeypatch.setattr(
+        relay,
+        "load_model_preregistration",
+        lambda: registration,
+    )
+    monkeypatch.setattr(
+        relay,
+        "_research_evidence_key",
+        lambda: b"test-research-evidence-key",
+    )
     monkeypatch.setattr(admin_api, "BASE_DIR", tmp_path)
     run_dir = (
         tmp_path
@@ -395,44 +710,40 @@ def test_root_admin_can_lock_query_and_cancel_a_prospective_factor_experiment(
         / "run-lockable"
     )
     run_dir.mkdir(parents=True)
+    evidence = _signed_factor_oos_evidence(
+        relay,
+        registration,
+        registered_model,
+    )
+    assessment = relay.assess_research_result(evidence)
+    assert assessment["lock_eligible"] is True
+    windows = evidence["windows"]
+    portfolio = evidence["portfolio"]
+    preregistered_oos = evidence["preregistered_oos"]
     report = {
         "status": "ok",
         "data_status": "ok",
-        "generated_at": "2026-07-29 17:10:00",
+        "generated_at": "2026-07-30 23:50:00",
         "research_status": "exploratory",
-        "research_assessment": {
-            "metric_gate_passed": True,
-            "lock_eligible": True,
-            "oos_total_return_pct": 8.0,
-            "oos_max_drawdown_pct": -5.0,
-            "executed_trade_count": 150,
-            "bootstrap_total_return_ci_pct": {"lower": 1.0},
+        "research_assessment": assessment,
+        "model": registered_model,
+        "config": preregistered_oos["locking_protocol"]["config"],
+        "mining_rules": preregistered_oos["locking_protocol"][
+            "mining_rules"
+        ],
+        "execution_rules": preregistered_oos["locking_protocol"][
+            "execution_rules"
+        ],
+        "summary": {
+            "latest_trade_date": preregistered_oos[
+                "observation_cutoff"
+            ],
+            **evidence["data_quality_assessment"],
         },
-        "model": {
-            "model_version": "relay_factor_mining_v3_nested_ridge",
-            "strategy_key": relay.STRATEGY_KEY,
-            "fallback": False,
-            "validation_accepted": True,
-            "selected_factors": ["ret_5"],
-            "coefficients": {"ret_5": 1.0},
-            "feature_means": {"ret_5": 0.5},
-            "feature_scales": {"ret_5": 0.25},
-            "selected_market_gate": {"enabled": False},
-        },
-        "config": {
-            "n_stocks": 800,
-            "days": 180,
-            "hold_days": 2,
-            "stop_loss": -0.035,
-            "take_profit": 0.07,
-            "top_k": 10,
-            "candidate_pool_size": 100,
-            "include_market_signals": False,
-            "universe_selection": "point_in_time_eligible_stable_sha256_sample",
-            "data_quality_policy": {"minimum_real_amount_coverage": 0.95},
-        },
-        "mining_rules": relay.normalize_mining_rules(None),
-        "summary": {"latest_trade_date": "2026-07-29"},
+        "windows": windows,
+        "portfolio": portfolio,
+        "gated_portfolio": portfolio,
+        "preregistered_oos": preregistered_oos,
     }
     (run_dir / "walkforward_report.json").write_text(
         json.dumps(report, ensure_ascii=False),
@@ -454,6 +765,7 @@ def test_root_admin_can_lock_query_and_cancel_a_prospective_factor_experiment(
     assert locked_response.status_code == 201
     assert locked["ok"] is True
     assert locked["experiment"]["status"] == "locked_shadow"
+    assert locked["experiment"]["protocol_verified"] is True
     assert locked["experiment"]["manifest"]["source_run_id"] == "run-lockable"
     assert locked["progress"]["observed_sessions"] == 0
 
@@ -469,14 +781,14 @@ def test_root_admin_can_lock_query_and_cancel_a_prospective_factor_experiment(
     assert [item["experiment_id"] for item in active["experiments"]] == [
         locked["experiment"]["experiment_id"]
     ]
-    assert active["experiments"][0]["progress"]["required_sessions"] == 20
+    assert active["experiments"][0]["progress"]["required_sessions"] == 60
 
     detail = client.get(
         "/api/admin/factor-mining/experiments/"
         + locked["experiment"]["experiment_id"]
         + "/prospective"
     ).get_json()
-    assert detail["progress"]["required_sessions"] == 20
+    assert detail["progress"]["required_sessions"] == 60
     assert detail["sessions"] == []
 
     cancelled = client.post(
@@ -726,6 +1038,8 @@ def test_factor_watchlist_import_update_delete_is_root_only(isolated_app, monkey
             "research_status": "validated",
             "deployment_eligible": True,
             "research_only": False,
+            "is_st": False,
+            "st_status_known": True,
             "live_readiness_status": "ready",
             "position_pct": 0.1,
             "stop_loss": -0.055,
@@ -835,6 +1149,8 @@ def test_ai_trade_decision_is_root_only_and_updates_watchlist(isolated_app, monk
             "research_status": "validated",
             "deployment_eligible": True,
             "research_only": False,
+            "is_st": False,
+            "st_status_known": True,
             "live_readiness_status": "ready",
             "position_pct": 0.1,
         },
@@ -849,6 +1165,8 @@ def test_ai_trade_decision_is_root_only_and_updates_watchlist(isolated_app, monk
             "research_status": "validated",
             "deployment_eligible": True,
             "research_only": False,
+            "is_st": False,
+            "st_status_known": True,
             "live_readiness_status": "ready",
             "position_pct": 0.1,
         },

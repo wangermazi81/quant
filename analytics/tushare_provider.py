@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import importlib
 import logging
+import math
 import os
 import threading
 import time
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 import requests
@@ -31,6 +32,11 @@ REPLAY_BASE_URL_ENV = "TUSHARE_REPLAY_BASE_URL"
 VALID_MODES = {"replay", "sdk"}
 VALID_MINUTE_FREQS = {"1MIN", "5MIN", "15MIN", "30MIN", "60MIN"}
 REALTIME_REPLAY_TIMEOUT = 4
+REPLAY_DAILY_CHUNK_DAYS = 366
+STOCK_BASIC_PAGE_SIZE = 1000
+STOCK_BASIC_MAX_LIMIT = 10000
+STOCK_BASIC_MAX_PAGE_REQUESTS = 100
+_BAOSTOCK_MASTER_LOCK = threading.Lock()
 
 
 def _ts_code(code: str) -> str:
@@ -272,58 +278,151 @@ def _five_level_side(row: dict, side: str) -> list[dict]:
 
 
 def _apply_qfq(daily: pd.DataFrame, factors: pd.DataFrame | None) -> pd.DataFrame:
-    if factors is None or factors.empty or "adj_factor" not in factors.columns:
-        return daily
+    error = "QFQ requires exactly one valid adjustment factor per daily trade date"
+    if (
+        daily is None
+        or daily.empty
+        or "trade_date" not in daily.columns
+        or factors is None
+        or factors.empty
+        or "trade_date" not in factors.columns
+        or "adj_factor" not in factors.columns
+    ):
+        raise ValueError(error)
     data = daily.copy()
     fac = factors[["trade_date", "adj_factor"]].copy()
+    data["_qfq_trade_date"] = pd.to_datetime(data["trade_date"], errors="coerce").dt.normalize()
+    fac["_qfq_trade_date"] = pd.to_datetime(fac["trade_date"], errors="coerce").dt.normalize()
     fac["adj_factor"] = pd.to_numeric(fac["adj_factor"], errors="coerce")
-    fac = fac.dropna(subset=["trade_date", "adj_factor"])
-    if fac.empty:
-        return data
-    data = data.merge(fac, on="trade_date", how="left")
-    data = data.sort_values("trade_date").reset_index(drop=True)
-    latest = data["adj_factor"].dropna().iloc[-1] if not data["adj_factor"].dropna().empty else None
-    if not latest or latest <= 0:
-        return data.drop(columns=["adj_factor"], errors="ignore")
+    invalid_factor = (
+        fac["adj_factor"].isna()
+        | ~fac["adj_factor"].map(math.isfinite)
+        | fac["adj_factor"].le(0)
+    )
+    if (
+        data["_qfq_trade_date"].isna().any()
+        or data["_qfq_trade_date"].duplicated().any()
+        or fac["_qfq_trade_date"].isna().any()
+        or fac["_qfq_trade_date"].duplicated().any()
+        or invalid_factor.any()
+        or len(data) != len(fac)
+        or set(data["_qfq_trade_date"]) != set(fac["_qfq_trade_date"])
+    ):
+        raise ValueError(error)
+    data = data.merge(
+        fac[["_qfq_trade_date", "adj_factor"]],
+        on="_qfq_trade_date",
+        how="left",
+        validate="one_to_one",
+    )
+    data = data.sort_values("_qfq_trade_date").reset_index(drop=True)
+    latest = data["adj_factor"].iloc[-1]
     ratio = data["adj_factor"] / latest
     for col in ("open", "high", "low", "close"):
         data[col] = pd.to_numeric(data[col], errors="coerce") * ratio
-    return data.drop(columns=["adj_factor"], errors="ignore")
+    return data.drop(columns=["_qfq_trade_date", "adj_factor"], errors="ignore")
 
 
 def _fetch_replay_kline_qfq(code: str, start: str, end: str, token: str) -> pd.DataFrame | None:
     ts_code = _ts_code(code)
     start_date = _date_text(start)
     end_date = _date_text(end)
-    daily_rows = _replay_get(
-        "daily",
-        token,
-        {
-            "ts_code": ts_code,
-            "start_date": start_date,
-            "end_date": end_date,
-            "fields": "ts_code,trade_date,open,high,low,close,vol",
-        },
-    )
+    start_dt = datetime.strptime(start_date, "%Y%m%d")
+    end_dt = datetime.strptime(end_date, "%Y%m%d")
+    if start_dt > end_dt:
+        return None
+
+    chunks: list[tuple[str, str]] = []
+    chunk_start = start_dt
+    while chunk_start <= end_dt:
+        chunk_end = min(
+            chunk_start + timedelta(days=REPLAY_DAILY_CHUNK_DAYS),
+            end_dt,
+        )
+        chunks.append(
+            (
+                chunk_start.strftime("%Y%m%d"),
+                chunk_end.strftime("%Y%m%d"),
+            )
+        )
+        chunk_start = chunk_end + timedelta(days=1)
+
+    daily_rows: list[dict] = []
+    factor_rows: list[dict] = []
+    factor_error: Exception | None = None
+    for chunk_start, chunk_end in chunks:
+        daily_rows.extend(
+            _replay_get(
+                "daily",
+                token,
+                {
+                    "ts_code": ts_code,
+                    "start_date": chunk_start,
+                    "end_date": chunk_end,
+                    "fields": "ts_code,trade_date,open,high,low,close,vol,amount",
+                },
+            )
+        )
+        try:
+            factor_rows.extend(
+                _replay_get(
+                    "adj_factor",
+                    token,
+                    {
+                        "ts_code": ts_code,
+                        "start_date": chunk_start,
+                        "end_date": chunk_end,
+                        "fields": "ts_code,trade_date,adj_factor",
+                    },
+                )
+            )
+        except Exception as exc:
+            factor_error = exc
     if not daily_rows:
         return None
-    daily = pd.DataFrame(daily_rows)
-    try:
-        factor_rows = _replay_get(
-            "adj_factor",
-            token,
-            {
-                "ts_code": ts_code,
-                "start_date": start_date,
-                "end_date": end_date,
-                "fields": "ts_code,trade_date,adj_factor",
-            },
+    daily = pd.DataFrame(daily_rows).drop_duplicates("trade_date", keep="last")
+    expected_daily_rows = len(daily)
+    if factor_error is not None:
+        logger.error(
+            "[tushare] rejected replay daily history without adjustment factors: %s",
+            factor_error,
         )
+        return None
+    if not factor_rows:
+        logger.error(
+            "[tushare] rejected replay daily history with empty adjustment factors for %s",
+            ts_code,
+        )
+        return None
+    try:
         daily = _apply_qfq(daily, pd.DataFrame(factor_rows))
-    except Exception as e:
-        # 复权因子获取/应用失败 → 返回未复权价（回测价格会失真，必须留痕）
-        logger.warning(f"[tushare] 复权处理失败，返回未复权日线: {e}")
-    return _normalize_daily_frame(daily)
+    except ValueError as exc:
+        logger.error(
+            "[tushare] rejected replay QFQ history for %s: %s",
+            ts_code,
+            exc,
+        )
+        return None
+    normalized = _normalize_daily_frame(daily)
+    if (
+        normalized is None
+        or normalized.empty
+        or len(normalized) != expected_daily_rows
+    ):
+        logger.error(
+            "[tushare] rejected incomplete replay QFQ history for %s: expected %s rows",
+            ts_code,
+            expected_daily_rows,
+        )
+        return None
+    close = pd.to_numeric(normalized["close"], errors="coerce")
+    if bool(close.pct_change(fill_method=None).abs().gt(0.35).any()):
+        logger.error(
+            "[tushare] rejected discontinuous replay QFQ history for %s",
+            ts_code,
+        )
+        return None
+    return normalized
 
 
 # ── 日线进程内 TTL 缓存 ───────────────────────────────────────────────
@@ -531,6 +630,15 @@ def fetch_full_market_realtime_daily(
     data = pd.DataFrame(rows)
     if data.empty:
         return _normalize_full_market_daily_frame(None)
+    # rt_k reports shares/yuan; daily reports lots/thousand-yuan.
+    volume_column = "volume" if "volume" in data.columns else "vol"
+    if volume_column in data.columns:
+        data[volume_column] = pd.to_numeric(
+            data[volume_column],
+            errors="coerce",
+        ) / 100.0
+    if "amount" in data.columns:
+        data["amount"] = pd.to_numeric(data["amount"], errors="coerce") / 1000.0
     data["trade_date"] = _date_text(source_trade_date)
     return _normalize_full_market_daily_frame(data)
 
@@ -701,6 +809,420 @@ def query_replay_api(
     if df is None or getattr(df, "empty", True):
         return []
     return df.to_dict("records")
+
+
+def _strict_security_master_date(
+    value: Any,
+    *,
+    field: str,
+    allow_empty: bool = False,
+) -> str:
+    text = str(value or "").strip().replace("-", "")
+    if not text and allow_empty:
+        return ""
+    if len(text) != 8 or not text.isdigit():
+        raise RuntimeError(
+            f"baostock lifecycle returned invalid {field}"
+        )
+    try:
+        datetime.strptime(text, "%Y%m%d")
+    except ValueError as exc:
+        raise RuntimeError(
+            f"baostock lifecycle returned invalid {field}"
+        ) from exc
+    return text
+
+
+def _validate_baostock_security_lifecycle(
+    rows: list[dict],
+) -> list[dict]:
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("baostock lifecycle is empty")
+
+    normalized: list[dict] = []
+    seen_codes: set[str] = set()
+    seen_ts_codes: set[str] = set()
+    coverage: set[tuple[str, str]] = set()
+    for raw in rows:
+        if not isinstance(raw, Mapping):
+            raise RuntimeError("baostock lifecycle returned invalid row")
+        code = str(raw.get("code") or "").strip()
+        ts_code = str(raw.get("ts_code") or "").strip().upper()
+        exchange = str(raw.get("exchange") or "").strip().upper()
+        if not exchange and "." in ts_code:
+            exchange = ts_code.rsplit(".", 1)[-1]
+        expected_ts_code = f"{code}.{exchange}"
+        if (
+            len(code) != 6
+            or not code.isdigit()
+            or exchange not in {"SH", "SZ"}
+            or ts_code != expected_ts_code
+            or code in seen_codes
+            or ts_code in seen_ts_codes
+        ):
+            raise RuntimeError(
+                "baostock lifecycle returned invalid or repeated security"
+            )
+
+        list_status = str(
+            raw.get("list_status") or ""
+        ).strip().upper()
+        if list_status not in {"L", "D"}:
+            raise RuntimeError(
+                "baostock lifecycle returned invalid list status"
+            )
+        list_date = _strict_security_master_date(
+            raw.get("list_date"),
+            field="list_date",
+        )
+        delist_date = _strict_security_master_date(
+            raw.get("delist_date"),
+            field="delist_date",
+            allow_empty=list_status == "L",
+        )
+        if (
+            (list_status == "L" and delist_date)
+            or (
+                list_status == "D"
+                and (
+                    not delist_date
+                    or delist_date < list_date
+                )
+            )
+        ):
+            raise RuntimeError(
+                "baostock lifecycle returned inconsistent lifecycle dates"
+            )
+
+        seen_codes.add(code)
+        seen_ts_codes.add(ts_code)
+        coverage.add((exchange, list_status))
+        normalized.append(
+            {
+                "code": code,
+                "ts_code": ts_code,
+                "name": str(raw.get("name") or "").strip(),
+                "list_date": list_date,
+                "delist_date": delist_date,
+                "list_status": list_status,
+                "exchange": exchange,
+            }
+        )
+
+    required_coverage = {
+        ("SH", "L"),
+        ("SH", "D"),
+        ("SZ", "L"),
+        ("SZ", "D"),
+    }
+    if not required_coverage.issubset(coverage):
+        raise RuntimeError(
+            "baostock lifecycle is missing SH/SZ listed or delisted coverage"
+        )
+    return sorted(normalized, key=lambda row: row["ts_code"])
+
+
+def _fetch_baostock_security_lifecycle() -> list[dict]:
+    try:
+        import baostock as bs
+    except Exception as exc:
+        raise RuntimeError(
+            "baostock lifecycle provider is unavailable"
+        ) from exc
+
+    with _BAOSTOCK_MASTER_LOCK:
+        try:
+            login = bs.login()
+        except Exception as exc:
+            raise RuntimeError(
+                "baostock lifecycle login failed"
+            ) from exc
+        if str(getattr(login, "error_code", "")) != "0":
+            raise RuntimeError(
+                "baostock lifecycle login failed: "
+                f"{getattr(login, 'error_msg', '')}"
+            )
+        try:
+            result = bs.query_stock_basic()
+            if str(getattr(result, "error_code", "")) != "0":
+                raise RuntimeError(
+                    "baostock lifecycle query failed: "
+                    f"{getattr(result, 'error_msg', '')}"
+                )
+            rows: list[dict] = []
+            while True:
+                if str(getattr(result, "error_code", "")) != "0":
+                    raise RuntimeError(
+                        "baostock lifecycle cursor failed: "
+                        f"{getattr(result, 'error_msg', '')}"
+                    )
+                if not result.next():
+                    break
+                raw = dict(zip(result.fields, result.get_row_data()))
+                if str(raw.get("type") or "") != "1":
+                    continue
+                raw_code = str(raw.get("code") or "").strip().lower()
+                if not raw_code.startswith(("sh.", "sz.")):
+                    continue
+                exchange_text, code = raw_code.split(".", 1)
+                if len(code) != 6 or not code.isdigit():
+                    raise RuntimeError(
+                        "baostock lifecycle returned invalid security code"
+                    )
+                raw_status = str(raw.get("status") or "").strip()
+                if raw_status not in {"0", "1"}:
+                    raise RuntimeError(
+                        "baostock lifecycle returned invalid status"
+                    )
+                exchange = exchange_text.upper()
+                rows.append(
+                    {
+                        "code": code,
+                        "ts_code": f"{code}.{exchange}",
+                        "name": str(raw.get("code_name") or "").strip(),
+                        "list_date": raw.get("ipoDate"),
+                        "delist_date": raw.get("outDate"),
+                        "list_status": "D" if raw_status == "0" else "L",
+                        "exchange": exchange,
+                    }
+                )
+            if str(getattr(result, "error_code", "")) != "0":
+                raise RuntimeError(
+                    "baostock lifecycle cursor failed: "
+                    f"{getattr(result, 'error_msg', '')}"
+                )
+            return _validate_baostock_security_lifecycle(rows)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                "baostock lifecycle query failed"
+            ) from exc
+        finally:
+            try:
+                bs.logout()
+            except Exception:
+                pass
+
+
+def _latest_completed_trade_date(
+    snapshot_now: datetime,
+    token: str | None,
+    mode: str | None,
+) -> str:
+    completed_through = (
+        snapshot_now
+        if snapshot_now.hour >= 15
+        else snapshot_now - timedelta(days=1)
+    )
+    calendar_start = completed_through - timedelta(days=31)
+    trade_dates = fetch_trade_calendar(
+        calendar_start.strftime("%Y%m%d"),
+        completed_through.strftime("%Y%m%d"),
+        token=token,
+        mode=mode,
+    )
+    completed_limit = completed_through.strftime("%Y%m%d")
+    completed_dates = {
+        _date_text(value)
+        for value in trade_dates
+        if len(_date_text(value)) == 8
+        and _date_text(value).isdigit()
+        and _date_text(value) <= completed_limit
+    }
+    if not completed_dates:
+        raise RuntimeError(
+            "cannot verify latest completed trade date for security master snapshot"
+        )
+    return max(completed_dates)
+
+
+def _fetch_stock_basic_pages(
+    status: str,
+    fields: str,
+    token: str | None,
+    mode: str | None,
+) -> tuple[list[dict], int]:
+    limit = STOCK_BASIC_PAGE_SIZE
+    max_limit = max(STOCK_BASIC_PAGE_SIZE, STOCK_BASIC_MAX_LIMIT)
+    previous_rows: dict[str, dict] | None = None
+    previous_was_full = False
+    for request_count in range(1, STOCK_BASIC_MAX_PAGE_REQUESTS + 1):
+        page = query_replay_api(
+            "stock_basic",
+            {
+                "list_status": status,
+                "fields": fields,
+                "limit": limit,
+                "offset": 0,
+            },
+            token=token,
+            mode=mode,
+            timeout=15,
+        )
+        if len(page) > limit:
+            raise RuntimeError(
+                f"stock_basic pagination exceeded requested page size for {status}"
+            )
+
+        current_rows: dict[str, dict] = {}
+        for row in page:
+            code = _plain_code(
+                str(
+                    row.get("ts_code")
+                    or row.get("symbol")
+                    or row.get("code")
+                    or ""
+                )
+            )
+            if (
+                len(code) != 6
+                or not code.isdigit()
+                or code in current_rows
+            ):
+                raise RuntimeError(
+                    f"stock_basic pagination returned invalid or repeated rows for {status}"
+                )
+            current_rows[code] = dict(row)
+
+        if previous_rows is not None:
+            previous_codes = set(previous_rows)
+            current_codes = set(current_rows)
+            if (
+                len(current_rows) < len(previous_rows)
+                or not previous_codes.issubset(current_codes)
+                or any(
+                    current_rows[code] != previous_rows[code]
+                    for code in previous_codes & current_codes
+                )
+            ):
+                raise RuntimeError(
+                    f"stock_basic pagination returned unstable rows for {status}"
+                )
+            if current_rows == previous_rows:
+                if previous_was_full:
+                    raise RuntimeError(
+                        f"stock_basic pagination appears server-capped for {status}"
+                    )
+                return page, request_count
+
+        current_was_full = len(page) == limit
+        if current_was_full and limit >= max_limit:
+            raise RuntimeError(
+                f"stock_basic pagination reached maximum limit for {status}"
+            )
+
+        previous_rows = current_rows
+        previous_was_full = current_was_full
+        limit = min(limit * 2, max_limit)
+
+    raise RuntimeError(
+        f"stock_basic pagination did not terminate for {status}"
+    )
+
+
+def fetch_security_master(
+    token: str | None = None,
+    mode: str | None = None,
+    statuses: tuple[str, ...] = ("L", "D", "P"),
+) -> list[dict]:
+    fields = (
+        "ts_code,symbol,name,area,industry,market,"
+        "list_date,delist_date,list_status"
+    )
+    snapshot_now = datetime.now()
+    snapshot_trade_date = _latest_completed_trade_date(
+        snapshot_now,
+        token,
+        mode,
+    )
+    lifecycle_rows = _validate_baostock_security_lifecycle(
+        _fetch_baostock_security_lifecycle()
+    )
+    profiles: dict[str, dict] = {}
+    page_requests = 0
+    for status in statuses:
+        try:
+            rows, status_page_requests = _fetch_stock_basic_pages(
+                status,
+                fields,
+                token,
+                mode,
+            )
+        except RuntimeError as exc:
+            logger.warning(
+                "[security-master] optional tushare profile failed "
+                "for %s: %s",
+                status,
+                exc,
+            )
+            continue
+        page_requests += status_page_requests
+        for row in rows:
+            code = _plain_code(
+                str(row.get("ts_code") or row.get("symbol") or row.get("code") or "")
+            )
+            if len(code) != 6 or not code.isdigit():
+                continue
+            if code in profiles:
+                logger.warning(
+                    "[security-master] ignored repeated optional "
+                    "tushare profile for %s",
+                    code,
+                )
+                continue
+            profiles[code] = {
+                "code": code,
+                "ts_code": row.get("ts_code") or _ts_code(code),
+                "name": str(row.get("name") or "").strip(),
+                "industry": str(row.get("industry") or "").strip(),
+                "area": str(row.get("area") or "").strip(),
+                "market": str(row.get("market") or "").strip(),
+                "list_date": str(row.get("list_date") or "").strip(),
+                "delist_date": str(row.get("delist_date") or "").strip(),
+                "list_status": str(row.get("list_status") or status).strip().upper(),
+                "source": "tushare_stock_basic",
+            }
+
+    normalized: dict[str, dict] = {}
+    for lifecycle in lifecycle_rows:
+        code = str(lifecycle["code"])
+        profile = profiles.get(code, {})
+        normalized[code] = {
+            **lifecycle,
+            "name": str(
+                profile.get("name") or lifecycle.get("name") or ""
+            ).strip(),
+            "industry": str(profile.get("industry") or "").strip(),
+            "area": str(profile.get("area") or "").strip(),
+            "market": str(profile.get("market") or "").strip(),
+            "source": (
+                "tushare_stock_basic+baostock_stock_basic"
+                if profile
+                else "baostock_stock_basic"
+            ),
+        }
+
+    snapshot_at = snapshot_now.isoformat(timespec="seconds")
+    row_count = len(normalized)
+    for row in normalized.values():
+        row.update(
+            {
+                "lifecycle_source": "baostock_stock_basic",
+                "lifecycle_snapshot_complete": True,
+                "universe_scope": "sh_sz_a_share",
+                "snapshot_at": snapshot_at,
+                "security_master_pagination_complete": True,
+                "security_master_page_requests": 1,
+                "security_master_row_count": row_count,
+                "security_master_snapshot_complete": True,
+                "security_master_snapshot_trade_date": snapshot_trade_date,
+                "tushare_profile_snapshot_complete": False,
+                "tushare_profile_page_requests": page_requests,
+                "tushare_profile_row_count": len(profiles),
+            }
+        )
+    return [normalized[code] for code in sorted(normalized)]
 
 
 def fetch_stock_basic(

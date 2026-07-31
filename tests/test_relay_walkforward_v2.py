@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -99,7 +100,7 @@ def test_walk_forward_reports_cash_aware_portfolio_metrics():
     assert summary["portfolio_min_cash"] >= 0.0
 
 
-def test_walk_forward_ranks_unlabeled_oos_feature_as_blocked_attempt():
+def test_walk_forward_marks_unlabeled_oos_feature_as_unevaluable():
     features, labels, dates = _purge_fixture()
     labels = labels[
         ~(
@@ -118,12 +119,43 @@ def test_walk_forward_ranks_unlabeled_oos_feature_as_blocked_attempt():
 
     first_trade = next(item for item in result["trades"] if item["trade_date"] == dates[8])
     assert first_trade["codes"] == ["AAA"]
-    assert first_trade["blocked_count"] == 1
+    assert first_trade["research_evaluable"] is False
+    assert first_trade["skip_reason"] == "missing_forward_execution_path"
+    assert first_trade["blocked_count"] == 0
     assert first_trade["executable_count"] == 0
-    assert first_trade["live_adjusted_return_pct"] == 0.0
+    assert first_trade["live_adjusted_return_pct"] is None
+    assert result["summary"]["unevaluable_oos_days"] == 1
+    assert result["summary"]["unevaluable_oos_slots"] == 1
 
 
-def test_walk_forward_keeps_fully_unlabeled_last_mature_feature_date():
+def test_walk_forward_excludes_selected_pending_exit_from_oos_evidence():
+    features, labels, dates = _purge_fixture()
+    pending = (labels["trade_date"] == dates[8]) & (labels["ts_code"] == "AAA")
+    labels.loc[pending, "forward_return_pct"] = np.nan
+    labels.loc[pending, "live_adjusted_return_pct"] = np.nan
+    labels.loc[pending, "model_target_pct"] = np.nan
+    labels.loc[pending, "exit_date"] = None
+    labels.loc[pending, "execution_blocked"] = False
+    labels.loc[pending, "label_status"] = "entered_pending_exit"
+    labels.loc[pending, "research_evaluable"] = False
+
+    result = relay.walk_forward_relay(
+        features,
+        labels,
+        train_days=8,
+        test_days=4,
+        top_k=1,
+    )
+
+    first_trade = next(item for item in result["trades"] if item["trade_date"] == dates[8])
+    assert first_trade["codes"] == ["AAA"]
+    assert first_trade["research_evaluable"] is False
+    assert first_trade["skip_reason"] == "entered_pending_exit"
+    assert result["summary"]["unevaluable_oos_days"] == 1
+    assert result["summary"]["unevaluable_oos_slots"] == 1
+
+
+def test_walk_forward_marks_fully_unlabeled_last_mature_feature_date_unevaluable():
     features, labels, dates = _purge_fixture()
     labels["holding_sessions"] = 3
     labels = labels[labels["trade_date"] < dates[11]].copy()
@@ -138,8 +170,40 @@ def test_walk_forward_keeps_fully_unlabeled_last_mature_feature_date():
 
     last_trade = next(item for item in result["trades"] if item["trade_date"] == dates[11])
     assert last_trade["codes"] == ["AAA"]
-    assert last_trade["blocked_count"] == 1
+    assert last_trade["research_evaluable"] is False
+    assert last_trade["skip_reason"] == "missing_forward_execution_path"
+    assert last_trade["blocked_count"] == 0
     assert last_trade["executable_count"] == 0
+    assert result["summary"]["unevaluable_oos_days"] == 1
+    assert result["summary"]["unevaluable_oos_slots"] == 1
+
+
+def test_walk_forward_keeps_untrusted_oos_session_and_fails_it_closed():
+    features, labels, dates = _purge_fixture()
+    features["market_data_trusted"] = True
+    features.loc[
+        features["trade_date"] == dates[8],
+        "market_data_trusted",
+    ] = False
+
+    result = relay.walk_forward_relay(
+        features,
+        labels,
+        train_days=8,
+        test_days=4,
+        top_k=1,
+    )
+
+    first_window = result["windows"][0]
+    first_trade = next(
+        item for item in result["trades"] if item["trade_date"] == dates[8]
+    )
+    assert first_window["test_start"] == dates[8]
+    assert first_window["test_end"] == dates[11]
+    assert first_window["untrusted_oos_sessions"] == 1
+    assert first_trade["research_evaluable"] is False
+    assert first_trade["skip_reason"] == "untrusted_market_data"
+    assert result["summary"]["untrusted_oos_sessions"] == 1
 
 
 def _model_fixture() -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
@@ -189,10 +253,10 @@ def test_walk_forward_fits_factor_model_without_reading_test_labels():
     assert first_model["coefficients"] == changed_model["coefficients"]
     assert first_model["feature_means"] == changed_model["feature_means"]
     assert first_model["feature_scales"] == changed_model["feature_scales"]
-    assert first_model["selection_source"] == "chronological_validation"
+    assert first_model["selection_source"] == "fixed_preregistered_parameters"
     assert first_model["selected_parameters"] == changed_model["selected_parameters"]
     assert first_model["validation_accepted"] is True
-    assert first_model["refit_policy"] == "selected_hyperparameters_on_full_purged_train"
+    assert first_model["refit_policy"] == "fixed_parameters_on_full_purged_train"
     assert first_model["refit_end"] == dates[11]
     assert baseline["windows"][0]["validation_diagnostics"]["rank_ic"] > 0
     assert baseline["windows"][0]["test_diagnostics"]["rank_ic"] > 0
@@ -203,7 +267,7 @@ def test_walk_forward_fits_factor_model_without_reading_test_labels():
     assert "selected_market_gate_rate" in baseline["summary"]
 
 
-def test_walk_forward_marks_model_rejected_when_validation_signal_reverses():
+def test_walk_forward_rejects_model_when_validation_reverses():
     features, labels, dates = _model_fixture()
     labels.loc[labels["trade_date"].isin(dates[9:12]), "model_target_pct"] *= -1.0
 
@@ -218,8 +282,9 @@ def test_walk_forward_marks_model_rejected_when_validation_signal_reverses():
     model = result["windows"][0]["model"]
     assert model["validation_accepted"] is False
     assert model["validation_rejection_reason"] == "validation_rank_ic_below_minimum"
+    assert model["validation_stable"] is False
+    assert model["validation_stability_reason"] == "validation_rank_ic_below_minimum"
     assert result["windows"][0]["gated_live_trade_count"] == 0
-    assert result["windows"][0]["gated_live_total_return_pct"] == 0.0
 
 
 def test_walk_forward_purges_fit_labels_that_touch_validation_window():

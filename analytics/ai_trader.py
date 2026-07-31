@@ -1444,6 +1444,8 @@ class _Engine:
                 continue
             if "market_gate_blocked" in (raw.get("live_warning_keys") or []):
                 continue
+            if raw.get("st_status_known") is not True or raw.get("is_st") is not False:
+                continue
             ts_code = str(raw.get("ts_code") or raw.get("code") or "").strip().upper()
             code = str(raw.get("code") or ts_code.split(".")[0]).strip()
             if not code or code in seen:

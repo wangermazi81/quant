@@ -23,7 +23,9 @@ DB_PATH.parent.mkdir(exist_ok=True)
 
 DEFAULT_COMMISSION_RATE = 0.0003
 DEFAULT_MIN_COMMISSION  = 5.0
-DEFAULT_TAX_RATE        = 0.001
+DEFAULT_TAX_RATE        = 0.0005
+LEGACY_DEFAULT_TAX_RATE = 0.001
+TAX_RATE_POLICY_VERSION = "cn_stamp_tax_20230828_v1"
 DEFAULT_SLIPPAGE_BPS    = 3
 DEFAULT_STOP_LOSS       = -0.05
 DEFAULT_TAKE_PROFIT     = 0.10
@@ -105,6 +107,7 @@ def _init_paper_db_unlocked():
     CREATE TABLE IF NOT EXISTS paper_trades (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id     INTEGER NOT NULL DEFAULT 0,
+        owner_user_id INTEGER,
         code        TEXT    NOT NULL,
         name        TEXT    DEFAULT '',
         buy_time    TEXT    NOT NULL,
@@ -137,6 +140,7 @@ def _init_paper_db_unlocked():
         buy_amount  REAL    NOT NULL,
         trade_id    INTEGER,
         strategy    TEXT    DEFAULT '',
+        display_pnl_scale REAL NOT NULL DEFAULT 1.0,
         PRIMARY KEY (user_id, code)
     );
 
@@ -149,6 +153,16 @@ def _init_paper_db_unlocked():
         drawdown   REAL    DEFAULT 0,
         PRIMARY KEY (user_id, snap_date)
     );
+
+    CREATE TABLE IF NOT EXISTS paper_capital_flows (
+        user_id   INTEGER NOT NULL DEFAULT 0,
+        event_key TEXT    NOT NULL,
+        flow_time TEXT    NOT NULL,
+        flow_date TEXT    NOT NULL,
+        flow_type TEXT    NOT NULL,
+        amount    REAL    NOT NULL,
+        PRIMARY KEY (user_id, event_key)
+    );
     """
     con = sqlite3.connect(str(DB_PATH), timeout=10)
     con.execute("PRAGMA journal_mode=WAL")
@@ -156,7 +170,14 @@ def _init_paper_db_unlocked():
     position_cols = {row[1] for row in con.execute("PRAGMA table_info(paper_positions)")}
     if "strategy" not in position_cols:
         con.execute("ALTER TABLE paper_positions ADD COLUMN strategy TEXT DEFAULT ''")
+    if "display_pnl_scale" not in position_cols:
+        con.execute(
+            "ALTER TABLE paper_positions"
+            " ADD COLUMN display_pnl_scale REAL NOT NULL DEFAULT 1.0"
+        )
     trade_cols = {row[1] for row in con.execute("PRAGMA table_info(paper_trades)")}
+    if "owner_user_id" not in trade_cols:
+        con.execute("ALTER TABLE paper_trades ADD COLUMN owner_user_id INTEGER")
     for column in (
         "strategy_key",
         "model_version",
@@ -195,6 +216,7 @@ class PaperBroker:
     def _ensure_user_config(self):
         """首次使用时为该用户初始化默认配置"""
         con = self._conn()
+        con.execute("BEGIN IMMEDIATE")
         existing = con.execute(
             "SELECT key FROM paper_config WHERE user_id=? AND key='cash'",
             (self._uid,),
@@ -207,6 +229,7 @@ class PaperBroker:
                 "commission_rate": str(DEFAULT_COMMISSION_RATE),
                 "min_commission":  str(DEFAULT_MIN_COMMISSION),
                 "tax_rate":        str(DEFAULT_TAX_RATE),
+                "tax_rate_policy_version": TAX_RATE_POLICY_VERSION,
                 "slippage_bps":    str(DEFAULT_SLIPPAGE_BPS),
                 "stop_loss":       str(DEFAULT_STOP_LOSS),
                 "take_profit":     str(DEFAULT_TAKE_PROFIT),
@@ -225,20 +248,137 @@ class PaperBroker:
                 (self._uid,),
             ).fetchall()
             cfg = {r["key"]: r["value"] for r in cfg_rows}
+            if "tax_rate_policy_version" not in cfg:
+                current_tax = float(
+                    cfg.get("tax_rate") or LEGACY_DEFAULT_TAX_RATE
+                )
+                if current_tax == LEGACY_DEFAULT_TAX_RATE:
+                    self._set_cfg(con, "tax_rate", DEFAULT_TAX_RATE)
+                self._set_cfg(
+                    con,
+                    "tax_rate_policy_version",
+                    TAX_RATE_POLICY_VERSION,
+                )
             if "pnl_base_capital" not in cfg:
                 old_initial = float(cfg.get("initial_capital") or DEFAULT_INITIAL_CAPITAL)
                 current_cash = float(cfg.get("cash") or 0.0)
                 current_peak = float(cfg.get("peak_equity") or old_initial)
-                self._set_cfg(con, "pnl_base_capital", old_initial)
+                display_scale = (
+                    DEFAULT_INITIAL_CAPITAL / old_initial
+                    if 0 < old_initial < DEFAULT_INITIAL_CAPITAL
+                    else 1.0
+                )
+                if display_scale != 1.0:
+                    con.execute(
+                        "UPDATE paper_positions SET display_pnl_scale=?"
+                        " WHERE user_id=?",
+                        (display_scale, self._uid),
+                    )
+                self._set_cfg(
+                    con,
+                    "pnl_base_capital",
+                    DEFAULT_INITIAL_CAPITAL,
+                )
                 if old_initial < DEFAULT_INITIAL_CAPITAL:
                     delta = DEFAULT_INITIAL_CAPITAL - old_initial
+                    flow_date = datetime.now().strftime("%Y-%m-%d")
+                    new_peak = max(
+                        current_peak + delta,
+                        DEFAULT_INITIAL_CAPITAL,
+                    )
+                    self._record_legacy_capital_flow(
+                        con,
+                        delta,
+                        flow_date,
+                    )
+                    con.execute(
+                        "UPDATE paper_equity SET"
+                        " cash=ROUND(cash+?,2),equity=ROUND(equity+?,2),"
+                        " drawdown=CASE WHEN ?>0"
+                        " THEN ROUND(((equity+?)-?)/?*100,4) ELSE 0 END"
+                        " WHERE user_id=? AND snap_date=?",
+                        (
+                            delta,
+                            delta,
+                            new_peak,
+                            delta,
+                            new_peak,
+                            new_peak,
+                            self._uid,
+                            flow_date,
+                        ),
+                    )
                     self._set_cfg(con, "initial_capital", DEFAULT_INITIAL_CAPITAL)
                     self._set_cfg(con, "cash", round(current_cash + delta, 2))
-                    self._set_cfg(con, "peak_equity", max(current_peak + delta, DEFAULT_INITIAL_CAPITAL))
-                con.commit()
+                    self._set_cfg(con, "peak_equity", new_peak)
+            else:
+                legacy_base = float(
+                    cfg.get("pnl_base_capital") or DEFAULT_INITIAL_CAPITAL
+                )
+                if 0 < legacy_base < DEFAULT_INITIAL_CAPITAL:
+                    delta = DEFAULT_INITIAL_CAPITAL - legacy_base
+                    con.execute(
+                        "UPDATE paper_positions SET display_pnl_scale=?"
+                        " WHERE user_id=? AND display_pnl_scale=1.0",
+                        (DEFAULT_INITIAL_CAPITAL / legacy_base, self._uid),
+                    )
+                    self._record_legacy_capital_flow(
+                        con,
+                        delta,
+                        self._infer_legacy_capital_flow_date(con, delta),
+                    )
+                    self._set_cfg(
+                        con,
+                        "pnl_base_capital",
+                        DEFAULT_INITIAL_CAPITAL,
+                    )
+            con.commit()
         con.close()
 
     # ── 配置 ─────────────────────────────────────────
+    def _infer_legacy_capital_flow_date(
+        self,
+        con: sqlite3.Connection,
+        amount: float,
+    ) -> str:
+        rows = con.execute(
+            "SELECT snap_date,equity FROM paper_equity"
+            " WHERE user_id=? ORDER BY snap_date",
+            (self._uid,),
+        ).fetchall()
+        best_match = None
+        for previous, current in zip(rows, rows[1:]):
+            residual = abs(
+                (float(current["equity"]) - float(previous["equity"])) - amount
+            )
+            if best_match is None or residual < best_match[0]:
+                best_match = (residual, current["snap_date"])
+        if best_match and best_match[0] <= max(abs(amount) * 0.25, 1.0):
+            return best_match[1]
+        if rows and float(rows[0]["equity"]) >= DEFAULT_INITIAL_CAPITAL * 0.75:
+            return rows[0]["snap_date"]
+        return datetime.now().strftime("%Y-%m-%d")
+
+    def _record_legacy_capital_flow(
+        self,
+        con: sqlite3.Connection,
+        amount: float,
+        flow_date: str,
+    ):
+        con.execute(
+            "INSERT OR IGNORE INTO paper_capital_flows("
+            "user_id,event_key,flow_time,flow_date,flow_type,amount"
+            ") VALUES(?,?,?,?,?,?)",
+            (
+                self._uid,
+                "legacy_initial_capital_to_1000000_v1",
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                flow_date,
+                "deposit",
+                round(float(amount), 2),
+            ),
+        )
+
     def _cfg(self, key: str, typ=float):
         con = self._conn()
         row = con.execute(
@@ -349,13 +489,7 @@ class PaperBroker:
                 (cur_prices or {}).get(p["code"], p["cost_price"]) * p["shares"]
                 for p in positions
             )
-            scaled_position_value = sum(
-                p["buy_amount"] + self._scale_pnl_amount(
-                    ((cur_prices or {}).get(p["code"], p["cost_price"]) - p["cost_price"]) * p["shares"]
-                )
-                for p in positions
-            )
-            equity = cash + scaled_position_value
+            equity = cash + mval
             peak = self._cfg("peak_equity") or equity
             if equity > peak:
                 peak = equity
@@ -402,7 +536,9 @@ class PaperBroker:
         slip = self._cfg("slippage_bps") or DEFAULT_SLIPPAGE_BPS
         comm = self._cfg("commission_rate") or DEFAULT_COMMISSION_RATE
         minc = self._cfg("min_commission") or DEFAULT_MIN_COMMISSION
-        tax  = self._cfg("tax_rate") or DEFAULT_TAX_RATE
+        tax = self._cfg("tax_rate")
+        if tax is None:
+            tax = DEFAULT_TAX_RATE
         exec_price = round(signal_price * (1 - slip / 10000), 4)
         if price_floor and price_floor > 0:
             exec_price = max(exec_price, round(float(price_floor), 4))
@@ -518,10 +654,15 @@ class PaperBroker:
                 "source_run_id",
             )
         }
+        try:
+            owner_user_id = int(attribution.get("user_id"))
+        except (TypeError, ValueError):
+            owner_user_id = None
         position_strategy = attribution_values["strategy_key"] or strategy or ""
 
         with self._lock:
             con = self._conn()
+            con.execute("BEGIN IMMEDIATE")
             cash_row = con.execute(
                 "SELECT value FROM paper_config WHERE user_id=? AND key='cash'",
                 (self._uid,),
@@ -549,12 +690,13 @@ class PaperBroker:
 
             cur = con.execute(
                 "INSERT INTO paper_trades"
-                "(user_id,code,name,buy_time,buy_price,shares,buy_cost,"
+                "(user_id,owner_user_id,code,name,buy_time,buy_price,shares,buy_cost,"
                 "strategy_key,model_version,experiment_id,model_instance_id,"
                 "watchlist_id,source_run_id)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    self._uid, code, name, now_str, exec_price, shares, round(total_cost, 2),
+                    self._uid, owner_user_id, code, name, now_str, exec_price,
+                    shares, round(total_cost, 2),
                     attribution_values["strategy_key"],
                     attribution_values["model_version"],
                     attribution_values["experiment_id"],
@@ -611,13 +753,18 @@ class PaperBroker:
                 "source_run_id",
             )
         }
+        try:
+            owner_user_id = int(attribution.get("user_id"))
+        except (TypeError, ValueError):
+            owner_user_id = None
         with self._lock:
             con = self._conn()
             con.execute(
-                "UPDATE paper_trades SET strategy_key=?,model_version=?,experiment_id=?,"
+                "UPDATE paper_trades SET owner_user_id=?,strategy_key=?,model_version=?,experiment_id=?,"
                 "model_instance_id=?,watchlist_id=?,source_run_id=?"
                 " WHERE id=? AND user_id=?",
                 (
+                    owner_user_id,
                     values["strategy_key"],
                     values["model_version"],
                     values["experiment_id"],
@@ -729,9 +876,9 @@ class PaperBroker:
             now_str   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             buy_cost  = pos["buy_amount"]
             raw_pnl   = round(net_income - buy_cost, 2)
-            pnl       = self._scale_pnl_amount(raw_pnl)
+            pnl       = raw_pnl
             pnl_pct   = round(raw_pnl / buy_cost * 100, 4) if buy_cost > 0 else 0
-            new_cash  = round(cash + buy_cost + pnl, 2)
+            new_cash  = round(cash + net_income, 2)
             # buy_time 损坏时不能让整笔卖出崩掉：上面的 T+1 检查已经容错放行了，
             # 这里若再裸 strptime 就会抛 ValueError，结果是这笔持仓根本卖不出去
             # （前端只看到 500/异常，而不是一句可读的失败原因）。持有天数退化为 0。
@@ -859,13 +1006,7 @@ class PaperBroker:
         # 这样账户权益/收益率能体现浮动盈亏，实现实时收益跟踪。
         cur_prices = cur_prices or {}
         mval = sum((cur_prices.get(p["code"]) or p["cost_price"]) * p["shares"] for p in positions)
-        scaled_position_value = sum(
-            p["buy_amount"] + self._scale_pnl_amount(
-                ((cur_prices.get(p["code"]) or p["cost_price"]) - p["cost_price"]) * p["shares"]
-            )
-            for p in positions
-        )
-        equity  = round(cash + scaled_position_value, 2)
+        equity  = round(cash + mval, 2)
         return {
             "initial_capital": initial,
             "cash":            round(cash, 2),
@@ -901,7 +1042,11 @@ class PaperBroker:
             shares     = r["shares"]
             cur_price  = (cur_prices or {}).get(code, cost_price)
             pnl_pct    = round((cur_price - cost_price) / cost_price * 100, 2) if cost_price else 0
-            pnl_amt    = self._scale_pnl_amount((cur_price - cost_price) * shares)
+            display_scale = float(r["display_pnl_scale"] or 1.0)
+            pnl_amt = round(
+                (cur_price - cost_price) * shares * display_scale,
+                2,
+            )
             hold_days  = (datetime.now() - datetime.strptime(r["buy_time"][:10], "%Y-%m-%d")).days
             # 防御：名称含 ? / 空 / 与 code 相同 / 长度 <2，则从 stock_names.json 重新查询
             nm = r["name"]
@@ -978,7 +1123,13 @@ class PaperBroker:
             (self._uid,),
         ).fetchall()
         equity_rows = con.execute(
-            "SELECT equity FROM paper_equity WHERE user_id=? ORDER BY snap_date",
+            "SELECT snap_date,equity FROM paper_equity"
+            " WHERE user_id=? ORDER BY snap_date",
+            (self._uid,),
+        ).fetchall()
+        capital_flows = con.execute(
+            "SELECT flow_date,amount FROM paper_capital_flows"
+            " WHERE user_id=? ORDER BY flow_date",
             (self._uid,),
         ).fetchall()
         init_row = con.execute(
@@ -1006,29 +1157,92 @@ class PaperBroker:
         avg_pnl       = round(sum(pnls) / len(pnls), 2)
         avg_hold      = round(sum(holds) / len(holds), 1) if holds else 0
 
-        equities = [r["equity"] for r in equity_rows]
+        equities = [float(row["equity"]) for row in equity_rows]
+        daily_returns = []
         max_dd = 0.0
-        if equities:
-            peak = equities[0]
-            for eq in equities:
-                if eq > peak:
-                    peak = eq
-                dd = (eq - peak) / peak * 100 if peak > 0 else 0
-                if dd < max_dd:
-                    max_dd = dd
-        total_ret = round((equities[-1] - initial) / initial * 100, 4) if equities else 0.0
+        if capital_flows and equity_rows:
+            flows_by_date = {}
+            total_external = 0.0
+            for flow in capital_flows:
+                amount = float(flow["amount"])
+                flow_date = flow["flow_date"]
+                flows_by_date[flow_date] = (
+                    flows_by_date.get(flow_date, 0.0) + amount
+                )
+                total_external += amount
+
+            performance_initial = initial - total_external
+            if performance_initial <= 0:
+                performance_initial = initial
+            first_date = equity_rows[0]["snap_date"]
+            first_external = sum(
+                amount
+                for flow_date, amount in flows_by_date.items()
+                if flow_date <= first_date
+            )
+            nav = (
+                (equities[0] - first_external) / performance_initial
+                if performance_initial > 0
+                else 1.0
+            )
+            nav_curve = [1.0, nav]
+            previous_date = first_date
+            previous_equity = equities[0]
+            for row, equity in zip(equity_rows[1:], equities[1:]):
+                snap_date = row["snap_date"]
+                external = sum(
+                    amount
+                    for flow_date, amount in flows_by_date.items()
+                    if previous_date < flow_date <= snap_date
+                )
+                if previous_equity > 0:
+                    daily_return = (
+                        equity - previous_equity - external
+                    ) / previous_equity
+                    daily_returns.append(daily_return)
+                    nav *= 1 + daily_return
+                    nav_curve.append(nav)
+                previous_date = snap_date
+                previous_equity = equity
+
+            peak = nav_curve[0]
+            for point in nav_curve:
+                peak = max(peak, point)
+                drawdown = (point - peak) / peak * 100 if peak > 0 else 0.0
+                max_dd = min(max_dd, drawdown)
+            total_ret = round((nav_curve[-1] - 1) * 100, 4)
+        else:
+            if equities:
+                peak = equities[0]
+                for equity in equities:
+                    if equity > peak:
+                        peak = equity
+                    drawdown = (
+                        (equity - peak) / peak * 100 if peak > 0 else 0.0
+                    )
+                    if drawdown < max_dd:
+                        max_dd = drawdown
+            total_ret = (
+                round((equities[-1] - initial) / initial * 100, 4)
+                if equities
+                else 0.0
+            )
+            daily_returns = [
+                (equities[index] - equities[index - 1])
+                / equities[index - 1]
+                for index in range(1, len(equities))
+                if equities[index - 1] > 0
+            ]
 
         # Sharpe：优先用净值曲线的日收益序列年化（正确口径）；
         # 净值点不足时退回单笔收益近似（仅作参考）
         sharpe = 0.0
         import statistics
-        if len(equities) >= 3:
-            rets = [(equities[i] - equities[i-1]) / equities[i-1]
-                    for i in range(1, len(equities)) if equities[i-1] > 0]
-            if len(rets) >= 2:
-                mu, std = statistics.mean(rets), statistics.stdev(rets)
-                if std > 0:
-                    sharpe = round(mu / std * (252 ** 0.5), 4)
+        if len(daily_returns) >= 2:
+            mu = statistics.mean(daily_returns)
+            std = statistics.stdev(daily_returns)
+            if std > 0:
+                sharpe = round(mu / std * (252 ** 0.5), 4)
         elif len(pnl_pcts) >= 2:
             mu  = statistics.mean(pnl_pcts)
             std = statistics.stdev(pnl_pcts)
@@ -1056,7 +1270,13 @@ class PaperBroker:
             cap = float(initial_capital or self._cfg("initial_capital") or DEFAULT_INITIAL_CAPITAL)
             cap = round(min(max(cap, MIN_RESET_CAPITAL), MAX_RESET_CAPITAL), 2)
             con = self._conn()
-            for tbl in ("paper_orders", "paper_trades", "paper_positions", "paper_equity"):
+            for tbl in (
+                "paper_orders",
+                "paper_trades",
+                "paper_positions",
+                "paper_equity",
+                "paper_capital_flows",
+            ):
                 con.execute(f"DELETE FROM {tbl} WHERE user_id=?", (self._uid,))
             for k, v in [("cash", cap), ("initial_capital", cap),
                          ("pnl_base_capital", DEFAULT_INITIAL_CAPITAL), ("peak_equity", cap)]:

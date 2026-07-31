@@ -2,6 +2,8 @@ import json
 import threading
 import time
 
+import pytest
+
 from core import factor_watchlist as fw
 
 
@@ -25,6 +27,8 @@ def _validated_candidate(code, **overrides):
         "research_status": "validated",
         "deployment_eligible": True,
         "research_only": False,
+        "is_st": False,
+        "st_status_known": True,
         "live_readiness_status": "ready",
         "position_pct": 0.1,
         **overrides,
@@ -81,6 +85,37 @@ def test_save_uses_atomic_replace(monkeypatch, tmp_path):
     assert source.parent == target.parent
     assert target == fw.factor_watchlist_path()
     assert json.loads(target.read_text(encoding="utf-8"))["items"][0]["ts_code"] == "000001.SZ"
+
+
+def test_ai_decision_atomic_replace_failure_preserves_previous_file(
+    monkeypatch, tmp_path
+):
+    import app_state
+    from analytics import live_factor_feedback
+
+    monkeypatch.setattr(app_state, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(
+        live_factor_feedback,
+        "record_ai_decision",
+        lambda payload: {"ok": True, "recorded": 1},
+    )
+    path = fw.ai_trade_decision_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    previous = {"generated_at": "2026-07-29 09:25:00", "results": []}
+    path.write_text(json.dumps(previous), encoding="utf-8")
+
+    def fail_replace(_source, _target):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(fw.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="simulated replace failure"):
+        fw.save_ai_trade_decision(
+            {"generated_at": "2026-07-30 09:25:00", "results": []}
+        )
+
+    assert fw.load_ai_trade_decision() == previous
+    assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
 
 
 def test_legacy_candidate_without_trade_date_imports_without_replacing_scope(
@@ -189,6 +224,43 @@ def test_ai_candidate_loader_fails_closed_for_legacy_and_rejected_items(monkeypa
     )
 
     assert fw.factor_watchlist_candidates(max_candidates=6) == []
+
+
+@pytest.mark.parametrize("st_fields", [{"is_st": False, "st_status_known": False}, {}])
+def test_ai_candidate_loader_rejects_unknown_st_status(
+    monkeypatch,
+    tmp_path,
+    st_fields,
+):
+    import app_state
+
+    monkeypatch.setattr(app_state, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(
+        fw,
+        "_expected_scope_trade_date",
+        lambda: "2026-07-27",
+    )
+    candidate = _validated_candidate("000001.SZ")
+    candidate.pop("is_st", None)
+    candidate.pop("st_status_known", None)
+    candidate.update(st_fields)
+    stored = fw.import_factor_candidates_to_watchlist(
+        [candidate],
+        run_id="run-unknown-st",
+    )["items"][0]
+
+    assert "is_st" in stored
+    assert "st_status_known" in stored
+    assert stored["is_st"] is st_fields.get("is_st")
+    assert stored["st_status_known"] is st_fields.get("st_status_known")
+    assert fw.factor_watchlist_candidates(max_candidates=6) == []
+    assert (
+        fw.authoritative_watchlist_candidates(
+            [{"id": stored["id"]}],
+            max_candidates=6,
+        )
+        == []
+    )
 
 
 def test_ai_candidate_loader_rejects_validated_claim_without_frozen_experiment_identity(
@@ -320,3 +392,39 @@ def test_same_code_from_different_runs_keeps_immutable_watchlist_history(monkeyp
     assert "market_gate_blocked" in next(
         item for item in stored if item["source_run_id"] == "run-1"
     )["live_warning_keys"]
+
+
+def test_legacy_business_key_is_migrated_before_candidate_merge(
+    monkeypatch, tmp_path
+):
+    import app_state
+
+    monkeypatch.setattr(app_state, "BASE_DIR", tmp_path)
+    legacy = {
+        **_validated_candidate("000001.SZ"),
+        "id": "legacy-watchlist-id",
+        "source_run_id": "run-legacy",
+        "business_key": "000001.SZ|2026-07-27",
+        "business_key_version": 1,
+        "status": "watch",
+        "note": "preserve this decision",
+    }
+    path = fw.factor_watchlist_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"items": [legacy]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = fw.import_factor_candidates_to_watchlist(
+        [_validated_candidate("000001.SZ")],
+        run_id="run-legacy",
+    )
+
+    assert result["total"] == 1
+    item = result["items"][0]
+    assert item["id"] == "legacy-watchlist-id"
+    assert item["status"] == "watch"
+    assert item["note"] == "preserve this decision"
+    assert item["business_key_version"] == 2
+    assert item["business_key"] == fw.watchlist_business_key(item)

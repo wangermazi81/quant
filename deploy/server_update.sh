@@ -97,7 +97,7 @@ ensure_data_scheduler_service() {
     fi
     sed -i "s|/opt/quant|$APP_DIR|g" "$unit_dst"
     systemctl daemon-reload
-    systemctl enable --now quant-scheduler >/dev/null 2>&1 || true
+    systemctl enable quant-scheduler >/dev/null 2>&1 || true
 }
 
 ensure_platform_scheduler_split() {
@@ -115,6 +115,36 @@ EOF
     systemctl daemon-reload
 }
 
+verify_scheduler_quiescence() {
+    "$APP_DIR/venv/bin/python" \
+        "$APP_DIR/deploy/check_scheduler_quiescence.py" \
+        --app-dir "$APP_DIR" \
+        --web-service "$SERVICE"
+}
+
+quiesce_legacy_schedulers() {
+    if [ "$(id -u)" != "0" ]; then
+        echo "ERROR: scheduler protocol migration requires root privileges."
+        exit 1
+    fi
+
+    if data_scheduler_service_exists; then
+        systemctl stop quant-scheduler
+        if systemctl is-active --quiet quant-scheduler; then
+            echo "ERROR: quant-scheduler did not stop cleanly."
+            exit 1
+        fi
+    fi
+
+    ensure_platform_scheduler_split
+    systemctl restart "$SERVICE"
+    verify_scheduler_quiescence
+    echo "Stopped legacy data schedulers before protocol migration."
+}
+
+echo "[0/6] Quiesce legacy schedulers"
+quiesce_legacy_schedulers
+
 echo "[1/6] Pull latest code from Gitee"
 git fetch origin --prune
 LOCAL=$(git rev-parse HEAD)
@@ -127,12 +157,10 @@ sync_nginx_anti_crawl
 
 if [ "$LOCAL" = "$REMOTE" ]; then
     secure_runtime_secrets "$RUN_USER"
-    ensure_platform_scheduler_split
-    systemctl restart "$SERVICE"
-    echo "Restarted $SERVICE to apply scheduler split."
     ensure_data_scheduler_service
     if data_scheduler_service_exists; then
-        systemctl restart quant-scheduler
+        verify_scheduler_quiescence
+        systemctl start quant-scheduler
         echo "Restarted quant-scheduler (data schedulers)."
     fi
     echo "Code is already up to date."
@@ -174,6 +202,7 @@ ensure_platform_scheduler_split
 ensure_data_scheduler_service
 systemctl restart "$SERVICE"
 if data_scheduler_service_exists; then
+    verify_scheduler_quiescence
     systemctl restart quant-scheduler
     echo "Restarted quant-scheduler (data schedulers)."
 fi

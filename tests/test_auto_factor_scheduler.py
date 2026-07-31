@@ -1,8 +1,15 @@
 # -*- coding: utf-8 -*-
+import errno
 import json
+import os
+import subprocess
+import sys
+import time
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
+import pytest
 
 
 def _isolate_scheduler(monkeypatch, tmp_path):
@@ -13,6 +20,960 @@ def _isolate_scheduler(monkeypatch, tmp_path):
     monkeypatch.setattr(scheduler, "STATUS_PATH", root / "auto_scheduler_status.json")
     monkeypatch.setattr(scheduler, "LOCK_PATH", root / "auto_scheduler.lock")
     return scheduler, root
+
+
+def _structured_lock(
+    *,
+    pid=4321,
+    process_start_token="start-1",
+    nonce="nonce-1",
+    created_at="2026-07-31 09:30:00",
+):
+    return {
+        "pid": pid,
+        "process_start_token": process_start_token,
+        "nonce": nonce,
+        "created_at": created_at,
+    }
+
+
+def _write_structured_lock(scheduler, payload):
+    scheduler.LOCK_PATH.write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+
+def _start_scheduler_lock_process(root, mode):
+    ready_path = root / f"child-{mode}.json"
+    script = """
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from analytics import auto_factor_scheduler as scheduler
+
+root = Path(sys.argv[1])
+ready_path = Path(sys.argv[2])
+mode = sys.argv[3]
+scheduler.ROOT = root
+scheduler.STATUS_PATH = root / "auto_scheduler_status.json"
+scheduler.LOCK_PATH = root / "auto_scheduler.lock"
+with scheduler._file_lock() as acquired:
+    ready_path.write_text(
+        json.dumps({"acquired": acquired, "pid": os.getpid()}),
+        encoding="utf-8",
+    )
+    if not acquired:
+        raise SystemExit(2)
+    if mode == "crash":
+        os._exit(17)
+    time.sleep(60)
+"""
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            script,
+            str(root),
+            str(ready_path),
+            mode,
+        ],
+        cwd=Path(__file__).resolve().parent.parent,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if ready_path.exists():
+            return process, json.loads(
+                ready_path.read_text(encoding="utf-8")
+            )
+        if process.poll() is not None:
+            break
+        time.sleep(0.05)
+    _stdout, stderr = process.communicate(timeout=5)
+    raise AssertionError(
+        f"scheduler lock child did not become ready: {stderr}"
+    )
+
+
+def test_file_lock_writes_structured_process_identity(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_token",
+        lambda pid: f"start-{pid}",
+        raising=False,
+    )
+
+    with scheduler._file_lock() as acquired:
+        assert acquired is True
+        payload = json.loads(
+            scheduler.LOCK_PATH.read_text(encoding="utf-8")
+        )
+
+        assert set(payload) == {
+            "pid",
+            "process_start_token",
+            "nonce",
+            "created_at",
+            "guard_protocol",
+        }
+        assert payload["pid"] == scheduler.os.getpid()
+        assert payload["process_start_token"] == (
+            f"start-{scheduler.os.getpid()}"
+        )
+        assert isinstance(payload["nonce"], str) and payload["nonce"]
+        assert payload["guard_protocol"] == (
+            "scheduler_kernel_guard_v1"
+        )
+        datetime.strptime(
+            payload["created_at"],
+            "%Y-%m-%d %H:%M:%S",
+        )
+
+
+def test_structured_lock_detects_reused_pid(monkeypatch, tmp_path):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    _write_structured_lock(
+        scheduler,
+        _structured_lock(process_start_token="old-process"),
+    )
+    monkeypatch.setattr(scheduler, "_pid_exists", lambda pid: True)
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_token",
+        lambda pid: "new-process",
+        raising=False,
+    )
+
+    assert scheduler._unlink_stale_lock() is True
+    assert not scheduler.LOCK_PATH.exists()
+
+
+def test_live_structured_lock_is_preserved_even_when_old(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    _write_structured_lock(scheduler, _structured_lock())
+    lock_mtime = scheduler.LOCK_PATH.stat().st_mtime
+    monkeypatch.setattr(
+        scheduler.time,
+        "time",
+        lambda: lock_mtime + 10_000,
+    )
+    monkeypatch.setattr(scheduler, "_pid_exists", lambda pid: True)
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_token",
+        lambda pid: "start-1",
+        raising=False,
+    )
+
+    assert scheduler._unlink_stale_lock(max_age_seconds=1) is False
+    assert scheduler.LOCK_PATH.exists()
+
+
+def test_file_lock_does_not_release_replacement_lock(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_token",
+        lambda pid: "owner-start",
+        raising=False,
+    )
+    replacement = _structured_lock(
+        pid=scheduler.os.getpid(),
+        process_start_token="owner-start",
+        nonce="replacement-nonce",
+    )
+
+    with scheduler._file_lock() as acquired:
+        assert acquired is True
+        _write_structured_lock(scheduler, replacement)
+
+    assert json.loads(
+        scheduler.LOCK_PATH.read_text(encoding="utf-8")
+    ) == replacement
+
+
+def test_stale_cleanup_rechecks_lock_identity_before_unlink(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    scheduler.LOCK_PATH.write_text("4321", encoding="utf-8")
+    replacement = _structured_lock(
+        pid=9876,
+        nonce="replacement-nonce",
+    )
+
+    def replace_lock_while_checking_pid(pid):
+        assert pid == 4321
+        _write_structured_lock(scheduler, replacement)
+        return False
+
+    monkeypatch.setattr(
+        scheduler,
+        "_pid_exists",
+        replace_lock_while_checking_pid,
+    )
+
+    assert scheduler._unlink_stale_lock() is False
+    assert json.loads(
+        scheduler.LOCK_PATH.read_text(encoding="utf-8")
+    ) == replacement
+
+
+def test_live_legacy_pid_lock_is_preserved_even_when_old(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    scheduler.LOCK_PATH.write_text(
+        "4321 2026-07-10 17:05:00",
+        encoding="utf-8",
+    )
+    lock_mtime = scheduler.LOCK_PATH.stat().st_mtime
+    monkeypatch.setattr(
+        scheduler.time,
+        "time",
+        lambda: lock_mtime + 10_000,
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_pid_exists",
+        lambda pid: pid == 4321,
+    )
+
+    assert scheduler._unlink_stale_lock(max_age_seconds=1) is False
+    assert scheduler.LOCK_PATH.exists()
+
+
+def test_linux_process_start_token_reads_proc_stat_field_22(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    fields_3_to_22 = [
+        "S",
+        *[str(field) for field in range(4, 22)],
+        "987654321",
+    ]
+
+    def fake_read_text(path, encoding=None, errors=None):
+        assert encoding == "utf-8"
+        if path.as_posix() == "/proc/sys/kernel/random/boot_id":
+            return "boot-id-1\n"
+        assert path.as_posix() == "/proc/4321/stat"
+        return (
+            f"4321 (worker name (batch)) "
+            f"{' '.join(fields_3_to_22)}\n"
+        )
+
+    monkeypatch.setattr(
+        scheduler.Path,
+        "read_text",
+        fake_read_text,
+    )
+
+    assert (
+        scheduler._linux_process_start_token(4321)
+        == "boot-id-1:987654321"
+    )
+
+
+def test_windows_process_start_token_uses_creation_filetime(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    class FakeKernel32:
+        def __init__(self):
+            self.open_args = None
+            self.closed_handle = None
+
+        def OpenProcess(self, access, inherit_handle, pid):
+            self.open_args = (access, inherit_handle, pid)
+            return 123
+
+        def GetProcessTimes(
+            self,
+            handle,
+            creation,
+            exit_time,
+            kernel,
+            user,
+        ):
+            assert handle == 123
+            creation._obj.dwHighDateTime = 0x12345678
+            creation._obj.dwLowDateTime = 0x9ABCDEF0
+            for value in (exit_time, kernel, user):
+                value._obj.dwHighDateTime = 0
+                value._obj.dwLowDateTime = 0
+            return True
+
+        def CloseHandle(self, handle):
+            self.closed_handle = handle
+            return True
+
+    kernel32 = FakeKernel32()
+
+    token = scheduler._windows_process_start_token(
+        2468,
+        kernel32=kernel32,
+    )
+
+    assert token == "1311768467463790320"
+    assert kernel32.open_args == (0x1000, False, 2468)
+    assert kernel32.closed_handle == 123
+
+
+def test_linux_process_start_epoch_uses_boot_time_and_clock_ticks(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    monkeypatch.setattr(scheduler.sys, "platform", "linux")
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_token",
+        lambda pid: "250",
+    )
+    monkeypatch.setattr(
+        scheduler.Path,
+        "read_text",
+        lambda path, **kwargs: "cpu 1 2 3\nbtime 1000\n",
+    )
+    monkeypatch.setattr(
+        scheduler.os,
+        "sysconf",
+        lambda name: 100,
+        raising=False,
+    )
+
+    assert scheduler._process_start_epoch(4321) == 1002.5
+
+
+def test_legacy_linux_token_rejects_same_ticks_from_new_boot(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    _write_structured_lock(
+        scheduler,
+        _structured_lock(
+            process_start_token="250",
+            created_at="2026-07-10 17:05:00",
+        ),
+    )
+    monkeypatch.setattr(scheduler, "_pid_exists", lambda pid: True)
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_token",
+        lambda pid: "new-boot-id:250",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_epoch",
+        lambda pid: datetime(
+            2026,
+            7,
+            11,
+            9,
+            30,
+        ).timestamp(),
+    )
+
+    assert scheduler._lock_is_stale() is True
+
+
+def test_legacy_linux_token_without_boot_id_checks_process_epoch(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    _write_structured_lock(
+        scheduler,
+        _structured_lock(
+            process_start_token="250",
+            created_at="2026-07-10 17:05:00",
+        ),
+    )
+    monkeypatch.setattr(scheduler, "_pid_exists", lambda pid: True)
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_token",
+        lambda pid: "250",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_epoch",
+        lambda pid: datetime(
+            2026,
+            7,
+            11,
+            9,
+            30,
+        ).timestamp(),
+    )
+
+    assert scheduler._lock_is_stale() is True
+
+
+def test_windows_process_start_epoch_converts_filetime(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    unix_epoch = 123_456_789
+    filetime = 116_444_736_000_000_000 + unix_epoch * 10_000_000
+    monkeypatch.setattr(scheduler.sys, "platform", "win32")
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_token",
+        lambda pid: str(filetime),
+    )
+
+    assert scheduler._process_start_epoch(2468) == float(unix_epoch)
+
+
+def test_file_lock_propagates_body_file_exists_error(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    with pytest.raises(FileExistsError, match="body failure"):
+        with scheduler._file_lock() as acquired:
+            assert acquired is True
+            raise FileExistsError("body failure")
+
+
+def test_recovery_holds_guard_while_clearing_stale_status(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    scheduler.LOCK_PATH.write_text(
+        "999999 2026-07-10 17:05:00",
+        encoding="utf-8",
+    )
+    status = {
+        "ok": True,
+        "enabled": True,
+        "running": True,
+        "current_job": "factor_mining",
+        "updated_at": "2026-07-10 17:05:00",
+        "jobs": {},
+        "history": [],
+    }
+    scheduler.STATUS_PATH.write_text(
+        json.dumps(status),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_pid_exists",
+        lambda pid: False,
+    )
+    real_save = scheduler._save_status
+    nested_acquisitions = []
+
+    def save_while_probing_guard(value):
+        with scheduler._file_lock() as acquired:
+            nested_acquisitions.append(acquired)
+        real_save(value)
+
+    monkeypatch.setattr(
+        scheduler,
+        "_save_status",
+        save_while_probing_guard,
+    )
+
+    recovered = scheduler._recover_stale_runtime_state(status)
+
+    assert recovered["running"] is False
+    assert nested_acquisitions == [False]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "4321 2026-07-10 17:05:00",
+        json.dumps(
+            _structured_lock(
+                pid=4321,
+                process_start_token=None,
+                created_at="2026-07-10 17:05:00",
+            )
+        ),
+    ],
+)
+def test_legacy_or_tokenless_lock_detects_reused_pid_by_start_time(
+    monkeypatch,
+    tmp_path,
+    payload,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    scheduler.LOCK_PATH.write_text(payload, encoding="utf-8")
+    monkeypatch.setattr(
+        scheduler,
+        "_pid_exists",
+        lambda pid: True,
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_epoch",
+        lambda pid: datetime(
+            2026,
+            7,
+            11,
+            9,
+            30,
+        ).timestamp(),
+        raising=False,
+    )
+
+    assert scheduler._unlink_stale_lock() is True
+    assert not scheduler.LOCK_PATH.exists()
+
+
+def test_unknown_pid_state_never_reclaims_lock(monkeypatch, tmp_path):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    scheduler.LOCK_PATH.write_text(
+        "4321 2026-07-10 17:05:00",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scheduler, "_pid_exists", lambda pid: None)
+
+    assert scheduler._lock_is_stale() is False
+    assert scheduler._unlink_stale_lock() is False
+    assert scheduler.LOCK_PATH.exists()
+
+
+def test_metadata_write_failure_releases_kernel_guard(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    real_publish = scheduler._publish_lock_metadata
+
+    def fail_metadata_write(owner):
+        raise OSError("metadata write failed")
+
+    monkeypatch.setattr(
+        scheduler,
+        "_publish_lock_metadata",
+        fail_metadata_write,
+    )
+    with pytest.raises(OSError, match="metadata write failed"):
+        with scheduler._file_lock():
+            pass
+
+    monkeypatch.setattr(
+        scheduler,
+        "_publish_lock_metadata",
+        real_publish,
+    )
+    with scheduler._file_lock() as acquired:
+        assert acquired is True
+
+
+def test_unsupported_hard_link_fails_closed_with_actionable_error(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    def reject_hard_link(source, destination):
+        raise OSError(errno.EOPNOTSUPP, "not supported")
+
+    monkeypatch.setattr(scheduler.os, "link", reject_hard_link)
+
+    with pytest.raises(
+        OSError,
+        match="requires atomic hard-link support",
+    ):
+        with scheduler._file_lock():
+            pass
+
+    assert scheduler._scheduler_guard_path().exists()
+    assert not scheduler.LOCK_PATH.exists()
+
+
+def test_windows_unsupported_hard_link_has_actionable_error(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    def reject_hard_link(source, destination):
+        error = OSError(errno.EINVAL, "not supported")
+        error.winerror = 50
+        raise error
+
+    monkeypatch.setattr(scheduler.os, "link", reject_hard_link)
+
+    with pytest.raises(
+        OSError,
+        match="requires atomic hard-link support",
+    ):
+        with scheduler._file_lock():
+            pass
+
+
+def test_scheduler_guard_file_is_persistent(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    with scheduler._file_lock() as acquired:
+        assert acquired is True
+        guard_path = scheduler._scheduler_guard_path()
+        assert guard_path.exists()
+
+    assert guard_path.exists()
+    assert not scheduler.LOCK_PATH.exists()
+
+
+def test_file_lock_does_not_overwrite_legacy_claim_during_publish(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    legacy_payload = (
+        f"{scheduler.os.getpid()} 2026-07-30 09:30:00"
+    )
+    real_link = scheduler.os.link
+
+    def legacy_claim_before_publish(source, destination):
+        scheduler.LOCK_PATH.write_text(
+            legacy_payload,
+            encoding="utf-8",
+        )
+        return real_link(source, destination)
+
+    monkeypatch.setattr(
+        scheduler.os,
+        "link",
+        legacy_claim_before_publish,
+    )
+
+    with scheduler._file_lock() as acquired:
+        assert acquired is False
+
+    assert root.exists()
+    assert scheduler.LOCK_PATH.read_text(
+        encoding="utf-8"
+    ) == legacy_payload
+
+
+def test_current_guard_protocol_orphan_does_not_block_next_run(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    monkeypatch.setattr(
+        scheduler,
+        "_process_start_token",
+        lambda pid: "start-1",
+    )
+    orphan = _structured_lock(
+        pid=scheduler.os.getpid(),
+        process_start_token="start-1",
+    )
+    orphan["guard_protocol"] = "scheduler_kernel_guard_v1"
+    _write_structured_lock(scheduler, orphan)
+
+    with scheduler._file_lock() as acquired:
+        assert acquired is True
+
+
+def test_metadata_validation_read_failure_cleans_owned_inode(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    real_read = scheduler._read_lock_record
+    monkeypatch.setattr(
+        scheduler,
+        "_read_lock_record",
+        lambda: None,
+    )
+
+    with scheduler._file_lock() as acquired:
+        assert acquired is False
+
+    monkeypatch.setattr(
+        scheduler,
+        "_read_lock_record",
+        real_read,
+    )
+    assert not scheduler.LOCK_PATH.exists()
+    with scheduler._file_lock() as acquired:
+        assert acquired is True
+
+
+def test_transient_metadata_unlink_failure_is_recovered_on_next_run(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    real_unlink = scheduler.Path.unlink
+    failed_once = False
+
+    def fail_first_owner_unlink(path, *args, **kwargs):
+        nonlocal failed_once
+        if path == scheduler.LOCK_PATH and not failed_once:
+            failed_once = True
+            raise OSError("transient unlink failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        scheduler.Path,
+        "unlink",
+        fail_first_owner_unlink,
+    )
+
+    with scheduler._file_lock() as acquired:
+        assert acquired is True
+    assert scheduler.LOCK_PATH.exists()
+
+    with scheduler._file_lock() as acquired:
+        assert acquired is True
+
+
+def test_windows_pid_probe_treats_terminated_process_as_dead(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    class FakeKernel32:
+        def __init__(self):
+            self.closed = None
+
+        def OpenProcess(self, access, inherit_handle, pid):
+            return 321
+
+        def WaitForSingleObject(self, handle, timeout_ms):
+            assert handle == 321
+            assert timeout_ms == 0
+            return 0
+
+        def CloseHandle(self, handle):
+            self.closed = handle
+            return True
+
+    kernel32 = FakeKernel32()
+
+    assert (
+        scheduler._windows_pid_exists(
+            4321,
+            kernel32=kernel32,
+        )
+        is False
+    )
+    assert kernel32.closed == 321
+
+
+def test_windows_pid_probe_treats_wait_timeout_as_running(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    class FakeKernel32:
+        def OpenProcess(self, access, inherit_handle, pid):
+            return 321
+
+        def WaitForSingleObject(self, handle, timeout_ms):
+            return 258
+
+        def CloseHandle(self, handle):
+            return True
+
+    assert (
+        scheduler._windows_pid_exists(
+            4321,
+            kernel32=FakeKernel32(),
+        )
+        is True
+    )
+
+
+def test_windows_pid_probe_rejects_dword_wraparound(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    class FakeKernel32:
+        def __init__(self):
+            self.open_calls = []
+
+        def OpenProcess(self, access, inherit_handle, pid):
+            self.open_calls.append(pid)
+            return 321
+
+        def WaitForSingleObject(self, handle, timeout_ms):
+            return 258
+
+        def CloseHandle(self, handle):
+            return True
+
+    kernel32 = FakeKernel32()
+
+    assert (
+        scheduler._windows_pid_exists(
+            scheduler.os.getpid() + 2**32,
+            kernel32=kernel32,
+        )
+        is False
+    )
+    assert kernel32.open_calls == []
+
+
+def test_windows_start_token_rejects_dword_wraparound(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    class FakeKernel32:
+        def __init__(self):
+            self.open_calls = []
+
+        def OpenProcess(self, access, inherit_handle, pid):
+            self.open_calls.append(pid)
+            return 321
+
+        def GetProcessTimes(self, *args):
+            return True
+
+        def CloseHandle(self, handle):
+            return True
+
+    kernel32 = FakeKernel32()
+
+    assert (
+        scheduler._windows_process_start_token(
+            scheduler.os.getpid() + 2**32,
+            kernel32=kernel32,
+        )
+        is None
+    )
+    assert kernel32.open_calls == []
+
+
+@pytest.mark.parametrize("error_type", [OverflowError, ValueError])
+def test_linux_pid_probe_rejects_unrepresentable_pid(
+    monkeypatch,
+    tmp_path,
+    error_type,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        scheduler,
+        "_read_linux_process_stat",
+        lambda pid: None,
+    )
+
+    def reject_pid(pid, signal):
+        raise error_type("pid out of range")
+
+    monkeypatch.setattr(scheduler.os, "kill", reject_pid)
+
+    assert scheduler._linux_pid_exists(10**100) is False
+
+
+def test_linux_pid_probe_rejects_zombie_process(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        scheduler.Path,
+        "read_text",
+        lambda path, **kwargs: (
+            "4321 (worker name) Z 1 2 3 4 5 6 7 8 9 10 "
+            "11 12 13 14 15 16 17 18 19 20\n"
+        ),
+    )
+
+    assert scheduler._linux_pid_exists(4321) is False
+
+
+def test_kernel_guard_excludes_real_subprocess(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    process, ready = _start_scheduler_lock_process(root, "hold")
+    try:
+        assert ready["acquired"] is True
+        with scheduler._file_lock() as acquired:
+            assert acquired is False
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=10)
+
+    with scheduler._file_lock() as acquired:
+        assert acquired is True
+
+
+def test_kernel_guard_recovers_after_subprocess_os_exit(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    process, ready = _start_scheduler_lock_process(root, "crash")
+
+    assert ready["acquired"] is True
+    assert process.wait(timeout=10) == 17
+    with scheduler._file_lock() as acquired:
+        assert acquired is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows os.kill semantics")
+def test_pid_probe_does_not_terminate_the_target_process(monkeypatch, tmp_path):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+    )
+    try:
+        assert scheduler._pid_exists(process.pid) is True
+        time.sleep(0.1)
+        assert process.poll() is None
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=5)
 
 
 def test_status_recovers_dead_pid_lock(monkeypatch, tmp_path):
@@ -44,6 +1005,23 @@ def test_status_recovers_dead_pid_lock(monkeypatch, tmp_path):
     assert status["history"][0]["ok"] is False
     assert status["history"][0]["error"] == "stale scheduler lock recovered"
     assert not scheduler.LOCK_PATH.exists()
+
+
+def test_live_pid_lock_is_not_reclaimed_only_because_it_is_old(monkeypatch, tmp_path):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    scheduler.LOCK_PATH.write_text("12345 2026-07-10 17:05:00", encoding="utf-8")
+    lock_mtime = scheduler.LOCK_PATH.stat().st_mtime
+    monkeypatch.setattr(scheduler, "_pid_exists", lambda pid: pid == 12345)
+    monkeypatch.setattr(
+        scheduler.time,
+        "time",
+        lambda: lock_mtime + 7201,
+    )
+
+    assert scheduler._lock_is_stale(max_age_seconds=7200) is False
+    assert scheduler._unlink_stale_lock(max_age_seconds=7200) is False
+    assert scheduler.LOCK_PATH.exists()
 
 
 def test_run_job_ignores_dead_pid_lock(monkeypatch, tmp_path):
@@ -150,16 +1128,28 @@ def test_data_refresh_updates_st_history_for_factor_universe(monkeypatch, tmp_pa
     from market import market_stats
 
     monkeypatch.setattr(dm, "refresh_name_cache", lambda: {"000001": "平安银行"})
+    refresh_kwargs = {}
+
+    def fake_refresh_factor_daily_cache(**kwargs):
+        refresh_kwargs.update(kwargs)
+        return {"ok": True, "latest_count": 800, "min_required": 800}
+
     monkeypatch.setattr(
         dm,
         "refresh_factor_daily_cache",
-        lambda **kwargs: {"ok": True, "latest_count": 800, "min_required": 800},
+        fake_refresh_factor_daily_cache,
         raising=False,
     )
+    panel_kwargs = {}
+
+    def fake_build_panel_from_cache(**kwargs):
+        panel_kwargs.update(kwargs)
+        return {"close": object()}, ["000001", "000002"]
+
     monkeypatch.setattr(
         scorer,
         "build_panel_from_cache",
-        lambda **kwargs: ({"close": object()}, ["000001", "000002"]),
+        fake_build_panel_from_cache,
     )
     captured = {}
 
@@ -176,6 +1166,10 @@ def test_data_refresh_updates_st_history_for_factor_universe(monkeypatch, tmp_pa
 
     assert result["ok"] is True
     assert captured["codes"] == ["000001", "000002"]
+    assert refresh_kwargs["refresh_security_master"] is True
+    assert refresh_kwargs["min_required"] == 880
+    assert panel_kwargs["n_stocks"] == 880
+    assert panel_kwargs["require_security_master"] is True
     assert result["details"]["st_status"]["coverage"] == 1.0
 
 
@@ -240,7 +1234,13 @@ def test_scheduled_factor_mining_passes_trade_plan_to_research(monkeypatch, tmp_
         }
     })
     monkeypatch.setattr(scheduler.relay_factor_mining, "run_relay_research", fake_research)
-    monkeypatch.setattr(scorer, "build_panel_from_cache", lambda **kwargs: (fresh_panel, ["000001"]))
+    panel_kwargs = {}
+
+    def build_panel(**kwargs):
+        panel_kwargs.update(kwargs)
+        return fresh_panel, ["000001"]
+
+    monkeypatch.setattr(scorer, "build_panel_from_cache", build_panel)
     monkeypatch.setattr(
         factor_watchlist,
         "import_factor_candidates_to_watchlist",
@@ -254,7 +1254,11 @@ def test_scheduled_factor_mining_passes_trade_plan_to_research(monkeypatch, tmp_
     assert captured["stop_loss"] == -0.04
     assert captured["take_profit"] == 0.08
     assert captured["feedback_user_id"] is None
+    assert captured["load_live_feedback"] is False
     assert captured["panel"] is fresh_panel
+    assert captured["n_stocks"] == 100
+    assert panel_kwargs["n_stocks"] == 110
+    assert panel_kwargs["require_security_master"] is True
 
 
 def test_factor_mining_failure_is_retryable_when_prospective_cycle_raises(
@@ -304,11 +1308,10 @@ def test_factor_mining_failure_is_retryable_when_prospective_cycle_raises(
 
 def test_factor_mining_rejects_stale_cache_before_research(monkeypatch, tmp_path):
     scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
-    from analytics.relay_factor_experiment import RelayFactorExperimentStore
     from analytics.factors_zoo import scorer
     from core import factor_watchlist
 
-    store = RelayFactorExperimentStore(tmp_path / "prospective.sqlite3")
+    store = _short_window_store(tmp_path / "prospective.sqlite3")
     experiment = store.create_locked_experiment(
         "run-stale-cache",
         _frozen_manifest(required_sessions=1),
@@ -351,9 +1354,8 @@ def test_factor_mining_rejects_stale_cache_before_research(monkeypatch, tmp_path
 
 def test_full_after_close_skips_mining_when_refresh_fails(monkeypatch, tmp_path):
     scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
-    from analytics.relay_factor_experiment import RelayFactorExperimentStore
 
-    store = RelayFactorExperimentStore(tmp_path / "prospective.sqlite3")
+    store = _short_window_store(tmp_path / "prospective.sqlite3")
     experiment = store.create_locked_experiment(
         "run-refresh-failed",
         _frozen_manifest(required_sessions=1),
@@ -490,12 +1492,23 @@ def test_factor_mining_records_exploratory_research_without_importing_watchlist(
 
 
 def _frozen_manifest(required_sessions=20):
+    from analytics import relay_factor_mining
+
     return {
+        "schema_version": 3,
         "strategy_key": "relay_factor_mining_v2",
+        "protocol_binding": relay_factor_mining.build_current_frozen_protocol_binding(),
         "model": {
             "model_version": "relay_factor_mining_v3_nested_ridge",
             "fallback": False,
             "validation_accepted": True,
+            "validation_stable": True,
+            "model_spec_protocol_version": (
+                relay_factor_mining.MODEL_SPEC_PROTOCOL_VERSION
+            ),
+            "model_spec_calibrated_through": (
+                relay_factor_mining.MODEL_SPEC_CALIBRATED_THROUGH
+            ),
             "selected_factors": ["ret_5"],
             "coefficients": {"ret_5": 1.0},
             "feature_means": {"ret_5": 0.5},
@@ -511,17 +1524,57 @@ def _frozen_manifest(required_sessions=20):
             "include_market_signals": False,
         },
         "mining_rules": {},
+        "model_specification": {
+            "protocol_version": relay_factor_mining.MODEL_SPEC_PROTOCOL_VERSION,
+            "calibrated_through": (
+                relay_factor_mining.MODEL_SPEC_CALIBRATED_THROUGH
+            ),
+            "parameters": dict(relay_factor_mining.FIXED_MODEL_PARAMETERS),
+        },
         "acceptance_rules": {
+            "protocol_version": "prospective_60_session_bootstrap_v2",
             "required_sessions": required_sessions,
             "minimum_total_return_pct": 0.0,
             "maximum_drawdown_pct": -10.0,
             "minimum_executed_trades": 1,
+            "minimum_bootstrap_lower_return_pct": None,
             "maximum_protocol_violations": 0,
+            "preregistered_at": (
+                relay_factor_mining.MODEL_SPEC_CALIBRATED_THROUGH
+            ),
+            "calibrated_through": (
+                relay_factor_mining.MODEL_SPEC_CALIBRATED_THROUGH
+            ),
         },
     }
 
 
-def _shadow_snapshot(signal_date):
+def _short_window_store(db_path):
+    from analytics.relay_factor_experiment import RelayFactorExperimentStore
+
+    class ShortWindowStore(RelayFactorExperimentStore):
+        @staticmethod
+        def _require_verified_protocol(experiment) -> None:
+            return None
+
+        def create_locked_experiment(self, *args, **kwargs):
+            experiment = super().create_locked_experiment(*args, **kwargs)
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    UPDATE experiments
+                    SET protocol_verified = 1
+                    WHERE experiment_id = ?
+                    """,
+                    (experiment["experiment_id"],),
+                )
+            return self.get_experiment(experiment["experiment_id"])
+
+    return ShortWindowStore(db_path)
+
+
+def _shadow_snapshot(signal_date, manifest=None):
+    manifest = manifest or {}
     return {
         "ok": True,
         "data_status": "ok",
@@ -539,6 +1592,9 @@ def _shadow_snapshot(signal_date):
                 "code": "000001",
                 "trade_date": signal_date,
                 "candidate_rank": 1,
+                "experiment_id": manifest.get("experiment_id", ""),
+                "model_instance_id": manifest.get("model_instance_id", ""),
+                "source_run_id": manifest.get("source_run_id", ""),
                 "shadow_target_position_pct": 0.1,
                 "position_pct": 0.0,
                 "research_status": "locked_shadow",
@@ -552,10 +1608,9 @@ def _shadow_snapshot(signal_date):
 
 def test_prospective_cycle_records_one_immutable_shadow_session(monkeypatch, tmp_path):
     scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
-    from analytics.relay_factor_experiment import RelayFactorExperimentStore
     from core import factor_watchlist
 
-    store = RelayFactorExperimentStore(tmp_path / "prospective.sqlite3")
+    store = _short_window_store(tmp_path / "prospective.sqlite3")
     experiment = store.create_locked_experiment(
         "run-shadow",
         _frozen_manifest(),
@@ -565,7 +1620,7 @@ def test_prospective_cycle_records_one_immutable_shadow_session(monkeypatch, tmp
     monkeypatch.setattr(
         scheduler.relay_factor_mining,
         "build_frozen_shadow_snapshot",
-        lambda panel, manifest: _shadow_snapshot("2026-07-02"),
+        lambda panel, manifest: _shadow_snapshot("2026-07-02", manifest),
     )
     monkeypatch.setattr(
         scheduler.relay_factor_mining,
@@ -580,6 +1635,20 @@ def test_prospective_cycle_records_one_immutable_shadow_session(monkeypatch, tmp
         "import_factor_candidates_to_watchlist",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("locked shadow candidates must not enter watchlist")
+        ),
+    )
+    monkeypatch.setattr(
+        store,
+        "record_frozen_snapshot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("scheduler must use verified shadow persistence")
+        ),
+    )
+    monkeypatch.setattr(
+        store,
+        "settle_candidate",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("scheduler must use verified settlement")
         ),
     )
 
@@ -603,9 +1672,8 @@ def test_prospective_cycle_freezes_untrusted_shadow_day_and_fails_fixed_window(
     tmp_path,
 ):
     scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
-    from analytics.relay_factor_experiment import RelayFactorExperimentStore
 
-    store = RelayFactorExperimentStore(tmp_path / "prospective.sqlite3")
+    store = _short_window_store(tmp_path / "prospective.sqlite3")
     experiment = store.create_locked_experiment(
         "run-untrusted-shadow",
         _frozen_manifest(required_sessions=1),
@@ -642,9 +1710,8 @@ def test_prospective_cycle_backfills_missed_fixed_window_sessions_as_untrusted(
     tmp_path,
 ):
     scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
-    from analytics.relay_factor_experiment import RelayFactorExperimentStore
 
-    store = RelayFactorExperimentStore(tmp_path / "prospective.sqlite3")
+    store = _short_window_store(tmp_path / "prospective.sqlite3")
     experiment = store.create_locked_experiment(
         "run-missed-window",
         _frozen_manifest(required_sessions=3),
@@ -654,7 +1721,7 @@ def test_prospective_cycle_backfills_missed_fixed_window_sessions_as_untrusted(
     monkeypatch.setattr(
         scheduler.relay_factor_mining,
         "build_frozen_shadow_snapshot",
-        lambda panel, manifest: _shadow_snapshot("2026-07-07"),
+        lambda panel, manifest: _shadow_snapshot("2026-07-07", manifest),
     )
     monkeypatch.setattr(
         scheduler.relay_factor_mining,
@@ -692,55 +1759,52 @@ def test_prospective_cycle_imports_only_latest_validated_frozen_model(
     tmp_path,
 ):
     scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
-    from analytics.relay_factor_experiment import RelayFactorExperimentStore
     from core import factor_watchlist
 
-    store = RelayFactorExperimentStore(tmp_path / "prospective.sqlite3")
+    store = _short_window_store(tmp_path / "prospective.sqlite3")
     experiment = store.create_locked_experiment(
         "run-validated",
         _frozen_manifest(required_sessions=1),
         locked_at="2026-07-01 17:10:00",
     )
     experiment_id = experiment["experiment_id"]
-    store.record_session(
+    monkeypatch.setattr(
+        scheduler.relay_factor_mining,
+        "build_frozen_shadow_snapshot",
+        lambda panel, manifest: _shadow_snapshot("2026-07-02", manifest),
+    )
+    monkeypatch.setattr(
+        scheduler.relay_factor_mining,
+        "settle_frozen_shadow_candidate",
+        lambda panel, candidate, manifest: {
+            "status": "settled",
+            "execution_blocked": False,
+            "block_reasons": [],
+            "entry_date": "2026-07-03",
+            "exit_date": "2026-07-06",
+            "entry_price": 10.0,
+            "exit_price": 11.0,
+            "exit_reason": "take_profit",
+            "realized_return_pct": 9.64,
+            "valuation_path": [
+                {"date": "2026-07-03", "return_pct": -0.36},
+                {"date": "2026-07-06", "return_pct": 9.64},
+            ],
+        },
+    )
+    store.record_verified_shadow_session(
         experiment_id,
         "2026-07-02",
-        source_snapshot={"market_data_trusted": True},
+        panel={},
     )
-    store.record_candidates(
-        experiment_id,
-        "2026-07-02",
-        [
-            {
-                "code": "000001.SZ",
-                "candidate_rank": 1,
-                "selected": True,
-                "target_position_pct": 0.1,
-            }
-        ],
-    )
-    store.settle_candidate(
-        experiment_id,
-        "2026-07-02",
-        "000001.SZ",
-        entry_date="2026-07-03",
-        exit_date="2026-07-06",
-        entry_price=10.0,
-        exit_price=11.0,
-        exit_reason="take_profit",
-        realized_return_pct=9.64,
-        valuation_path=[
-            {"date": "2026-07-03", "return_pct": -0.36},
-            {"date": "2026-07-06", "return_pct": 9.64},
-        ],
-    )
+    store.settle_verified_candidates(experiment_id, panel={})
     assert store.evaluate_once(experiment_id)["status"] == "validated"
 
     monkeypatch.setattr(scheduler, "_factor_experiment_store", lambda: store)
     monkeypatch.setattr(
         scheduler.relay_factor_mining,
         "build_frozen_shadow_snapshot",
-        lambda panel, manifest: _shadow_snapshot("2026-07-07"),
+        lambda panel, manifest: _shadow_snapshot("2026-07-07", manifest),
     )
     captured = {}
 
@@ -766,6 +1830,40 @@ def test_prospective_cycle_imports_only_latest_validated_frozen_model(
     assert candidate["deployment_eligible"] is True
     assert candidate["research_only"] is False
     assert candidate["position_pct"] == 0.1
+
+
+def test_prospective_cycle_propagates_validated_production_failure(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    validated = {"experiment_id": "validated-experiment"}
+
+    class Store:
+        @staticmethod
+        def get_active_experiment():
+            return None
+
+        @staticmethod
+        def get_latest_validated_experiment():
+            return validated
+
+    production_failure = {
+        "ok": False,
+        "skipped": True,
+        "reason": "validated_snapshot_not_trusted",
+    }
+    monkeypatch.setattr(scheduler, "_factor_experiment_store", Store)
+    monkeypatch.setattr(
+        scheduler,
+        "_validated_production_candidates",
+        lambda experiment, panel: production_failure,
+    )
+
+    result = scheduler._run_prospective_cycle("2026-07-29", panel={})
+
+    assert result["production"] == production_failure
+    assert result["ok"] is False
 
 
 def test_validated_zero_candidate_day_advances_watchlist_scope_without_fallback(

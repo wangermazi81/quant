@@ -10,6 +10,7 @@ tests/test_paper_broker.py
 
 import sys
 import sqlite3
+import threading
 import pytest
 from pathlib import Path
 
@@ -196,6 +197,32 @@ class TestBuy:
         after = broker._cash()
         assert after < before
 
+    def test_buy_locks_the_cash_row_before_reading_available_funds(self, broker):
+        traced_sql = []
+        original_conn = broker._conn
+
+        def traced_conn():
+            con = original_conn()
+            con.set_trace_callback(traced_sql.append)
+            return con
+
+        broker._conn = traced_conn
+
+        result = broker.submit_buy("000001", "平安银行", 10.0, 100)
+
+        assert result["ok"] is True
+        begin_index = next(
+            index
+            for index, statement in enumerate(traced_sql)
+            if statement.strip().upper() == "BEGIN IMMEDIATE"
+        )
+        cash_read_index = next(
+            index
+            for index, statement in enumerate(traced_sql)
+            if "KEY='CASH'" in statement.upper()
+        )
+        assert begin_index < cash_read_index
+
     def test_buy_round_lot(self, broker):
         """非整百股自动向下取整"""
         result = broker.submit_buy("000001", "平安银行", 10.0, 150)
@@ -232,6 +259,7 @@ class TestBuy:
 
         result = broker.submit_buy("000001", "平安银行", 10.0, 100)
         attribution = {
+            "user_id": 101,
             "strategy_key": "relay_factor_mining_v2",
             "model_version": "relay_factor_mining_v2_ridge",
             "experiment_id": "experiment-v2-1",
@@ -244,6 +272,7 @@ class TestBuy:
         pb.init_paper_db()
 
         trade = broker.get_trades()[0]
+        assert trade["owner_user_id"] == attribution["user_id"]
         assert trade["strategy_key"] == attribution["strategy_key"]
         assert trade["model_version"] == attribution["model_version"]
         assert trade["experiment_id"] == attribution["experiment_id"]
@@ -254,6 +283,7 @@ class TestBuy:
 
     def test_buy_persists_attribution_in_the_fill_transaction(self, broker):
         attribution = {
+            "user_id": 101,
             "strategy_key": "relay_factor_mining_v2",
             "model_version": "relay_factor_mining_v2_ridge",
             "experiment_id": "experiment-v2-atomic",
@@ -272,6 +302,7 @@ class TestBuy:
 
         assert result["ok"] is True
         trade = broker.get_trades()[0]
+        assert trade["owner_user_id"] == attribution["user_id"]
         assert {
             key: trade[key]
             for key in (
@@ -282,7 +313,17 @@ class TestBuy:
                 "watchlist_id",
                 "source_run_id",
             )
-        } == attribution
+        } == {
+            key: attribution[key]
+            for key in (
+                "strategy_key",
+                "model_version",
+                "experiment_id",
+                "model_instance_id",
+                "watchlist_id",
+                "source_run_id",
+            )
+        }
         assert broker.get_positions()[0]["strategy"] == attribution["strategy_key"]
 
 
@@ -316,6 +357,7 @@ def test_init_paper_db_migrates_legacy_trade_table_idempotently(tmp_path, monkey
     columns = {row[1] for row in con.execute("PRAGMA table_info(paper_trades)")}
     con.close()
     assert {
+        "owner_user_id",
         "strategy_key",
         "model_version",
         "experiment_id",
@@ -403,6 +445,22 @@ class TestSell:
         result = broker.submit_sell("000001", 10.0)
         assert result["ok"] is True
         assert result["tax"] > 0
+
+    def test_default_stamp_tax_is_half_per_thousand_and_zero_is_respected(
+        self,
+        broker,
+    ):
+        from broker import paper_broker as pb
+
+        assert pb.DEFAULT_TAX_RATE == 0.0005
+        broker.set_config({"tax_rate": 0})
+
+        _price, _income, _commission, tax = broker._calc_sell_income(
+            10.0,
+            1000,
+        )
+
+        assert tax == 0.0
 
     def test_sell_adds_cash(self, broker):
         """卖出后现金增加"""
@@ -505,6 +563,364 @@ class TestStats:
 # ══════════════════════════════════════════════════════
 # 5. 重置测试
 # ══════════════════════════════════════════════════════
+class TestLegacyCapitalMigration:
+    @staticmethod
+    def _set_config(con, user_id, values):
+        for key, value in values.items():
+            con.execute(
+                "INSERT OR REPLACE INTO paper_config(user_id,key,value)"
+                " VALUES(?,?,?)",
+                (user_id, key, str(value)),
+            )
+
+    @staticmethod
+    def _insert_closed_trade(con, user_id):
+        con.execute(
+            "INSERT INTO paper_trades("
+            "user_id,code,name,buy_time,sell_time,buy_price,sell_price,"
+            "shares,buy_cost,sell_income,pnl,pnl_pct,hold_days"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                user_id,
+                "000001",
+                "A",
+                "2026-07-01 09:30:00",
+                "2026-07-02 10:00:00",
+                10.0,
+                10.01,
+                100,
+                1000.0,
+                1001.0,
+                1.0,
+                0.1,
+                1,
+            ),
+        )
+
+    def test_ensure_starts_immediate_transaction_before_reading_config(
+        self,
+        broker,
+    ):
+        traced_sql = []
+        original_conn = broker._conn
+
+        def traced_conn():
+            con = original_conn()
+            con.set_trace_callback(traced_sql.append)
+            return con
+
+        broker._conn = traced_conn
+        broker._ensure_user_config()
+
+        normalized = [statement.strip().upper() for statement in traced_sql]
+        begin_indexes = [
+            index
+            for index, statement in enumerate(normalized)
+            if statement == "BEGIN IMMEDIATE"
+        ]
+        assert begin_indexes, traced_sql
+        config_read_index = next(
+            index
+            for index, statement in enumerate(normalized)
+            if "FROM PAPER_CONFIG" in statement
+        )
+        assert begin_indexes[0] < config_read_index
+
+    def test_concurrent_migration_is_idempotent_and_preserves_position_accounting(
+        self,
+        broker,
+    ):
+        from broker import paper_broker as pb
+
+        con = broker._conn()
+        self._set_config(
+            con,
+            broker._uid,
+            {
+                "initial_capital": 500_000.0,
+                "cash": 400_000.0,
+                "peak_equity": 500_000.0,
+            },
+        )
+        con.execute(
+            "DELETE FROM paper_config WHERE user_id=? AND key='pnl_base_capital'",
+            (broker._uid,),
+        )
+        con.execute(
+            "INSERT INTO paper_positions("
+            "user_id,code,name,shares,cost_price,buy_time,buy_amount"
+            ") VALUES(?,?,?,?,?,?,?)",
+            (
+                broker._uid,
+                "000001",
+                "Legacy",
+                10_000,
+                10.0,
+                "2026-07-01 09:30:00",
+                100_000.0,
+            ),
+        )
+        con.commit()
+        con.close()
+
+        start = threading.Barrier(3)
+        failures = []
+
+        def migrate(candidate):
+            start.wait()
+            try:
+                candidate._ensure_user_config()
+            except Exception as exc:
+                failures.append(exc)
+
+        candidates = []
+        for _ in range(2):
+            candidate = object.__new__(pb.PaperBroker)
+            candidate._uid = broker._uid
+            candidate._lock = threading.Lock()
+            candidates.append(candidate)
+        threads = [
+            threading.Thread(target=migrate, args=(candidate,))
+            for candidate in candidates
+        ]
+        for thread in threads:
+            thread.start()
+        start.wait()
+        for thread in threads:
+            thread.join(timeout=15)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert failures == []
+        broker._ensure_user_config()
+
+        con = broker._conn()
+        flows = con.execute(
+            "SELECT amount,flow_type FROM paper_capital_flows"
+            " WHERE user_id=?",
+            (broker._uid,),
+        ).fetchall()
+        position = con.execute(
+            "SELECT shares,cost_price,buy_amount,display_pnl_scale"
+            " FROM paper_positions WHERE user_id=? AND code=?",
+            (broker._uid, "000001"),
+        ).fetchone()
+        con.close()
+
+        assert len(flows) == 1
+        assert float(flows[0]["amount"]) == 500_000.0
+        assert flows[0]["flow_type"] == "deposit"
+        assert broker._cash() == 900_000.0
+        assert tuple(position[:3]) == (10_000, 10.0, 100_000.0)
+        assert float(position["display_pnl_scale"]) == 2.0
+
+        account = broker.get_account(cur_prices={"000001": 11.0})
+        displayed_position = broker.get_positions(
+            cur_prices={"000001": 11.0}
+        )[0]
+        assert account["equity"] == 1_010_000.0
+        assert displayed_position["pnl_amount"] == 20_000.0
+
+    def test_stats_remove_migration_deposit_from_returns_and_drawdown(
+        self,
+        broker,
+    ):
+        from datetime import datetime, timedelta
+
+        flow_date = datetime.now().date()
+        first_date = (flow_date - timedelta(days=2)).isoformat()
+        loss_date = (flow_date - timedelta(days=1)).isoformat()
+        final_date = (flow_date + timedelta(days=1)).isoformat()
+
+        con = broker._conn()
+        self._set_config(
+            con,
+            broker._uid,
+            {
+                "initial_capital": 500_000.0,
+                "cash": 490_000.0,
+                "peak_equity": 500_000.0,
+            },
+        )
+        con.execute(
+            "DELETE FROM paper_config WHERE user_id=? AND key='pnl_base_capital'",
+            (broker._uid,),
+        )
+        con.execute(
+            "INSERT INTO paper_equity("
+            "user_id,snap_date,cash,market_val,equity,drawdown"
+            ") VALUES(?,?,?,?,?,?)",
+            (broker._uid, first_date, 500_000.0, 0.0, 500_000.0, 0.0),
+        )
+        con.execute(
+            "INSERT INTO paper_equity("
+            "user_id,snap_date,cash,market_val,equity,drawdown"
+            ") VALUES(?,?,?,?,?,?)",
+            (broker._uid, loss_date, 490_000.0, 0.0, 490_000.0, -2.0),
+        )
+        con.commit()
+        con.close()
+
+        broker._ensure_user_config()
+
+        con = broker._conn()
+        con.execute(
+            "INSERT INTO paper_equity("
+            "user_id,snap_date,cash,market_val,equity,drawdown"
+            ") VALUES(?,?,?,?,?,?)",
+            (
+                broker._uid,
+                flow_date.isoformat(),
+                990_000.0,
+                0.0,
+                990_000.0,
+                0.0,
+            ),
+        )
+        con.execute(
+            "INSERT INTO paper_equity("
+            "user_id,snap_date,cash,market_val,equity,drawdown"
+            ") VALUES(?,?,?,?,?,?)",
+            (broker._uid, final_date, 980_100.0, 0.0, 980_100.0, -1.0),
+        )
+        self._insert_closed_trade(con, broker._uid)
+        con.commit()
+        con.close()
+
+        stats = broker.get_stats()
+
+        assert stats["total_return"] == -2.98
+        assert stats["max_drawdown"] == -2.98
+        assert stats["sharpe"] == -15.8745
+
+    def test_backfilled_flow_uses_the_historical_injection_jump(
+        self,
+        broker,
+    ):
+        from datetime import datetime, timedelta
+
+        current_date = datetime.now().date()
+        before_date = (current_date - timedelta(days=2)).isoformat()
+        injection_date = (current_date - timedelta(days=1)).isoformat()
+
+        con = broker._conn()
+        self._set_config(
+            con,
+            broker._uid,
+            {
+                "initial_capital": 1_000_000.0,
+                "cash": 1_000_000.0,
+                "peak_equity": 1_000_000.0,
+                "pnl_base_capital": 500_000.0,
+            },
+        )
+        for snap_date, equity in (
+            (before_date, 500_000.0),
+            (injection_date, 1_000_000.0),
+            (current_date.isoformat(), 990_000.0),
+        ):
+            con.execute(
+                "INSERT INTO paper_equity("
+                "user_id,snap_date,cash,market_val,equity,drawdown"
+                ") VALUES(?,?,?,?,?,?)",
+                (broker._uid, snap_date, equity, 0.0, equity, 0.0),
+            )
+        self._insert_closed_trade(con, broker._uid)
+        con.commit()
+        con.close()
+
+        broker._ensure_user_config()
+
+        con = broker._conn()
+        flow = con.execute(
+            "SELECT flow_date,amount FROM paper_capital_flows"
+            " WHERE user_id=?",
+            (broker._uid,),
+        ).fetchone()
+        con.close()
+        stats = broker.get_stats()
+
+        assert flow["flow_date"] == injection_date
+        assert float(flow["amount"]) == 500_000.0
+        assert stats["total_return"] == -1.0
+        assert stats["max_drawdown"] == -1.0
+        assert stats["sharpe"] == -11.225
+
+    def test_same_day_pre_migration_snapshot_is_advanced_with_the_deposit(
+        self,
+        broker,
+    ):
+        from datetime import datetime
+
+        flow_date = datetime.now().strftime("%Y-%m-%d")
+        con = broker._conn()
+        self._set_config(
+            con,
+            broker._uid,
+            {
+                "initial_capital": 500_000.0,
+                "cash": 500_000.0,
+                "peak_equity": 500_000.0,
+            },
+        )
+        con.execute(
+            "DELETE FROM paper_config WHERE user_id=? AND key='pnl_base_capital'",
+            (broker._uid,),
+        )
+        con.execute(
+            "INSERT INTO paper_equity("
+            "user_id,snap_date,cash,market_val,equity,drawdown"
+            ") VALUES(?,?,?,?,?,?)",
+            (broker._uid, flow_date, 500_000.0, 0.0, 500_000.0, 0.0),
+        )
+        self._insert_closed_trade(con, broker._uid)
+        con.commit()
+        con.close()
+
+        broker._ensure_user_config()
+
+        con = broker._conn()
+        snapshot = con.execute(
+            "SELECT cash,equity,drawdown FROM paper_equity"
+            " WHERE user_id=? AND snap_date=?",
+            (broker._uid, flow_date),
+        ).fetchone()
+        con.close()
+        stats = broker.get_stats()
+
+        assert tuple(snapshot) == (1_000_000.0, 1_000_000.0, 0.0)
+        assert stats["total_return"] == 0.0
+        assert stats["max_drawdown"] == 0.0
+
+    def test_reset_starts_a_new_capital_flow_epoch(self, broker):
+        con = broker._conn()
+        self._set_config(
+            con,
+            broker._uid,
+            {
+                "initial_capital": 500_000.0,
+                "cash": 500_000.0,
+                "peak_equity": 500_000.0,
+            },
+        )
+        con.execute(
+            "DELETE FROM paper_config WHERE user_id=? AND key='pnl_base_capital'",
+            (broker._uid,),
+        )
+        con.commit()
+        con.close()
+        broker._ensure_user_config()
+
+        broker.reset(initial_capital=200_000.0)
+
+        con = broker._conn()
+        flow_count = con.execute(
+            "SELECT COUNT(*) FROM paper_capital_flows WHERE user_id=?",
+            (broker._uid,),
+        ).fetchone()[0]
+        con.close()
+        assert flow_count == 0
+
+
 class TestReset:
     def test_reset_clears_data(self, broker):
         """重置后持仓、成交全部清空"""
@@ -555,7 +971,7 @@ class TestReset:
         assert result["pnl"] == raw_pnl
         assert result["cash_after"] == round(cash_before + buy_amount + raw_pnl, 2)
 
-    def test_legacy_half_million_position_pnl_scales_to_one_million(self, broker):
+    def test_legacy_position_scales_display_pnl_without_scaling_cash(self, broker):
         con = broker._conn()
         for key, value in {
             "initial_capital": 500_000.0,
@@ -587,23 +1003,32 @@ class TestReset:
         assert positions[0]["cost_price"] == cost_price
         assert positions[0]["pnl_pct"] == round(raw_open_pnl / (cost_price * 1000) * 100, 2)
         assert positions[0]["pnl_amount"] == round(raw_open_pnl * 2, 2)
+        assert broker._pnl_scale() == 1.0
 
         con = broker._conn()
         row = con.execute(
-            "SELECT buy_amount FROM paper_positions WHERE user_id=? AND code=?",
+            "SELECT buy_amount,display_pnl_scale FROM paper_positions"
+            " WHERE user_id=? AND code=?",
             (broker._uid, "000001"),
         ).fetchone()
         con.close()
         buy_amount = float(row["buy_amount"])
+        assert float(row["display_pnl_scale"]) == 2.0
         _, net_income, _, _ = broker._calc_sell_income(12.0, 1000)
         raw_sell_pnl = round(net_income - buy_amount, 2)
-        expected_scaled_pnl = round(raw_sell_pnl * 2, 2)
         cash_before_sell = broker._cash()
         result = broker.submit_sell("000001", 12.0)
         assert result["ok"] is True
         assert result["pnl_pct"] == round(raw_sell_pnl / buy_amount * 100, 4)
-        assert result["pnl"] == expected_scaled_pnl
-        assert result["cash_after"] == round(cash_before_sell + buy_amount + expected_scaled_pnl, 2)
+        assert result["pnl"] == raw_sell_pnl
+        assert result["cash_after"] == round(cash_before_sell + net_income, 2)
+
+        assert broker.submit_buy("000002", "New", 10.0, 1000)["ok"] is True
+        new_position = broker.get_positions(cur_prices={"000002": 12.0})[0]
+        assert new_position["pnl_amount"] == round(
+            (12.0 - new_position["cost_price"]) * 1000,
+            2,
+        )
 
 
 # ══════════════════════════════════════════════════════

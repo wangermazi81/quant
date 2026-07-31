@@ -40,6 +40,8 @@ data/paper_trading.db-shm
 
 # ── 历史行情数据（体积大）───────────────────────────
 data/daily/
+data/security_master.csv
+data/security_master.csv.tmp
 data/stock_names.json
 data/metadata.json
 data/st_namechange_cache.json
@@ -65,6 +67,7 @@ backups/
 .coverage
 htmlcov/
 .pytest_cache/
+.pytest_tmp_*/
 codex_pytest_tmp/
 
 # ── 归档目录（历史备份，不提交）─────────────────────
