@@ -17,6 +17,7 @@ DEPLOY_BRANCH="${DEPLOY_BRANCH:-}"
 DEPLOY_TARGET_SHA="${DEPLOY_TARGET_SHA:-}"
 DEPLOY_TOOL_BUNDLE_SHA256="${DEPLOY_TOOL_BUNDLE_SHA256:-}"
 DEPLOY_GIT_SSH_COMMAND="${DEPLOY_GIT_SSH_COMMAND:-}"
+DEPLOY_PIP_INDEX_URL="${DEPLOY_PIP_INDEX_URL:-}"
 DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-/run/lock/jwalpha-deploy.lock}"
 DEPLOY_COMPLETED=0
 CODE_UPDATED=0
@@ -268,6 +269,19 @@ EOF
 prepare_release_venv() {
     local releases_dir="$APP_DIR/.venv-releases"
     local runtime_home="$APP_DIR/data"
+    local -a pip_environment=(
+        "HOME=$runtime_home"
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+        "PIP_CONFIG_FILE=/dev/null"
+        "PIP_DEFAULT_TIMEOUT=120"
+        "PIP_RETRIES=5"
+        "PIP_DISABLE_PIP_VERSION_CHECK=1"
+    )
+    if [ -n "$DEPLOY_PIP_INDEX_URL" ]; then
+        pip_environment+=(
+            "PIP_INDEX_URL=$DEPLOY_PIP_INDEX_URL"
+        )
+    fi
     install -d -o root -g "$RUN_USER" -m 0750 "$releases_dir"
     RELEASE_VENV=$(mktemp -d "$releases_dir/release-$REMOTE.XXXXXX")
     chown "$RUN_USER:$RUN_USER" "$RELEASE_VENV"
@@ -278,15 +292,11 @@ prepare_release_venv() {
         PIP_CONFIG_FILE="/dev/null" \
         "$DEPLOY_PYTHON" -I -m venv --copies "$RELEASE_VENV"
     sudo -u "$RUN_USER" env -i \
-        HOME="$runtime_home" \
-        PATH="/usr/local/bin:/usr/bin:/bin" \
-        PIP_CONFIG_FILE="/dev/null" \
+        "${pip_environment[@]}" \
         "$RELEASE_VENV/bin/python" -I -m pip install \
         --upgrade pip wheel
     sudo -u "$RUN_USER" env -i \
-        HOME="$runtime_home" \
-        PATH="/usr/local/bin:/usr/bin:/bin" \
-        PIP_CONFIG_FILE="/dev/null" \
+        "${pip_environment[@]}" \
         "$RELEASE_VENV/bin/python" -I -m pip install \
         -r "$APP_DIR/requirements.txt"
     secure_application_ownership "$RUN_USER"
@@ -397,6 +407,11 @@ if [[ "$DEPLOY_REMOTE_URL" != https://* \
     || ! [[ "$DEPLOY_TARGET_SHA" =~ ^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$ ]] \
     || ! [[ "$DEPLOY_TOOL_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
     echo "ERROR: pinned deployment revision is missing or invalid."
+    exit 1
+fi
+if [ -n "$DEPLOY_PIP_INDEX_URL" ] \
+    && [[ "$DEPLOY_PIP_INDEX_URL" != https://* ]]; then
+    echo "ERROR: deployment pip index must use HTTPS."
     exit 1
 fi
 verify_deploy_python

@@ -52,7 +52,8 @@ chmod 0700 /root/jwalpha-bootstrap-<TARGET_SHA>.py
   --target-sha <TARGET_SHA> \
   --tool-bundle-sha256 <DEPLOY_TOOL_BUNDLE_SHA256> \
   --ssh-key-path /root/.ssh/id_ed25519 \
-  --ssh-known-hosts-path /root/.ssh/known_hosts
+  --ssh-known-hosts-path /root/.ssh/known_hosts \
+  --pip-index-url https://mirrors.aliyun.com/pypi/simple/
 rm -f /root/jwalpha-bootstrap-<TARGET_SHA>.py
 ```
 

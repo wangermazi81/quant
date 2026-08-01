@@ -45,6 +45,7 @@ def _runner(
     target: str = TARGET_SHA,
     remote_url: str = REMOTE_URL,
     expect_ssh: bool = False,
+    pip_index_url: str | None = None,
 ):
     def fake_runner(command, **kwargs):
         command = list(command)
@@ -91,6 +92,11 @@ def _runner(
             )
             if expect_ssh:
                 assert environment["DEPLOY_GIT_SSH_COMMAND"]
+            if pip_index_url:
+                assert (
+                    environment["DEPLOY_PIP_INDEX_URL"]
+                    == pip_index_url
+                )
             for variable, relative_path in {
                 "QUIESCENCE_HELPER": (
                     "deploy/check_scheduler_quiescence.py"
@@ -267,4 +273,38 @@ def test_bootstrap_surfaces_remote_fetch_error(tmp_path):
             target_sha=TARGET_SHA,
             expected_bundle_sha256=TOOL_BUNDLE_SHA256,
             runner=runner,
+        )
+
+
+def test_bootstrap_passes_validated_pip_index_to_deployment(tmp_path):
+    from deploy import bootstrap_server_update
+
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    pip_index_url = "https://mirrors.aliyun.com/pypi/simple/"
+    calls = []
+
+    assert bootstrap_server_update.bootstrap(
+        app_dir=app_dir,
+        remote_url=REMOTE_URL,
+        branch="main",
+        target_sha=TARGET_SHA,
+        expected_bundle_sha256=TOOL_BUNDLE_SHA256,
+        pip_index_url=pip_index_url,
+        runner=_runner(
+            app_dir,
+            calls,
+            pip_index_url=pip_index_url,
+        ),
+    ) == 0
+
+    with pytest.raises(ValueError, match="HTTPS"):
+        bootstrap_server_update.bootstrap(
+            app_dir=app_dir,
+            remote_url=REMOTE_URL,
+            branch="main",
+            target_sha=TARGET_SHA,
+            expected_bundle_sha256=TOOL_BUNDLE_SHA256,
+            pip_index_url="http://mirror.invalid/simple/",
+            runner=lambda *_args, **_kwargs: None,
         )

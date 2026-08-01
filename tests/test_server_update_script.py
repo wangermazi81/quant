@@ -140,6 +140,9 @@ def test_server_update_rejects_dirty_diverged_or_inexact_checkout():
     assert "SCHEDULER_MIGRATION_BOOTSTRAPPED" in script
     assert "DEPLOY_REMOTE_URL" in script
     assert "DEPLOY_GIT_SSH_COMMAND" in script
+    assert "DEPLOY_PIP_INDEX_URL" in script
+    assert "PIP_DEFAULT_TIMEOUT=120" in script
+    assert "PIP_RETRIES=5" in script
     assert "ssh://git@" in script
     assert "DEPLOY_BRANCH" in script
     assert "DEPLOY_TOOL_BUNDLE_SHA256" in script

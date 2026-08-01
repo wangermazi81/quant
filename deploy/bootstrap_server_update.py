@@ -95,6 +95,27 @@ def _validate_remote_url(remote_url: str) -> str:
     return value
 
 
+def _validate_pip_index_url(value: str | None) -> str | None:
+    trusted = str(value or "").strip()
+    if not trusted:
+        return None
+    parsed = urlsplit(trusted)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path in {"", "/"}
+        or any(char in trusted for char in "\r\n\0")
+    ):
+        raise ValueError(
+            "pip_index_url must be a credential-free HTTPS URL"
+        )
+    return trusted
+
+
 def _validated_ssh_file(
     value: str | Path | None,
     *,
@@ -250,6 +271,7 @@ def _deployment_environment(
     bundle_sha256: str,
     staged_paths: Mapping[str, Path],
     git_ssh_command: str | None = None,
+    pip_index_url: str | None = None,
 ) -> dict[str, str]:
     environment = {
         "PATH": (
@@ -276,6 +298,8 @@ def _deployment_environment(
     }
     if git_ssh_command:
         environment["DEPLOY_GIT_SSH_COMMAND"] = git_ssh_command
+    if pip_index_url:
+        environment["DEPLOY_PIP_INDEX_URL"] = pip_index_url
     return environment
 
 
@@ -288,6 +312,7 @@ def bootstrap(
     expected_bundle_sha256: str,
     ssh_key_path: str | Path | None = None,
     ssh_known_hosts_path: str | Path | None = None,
+    pip_index_url: str | None = None,
     runner: Runner = subprocess.run,
 ) -> int:
     root = Path(os.path.abspath(os.fspath(app_dir)))
@@ -301,6 +326,7 @@ def bootstrap(
         raise RuntimeError("app_dir must be a real directory")
 
     trusted_remote = _validate_remote_url(remote_url)
+    trusted_pip_index = _validate_pip_index_url(pip_index_url)
     remote_scheme = urlsplit(trusted_remote).scheme
     if remote_scheme == "ssh":
         git_ssh_command = _git_ssh_command(
@@ -440,6 +466,7 @@ def bootstrap(
                 bundle_sha256=trusted_bundle,
                 staged_paths=staged_paths,
                 git_ssh_command=git_ssh_command,
+                pip_index_url=trusted_pip_index,
             ),
         )
         return int(result.returncode)
@@ -454,6 +481,7 @@ def main() -> int:
     parser.add_argument("--tool-bundle-sha256", required=True)
     parser.add_argument("--ssh-key-path")
     parser.add_argument("--ssh-known-hosts-path")
+    parser.add_argument("--pip-index-url")
     args = parser.parse_args()
     return bootstrap(
         app_dir=args.app_dir,
@@ -463,6 +491,7 @@ def main() -> int:
         expected_bundle_sha256=args.tool_bundle_sha256,
         ssh_key_path=args.ssh_key_path,
         ssh_known_hosts_path=args.ssh_known_hosts_path,
+        pip_index_url=args.pip_index_url,
     )
 
 
