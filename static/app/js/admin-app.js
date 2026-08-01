@@ -1245,6 +1245,8 @@ let FM_EXPERIMENT_OVERVIEW = null;
 let FM_LOAD_GENERATION = 0;
 let FM_EXPERIMENT_REQUEST_GENERATION = 0;
 let FM_WATCHLIST_REQUEST_GENERATION = 0;
+let SFD_ACTIVE_TASK_ID = '';
+let SFD_POLL_GENERATION = 0;
 
 function fmSetText(id, text){
   const el = document.getElementById(id);
@@ -1894,6 +1896,7 @@ async function fmCancelExperiment(){
 }
 
 async function loadFactorMining(){
+  loadShortFactorDiscovery().catch(()=>{});
   const generation = ++FM_LOAD_GENERATION;
   const experimentGeneration = ++FM_EXPERIMENT_REQUEST_GENERATION;
   const msg = document.getElementById('fm-msg');
@@ -1915,6 +1918,173 @@ async function loadFactorMining(){
   if(task && task.ok && task.found && (task.status === 'queued' || task.status === 'running')){
     fmPollFactorMining(task.task_id);
   }
+}
+
+function sfdSetBusy(busy){
+  const button = document.getElementById('sfd-run-btn');
+  if(button) button.disabled = !!busy;
+}
+
+function sfdScopeText(scope){
+  if(scope === 'auction_confirmation') return '竞价确认';
+  if(scope === 'close') return '收盘候选';
+  return scope || '—';
+}
+
+function renderShortFactorDiscovery(payload){
+  const report = payload && payload.report;
+  const body = document.getElementById('sfd-candidates');
+  const msg = document.getElementById('sfd-msg');
+  if(!payload || !payload.ok){
+    const error = (payload && payload.error) || '加载失败';
+    if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
+    if(body) body.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--red)">${esc(error)}</td></tr>`;
+    return;
+  }
+  if(!payload.found || !report){
+    ['sfd-status','sfd-data-through','sfd-tested','sfd-promoted','sfd-oos-ic','sfd-net-return','sfd-max-dd']
+      .forEach(id=>fmSetText(id, '—'));
+    fmSetText('sfd-protocol', '固定协议尚未产生研究报告');
+    fmSetText('sfd-updated', '');
+    if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '暂无新因子研究结果'; }
+    if(body) body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--text3)">暂无晋级候选</td></tr>';
+    return;
+  }
+
+  const summary = report.summary || {};
+  const protocol = report.protocol || {};
+  const config = report.config || {};
+  const catalog = report.factor_catalog || {};
+  const candidates = Array.isArray(report.promotion_candidates)
+    ? report.promotion_candidates
+    : [];
+  const researchOnly = report.research_only === true;
+  const deploymentEligible = report.deployment_eligible === true;
+  const contract = document.getElementById('sfd-contract');
+  if(contract){
+    contract.textContent = researchOnly && !deploymentEligible
+      ? '仅研究，禁止部署'
+      : '研究契约异常';
+    contract.className = researchOnly && !deploymentEligible
+      ? 'tag tag-orange'
+      : 'tag tag-red';
+  }
+  fmSetText('sfd-status', report.status || '—');
+  fmSetText('sfd-data-through', report.data_through || '—');
+  fmSetText('sfd-tested', fmNumText(summary.tested_factor_count));
+  fmSetText('sfd-promoted', fmNumText(summary.promotion_candidate_count));
+  fmSetText('sfd-oos-ic', fmDecimalText(summary.oos_rank_ic, 4));
+  fmSetText('sfd-net-return', fmPctText(summary.net_return_pct));
+  fmSetText('sfd-max-dd', fmPctText(summary.max_drawdown_pct));
+  fmSetText(
+    'sfd-protocol',
+    `Purged walk-forward；BH-FDR ${fmDecimalText(config.fdr_alpha, 2)}；`
+      + `训练/测试/步长 ${fmNumText(config.train_days)}/${fmNumText(config.test_days)}/${fmNumText(config.step_days)} 日；`
+      + `持仓 ${fmNumText(config.hold_days)} 日；候选语法 ${String(protocol.candidate_grammar_sha256 || '—').slice(0, 12)}`
+  );
+  fmSetText(
+    'sfd-updated',
+    `${payload.updated_at || report.generated_at || ''}${report.run_id ? ' / '+report.run_id : ''}`
+  );
+  if(msg){
+    msg.style.color = candidates.length ? 'var(--green)' : 'var(--orange)';
+    msg.textContent = candidates.length
+      ? `发现 ${candidates.length} 个通过多重检验和样本外门禁的新因子候选`
+      : '本轮没有因子通过晋级门禁，不会写入观察池或交易策略';
+  }
+  if(!body) return;
+  if(!candidates.length){
+    body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--text3)">没有通过晋级门禁的候选</td></tr>';
+    return;
+  }
+  body.innerHTML = candidates.map(item=>{
+    const meta = catalog[item.factor] || {};
+    return `<tr>
+      <td><b>${esc(item.factor || '')}</b></td>
+      <td>${esc(sfdScopeText(item.scope))}<br><span style="font-size:11px;color:var(--text3)">${esc(meta.available_at || '')}</span></td>
+      <td style="min-width:240px">${esc(meta.formula || item.factor || '')}</td>
+      <td>${fmNumText(item.selected_windows)} / ${fmNumText(item.oos_window_count)}</td>
+      <td>${fmDecimalText(item.oos_mean_rank_ic, 4)}</td>
+      <td>${fmRateText(item.positive_oos_window_rate)}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadShortFactorDiscovery(){
+  const [latest, task] = await Promise.all([
+    _annFetch('GET', '/admin/short-factor-discovery/latest'),
+    _annFetch('GET', '/admin/short-factor-discovery/status'),
+  ]);
+  renderShortFactorDiscovery(latest);
+  if(task && task.ok && task.found && (task.status === 'queued' || task.status === 'running')){
+    pollShortFactorDiscovery(task.task_id);
+  }
+}
+
+async function pollShortFactorDiscovery(taskId){
+  if(!taskId) return;
+  SFD_ACTIVE_TASK_ID = taskId;
+  const generation = ++SFD_POLL_GENERATION;
+  const msg = document.getElementById('sfd-msg');
+  sfdSetBusy(true);
+  while(SFD_ACTIVE_TASK_ID === taskId && generation === SFD_POLL_GENERATION){
+    const task = await _annFetch(
+      'GET',
+      '/admin/short-factor-discovery/status?task_id='+encodeURIComponent(taskId),
+      null,
+      30000,
+    );
+    if(SFD_ACTIVE_TASK_ID !== taskId || generation !== SFD_POLL_GENERATION) return;
+    if(!task || !task.ok || !task.found){
+      const error = (task && task.error) || '无法读取新因子研究状态';
+      if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
+      SFD_ACTIVE_TASK_ID = '';
+      sfdSetBusy(false);
+      return;
+    }
+    if(task.status === 'queued' || task.status === 'running'){
+      if(msg){
+        msg.style.color = 'var(--text2)';
+        msg.textContent = task.status === 'queued'
+          ? '新因子研究已排队'
+          : `正在运行真实样本外研究${task.started_at ? '（'+task.started_at+'）' : ''}`;
+      }
+      await fmSleep(2000);
+      continue;
+    }
+    SFD_ACTIVE_TASK_ID = '';
+    sfdSetBusy(false);
+    if(task.status === 'done'){
+      showToast('新因子研究完成', 'success');
+      await loadShortFactorDiscovery();
+      return;
+    }
+    const error = task.error || (task.result && task.result.error) || '新因子研究失败';
+    if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
+    showToast(error, 'error');
+    return;
+  }
+}
+
+async function runShortFactorDiscovery(){
+  const msg = document.getElementById('sfd-msg');
+  sfdSetBusy(true);
+  if(msg){ msg.style.color = 'var(--text2)'; msg.textContent = '正在创建独立研究任务…'; }
+  const result = await _annFetch(
+    'POST',
+    '/admin/short-factor-discovery/run',
+    {},
+    30000,
+  );
+  if(result && result.ok && result.task_id){
+    if(result.reused) showToast('已有新因子研究运行中，已恢复进度', 'info');
+    pollShortFactorDiscovery(result.task_id);
+    return;
+  }
+  sfdSetBusy(false);
+  const error = (result && result.error) || '新因子研究任务创建失败';
+  if(msg){ msg.style.color = 'var(--red)'; msg.textContent = error; }
+  showToast(error, 'error');
 }
 
 function renderFactorMining(r){

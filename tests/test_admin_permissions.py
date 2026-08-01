@@ -74,6 +74,148 @@ def _login_session(client, uid, username, is_admin=True):
         sess["is_admin"] = is_admin
 
 
+def test_short_factor_discovery_latest_is_root_only(
+    isolated_app,
+    monkeypatch,
+):
+    app, um, _main = isolated_app
+    ops_uid = _create_admin(
+        um,
+        username="short-factor-ops",
+        permissions=["strategy_manage"],
+    )
+    import web.admin as admin_api
+
+    report = {
+        "schema_version": "short_factor_discovery_report_v1",
+        "channel": "short_factor_discovery",
+        "run_id": "sfd-20260710-171000",
+        "status": "accepted",
+        "research_only": True,
+        "deployment_eligible": False,
+        "summary": {
+            "tested_factor_count": 45,
+            "promotion_candidate_count": 2,
+            "oos_window_count": 5,
+            "oos_rank_ic": 0.031,
+            "net_return_pct": 6.8,
+            "max_drawdown_pct": -3.4,
+        },
+        "promotion_candidates": [
+            {
+                "factor": "gap_absorption_1",
+                "scope": "close",
+            }
+        ],
+    }
+
+    class ShortFactorJobStub:
+        @staticmethod
+        def get_latest_report():
+            return report
+
+    monkeypatch.setattr(
+        admin_api,
+        "short_factor_job",
+        ShortFactorJobStub,
+        raising=False,
+    )
+    client = app.test_client()
+
+    _login_session(client, ops_uid, "short-factor-ops")
+    denied = client.get(
+        "/api/admin/short-factor-discovery/latest"
+    )
+    assert denied.status_code == 403
+    assert denied.get_json()["code"] == "root_admin_required"
+
+    _login_session(client, 1, "admin")
+    allowed = client.get(
+        "/api/admin/short-factor-discovery/latest"
+    )
+    payload = allowed.get_json()
+    assert allowed.status_code == 200
+    assert payload["ok"] is True
+    assert payload["found"] is True
+    assert payload["report"] == report
+    assert payload["report"]["deployment_eligible"] is False
+
+
+def test_short_factor_discovery_run_is_async_and_reuses_active_task(
+    isolated_app,
+    monkeypatch,
+):
+    app, _um, _main = isolated_app
+    import web.admin as admin_api
+
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def fake_run_job(job, slot=None, force=False):
+        calls.append((job, slot, force))
+        started.set()
+        assert release.wait(timeout=2)
+        return {
+            "ok": True,
+            "run_id": "sfd-20260710-171000",
+            "status": "accepted",
+            "research_only": True,
+            "deployment_eligible": False,
+            "promotion_candidate_count": 1,
+        }
+
+    monkeypatch.setattr(
+        admin_api.auto_factor_scheduler,
+        "run_job",
+        fake_run_job,
+    )
+    client = app.test_client()
+    _login_session(client, 1, "admin")
+
+    first = client.post(
+        "/api/admin/short-factor-discovery/run",
+        json={},
+    )
+    first_payload = first.get_json()
+    try:
+        assert first.status_code == 202
+        assert first_payload["ok"] is True
+        assert first_payload["task_id"]
+        assert first_payload["status"] in {"queued", "running"}
+        assert started.wait(timeout=1)
+
+        duplicate = client.post(
+            "/api/admin/short-factor-discovery/run",
+            json={},
+        )
+        duplicate_payload = duplicate.get_json()
+        assert duplicate.status_code == 202
+        assert duplicate_payload["task_id"] == first_payload["task_id"]
+        assert duplicate_payload["reused"] is True
+    finally:
+        release.set()
+
+    status_payload = None
+    for _ in range(40):
+        status_response = client.get(
+            "/api/admin/short-factor-discovery/status"
+            f"?task_id={first_payload['task_id']}"
+        )
+        status_payload = status_response.get_json()
+        if status_payload.get("status") == "done":
+            break
+        time.sleep(0.02)
+
+    assert status_payload["ok"] is True
+    assert status_payload["status"] == "done"
+    assert status_payload["result"]["research_only"] is True
+    assert status_payload["result"]["deployment_eligible"] is False
+    assert calls == [
+        ("short_factor_discovery", None, True)
+    ]
+
+
 def _eligible_factor_registration(relay):
     source = relay.load_model_preregistration()
     assert source["ok"] is True

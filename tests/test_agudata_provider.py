@@ -1,5 +1,6 @@
 from datetime import datetime
 
+import pandas as pd
 import pytest
 
 from analytics import agudata_provider as provider
@@ -69,6 +70,73 @@ def test_query_api_reports_permission_error_without_leaking_key(monkeypatch):
 
     assert "API_PERMISSION_DENIED" in str(exc_info.value)
     assert "never-log-this" not in str(exc_info.value)
+
+
+def test_query_api_classifies_gateway_limiter_outage_as_retryable(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        provider.requests,
+        "get",
+        lambda *args, **kwargs: _Response(
+            {
+                "code": 500,
+                "message": "限流服务不可用",
+            }
+        ),
+    )
+
+    with pytest.raises(provider.AgudataRateLimitError):
+        provider.query_api(
+            "daily-basic",
+            api_key="test-secret",
+        )
+
+
+def test_query_api_classifies_business_5xx_as_transient(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        provider.requests,
+        "get",
+        lambda *args, **kwargs: _Response(
+            {
+                "code": 500,
+                "message": "请求摘要暂不可用，请稍后重试",
+            }
+        ),
+    )
+
+    with pytest.raises(provider.AgudataTransientError):
+        provider.query_api(
+            "daily-basic",
+            api_key="test-secret",
+        )
+
+
+def test_query_api_classifies_non_json_http_5xx_as_transient(
+    monkeypatch,
+):
+    class NonJsonResponse(_Response):
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setattr(
+        provider.requests,
+        "get",
+        lambda *args, **kwargs: NonJsonResponse(
+            "<html>timeout</html>",
+            status_code=524,
+        ),
+    )
+
+    with pytest.raises(provider.AgudataTransientError) as exc_info:
+        provider.query_api(
+            "daily-basic",
+            api_key="test-secret",
+        )
+
+    assert "HTTP 524" in str(exc_info.value)
 
 
 def test_fetch_kline_qfq_applies_adjustment_factors(monkeypatch):
@@ -298,6 +366,113 @@ def test_paged_query_retries_rate_limit_with_bounded_backoff(monkeypatch):
     assert sleeps == [3.0, 10.0]
 
 
+def test_paged_query_survives_sustained_rate_limit_window(
+    monkeypatch,
+):
+    attempts = []
+    sleeps = []
+
+    def fake_query(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) < 5:
+            raise provider.AgudataRateLimitError("too fast")
+        return [{"ts_code": "000001.SZ"}]
+
+    monkeypatch.setattr(provider, "query_api", fake_query)
+    monkeypatch.setattr(provider.time, "sleep", sleeps.append)
+
+    rows = provider._paged_query(
+        "daily-basic",
+        {"trade_date": "20260731"},
+        api_key="key",
+        page_size=1000,
+        max_rows=1000,
+    )
+
+    assert rows == [{"ts_code": "000001.SZ"}]
+    assert len(attempts) == 5
+    assert sleeps == [3.0, 10.0, 30.0, 60.0]
+
+
+def test_paged_query_paces_successive_full_pages(monkeypatch):
+    offsets = []
+    sleeps = []
+
+    def fake_query(_endpoint, params, **_kwargs):
+        offsets.append(params["offset"])
+        if params["offset"] < 2:
+            return [{"ts_code": f"{params['offset']:06d}.SZ"}]
+        return []
+
+    monkeypatch.setattr(provider, "query_api", fake_query)
+    monkeypatch.setattr(provider.time, "sleep", sleeps.append)
+
+    rows = provider._paged_query(
+        "daily-basic",
+        {},
+        api_key="key",
+        page_size=1,
+        max_rows=3,
+        request_interval_seconds=2.1,
+    )
+
+    assert len(rows) == 2
+    assert offsets == [0, 1, 2]
+    assert sleeps == [2.1, 2.1]
+
+
+def test_paged_query_allows_provider_verified_5000_row_pages(
+    monkeypatch,
+):
+    limits = []
+
+    def fake_query(_endpoint, params, **_kwargs):
+        limits.append(params["limit"])
+        return []
+
+    monkeypatch.setattr(provider, "query_api", fake_query)
+
+    provider._paged_query(
+        "daily-basic",
+        {},
+        api_key="key",
+        page_size=5000,
+        max_rows=5000,
+    )
+
+    assert limits == [5000]
+
+
+def test_paged_query_retries_transient_5xx_with_bounded_backoff(
+    monkeypatch,
+):
+    attempts = []
+    sleeps = []
+
+    def fake_query(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise provider.AgudataTransientError(
+                "temporarily unavailable"
+            )
+        return [{"ts_code": "000001.SZ"}]
+
+    monkeypatch.setattr(provider, "query_api", fake_query)
+    monkeypatch.setattr(provider.time, "sleep", sleeps.append)
+
+    rows = provider._paged_query(
+        "daily-basic",
+        {"trade_date": "20260731"},
+        api_key="key",
+        page_size=1000,
+        max_rows=1000,
+    )
+
+    assert rows == [{"ts_code": "000001.SZ"}]
+    assert len(attempts) == 3
+    assert sleeps == [3.0, 10.0]
+
+
 def test_fetch_minute_kline_uses_historical_endpoint_for_trade_date(monkeypatch):
     calls = []
 
@@ -389,6 +564,217 @@ def test_fetch_realtime_quotes_and_auction_snapshot(monkeypatch):
     assert quotes[0]["source"] == "agudata_rt_k"
     assert auction["price"] == 11.8
     assert auction["source"] == "agudata_stk_auction"
+
+
+def test_fetch_daily_basic_history_batches_and_normalizes(monkeypatch):
+    calls = []
+
+    def fake_paged(endpoint, params, **kwargs):
+        calls.append((endpoint, dict(params), kwargs))
+        if len(calls) > 1:
+            return []
+        return [
+            {
+                "ts_code": "000002.SZ",
+                "trade_date": "20260731",
+                "turnover_rate": "2.5",
+                "turnover_rate_f": "3.5",
+                "volume_ratio": "1.2",
+                "float_share": "2000",
+                "total_share": "3000",
+                "float_mv": "4000",
+                "circ_mv": "5000",
+            },
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20260730",
+                "turnover_rate": "1.0",
+                "turnover_rate_f": "1.1",
+                "volume_ratio": "0.8",
+                "float_share": "1000",
+                "total_share": "1500",
+                "float_mv": "2000",
+                "circ_mv": "2500",
+            },
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20260730",
+                "turnover_rate": "1.5",
+                "turnover_rate_f": "1.6",
+                "volume_ratio": "0.9",
+                "float_share": "1100",
+                "total_share": "1600",
+                "float_mv": "2100",
+                "circ_mv": "2600",
+            },
+            {
+                "ts_code": "invalid",
+                "trade_date": "not-a-date",
+                "turnover_rate": "bad",
+            },
+        ]
+
+    monkeypatch.setattr(provider, "_paged_query", fake_paged)
+
+    frame = provider.fetch_daily_basic_history(
+        [f"{number:06d}" for number in range(1, 52)],
+        "2026-07-01",
+        "2026-07-31",
+        api_key="key",
+        base_url="https://data.example/openapi/v1",
+    )
+
+    assert [endpoint for endpoint, _, _ in calls] == [
+        "daily-basic",
+        "daily-basic",
+    ]
+    assert [len(params["ts_code"].split(",")) for _, params, _ in calls] == [
+        50,
+        1,
+    ]
+    assert calls[0][1]["ts_code"].split(",")[0] == "000001.SZ"
+    assert calls[1][1]["ts_code"] == "000051.SZ"
+    assert calls[0][1]["start_date"] == "20260701"
+    assert calls[0][1]["end_date"] == "20260731"
+    assert all(call[2]["page_size"] == 5000 for call in calls)
+    assert all(
+        call[2]["request_interval_seconds"] == 3.2
+        for call in calls
+    )
+    assert list(frame.columns) == [
+        "code",
+        "date",
+        "turnover_rate",
+        "turnover_rate_f",
+        "volume_ratio",
+        "float_share",
+        "total_share",
+        "float_mv",
+        "circ_mv",
+    ]
+    assert frame["code"].tolist() == ["000001", "000002"]
+    assert frame["date"].dt.strftime("%Y%m%d").tolist() == [
+        "20260730",
+        "20260731",
+    ]
+    assert frame["turnover_rate"].tolist() == [1.5, 2.5]
+    assert all(
+        pd.api.types.is_numeric_dtype(frame[column])
+        for column in frame.columns[2:]
+    )
+
+
+def test_fetch_auction_history_normalizes_deduplicates_and_sorts(monkeypatch):
+    calls = []
+
+    def fake_paged(endpoint, params, **kwargs):
+        calls.append((endpoint, dict(params), kwargs))
+        return [
+            {
+                "ts_code": "600000.SH",
+                "trade_date": "20260731",
+                "vol": "200",
+                "price": "12.5",
+                "amount": "2500",
+                "pre_close": "12.0",
+                "turnover_rate": "0.2",
+                "volume_ratio": "1.3",
+                "float_share": "10000",
+            },
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20260730",
+                "vol": "100",
+                "price": "10.0",
+                "amount": "1000",
+                "pre_close": "9.8",
+                "turnover_rate": "0.1",
+                "volume_ratio": "1.1",
+                "float_share": "8000",
+            },
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20260730",
+                "vol": "150",
+                "price": "10.2",
+                "amount": "1530",
+                "pre_close": "9.8",
+                "turnover_rate": "0.15",
+                "volume_ratio": "1.2",
+                "float_share": "8000",
+            },
+        ]
+
+    monkeypatch.setattr(provider, "_paged_query", fake_paged)
+
+    frame = provider.fetch_auction_history(
+        ["600000.SH", "000001"],
+        "20260701",
+        "20260731",
+        api_key="key",
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] == "stk-auction"
+    assert calls[0][1]["ts_code"] == "600000.SH,000001.SZ"
+    assert calls[0][2]["page_size"] == 5000
+    assert calls[0][2]["request_interval_seconds"] == 3.2
+    assert list(frame.columns) == [
+        "code",
+        "date",
+        "auction_volume",
+        "auction_price",
+        "auction_amount",
+        "pre_close",
+        "auction_turnover_rate",
+        "auction_volume_ratio",
+        "float_share",
+    ]
+    assert frame["code"].tolist() == ["000001", "600000"]
+    assert frame["auction_volume"].tolist() == [150, 200]
+    assert frame["auction_price"].tolist() == [10.2, 12.5]
+    assert all(
+        pd.api.types.is_numeric_dtype(frame[column])
+        for column in frame.columns[2:]
+    )
+
+
+def test_history_helpers_return_fixed_empty_frames_without_requests(monkeypatch):
+    monkeypatch.setattr(
+        provider,
+        "_paged_query",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("empty input must not request Agudata")
+        ),
+    )
+
+    daily = provider.fetch_daily_basic_history([], "20260701", "20260731")
+    auction = provider.fetch_auction_history([], "20260701", "20260731")
+
+    assert list(daily.columns) == [
+        "code",
+        "date",
+        "turnover_rate",
+        "turnover_rate_f",
+        "volume_ratio",
+        "float_share",
+        "total_share",
+        "float_mv",
+        "circ_mv",
+    ]
+    assert list(auction.columns) == [
+        "code",
+        "date",
+        "auction_volume",
+        "auction_price",
+        "auction_amount",
+        "pre_close",
+        "auction_turnover_rate",
+        "auction_volume_ratio",
+        "float_share",
+    ]
+    assert daily.empty
+    assert auction.empty
 
 
 def test_fetch_security_master_merges_agudata_profiles_with_trusted_lifecycle(

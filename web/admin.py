@@ -20,6 +20,7 @@ from analytics import datasource_config
 from analytics import tushare_provider
 from analytics import relay_factor_mining
 from analytics import relay_factor_experiment
+from analytics import short_factor_job
 from analytics import ai_trader as ai_trader_engine
 from analytics import auto_factor_scheduler
 from app_state import BASE_DIR, require_admin, require_admin_perm, require_root_admin
@@ -32,6 +33,10 @@ _factor_mining_jobs: dict[str, dict] = {}
 _factor_mining_jobs_lock = threading.RLock()
 _factor_mining_active_task_id: str | None = None
 _factor_mining_last_task_id: str | None = None
+_short_factor_jobs: dict[str, dict] = {}
+_short_factor_jobs_lock = threading.RLock()
+_short_factor_active_task_id: str | None = None
+_short_factor_last_task_id: str | None = None
 
 
 def _bounded_int_value(raw, default: int, min_value: int, max_value: int) -> int:
@@ -314,6 +319,61 @@ def _run_factor_mining_job(task_id: str, params: dict) -> None:
         with _factor_mining_jobs_lock:
             if _factor_mining_active_task_id == task_id:
                 _factor_mining_active_task_id = None
+
+
+def _short_factor_job_snapshot(task: dict) -> dict:
+    payload = {
+        "task_id": task.get("task_id"),
+        "status": task.get("status", "queued"),
+        "created_at": task.get("created_at"),
+        "started_at": task.get("started_at"),
+        "finished_at": task.get("finished_at"),
+        "error": task.get("error"),
+    }
+    if task.get("status") in {"done", "error"}:
+        payload["result"] = task.get("result")
+    return payload
+
+
+def _set_short_factor_job(task_id: str, **changes) -> None:
+    with _short_factor_jobs_lock:
+        task = _short_factor_jobs.get(task_id)
+        if task is not None:
+            task.update(changes)
+
+
+def _run_short_factor_job(task_id: str) -> None:
+    global _short_factor_active_task_id
+
+    _set_short_factor_job(
+        task_id,
+        status="running",
+        started_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    try:
+        result = auto_factor_scheduler.run_job(
+            "short_factor_discovery",
+            force=True,
+        )
+        _set_short_factor_job(
+            task_id,
+            status="done" if result.get("ok") else "error",
+            result=result,
+            error=None if result.get("ok") else result.get("error"),
+            finished_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+    except Exception as exc:
+        _set_short_factor_job(
+            task_id,
+            status="error",
+            error=str(exc),
+            result={"ok": False, "error": str(exc)},
+            finished_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+    finally:
+        with _short_factor_jobs_lock:
+            if _short_factor_active_task_id == task_id:
+                _short_factor_active_task_id = None
 
 
 # ── 因子观察池 / AI 决策落盘：领域逻辑已搬到 core/factor_watchlist.py ──────
@@ -740,6 +800,131 @@ def admin_factor_mining_run():
         name=f"factor-mining-{task_id[:8]}",
     ).start()
     return jsonify({"ok": True, "found": True, "reused": False, **_factor_mining_job_snapshot(task)}), 202
+
+
+@bp.route(
+    "/api/admin/short-factor-discovery/latest",
+    methods=["GET"],
+)
+@require_root_admin
+def admin_short_factor_discovery_latest():
+    report = short_factor_job.get_latest_report()
+    return jsonify(
+        {
+            "ok": True,
+            "found": report is not None,
+            "run_id": (
+                report.get("run_id")
+                if isinstance(report, dict)
+                else None
+            ),
+            "updated_at": (
+                report.get("generated_at")
+                if isinstance(report, dict)
+                else None
+            ),
+            "report": report,
+        }
+    )
+
+
+@bp.route(
+    "/api/admin/short-factor-discovery/status",
+    methods=["GET"],
+)
+@require_root_admin
+def admin_short_factor_discovery_status():
+    task_id = str(request.args.get("task_id") or "").strip()
+    with _short_factor_jobs_lock:
+        if not task_id:
+            task_id = (
+                _short_factor_active_task_id
+                or _short_factor_last_task_id
+                or ""
+            )
+        task = dict(_short_factor_jobs.get(task_id) or {})
+    if not task:
+        return jsonify(
+            {
+                "ok": True,
+                "found": False,
+                "status": "idle",
+                "task_id": task_id or None,
+            }
+        )
+    return jsonify(
+        {
+            "ok": True,
+            "found": True,
+            **_short_factor_job_snapshot(task),
+        }
+    )
+
+
+@bp.route(
+    "/api/admin/short-factor-discovery/run",
+    methods=["POST"],
+)
+@require_root_admin
+def admin_short_factor_discovery_run():
+    global _short_factor_active_task_id
+    global _short_factor_last_task_id
+
+    body = request.get_json(silent=True)
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        return jsonify(
+            {"ok": False, "error": "请求体必须是 JSON 对象"}
+        ), 400
+    with _short_factor_jobs_lock:
+        active = _short_factor_jobs.get(
+            _short_factor_active_task_id or ""
+        )
+        if active and active.get("status") in {
+            "queued",
+            "running",
+        }:
+            return jsonify(
+                {
+                    "ok": True,
+                    "found": True,
+                    "reused": True,
+                    **_short_factor_job_snapshot(active),
+                }
+            ), 202
+
+        task_id = uuid.uuid4().hex
+        task = {
+            "task_id": task_id,
+            "status": "queued",
+            "created_at": datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+        }
+        _short_factor_jobs[task_id] = task
+        _short_factor_active_task_id = task_id
+        _short_factor_last_task_id = task_id
+        while len(_short_factor_jobs) > 20:
+            oldest = next(iter(_short_factor_jobs))
+            if oldest == task_id:
+                break
+            _short_factor_jobs.pop(oldest, None)
+
+    threading.Thread(
+        target=_run_short_factor_job,
+        args=(task_id,),
+        daemon=True,
+        name=f"short-factor-{task_id[:8]}",
+    ).start()
+    return jsonify(
+        {
+            "ok": True,
+            "found": True,
+            "reused": False,
+            **_short_factor_job_snapshot(task),
+        }
+    ), 202
 
 
 # 可执行性排序权重：ready > watch > avoid。

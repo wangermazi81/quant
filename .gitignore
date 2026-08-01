@@ -70,6 +70,7 @@ backups/
 htmlcov/
 .pytest_cache/
 .pytest_tmp_*/
+.pytest-tmp-*/
 codex_pytest_tmp/
 
 # ── 归档目录（历史备份，不提交）─────────────────────

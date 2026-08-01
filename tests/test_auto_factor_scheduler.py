@@ -1579,6 +1579,65 @@ def test_default_factor_mining_next_run_is_1710(monkeypatch, tmp_path):
     assert next_runs["factor_mining"] == "2026-07-10 17:10"
 
 
+def test_default_short_factor_discovery_next_run_is_1710(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+
+    next_runs = scheduler.next_runs(datetime(2026, 7, 10, 16, 59))
+
+    assert (
+        scheduler.get_config()["short_factor_discovery_time"]
+        == "17:10"
+    )
+    assert (
+        next_runs["short_factor_discovery"]
+        == "2026-07-10 17:10"
+    )
+
+
+def test_run_job_dispatches_short_factor_discovery(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        scheduler,
+        "_run_short_factor_discovery",
+        lambda date_text: calls.append(date_text)
+        or {
+            "ok": True,
+            "run_id": "sfd-20260710-171000",
+            "research_only": True,
+            "deployment_eligible": False,
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_today_text",
+        lambda: "2026-07-10",
+    )
+
+    result = scheduler.run_job(
+        "short_factor_discovery",
+        slot="17:10",
+        force=True,
+    )
+
+    assert result["ok"] is True
+    assert result["research_only"] is True
+    assert result["deployment_eligible"] is False
+    assert calls == ["2026-07-10"]
+    status = scheduler.get_status()
+    record = status["jobs"][
+        "2026-07-10:short_factor_discovery:1710"
+    ]
+    assert record["ok"] is True
+
+
 def test_default_factor_mining_history_can_cover_research_window_gate(monkeypatch, tmp_path):
     scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
     from analytics.relay_factor_mining import RESEARCH_VALIDATION_RULES
@@ -1643,6 +1702,7 @@ def test_scheduler_blocks_when_authoritative_calendar_is_unavailable(
     assert next_runs == {
         "data_refresh": None,
         "factor_mining": None,
+        "short_factor_discovery": None,
         "ai_decision": None,
     }
 

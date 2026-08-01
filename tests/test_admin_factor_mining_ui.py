@@ -14,6 +14,22 @@ ADMIN_CSS = ROOT / "static" / "app" / "css" / "admin-base.css"
 ADMIN_JS = ROOT / "static" / "app" / "js" / "admin-app.js"
 
 
+def test_short_factor_discovery_admin_ui_contract():
+    html = ADMIN_HTML.read_text(encoding="utf-8")
+    js = ADMIN_JS.read_text(encoding="utf-8")
+
+    assert 'id="sfd-run-btn"' in html
+    assert 'id="sfd-candidates"' in html
+    assert 'id="sfd-protocol"' in html
+    assert "极致短线新因子发现" in html
+    assert "/admin/short-factor-discovery/latest" in js
+    assert "/admin/short-factor-discovery/status" in js
+    assert "/admin/short-factor-discovery/run" in js
+    assert "renderShortFactorDiscovery" in js
+    assert "research_only" in js
+    assert "deployment_eligible" in js
+
+
 def _render_model_meta(report: dict) -> str:
     node = shutil.which("node")
     if not node:

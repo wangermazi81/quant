@@ -24,6 +24,7 @@ from typing import Any
 from core import user_manager as um
 from analytics import relay_factor_mining
 from analytics import relay_factor_experiment
+from analytics import short_factor_job
 from analytics import ai_trader as ai_trader_engine
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ DEFAULT_CONFIG = {
     "enabled": True,
     "data_refresh_times": ["15:35", "16:10"],
     "factor_mining_time": "17:10",
+    "short_factor_discovery_time": "17:10",
     "ai_decision_times": ["09:15", "09:25"],
     "window_minutes": 90,
     "retry_cooldown_minutes": 10,
@@ -399,6 +401,10 @@ def _validated_scheduler_config() -> dict[str, Any]:
     normalized["factor_mining_time"] = _schedule_time(
         raw.get("factor_mining_time"),
         "factor_mining_time",
+    )
+    normalized["short_factor_discovery_time"] = _schedule_time(
+        raw.get("short_factor_discovery_time"),
+        "short_factor_discovery_time",
     )
     normalized["window_minutes"] = _config_int(
         raw.get("window_minutes"),
@@ -1168,10 +1174,19 @@ def next_runs(now: datetime | None = None) -> dict:
     cfg = get_config()
     now = now or datetime.now()
     dates = [(now + timedelta(days=offset)).date() for offset in range(14)]
-    out: dict[str, str | None] = {"data_refresh": None, "factor_mining": None, "ai_decision": None}
+    out: dict[str, str | None] = {
+        "data_refresh": None,
+        "factor_mining": None,
+        "short_factor_discovery": None,
+        "ai_decision": None,
+    }
     schedule = {
         "data_refresh": cfg.get("data_refresh_times") or [],
         "factor_mining": [cfg.get("factor_mining_time") or DEFAULT_CONFIG["factor_mining_time"]],
+        "short_factor_discovery": [
+            cfg.get("short_factor_discovery_time")
+            or DEFAULT_CONFIG["short_factor_discovery_time"]
+        ],
         "ai_decision": cfg.get("ai_decision_times") or [],
     }
     for name, times in schedule.items():
@@ -1748,6 +1763,16 @@ def _run_factor_mining(date_text: str) -> dict:
     }
 
 
+def _run_short_factor_discovery(_date_text: str) -> dict:
+    result = short_factor_job.run_discovery_job()
+    if not isinstance(result, dict):
+        return {
+            "ok": False,
+            "error": "short factor discovery returned invalid result",
+        }
+    return result
+
+
 def _run_ai_decision(date_text: str) -> dict:
     from core import factor_watchlist as admin_api
 
@@ -1782,7 +1807,13 @@ def _run_ai_decision(date_text: str) -> dict:
 
 def run_job(job: str, slot: str | None = None, force: bool = False) -> dict:
     job = str(job or "").strip()
-    if job not in {"data_refresh", "factor_mining", "ai_decision", "full_after_close"}:
+    if job not in {
+        "data_refresh",
+        "factor_mining",
+        "short_factor_discovery",
+        "ai_decision",
+        "full_after_close",
+    }:
         return {"ok": False, "error": "unknown auto scheduler job"}
     if not force and not get_config().get("enabled", True):
         return {"ok": False, "error": "auto scheduler disabled"}
@@ -1806,6 +1837,8 @@ def run_job(job: str, slot: str | None = None, force: bool = False) -> dict:
                         result = _run_data_refresh(date_text)
                     elif job == "factor_mining":
                         result = _run_factor_mining(date_text)
+                    elif job == "short_factor_discovery":
+                        result = _run_short_factor_discovery(date_text)
                     elif job == "ai_decision":
                         result = _run_ai_decision(date_text)
                     else:
@@ -1944,6 +1977,22 @@ def run_scheduler_loop(interval_seconds: int = 30) -> None:
                 ):
                     _mark_scheduler_progress()
                     run_job("factor_mining", slot=slot)
+                    _mark_scheduler_progress()
+                    status = get_status()
+                slot = str(
+                    cfg.get("short_factor_discovery_time")
+                    or DEFAULT_CONFIG["short_factor_discovery_time"]
+                )
+                if _in_window(now, slot, window) and not _attempt_blocked(
+                    status,
+                    "short_factor_discovery",
+                    slot,
+                    date_text,
+                    now=now,
+                    retry_cooldown_minutes=retry_cooldown,
+                ):
+                    _mark_scheduler_progress()
+                    run_job("short_factor_discovery", slot=slot)
                     _mark_scheduler_progress()
                     status = get_status()
                 for slot in cfg.get("ai_decision_times") or []:

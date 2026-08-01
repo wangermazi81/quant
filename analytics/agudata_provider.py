@@ -29,7 +29,11 @@ VALID_MINUTE_FREQS = {"1MIN", "5MIN", "15MIN", "30MIN", "60MIN"}
 DEFAULT_PAGE_SIZE = 1000
 DEFAULT_MAX_ROWS = 10000
 FULL_MARKET_DAILY_PAGE_SIZE = 500
-RATE_LIMIT_BACKOFF_SECONDS = (3.0, 10.0)
+RATE_LIMIT_BACKOFF_SECONDS = (3.0, 10.0, 30.0, 60.0)
+TRANSIENT_BACKOFF_SECONDS = (3.0, 10.0)
+HISTORY_CODE_BATCH_SIZE = 50
+HISTORY_PAGE_SIZE = 5000
+HISTORY_REQUEST_INTERVAL_SECONDS = 3.2
 
 
 class AgudataError(RuntimeError):
@@ -40,7 +44,11 @@ class AgudataPermissionError(AgudataError):
     """The API key lacks permission for an endpoint."""
 
 
-class AgudataRateLimitError(AgudataError):
+class AgudataTransientError(AgudataError):
+    """The provider reported a retryable gateway failure."""
+
+
+class AgudataRateLimitError(AgudataTransientError):
     """The request exceeded the provider rate limit."""
 
 
@@ -180,7 +188,15 @@ def query_api(
     try:
         payload = response.json()
     except Exception as exc:
-        raise AgudataError(
+        http_status = int(
+            getattr(response, "status_code", 0) or 0
+        )
+        error_type = (
+            AgudataTransientError
+            if http_status >= 500
+            else AgudataError
+        )
+        raise error_type(
             f"Agudata {slug} returned non-JSON content "
             f"(HTTP {response.status_code})"
         ) from exc
@@ -190,8 +206,31 @@ def query_api(
     effective_code = code or (http_status if http_status >= 400 else None)
     if effective_code in {401, 403}:
         raise AgudataPermissionError(message or "Agudata permission denied")
-    if effective_code == 429:
+    normalized_message = message.strip().lower()
+    if effective_code == 429 or any(
+        marker in normalized_message
+        for marker in (
+            "限流",
+            "rate limit",
+            "too many requests",
+        )
+    ):
         raise AgudataRateLimitError(message or "Agudata rate limit exceeded")
+    if (
+        isinstance(effective_code, int)
+        and 500 <= effective_code <= 599
+    ) or any(
+        marker in normalized_message
+        for marker in (
+            "暂不可用",
+            "稍后重试",
+            "temporarily unavailable",
+            "try again later",
+        )
+    ):
+        raise AgudataTransientError(
+            message or "Agudata service temporarily unavailable"
+        )
     if effective_code:
         raise AgudataError(
             message or f"Agudata {slug} failed with code {effective_code}"
@@ -208,9 +247,14 @@ def _paged_query(
     timeout: int = 60,
     page_size: int = DEFAULT_PAGE_SIZE,
     max_rows: int = DEFAULT_MAX_ROWS,
+    request_interval_seconds: float = 0.0,
 ) -> list[dict]:
-    size = max(1, min(int(page_size or DEFAULT_PAGE_SIZE), 1000))
+    size = max(1, min(int(page_size or DEFAULT_PAGE_SIZE), 5000))
     cap = max(size, int(max_rows or DEFAULT_MAX_ROWS))
+    request_interval = max(
+        0.0,
+        float(request_interval_seconds or 0.0),
+    )
     offset = 0
     result: list[dict] = []
     with requests.Session() as session:
@@ -219,7 +263,11 @@ def _paged_query(
             query["limit"] = min(size, cap - offset)
             query["offset"] = offset
             page = None
-            for attempt in range(3):
+            retry_attempts = max(
+                len(RATE_LIMIT_BACKOFF_SECONDS),
+                len(TRANSIENT_BACKOFF_SECONDS),
+            )
+            for attempt in range(retry_attempts + 1):
                 try:
                     page = query_api(
                         endpoint,
@@ -234,12 +282,18 @@ def _paged_query(
                     if attempt >= len(RATE_LIMIT_BACKOFF_SECONDS):
                         raise
                     time.sleep(RATE_LIMIT_BACKOFF_SECONDS[attempt])
+                except AgudataTransientError:
+                    if attempt >= len(TRANSIENT_BACKOFF_SECONDS):
+                        raise
+                    time.sleep(TRANSIENT_BACKOFF_SECONDS[attempt])
             if not page:
                 break
             result.extend(page)
             if len(page) < query["limit"]:
                 break
             offset += len(page)
+            if request_interval > 0:
+                time.sleep(request_interval)
     return result[:cap]
 
 
@@ -282,6 +336,113 @@ def _normalize_daily_frame(
         data[columns]
         .drop_duplicates(subset=dedupe, keep="last")
         .sort_values(order)
+        .reset_index(drop=True)
+    )
+
+
+def _history_ts_codes(
+    codes: list[str] | tuple[str, ...] | str,
+) -> list[str]:
+    values = codes.split(",") if isinstance(codes, str) else codes
+    result = []
+    seen = set()
+    for value in values or []:
+        if not str(value or "").strip():
+            continue
+        ts_code = _ts_code(value)
+        if (
+            not _plain_code(ts_code).isdigit()
+            or len(_plain_code(ts_code)) != 6
+            or ts_code in seen
+        ):
+            continue
+        seen.add(ts_code)
+        result.append(ts_code)
+    return result
+
+
+def _fetch_batched_history(
+    endpoint: str,
+    codes: list[str] | tuple[str, ...] | str,
+    start: str,
+    end: str,
+    fields: str,
+    *,
+    api_key: str | None,
+    base_url: str | None,
+) -> list[dict]:
+    ts_codes = _history_ts_codes(codes)
+    if not ts_codes:
+        return []
+    start_date = _date_text(start)
+    end_date = _date_text(end)
+    start_at = pd.to_datetime(start_date, format="%Y%m%d", errors="coerce")
+    end_at = pd.to_datetime(end_date, format="%Y%m%d", errors="coerce")
+    calendar_days = (
+        max(1, int((end_at - start_at).days) + 1)
+        if not pd.isna(start_at) and not pd.isna(end_at)
+        else HISTORY_PAGE_SIZE
+    )
+    rows = []
+    for offset in range(0, len(ts_codes), HISTORY_CODE_BATCH_SIZE):
+        batch = ts_codes[offset : offset + HISTORY_CODE_BATCH_SIZE]
+        rows.extend(
+            _paged_query(
+                endpoint,
+                {
+                    "ts_code": ",".join(batch),
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "fields": fields,
+                },
+                api_key=api_key,
+                base_url=base_url,
+                timeout=60,
+                page_size=HISTORY_PAGE_SIZE,
+                request_interval_seconds=(
+                    HISTORY_REQUEST_INTERVAL_SECONDS
+                ),
+                max_rows=max(
+                    HISTORY_PAGE_SIZE,
+                    len(batch) * calendar_days,
+                ),
+            )
+        )
+    return rows
+
+
+def _normalize_history_frame(
+    rows: list[dict],
+    columns: list[str],
+    *,
+    rename: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    data = pd.DataFrame(rows)
+    if data.empty:
+        return pd.DataFrame(columns=columns)
+    data = data.rename(
+        columns={"trade_date": "date", **(rename or {})}
+    ).copy()
+    if "ts_code" not in data.columns or "date" not in data.columns:
+        return pd.DataFrame(columns=columns)
+    data["code"] = data["ts_code"].map(_plain_code)
+    data["date"] = pd.to_datetime(
+        data["date"].astype("string"),
+        format="%Y%m%d",
+        errors="coerce",
+    )
+    numeric_columns = columns[2:]
+    for column in numeric_columns:
+        if column not in data.columns:
+            data[column] = pd.NA
+        data[column] = pd.to_numeric(data[column], errors="coerce")
+    data = data[
+        data["code"].str.fullmatch(r"\d{6}") & data["date"].notna()
+    ]
+    return (
+        data[columns]
+        .drop_duplicates(["code", "date"], keep="last")
+        .sort_values(["code", "date"])
         .reset_index(drop=True)
     )
 
@@ -458,6 +619,84 @@ def fetch_full_market_adj_factors(
     return data[columns].drop_duplicates(
         ["code", "date"], keep="last"
     ).reset_index(drop=True)
+
+
+def fetch_daily_basic_history(
+    codes: list[str] | tuple[str, ...] | str,
+    start: str,
+    end: str,
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> pd.DataFrame:
+    columns = [
+        "code",
+        "date",
+        "turnover_rate",
+        "turnover_rate_f",
+        "volume_ratio",
+        "float_share",
+        "total_share",
+        "float_mv",
+        "circ_mv",
+    ]
+    rows = _fetch_batched_history(
+        "daily-basic",
+        codes,
+        start,
+        end,
+        (
+            "ts_code,trade_date,turnover_rate,turnover_rate_f,"
+            "volume_ratio,float_share,total_share,float_mv,circ_mv"
+        ),
+        api_key=api_key,
+        base_url=base_url,
+    )
+    return _normalize_history_frame(rows, columns)
+
+
+def fetch_auction_history(
+    codes: list[str] | tuple[str, ...] | str,
+    start: str,
+    end: str,
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> pd.DataFrame:
+    columns = [
+        "code",
+        "date",
+        "auction_volume",
+        "auction_price",
+        "auction_amount",
+        "pre_close",
+        "auction_turnover_rate",
+        "auction_volume_ratio",
+        "float_share",
+    ]
+    rows = _fetch_batched_history(
+        "stk-auction",
+        codes,
+        start,
+        end,
+        (
+            "ts_code,trade_date,vol,price,amount,pre_close,"
+            "turnover_rate,volume_ratio,float_share"
+        ),
+        api_key=api_key,
+        base_url=base_url,
+    )
+    return _normalize_history_frame(
+        rows,
+        columns,
+        rename={
+            "vol": "auction_volume",
+            "price": "auction_price",
+            "amount": "auction_amount",
+            "turnover_rate": "auction_turnover_rate",
+            "volume_ratio": "auction_volume_ratio",
+        },
+    )
 
 
 def _normalize_quote(row: dict) -> dict:

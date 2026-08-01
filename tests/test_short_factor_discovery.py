@@ -1,0 +1,910 @@
+from __future__ import annotations
+
+import json
+import math
+import warnings
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from analytics import short_factor_discovery as discovery
+
+
+def _panel(periods: int = 90, codes: int = 24) -> dict[str, pd.DataFrame]:
+    index = pd.bdate_range("2026-01-05", periods=periods)
+    columns = [f"{value:06d}" for value in range(1, codes + 1)]
+    time = np.arange(periods, dtype=float)[:, None]
+    cross = np.arange(codes, dtype=float)[None, :]
+    close = pd.DataFrame(
+        10.0 + time * 0.03 + cross * 0.02,
+        index=index,
+        columns=columns,
+    )
+    open_price = close.shift(1).fillna(close.iloc[0]) * (
+        1.0 + (cross - codes / 2) * 0.0002
+    )
+    high = np.maximum(open_price, close) * 1.02
+    low = np.minimum(open_price, close) * 0.98
+    volume = pd.DataFrame(
+        1_000_000.0 + time * 1000.0 + cross * 10_000.0,
+        index=index,
+        columns=columns,
+    )
+    amount = close * volume
+    return {
+        "open": open_price,
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": volume,
+        "amount": amount,
+        "amount_real": pd.DataFrame(
+            1.0,
+            index=index,
+            columns=columns,
+        ),
+        "universe_eligible": pd.DataFrame(
+            1.0,
+            index=index,
+            columns=columns,
+        ),
+    }
+
+
+def test_build_daily_candidates_is_point_in_time():
+    panel = _panel()
+    original = discovery.build_daily_candidate_factors(panel)
+
+    changed = {key: value.copy() for key, value in panel.items()}
+    cutoff = changed["close"].index[-8]
+    for key in ("open", "high", "low", "close", "volume", "amount"):
+        changed[key].loc[changed[key].index > cutoff] *= 10.0
+    mutated = discovery.build_daily_candidate_factors(changed)
+
+    assert set(discovery.BASE_FACTOR_FORMULAS).issubset(original)
+    for name in original:
+        pd.testing.assert_frame_equal(
+            original[name].loc[:cutoff],
+            mutated[name].loc[:cutoff],
+        )
+
+
+def test_daily_candidates_include_extreme_short_structure_grammar():
+    factors = discovery.build_daily_candidate_factors(_panel())
+
+    assert {
+        "return_1",
+        "return_3",
+        "return_5",
+        "return_10",
+        "return_20",
+        "momentum_acceleration_3_20",
+        "distance_high_20",
+        "distance_low_20",
+        "range_close_strength_1",
+        "gap_hold_1",
+        "panic_recovery_1",
+        "liquidity_reversal_3_20",
+        "price_volume_divergence_5_20",
+        "quiet_breakout_20",
+        "return_to_risk_5_20",
+        "limit_proximity_1",
+        "limit_close_strength_1",
+    }.issubset(factors)
+    assert all(
+        frame.shape == factors["return_1"].shape
+        for frame in factors.values()
+    )
+
+
+def test_structural_candidates_are_target_free_and_point_in_time():
+    panel = _panel()
+    close_factors = discovery.build_daily_candidate_factors(panel)
+    dates = panel["close"].index
+    codes = panel["close"].columns
+    daily_basic = pd.DataFrame(
+        [
+            {
+                "code": code,
+                "date": trade_date,
+                "turnover_rate": 1.0 + day / 10 + index / 100,
+                "turnover_rate_f": 1.2 + day / 10 + index / 100,
+                "volume_ratio": 0.8 + index / 100,
+                "float_share": 1000.0,
+                "total_share": 1500.0,
+                "circ_mv": 1800.0 + index,
+            }
+            for day, trade_date in enumerate(dates)
+            for index, code in enumerate(codes)
+        ]
+    )
+    base = {
+        **close_factors,
+        **discovery.build_daily_basic_candidate_factors(daily_basic),
+    }
+
+    original = discovery.build_structural_candidate_factors(base)
+    changed_panel = {
+        key: value.copy()
+        for key, value in panel.items()
+    }
+    cutoff = dates[-8]
+    for key in ("open", "high", "low", "close", "volume", "amount"):
+        changed_panel[key].loc[dates > cutoff] *= 10.0
+    changed_base = {
+        **discovery.build_daily_candidate_factors(changed_panel),
+        **discovery.build_daily_basic_candidate_factors(daily_basic),
+    }
+    mutated = discovery.build_structural_candidate_factors(changed_base)
+
+    assert set(discovery.STRUCTURAL_FACTOR_FORMULAS) == {
+        "turnover_limit_pressure",
+        "turnover_panic_recovery",
+        "quiet_turnover_breakout",
+        "strong_stock_dryup_pullback",
+        "liquidity_close_confirmation",
+        "compression_limit_pressure",
+    }
+    assert set(original) == set(discovery.STRUCTURAL_FACTOR_FORMULAS)
+    for name in original:
+        pd.testing.assert_frame_equal(
+            original[name].loc[:cutoff],
+            mutated[name].loc[:cutoff],
+        )
+
+
+def test_align_auction_confirmation_uses_entry_date_not_signal_date():
+    signal_dates = pd.to_datetime(["2026-07-30", "2026-07-31"])
+    features = pd.DataFrame(
+        {
+            "trade_date": signal_dates.strftime("%Y-%m-%d"),
+            "ts_code": ["000001", "000001"],
+        }
+    )
+    auction = pd.DataFrame(
+        {
+            "code": ["000001"],
+            "date": pd.to_datetime(["2026-07-31"]),
+            "auction_price": [11.0],
+            "pre_close": [10.0],
+            "auction_amount": [2_000_000.0],
+            "auction_turnover_rate": [0.2],
+            "auction_volume_ratio": [1.5],
+        }
+    )
+
+    aligned = discovery.align_auction_confirmation(features, auction)
+
+    first = aligned.iloc[0]
+    second = aligned.iloc[1]
+    assert first["auction_trade_date"] == "2026-07-31"
+    assert first["auction_gap"] == 0.1
+    assert pd.isna(second["auction_gap"])
+
+
+def test_benjamini_hochberg_controls_false_discoveries():
+    accepted = discovery.benjamini_hochberg(
+        {
+            "strong": 0.001,
+            "borderline": 0.04,
+            "noise": 0.7,
+        },
+        alpha=0.05,
+    )
+
+    assert accepted == {"strong"}
+
+
+def test_ic_significance_uses_conservative_newey_west_hac():
+    values = pd.Series(
+        np.repeat(
+            [0.08, -0.01, 0.08, -0.01, 0.08, -0.01],
+            20,
+        ),
+        dtype=float,
+    )
+    stats = discovery._ic_diagnostics(values)
+    iid_t = values.mean() / (
+        values.std(ddof=1) / math.sqrt(len(values))
+    )
+    iid_p = math.erfc(abs(iid_t) / math.sqrt(2.0))
+
+    assert stats["p_value_method"] == "newey_west_hac"
+    assert stats["hac_lag"] >= 1
+    assert stats["p_value"] >= iid_p
+
+
+def test_daily_rank_ic_matrix_matches_scalar_implementation():
+    factors, labels = _discovery_sample(periods=12, codes=30)
+    frame = discovery._factor_long_frame(factors).merge(
+        labels,
+        on=["trade_date", "ts_code"],
+        how="inner",
+    )
+    frame.loc[
+        frame["ts_code"].isin(["000001", "000002"]),
+        "noise",
+    ] = np.nan
+
+    matrix = discovery._daily_rank_ic_matrix(
+        frame,
+        ["predictive", "noise"],
+        "live_adjusted_return_pct",
+        min_cross_section=20,
+    )
+
+    for name in ("predictive", "noise"):
+        scalar = discovery._daily_rank_ic(
+            frame,
+            name,
+            "live_adjusted_return_pct",
+            min_cross_section=20,
+        )
+        pd.testing.assert_series_equal(
+            matrix[name].dropna(),
+            scalar,
+            check_names=False,
+            atol=1e-12,
+            rtol=1e-12,
+        )
+
+
+def test_daily_rank_ic_matrix_skips_constant_pairs_without_warning():
+    dates = pd.bdate_range("2026-01-05", periods=3)
+    codes = [f"{value:06d}" for value in range(1, 31)]
+    frame = pd.DataFrame(
+        [
+            {
+                "trade_date": trade_date,
+                "ts_code": code,
+                "constant": 1.0,
+                "varying": float(index),
+                "target": float(index),
+            }
+            for trade_date in dates
+            for index, code in enumerate(codes)
+        ]
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = discovery._daily_rank_ic_matrix(
+            frame,
+            ["constant", "varying"],
+            "target",
+            min_cross_section=20,
+        )
+
+    assert result["constant"].isna().all()
+    assert result["varying"].eq(1.0).all()
+    assert caught == []
+
+
+def test_market_regime_model_predicts_only_from_signal_date_features():
+    dates = pd.bdate_range("2026-01-05", periods=60)
+    codes = [f"{value:06d}" for value in range(1, 31)]
+    rows = []
+    for day, trade_date in enumerate(dates):
+        state = 1.0 if day % 4 in {0, 1} else -1.0
+        for index, code in enumerate(codes):
+            rows.append(
+                {
+                    "trade_date": trade_date,
+                    "ts_code": code,
+                    "return_1": state * 0.01 + index * 1e-6,
+                    "return_5": state * 0.02,
+                    "return_20": state * 0.03,
+                    "range_pct_1": 0.02,
+                    "amount_shock_1_20": 1.0 + state * 0.1,
+                    "volatility_compression_5_20": 1.0,
+                    "live_adjusted_return_pct": state * 1.5,
+                }
+            )
+    frame = pd.DataFrame(rows)
+
+    model = discovery._fit_market_regime_model(
+        frame[frame["trade_date"].isin(dates[:40])],
+        "live_adjusted_return_pct",
+        min_days=20,
+    )
+    predictions = discovery._predict_market_regime(
+        model,
+        frame[frame["trade_date"].isin(dates[40:])],
+    )
+
+    expected = pd.Series(
+        [
+            1.0 if day % 4 in {0, 1} else -1.0
+            for day in range(40, 60)
+        ],
+        index=dates[40:],
+    )
+    assert model["status"] == "fitted"
+    assert (predictions.gt(0).astype(float) * 2.0 - 1.0).equals(
+        expected
+    )
+
+
+def test_purged_walk_forward_never_trains_on_test_labels():
+    dates = pd.bdate_range("2026-01-05", periods=80)
+    windows = discovery.purged_walk_forward_windows(
+        dates,
+        train_days=40,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+    )
+
+    assert len(windows) == 3
+    for window in windows:
+        assert window.train_dates[-1] < window.test_dates[0]
+        distance = dates.get_loc(window.test_dates[0]) - dates.get_loc(
+            window.train_dates[-1]
+        )
+        assert distance == 4
+
+
+def test_decorrelate_factors_keeps_stronger_candidate():
+    index = pd.MultiIndex.from_product(
+        [
+            pd.bdate_range("2026-01-05", periods=4),
+            [f"{value:06d}" for value in range(1, 21)],
+        ],
+        names=["trade_date", "ts_code"],
+    )
+    base = np.tile(np.linspace(-1.0, 1.0, 20), 4)
+    frame = pd.DataFrame(
+        {
+            "strong": base,
+            "duplicate": base * 2.0,
+            "independent": np.sin(np.arange(len(index))),
+        },
+        index=index,
+    )
+
+    selected = discovery.decorrelate_factors(
+        frame,
+        ["duplicate", "strong", "independent"],
+        evidence_scores={
+            "strong": 2.0,
+            "duplicate": 1.0,
+            "independent": 0.5,
+        },
+        max_abs_correlation=0.8,
+    )
+
+    assert selected == ["strong", "independent"]
+
+
+def test_decorrelate_factors_skips_constant_pairs_without_warning():
+    index = pd.MultiIndex.from_product(
+        [
+            pd.bdate_range("2026-01-05", periods=4),
+            [f"{value:06d}" for value in range(1, 21)],
+        ],
+        names=["trade_date", "ts_code"],
+    )
+    frame = pd.DataFrame(
+        {
+            "constant": 1.0,
+            "varying": np.arange(len(index), dtype=float),
+        },
+        index=index,
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        selected = discovery.decorrelate_factors(
+            frame,
+            ["constant", "varying"],
+            evidence_scores={"constant": 2.0, "varying": 1.0},
+        )
+
+    assert selected == ["constant", "varying"]
+    assert caught == []
+
+
+def _discovery_sample(
+    periods: int = 120,
+    codes: int = 30,
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+    dates = pd.bdate_range("2025-12-01", periods=periods)
+    names = [f"{value:06d}" for value in range(1, codes + 1)]
+    cross = np.linspace(-1.0, 1.0, codes)
+    predictive = pd.DataFrame(
+        np.tile(cross, (periods, 1)),
+        index=dates,
+        columns=names,
+    )
+    noise = pd.DataFrame(
+        np.sin(
+            np.arange(periods * codes, dtype=float).reshape(periods, codes)
+            * 0.73
+        ),
+        index=dates,
+        columns=names,
+    )
+    labels = predictive.stack().rename("live_adjusted_return_pct").reset_index()
+    labels.columns = [
+        "trade_date",
+        "ts_code",
+        "live_adjusted_return_pct",
+    ]
+    labels["live_adjusted_return_pct"] *= 2.0
+    return {"predictive": predictive, "noise": noise}, labels
+
+
+def test_expression_candidates_are_deterministic_and_target_free():
+    factors, _labels = _discovery_sample(periods=30)
+
+    first = discovery.build_expression_candidates(
+        factors,
+        max_interactions=1,
+    )
+    second = discovery.build_expression_candidates(
+        {key: factors[key] for key in reversed(factors)},
+        max_interactions=1,
+    )
+
+    assert list(first) == list(second)
+    assert list(first) == [
+        "noise",
+        "predictive",
+        "noise__x__predictive",
+    ]
+    pd.testing.assert_frame_equal(
+        first["noise__x__predictive"],
+        second["noise__x__predictive"],
+    )
+
+
+def test_walk_forward_discovery_selects_cost_positive_oos_factor():
+    factors, labels = _discovery_sample()
+
+    report = discovery.run_walk_forward_discovery(
+        factors,
+        labels,
+        train_days=60,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        max_factors=3,
+        fdr_alpha=0.05,
+        min_cross_section=20,
+    )
+
+    assert report["status"] == "accepted", report
+    assert len(report["windows"]) == 5
+    assert report["factor_summary"]["predictive"]["selected_windows"] == 5
+    assert report["summary"]["oos_rank_ic"] > 0.9
+    assert report["summary"]["total_return_pct"] > 0.0
+    assert report["summary"]["positive_window_rate"] == 1.0
+    for window in report["windows"]:
+        assert sum(window["score_weights"].values()) == pytest.approx(
+            1.0
+        )
+
+
+def test_high_ic_factor_is_not_promoted_when_calibration_returns_are_negative():
+    factors, labels = _discovery_sample()
+    labels["live_adjusted_return_pct"] = (
+        labels["live_adjusted_return_pct"] * 0.1 - 2.0
+    )
+
+    report = discovery.run_walk_forward_discovery(
+        factors,
+        labels,
+        train_days=60,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        max_factors=3,
+        fdr_alpha=0.05,
+        min_cross_section=20,
+    )
+
+    assert report["status"] == "rejected"
+    assert all(
+        window["status"] == "calibration_rejected"
+        for window in report["windows"]
+    )
+    assert (
+        report["factor_summary"]["predictive"][
+            "promotion_eligible"
+        ]
+        is False
+    )
+    assert report["summary"]["trade_count"] == 0
+
+
+def test_test_labels_cannot_change_window_factor_selection():
+    factors, labels = _discovery_sample()
+    baseline = discovery.run_walk_forward_discovery(
+        factors,
+        labels,
+        train_days=60,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        min_cross_section=20,
+    )
+    mutated = labels.copy()
+    first_test_dates = set(baseline["windows"][0]["test_dates"])
+    mask = mutated["trade_date"].dt.strftime("%Y-%m-%d").isin(
+        first_test_dates
+    )
+    mutated.loc[mask, "live_adjusted_return_pct"] *= -100.0
+
+    changed = discovery.run_walk_forward_discovery(
+        factors,
+        mutated,
+        train_days=60,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        min_cross_section=20,
+    )
+
+    assert (
+        baseline["windows"][0]["selected_factors"]
+        == changed["windows"][0]["selected_factors"]
+    )
+    assert (
+        baseline["windows"][0]["factor_diagnostics"]
+        == changed["windows"][0]["factor_diagnostics"]
+    )
+    assert (
+        baseline["windows"][0]["total_return_pct"]
+        != changed["windows"][0]["total_return_pct"]
+    )
+
+
+def test_execution_horizon_is_selected_on_calibration_only():
+    factors, one_day = _discovery_sample()
+    three_day = one_day.copy()
+    three_day["live_adjusted_return_pct"] *= 0.5
+    common = {
+        "train_days": 60,
+        "test_days": 10,
+        "step_days": 10,
+        "purge_days": 4,
+        "top_k": 5,
+        "max_factors": 3,
+        "fdr_alpha": 0.05,
+        "min_cross_section": 20,
+    }
+
+    baseline = discovery.run_walk_forward_execution_discovery(
+        factors,
+        {
+            "hold_1": one_day,
+            "hold_3": three_day,
+        },
+        execution_metadata={
+            "hold_1": {"hold_days": 1},
+            "hold_3": {"hold_days": 3},
+        },
+        **common,
+    )
+    first_test_dates = set(baseline["windows"][0]["test_dates"])
+    changed_one_day = one_day.copy()
+    changed_one_day.loc[
+        changed_one_day["trade_date"]
+        .dt.strftime("%Y-%m-%d")
+        .isin(first_test_dates),
+        "live_adjusted_return_pct",
+    ] *= -100.0
+    changed = discovery.run_walk_forward_execution_discovery(
+        factors,
+        {
+            "hold_1": changed_one_day,
+            "hold_3": three_day,
+        },
+        execution_metadata={
+            "hold_1": {"hold_days": 1},
+            "hold_3": {"hold_days": 3},
+        },
+        **common,
+    )
+
+    assert baseline["windows"][0]["selected_execution"] == "hold_1"
+    assert changed["windows"][0]["selected_execution"] == "hold_1"
+    assert (
+        baseline["windows"][0]["execution_selection"]
+        == changed["windows"][0]["execution_selection"]
+    )
+    assert (
+        baseline["windows"][0]["total_return_pct"]
+        != changed["windows"][0]["total_return_pct"]
+    )
+    assert baseline["selection_policy"]["execution_selection"] == (
+        "calibration_only"
+    )
+    assert baseline["selection_policy"]["effective_fdr_alpha"] == (
+        pytest.approx(0.025)
+    )
+    assert all(
+        "oos_rank_ic" not in candidate
+        for candidate in baseline["windows"][0][
+            "execution_selection"
+        ]["candidates"]
+    )
+
+
+def test_execution_factor_requires_half_of_all_scheduled_windows(
+    monkeypatch,
+):
+    windows = []
+    for window_id in range(1, 7):
+        evaluated = window_id == 1
+        windows.append(
+            {
+                "window_id": window_id,
+                "test_dates": [f"2026-07-{window_id:02d}"],
+                "status": (
+                    "evaluated"
+                    if evaluated
+                    else "calibration_rejected"
+                ),
+                "calibration_passed": evaluated,
+                "calibration": {
+                    "trade_count": 20 if evaluated else 0,
+                    "avg_return_pct": 1.0 if evaluated else 0.0,
+                    "total_return_pct": 1.0 if evaluated else 0.0,
+                    "max_drawdown_pct": 0.0,
+                    "hit_rate": 1.0 if evaluated else 0.0,
+                },
+                "selected_factors": ["predictive"] if evaluated else [],
+                "score_weights": {"predictive": 1.0} if evaluated else {},
+                "oos_rank_ic": 0.2 if evaluated else None,
+                "oos_factor_diagnostics": (
+                    {
+                        "predictive": {
+                            "mean_rank_ic": 0.2,
+                            "avg_return_pct": 1.0,
+                        }
+                    }
+                    if evaluated
+                    else {}
+                ),
+                "trade_count": 20 if evaluated else 0,
+                "hit_rate": 1.0 if evaluated else 0.0,
+                "avg_return_pct": 1.0 if evaluated else 0.0,
+                "total_return_pct": 1.0 if evaluated else 0.0,
+                "max_drawdown_pct": 0.0,
+                "daily_returns_pct": [1.0] if evaluated else [],
+            }
+        )
+
+    monkeypatch.setattr(
+        discovery,
+        "run_walk_forward_discovery",
+        lambda *_args, **_kwargs: {
+            "selection_policy": {},
+            "windows": windows,
+        },
+    )
+    factors, labels = _discovery_sample(periods=10)
+
+    report = discovery.run_walk_forward_execution_discovery(
+        factors,
+        {"hold_1": labels},
+        execution_metadata={"hold_1": {"hold_days": 1}},
+    )
+
+    details = report["factor_summary"]["predictive"]
+    assert details["selected_windows"] == 1
+    assert details["oos_window_count"] == 1
+    assert details["promotion_eligible"] is False
+
+
+def test_label_max_exit_uses_all_execution_candidates():
+    first = pd.DataFrame(
+        {"exit_date": ["2026-07-20", "2026-07-21"]}
+    )
+    second = pd.DataFrame(
+        {"exit_date": ["2026-07-22", None]}
+    )
+
+    value = discovery._maximum_label_exit(
+        {"hold_1": first, "hold_3": second}
+    )
+
+    assert value == "2026-07-22"
+
+
+def test_walk_forward_filters_labels_that_exit_in_test_window():
+    factors, labels = _discovery_sample()
+    dates = sorted(labels["trade_date"].unique())
+    labels["exit_date"] = labels["trade_date"] + pd.offsets.BDay(2)
+    overlap_signal_date = dates[59]
+    first_test_start = dates[63]
+    labels.loc[
+        labels["trade_date"].eq(overlap_signal_date),
+        "exit_date",
+    ] = first_test_start
+
+    report = discovery.run_walk_forward_discovery(
+        factors,
+        labels,
+        train_days=60,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        min_cross_section=20,
+    )
+
+    first = report["windows"][0]
+    assert first["train_sample_count"] == 59 * 30
+    assert first["train_label_max_exit"] < first["test_start"]
+
+
+def test_walk_forward_excludes_unexecutable_and_unevaluable_labels():
+    factors, labels = _discovery_sample()
+    labels["execution_blocked"] = labels["ts_code"].isin(
+        [f"{value:06d}" for value in range(26, 31)]
+    )
+    labels["research_evaluable"] = ~labels["ts_code"].isin(
+        ["000001", "000002"]
+    )
+
+    report = discovery.run_walk_forward_discovery(
+        factors,
+        labels,
+        train_days=60,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        min_cross_section=20,
+    )
+
+    first = report["windows"][0]
+    assert first["train_sample_count"] == 60 * 23
+    assert first["test_sample_count"] == 10 * 23
+    assert first["trade_count"] == 10 * 5
+
+
+def test_daily_basic_candidates_preserve_missing_observations():
+    dates = pd.bdate_range("2026-07-20", periods=6)
+    rows = []
+    for code in ("000001", "000002"):
+        for index, trade_date in enumerate(dates):
+            if code == "000002" and index == 3:
+                continue
+            rows.append(
+                {
+                    "code": code,
+                    "date": trade_date,
+                    "turnover_rate": 1.0 + index,
+                    "turnover_rate_f": 1.2 + index,
+                    "volume_ratio": 0.8 + index / 10,
+                    "float_share": 1000.0,
+                    "total_share": 1500.0,
+                    "float_mv": 2000.0 + index,
+                    "circ_mv": 1800.0 + index,
+                }
+            )
+
+    factors = discovery.build_daily_basic_candidate_factors(
+        pd.DataFrame(rows)
+    )
+
+    assert set(discovery.DAILY_BASIC_FACTOR_FORMULAS).issubset(factors)
+    assert pd.isna(
+        factors["turnover_rate_1"].loc[dates[3], "000002"]
+    )
+    assert not pd.isna(
+        factors["turnover_rate_1"].loc[dates[3], "000001"]
+    )
+
+
+def test_run_short_factor_research_writes_auditable_report(tmp_path):
+    panel = _panel(periods=120, codes=30)
+    panel["is_st"] = pd.DataFrame(
+        0.0,
+        index=panel["close"].index,
+        columns=panel["close"].columns,
+    )
+    panel["st_status_known"] = pd.DataFrame(
+        1.0,
+        index=panel["close"].index,
+        columns=panel["close"].columns,
+    )
+    _factors, labels = _discovery_sample(periods=120, codes=30)
+    label_dates = sorted(labels["trade_date"].unique())
+    panel_dates = list(panel["close"].index)
+    labels["trade_date"] = labels["trade_date"].map(
+        dict(zip(label_dates, panel_dates))
+    )
+
+    report = discovery.run_short_factor_research(
+        panel,
+        labels=labels,
+        out_dir=tmp_path,
+        train_days=60,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        max_interactions=2,
+        min_cross_section=20,
+    )
+
+    path = tmp_path / "discovery_report.json"
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written == report
+    assert report["schema_version"] == (
+        "short_factor_discovery_report_v1"
+    )
+    assert report["channel"] == "short_factor_discovery"
+    assert report["protocol_version"] == "short_factor_discovery_v1"
+    assert report["research_only"] is True
+    assert report["deployment_eligible"] is False
+    assert report["production_write_attempted"] is False
+    assert len(report["protocol"]["candidate_grammar_sha256"]) == 64
+    assert len(report["protocol"]["config_sha256"]) == 64
+    assert report["lookahead_policy"]["close_factors"] == (
+        "signal_date_close_for_next_session"
+    )
+    assert report["lookahead_policy"]["auction_factors"] == (
+        "entry_date_09:25_confirmation_only"
+    )
+    assert len(report["close_discovery"]["windows"]) == 5
+    assert all(
+        "calibration_passed" in window
+        for window in report["close_discovery"]["windows"]
+    )
+    assert report["data_quality"]["st_status_coverage"] == 1.0
+    assert "factor_catalog" in report
+
+
+def test_partial_auxiliary_coverage_is_excluded_from_candidates():
+    panel = _panel(periods=120, codes=30)
+    _factors, labels = _discovery_sample(periods=120, codes=30)
+    dates = panel["close"].index
+    rows = []
+    for code in [f"{value:06d}" for value in range(1, 6)]:
+        for trade_date in dates:
+            rows.append(
+                {
+                    "code": code,
+                    "date": trade_date,
+                    "turnover_rate": 1.0,
+                    "turnover_rate_f": 1.2,
+                    "volume_ratio": 0.9,
+                    "float_share": 1000.0,
+                    "total_share": 1500.0,
+                    "circ_mv": 1800.0,
+                }
+            )
+
+    report = discovery.run_short_factor_research(
+        panel,
+        labels=labels,
+        daily_basic=pd.DataFrame(rows),
+        expected_codes=[
+            f"{value:06d}" for value in range(1, 31)
+        ],
+        train_days=60,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        max_interactions=0,
+        min_cross_section=20,
+    )
+
+    assert report["data_coverage"]["daily_basic_code_count"] == 5
+    assert report["data_coverage"]["daily_basic_coverage"] == (
+        pytest.approx(5 / 30, abs=1e-6)
+    )
+    assert report["data_coverage"]["daily_basic_used"] is False
+    assert "daily_basic_coverage_below_80pct" in report["warnings"]
+    assert "turnover_rate_1" not in report["factor_catalog"]
