@@ -273,6 +273,7 @@ prepare_release_venv() {
         "HOME=$runtime_home"
         "PATH=/usr/local/bin:/usr/bin:/bin"
         "PIP_CONFIG_FILE=/dev/null"
+        "PIP_NO_CACHE_DIR=1"
         "PIP_DEFAULT_TIMEOUT=120"
         "PIP_RETRIES=5"
         "PIP_DISABLE_PIP_VERSION_CHECK=1"
