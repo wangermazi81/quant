@@ -38,7 +38,10 @@ def deployment_tool_bundle_sha256(
         raise ValueError("deployment tool bundle is incomplete")
     digest = hashlib.sha256()
     for relative_path in sorted(source_by_path):
-        content = bytes(source_by_path[relative_path])
+        content = bytes(source_by_path[relative_path]).replace(
+            b"\r\n",
+            b"\n",
+        ).replace(b"\r", b"\n")
         digest.update(relative_path.encode("utf-8"))
         digest.update(b"\0")
         digest.update(len(content).to_bytes(8, "big"))

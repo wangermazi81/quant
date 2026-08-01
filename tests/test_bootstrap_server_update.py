@@ -19,6 +19,25 @@ REMOTE_FILES = {
 }
 
 
+def test_deployment_tool_bundle_hash_normalizes_line_endings():
+    from deploy import bootstrap_server_update
+
+    lf_files = {
+        path: content.replace(b"\r\n", b"\n")
+        for path, content in REMOTE_FILES.items()
+    }
+    crlf_files = {
+        path: content.replace(b"\n", b"\r\n")
+        for path, content in REMOTE_FILES.items()
+    }
+
+    assert bootstrap_server_update.deployment_tool_bundle_sha256(
+        lf_files
+    ) == bootstrap_server_update.deployment_tool_bundle_sha256(
+        crlf_files
+    )
+
+
 def _runner(
     app_dir: Path,
     calls: list,
