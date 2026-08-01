@@ -15,10 +15,11 @@ import pandas as pd
 import akshare as ak
 
 try:
+    from analytics import agudata_provider
     from analytics import datasource_config
     from analytics import tushare_provider
 except Exception:  # pragma: no cover - package import fallback for tests/tools
-    from . import datasource_config, tushare_provider  # type: ignore
+    from . import agudata_provider, datasource_config, tushare_provider  # type: ignore
 
 # ── 强制 akshare 不走代理（直连国内行情接口）───────────────
 # requests 底层：trust_env=False 完全忽略系统代理
@@ -483,6 +484,32 @@ def _fetch_tushare_kline_by_config(code: str, days: int, cfg: dict) -> pd.DataFr
     return _standardize_kline_for_cache(df)
 
 
+def _fetch_agudata_kline_by_config(
+    code: str,
+    days: int,
+    cfg: dict,
+) -> pd.DataFrame:
+    api_key = (
+        cfg.get("agudata_api_key")
+        or datasource_config.resolve_agudata_api_key(cfg)
+    )
+    if not (cfg.get("agudata_enabled") and api_key):
+        return pd.DataFrame()
+    end = datetime.now().strftime("%Y%m%d")
+    start = (
+        datetime.now()
+        - timedelta(days=max(int(days or 60) * 3, int(days or 60) + 90))
+    ).strftime("%Y%m%d")
+    frame = agudata_provider.fetch_kline_qfq(
+        code,
+        start,
+        end,
+        api_key=api_key,
+        base_url=cfg.get("agudata_base_url"),
+    )
+    return _standardize_kline_for_cache(frame)
+
+
 # 标记「这份数据原封不动来自本地 CSV 缓存」。用于让 get_kline_by_config 跳过
 # merge_kline_cache —— 把刚从 CSV 读出来的东西再原样写回去，等于每只股票白做
 # 一次「读 CSV + concat + 重写 CSV + 更新元数据」。一轮 5000 只的全市场扫描
@@ -535,8 +562,10 @@ def get_kline_by_config(code: str, days: int = 60, min_rows: int = 10, update_ca
     fallback_enabled = bool(cfg.get("fallback_enabled", True))
     result = _empty_kline_result(clean_code, days, primary)
 
+    if primary not in {"agudata", "current", "tushare"}:
+        primary = "current"
     attempts = [primary]
-    secondary = "current" if primary == "tushare" else "tushare"
+    secondary = "tushare" if primary == "current" else "current"
     if fallback_enabled and secondary not in attempts:
         attempts.append(secondary)
 
@@ -544,7 +573,13 @@ def get_kline_by_config(code: str, days: int = 60, min_rows: int = 10, update_ca
     for idx, source in enumerate(attempts):
         df = pd.DataFrame()
         try:
-            if source == "tushare":
+            if source == "agudata":
+                df = _fetch_agudata_kline_by_config(
+                    clean_code,
+                    days,
+                    cfg,
+                )
+            elif source == "tushare":
                 df = _fetch_tushare_kline_by_config(clean_code, days, cfg)
             elif source == "current":
                 df = _fetch_current_kline(clean_code, days, min_rows, prefer_local=True)
@@ -711,6 +746,32 @@ def _factor_tushare_enabled(config: dict) -> bool:
         and config.get("tushare_enabled")
         and config.get("tushare_token")
     )
+
+
+def _factor_remote_source(config: dict) -> tuple[str, object | None, dict]:
+    if (
+        config.get("provider") == "agudata"
+        and config.get("agudata_enabled")
+        and config.get("agudata_api_key")
+    ):
+        return (
+            "agudata",
+            agudata_provider,
+            {
+                "api_key": config.get("agudata_api_key"),
+                "base_url": config.get("agudata_base_url"),
+            },
+        )
+    if _factor_tushare_enabled(config):
+        return (
+            "tushare",
+            tushare_provider,
+            {
+                "token": config.get("tushare_token"),
+                "mode": config.get("tushare_mode"),
+            },
+        )
+    return "", None, {}
 
 
 def _completed_date_candidates(current: datetime, lookback_days: int = 12) -> list[str]:
@@ -959,19 +1020,31 @@ def refresh_factor_security_master_history(
     now: datetime | None = None,
     token: str | None = None,
     mode: str | None = None,
+    history_provider: str | None = None,
+    agudata_api_key: str | None = None,
+    agudata_base_url: str | None = None,
 ) -> dict:
     current = now or datetime.now()
     cfg = datasource_config.get_internal_config()
+    selected_history_provider = str(
+        history_provider or cfg.get("provider") or "tushare"
+    ).strip().lower()
     resolved_token = token or cfg.get("tushare_token") or datasource_config.resolve_tushare_token(
         cfg,
         mode=mode or cfg.get("tushare_mode"),
     )
     resolved_mode = mode or cfg.get("tushare_mode")
     try:
-        rows = tushare_provider.fetch_security_master(
-            token=resolved_token,
-            mode=resolved_mode,
-        )
+        if selected_history_provider == "agudata":
+            rows = agudata_provider.fetch_security_master(
+                api_key=agudata_api_key or cfg.get("agudata_api_key"),
+                base_url=agudata_base_url or cfg.get("agudata_base_url"),
+            )
+        else:
+            rows = tushare_provider.fetch_security_master(
+                token=resolved_token,
+                mode=resolved_mode,
+            )
     except Exception as exc:
         return {
             "ok": False,
@@ -983,7 +1056,10 @@ def refresh_factor_security_master_history(
     if not rows:
         return {
             "ok": False,
-            "error": "Tushare security master is empty",
+            "error": (
+                f"{selected_history_provider or 'remote'} "
+                "security master is empty"
+            ),
             "master_count": 0,
             "history_required": 0,
             "history_backfilled": 0,
@@ -1112,13 +1188,28 @@ def refresh_factor_security_master_history(
                 continue
             try:
                 try:
-                    history = tushare_provider.fetch_kline_qfq(
-                        code,
-                        security_start.strftime("%Y%m%d"),
-                        security_end.strftime("%Y%m%d"),
-                        token=resolved_token,
-                        mode=resolved_mode,
-                    )
+                    if selected_history_provider == "agudata":
+                        history = agudata_provider.fetch_kline_qfq(
+                            code,
+                            security_start.strftime("%Y%m%d"),
+                            security_end.strftime("%Y%m%d"),
+                            api_key=(
+                                agudata_api_key
+                                or cfg.get("agudata_api_key")
+                            ),
+                            base_url=(
+                                agudata_base_url
+                                or cfg.get("agudata_base_url")
+                            ),
+                        )
+                    else:
+                        history = tushare_provider.fetch_kline_qfq(
+                            code,
+                            security_start.strftime("%Y%m%d"),
+                            security_end.strftime("%Y%m%d"),
+                            token=resolved_token,
+                            mode=resolved_mode,
+                        )
                 except Exception:
                     history = None
                 history = _standardize_kline_for_cache(history)
@@ -1173,13 +1264,19 @@ def refresh_factor_daily_cache(
     """Refresh factor daily bars with Tushare primary and TDX fallback."""
     current = now or datetime.now()
     config = datasource_config.get_internal_config()
+    remote_name, remote_provider, remote_kwargs = (
+        _factor_remote_source(config)
+    )
     security_master_result: dict | None = None
     if refresh_security_master:
-        if not _factor_tushare_enabled(config):
+        if remote_provider is None:
             return {
                 "ok": False,
-                "error": "point-in-time security master requires Tushare",
-                "security_master": {"ok": False, "error": "Tushare unavailable"},
+                "error": "point-in-time security master requires a remote data provider",
+                "security_master": {
+                    "ok": False,
+                    "error": "remote data provider unavailable",
+                },
             }
         try:
             security_master_result = refresh_factor_security_master_history(
@@ -1188,6 +1285,9 @@ def refresh_factor_daily_cache(
                 now=current,
                 token=config.get("tushare_token"),
                 mode=config.get("tushare_mode"),
+                history_provider=remote_name,
+                agudata_api_key=config.get("agudata_api_key"),
+                agudata_base_url=config.get("agudata_base_url"),
             )
         except Exception as exc:
             security_master_result = {"ok": False, "error": str(exc)[:200]}
@@ -1197,7 +1297,7 @@ def refresh_factor_daily_cache(
                 "error": "point-in-time security master refresh failed",
                 "security_master": security_master_result,
             }
-    if not _factor_tushare_enabled(config):
+    if remote_provider is None:
         result = _refresh_factor_daily_cache_tdx(days=days, min_required=min_required, now=current)
         result.setdefault("primary_source", "tdx_daily")
         result.setdefault("tushare_count", 0)
@@ -1208,7 +1308,15 @@ def refresh_factor_daily_cache(
     token = config.get("tushare_token")
     mode = config.get("tushare_mode")
     fallback_enabled = bool(config.get("fallback_enabled", True))
-    configured_source = "tushare_replay_daily" if str(mode).lower() == "replay" else "tushare_sdk_daily"
+    configured_source = (
+        "agudata_daily"
+        if remote_name == "agudata"
+        else (
+            "tushare_replay_daily"
+            if str(mode).lower() == "replay"
+            else "tushare_sdk_daily"
+        )
+    )
     source_name = configured_source
     source_frame = pd.DataFrame()
     source_date = None
@@ -1233,10 +1341,9 @@ def refresh_factor_daily_cache(
     for compact_date in _completed_date_candidates(current):
         candidate = pd.DataFrame()
         try:
-            candidate = tushare_provider.fetch_full_market_daily(
+            candidate = remote_provider.fetch_full_market_daily(
                 compact_date,
-                token=token,
-                mode=mode,
+                **remote_kwargs,
             )
         except Exception as exc:
             tushare_errors.append(f"daily {compact_date}: {str(exc)[:200]}")
@@ -1258,13 +1365,18 @@ def refresh_factor_daily_cache(
                 )
 
         should_try_realtime = (
-            str(mode).lower() == "replay"
+            (
+                remote_name == "agudata"
+                or str(mode).lower() == "replay"
+            )
             and current >= market_close_guard
             and compact_date == today_compact
         )
         if should_try_realtime:
             try:
-                realtime = tushare_provider.fetch_full_market_realtime_daily(token=token, mode=mode)
+                realtime = remote_provider.fetch_full_market_realtime_daily(
+                    **remote_kwargs
+                )
             except Exception as exc:
                 tushare_errors.append(f"rt_k: {str(exc)[:200]}")
                 realtime = pd.DataFrame()
@@ -1278,7 +1390,11 @@ def refresh_factor_daily_cache(
                     if len(realtime) >= minimum_market_rows:
                         source_frame = realtime.copy()
                         source_date = realtime_source_date
-                        source_name = "tushare_replay_rt_k"
+                        source_name = (
+                            "agudata_rt_k"
+                            if remote_name == "agudata"
+                            else "tushare_replay_rt_k"
+                        )
                         break
                     tushare_errors.append(
                         f"rt_k: market rows {len(realtime)} below required {minimum_market_rows}"
@@ -1389,8 +1505,9 @@ def refresh_factor_daily_cache(
         datetime.combine((source_date - timedelta(days=1)).date(), datetime.min.time()).replace(hour=23)
     )
     try:
-        factor_frame = tushare_provider.fetch_full_market_adj_factors(
-            source_date.strftime("%Y%m%d"), token=token, mode=mode
+        factor_frame = remote_provider.fetch_full_market_adj_factors(
+            source_date.strftime("%Y%m%d"),
+            **remote_kwargs,
         )
         if factor_frame is not None and not factor_frame.empty:
             factor_frame = factor_frame.copy()
@@ -1414,8 +1531,9 @@ def refresh_factor_daily_cache(
                 datetime.combine((source_date - timedelta(days=1)).date(), datetime.min.time()).replace(hour=23),
                 lookback_days=10,
             ):
-                previous = tushare_provider.fetch_full_market_adj_factors(
-                    compact_date, token=token, mode=mode
+                previous = remote_provider.fetch_full_market_adj_factors(
+                    compact_date,
+                    **remote_kwargs,
                 )
                 if previous is None or previous.empty:
                     continue
@@ -1532,7 +1650,10 @@ def refresh_factor_daily_cache(
                         else (source_date - timedelta(days=max(365, int(days) * 2))).strftime("%Y%m%d")
                     )
                 )
-                replay_mode = str(mode).lower() == "replay"
+                replay_mode = (
+                    remote_name == "tushare"
+                    and str(mode).lower() == "replay"
+                )
                 qfq_frame = pd.DataFrame()
                 qfq_source = ""
                 if replay_mode and fallback_enabled:
@@ -1547,12 +1668,11 @@ def refresh_factor_daily_cache(
                         qfq_source = "baostock_qfq"
                 if qfq_frame.empty:
                     try:
-                        qfq_frame = tushare_provider.fetch_kline_qfq(
+                        qfq_frame = remote_provider.fetch_kline_qfq(
                             code,
                             start_date,
                             source_date.strftime("%Y%m%d"),
-                            token=token,
-                            mode=mode,
+                            **remote_kwargs,
                         )
                     except Exception as exc:
                         qfq_frame = None
@@ -1561,9 +1681,13 @@ def refresh_factor_daily_cache(
                     qfq_frame = _standardize_kline_for_cache(qfq_frame)
                     if not qfq_frame.empty:
                         qfq_source = (
-                            "tushare_replay_qfq"
-                            if replay_mode
-                            else "tushare_sdk_qfq"
+                            "agudata_qfq"
+                            if remote_name == "agudata"
+                            else (
+                                "tushare_replay_qfq"
+                                if replay_mode
+                                else "tushare_sdk_qfq"
+                            )
                         )
                 if qfq_frame.empty and fallback_enabled and not replay_mode:
                     qfq_frame = _standardize_kline_for_cache(
@@ -1745,8 +1869,18 @@ def refresh_factor_daily_cache(
         "already_current": already_current,
         "refreshed": refreshed,
         "failed": failed,
-        "tushare_count": tushare_count,
-        "tushare_qfq_count": tushare_qfq_count,
+        "tushare_count": (
+            tushare_count if remote_name == "tushare" else 0
+        ),
+        "tushare_qfq_count": (
+            tushare_qfq_count if remote_name == "tushare" else 0
+        ),
+        "agudata_count": (
+            tushare_count if remote_name == "agudata" else 0
+        ),
+        "agudata_qfq_count": (
+            tushare_qfq_count if remote_name == "agudata" else 0
+        ),
         "baostock_qfq_count": baostock_qfq_count,
         "tdx_fallback_count": tdx_fallback_count,
         "adjustment_fallback_count": adjustment_fallback_count,
@@ -1768,7 +1902,12 @@ def refresh_factor_daily_cache(
             if csv_paths
             else 0.0
         ),
-        "tushare_market_rows": len(source_frame),
+        "tushare_market_rows": (
+            len(source_frame) if remote_name == "tushare" else 0
+        ),
+        "agudata_market_rows": (
+            len(source_frame) if remote_name == "agudata" else 0
+        ),
     }
     if security_master_result is not None:
         result["security_master"] = security_master_result

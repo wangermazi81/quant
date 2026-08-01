@@ -61,3 +61,42 @@ def test_admin_datasource_test_uses_posted_or_saved_token(isolated_app, monkeypa
     assert resp.status_code == 200
     assert resp.get_json()["ok"] is True
     assert calls == [("saved-token", "replay")]
+
+
+def test_admin_datasource_test_routes_to_agudata(isolated_app, monkeypatch, tmp_path):
+    app, _um, _main = isolated_app
+    import web.admin as admin_api
+
+    monkeypatch.setattr(
+        admin_api.datasource_config,
+        "CONFIG_FILE",
+        tmp_path / "datasource_config.json",
+    )
+    calls = []
+    monkeypatch.setattr(
+        admin_api.agudata_provider,
+        "test_connection",
+        lambda api_key=None, base_url=None: calls.append((api_key, base_url))
+        or {"ok": True, "rows": 1, "provider": "agudata"},
+    )
+
+    client = app.test_client()
+    _login_session(client, 1, "admin")
+    client.post(
+        "/api/admin/datasource/config",
+        json={
+            "provider": "agudata",
+            "agudata_api_key": "saved-agudata-key",
+            "agudata_base_url": "https://data.example/openapi/v1",
+        },
+    )
+    resp = client.post(
+        "/api/admin/datasource/test",
+        json={"provider": "agudata"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.get_json()["ok"] is True
+    assert calls == [
+        ("saved-agudata-key", "https://data.example/openapi/v1")
+    ]

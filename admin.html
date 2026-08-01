@@ -525,28 +525,43 @@
       <div class="card" style="max-width:680px">
         <div class="card-title"><i class="fas fa-database"></i> 行情数据源配置</div>
         <div style="font-size:12px;color:var(--text2);margin-bottom:16px">
-          选择全平台第一数据源。默认使用 Tushare Pro；开启第二数据源后，第一数据源失败时自动回退到当前数据源，避免策略扫描和回测中断。
+          选择全平台第一数据源。Agudata 支持日线、实时 K、分钟线和集合竞价汇总；盘口与逐笔数据不在当前权限内，会按配置回退到当前数据源。
         </div>
         <div class="form-group">
           <label class="form-label">第一数据源</label>
           <select id="dsc-provider" class="form-input" data-ui-change="dscProviderChanged()">
+            <option value="agudata">Agudata</option>
             <option value="tushare">Tushare Pro</option>
             <option value="current">当前数据源（AkShare / 同花顺 / 东方财富等）</option>
           </select>
         </div>
-        <div class="form-group">
+        <div id="dsc-agudata-fields">
+          <div class="form-group">
+            <label class="form-label">Agudata API 地址</label>
+            <input id="dsc-agudata-base-url" class="form-input" type="url" value="https://api-hk.agudata.cn/app-api/openapi/v1" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Agudata API Key（留空 = 保持不变）</label>
+            <input id="dsc-agudata-key" class="form-input" type="password" placeholder="请输入 X-API-Key" autocomplete="new-password">
+            <div id="dsc-agudata-current" style="margin-top:6px;font-size:12px;color:var(--text3)">当前 API Key: 未配置</div>
+          </div>
+        </div>
+        <div class="form-group" id="dsc-tushare-mode-group">
           <label class="form-label">Tushare 接口类型</label>
           <select id="dsc-mode" class="form-input">
             <option value="replay">Replay HTTP API（X-API-Key）</option>
             <option value="sdk">官方 SDK Token</option>
           </select>
         </div>
-        <div class="form-group">
+        <div class="form-group" id="dsc-tushare-token-group">
           <label class="form-label">Tushare Token / API Key（留空 = 保持不变）</label>
           <input id="dsc-token" class="form-input" type="password" placeholder="请输入 Tushare Token 或 Replay API Key" autocomplete="new-password">
           <div id="dsc-current" style="margin-top:6px;font-size:12px;color:var(--text3)">当前 Token/API Key: 未配置</div>
         </div>
         <div class="form-group">
+          <label class="form-label" style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" id="dsc-agudata-enabled"> 启用 Agudata
+          </label>
           <label class="form-label" style="display:flex;align-items:center;gap:8px">
             <input type="checkbox" id="dsc-tushare-enabled"> 启用 Tushare Pro
           </label>
@@ -556,7 +571,7 @@
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
           <button class="btn btn-primary" data-ui-click="dscSave()"><i class="fas fa-save"></i> 保存并生效</button>
-          <button class="btn btn-outline" data-ui-click="dscTest()"><i class="fas fa-plug"></i> 测试 Tushare</button>
+          <button class="btn btn-outline" data-ui-click="dscTest()"><i class="fas fa-plug"></i> <span id="dsc-test-label">测试连接</span></button>
         </div>
         <div id="dsc-msg" style="margin-top:12px;font-size:13px;color:var(--text2)"></div>
       </div>

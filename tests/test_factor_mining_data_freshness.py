@@ -321,6 +321,92 @@ def test_refresh_security_master_repairs_existing_incomplete_history(
     assert len(pd.read_csv(daily_dir / "000001.csv")) >= 120
 
 
+def test_refresh_security_master_uses_agudata_master_and_history(
+    tmp_path,
+    monkeypatch,
+):
+    daily_dir = tmp_path / "daily"
+    daily_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", daily_dir)
+    monkeypatch.setattr(
+        dm,
+        "SECURITY_MASTER_FILE",
+        tmp_path / "security_master.csv",
+    )
+    monkeypatch.setattr(dm, "_load_meta", lambda: {})
+    monkeypatch.setattr(dm, "_save_meta", lambda meta: None)
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_security_master",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("old Tushare master must not be used")
+        ),
+    )
+    master_calls = []
+    monkeypatch.setattr(
+        dm.agudata_provider,
+        "fetch_security_master",
+        lambda **kwargs: (
+            master_calls.append(kwargs)
+            or _trusted_security_master(
+                [
+                    {
+                        "code": "000001",
+                        "list_date": "20200101",
+                        "delist_date": "",
+                        "list_status": "L",
+                        "lifecycle_snapshot_complete": True,
+                    }
+                ]
+            )
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_kline_qfq",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("old Tushare history must not be used")
+        ),
+    )
+    repaired = _daily_frame("2025-07-01", 280)
+    repaired["date"] = pd.bdate_range(
+        end="2026-07-30",
+        periods=len(repaired),
+    )
+    calls = []
+    monkeypatch.setattr(
+        dm.agudata_provider,
+        "fetch_kline_qfq",
+        lambda code, start, end, **kwargs: (
+            calls.append((code, start, end, kwargs))
+            or repaired
+        ),
+    )
+
+    result = dm.refresh_factor_security_master_history(
+        days=120,
+        now=datetime(2026, 7, 30, 17, 10),
+        history_provider="agudata",
+        agudata_api_key="agudata-key",
+        agudata_base_url="https://data.example/openapi/v1",
+    )
+
+    assert result["ok"] is True, result
+    assert result["history_backfilled"] == 1
+    assert master_calls == [
+        {
+            "api_key": "agudata-key",
+            "base_url": "https://data.example/openapi/v1",
+        }
+    ]
+    assert calls[0][0] == "000001"
+    assert calls[0][3] == {
+        "api_key": "agudata-key",
+        "base_url": "https://data.example/openapi/v1",
+    }
+
+
 def test_refresh_security_master_falls_back_to_baostock_qfq(
     tmp_path,
     monkeypatch,

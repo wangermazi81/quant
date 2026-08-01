@@ -2507,30 +2507,46 @@ async function loadDatasourceConfig(){
     return;
   }
   document.getElementById('dsc-provider').value = r.provider || 'current';
+  document.getElementById('dsc-agudata-base-url').value = r.agudata_base_url || 'https://api-hk.agudata.cn/app-api/openapi/v1';
+  document.getElementById('dsc-agudata-key').value = '';
   document.getElementById('dsc-mode').value = r.tushare_mode || 'replay';
   document.getElementById('dsc-token').value = '';
+  document.getElementById('dsc-agudata-enabled').checked = !!r.agudata_enabled;
   document.getElementById('dsc-tushare-enabled').checked = !!r.tushare_enabled;
   document.getElementById('dsc-fallback-enabled').checked = r.fallback_enabled !== false;
+  document.getElementById('dsc-agudata-current').textContent = '当前 API Key: ' + (r.agudata_api_key_masked || '未配置');
   document.getElementById('dsc-current').textContent = '当前 Token/API Key: ' + (r.tushare_token_masked || '未配置');
   dscProviderChanged();
   if(msg){
     msg.style.color = 'var(--text2)';
-    msg.textContent = `当前第一数据源：${r.provider === 'tushare' ? 'Tushare Pro' : '当前数据源'}；第二数据源：${r.fallback_enabled !== false ? '自动降级启用' : '禁用'}`;
+    const names = {agudata:'Agudata', tushare:'Tushare Pro', current:'当前数据源'};
+    msg.textContent = `当前第一数据源：${names[r.provider] || r.provider}；第二数据源：${r.fallback_enabled !== false ? '自动降级启用' : '禁用'}`;
   }
 }
 
 function dscProviderChanged(){
   const provider = document.getElementById('dsc-provider').value;
+  const isAgudata = provider === 'agudata';
+  const isTushare = provider === 'tushare';
+  document.getElementById('dsc-agudata-fields').style.display = isAgudata ? '' : 'none';
+  document.getElementById('dsc-tushare-mode-group').style.display = isTushare ? '' : 'none';
+  document.getElementById('dsc-tushare-token-group').style.display = isTushare ? '' : 'none';
+  document.getElementById('dsc-test-label').textContent = `测试 ${isAgudata ? 'Agudata' : (isTushare ? 'Tushare' : '当前数据源')}`;
+  if(isAgudata) document.getElementById('dsc-agudata-enabled').checked = true;
   if(provider === 'tushare') document.getElementById('dsc-tushare-enabled').checked = true;
 }
 
 async function dscSave(){
   const body = {
     provider: document.getElementById('dsc-provider').value,
+    agudata_enabled: document.getElementById('dsc-agudata-enabled').checked,
+    agudata_base_url: document.getElementById('dsc-agudata-base-url').value.trim(),
     tushare_mode: document.getElementById('dsc-mode').value,
     tushare_enabled: document.getElementById('dsc-tushare-enabled').checked,
     fallback_enabled: document.getElementById('dsc-fallback-enabled').checked,
   };
+  const agudataKey = document.getElementById('dsc-agudata-key').value.trim();
+  if(agudataKey) body.agudata_api_key = agudataKey;
   const token = document.getElementById('dsc-token').value.trim();
   if(token) body.tushare_token = token;
   const r = await _annFetch('POST', '/admin/datasource/config', body);
@@ -2540,14 +2556,27 @@ async function dscSave(){
 
 async function dscTest(){
   const msg = document.getElementById('dsc-msg');
-  msg.style.color = 'var(--text2)'; msg.textContent = '正在测试 Tushare 连接…';
-  const token = document.getElementById('dsc-token').value.trim();
-  const body = {tushare_mode: document.getElementById('dsc-mode').value};
-  if(token) body.tushare_token = token;
+  const provider = document.getElementById('dsc-provider').value;
+  const providerName = provider === 'agudata' ? 'Agudata' : (provider === 'tushare' ? 'Tushare' : '当前数据源');
+  if(provider === 'current'){
+    msg.style.color = 'var(--text2)';
+    msg.textContent = '当前数据源由行情服务运行状态检测，无独立密钥连接测试。';
+    return;
+  }
+  msg.style.color = 'var(--text2)'; msg.textContent = `正在测试 ${providerName} 连接…`;
+  const body = {provider, tushare_mode: document.getElementById('dsc-mode').value};
+  if(provider === 'agudata'){
+    body.agudata_base_url = document.getElementById('dsc-agudata-base-url').value.trim();
+    const key = document.getElementById('dsc-agudata-key').value.trim();
+    if(key) body.agudata_api_key = key;
+  }else{
+    const token = document.getElementById('dsc-token').value.trim();
+    if(token) body.tushare_token = token;
+  }
   const r = await _annFetch('POST', '/admin/datasource/test', body, 30000);
   if(r && r.ok){
     msg.style.color = 'var(--green)';
-    msg.textContent = `Tushare ${r.mode || 'replay'} 连接正常，样例 ${r.sample || '000001.SZ'} 返回 ${r.rows || 0} 条日线`;
+    msg.textContent = `${providerName}${r.mode ? ` ${r.mode}` : ''} 连接正常，样例 ${r.sample || '000001.SZ'} 返回 ${r.rows || 0} 条数据`;
   }else{
     msg.style.color = 'var(--red)';
     msg.textContent = (r&&r.error)||'测试失败';

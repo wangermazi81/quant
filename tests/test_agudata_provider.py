@@ -1,0 +1,508 @@
+from datetime import datetime
+
+import pytest
+
+from analytics import agudata_provider as provider
+
+
+class _Response:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = ""
+
+    def json(self):
+        return self._payload
+
+
+def test_query_api_unwraps_nested_fields_and_items(monkeypatch):
+    calls = []
+    payload = {
+        "code": 0,
+        "data": {
+            "code": 200,
+            "data": {
+                "data": {
+                    "fields": ["ts_code", "trade_date", "close"],
+                    "items": [["000001.SZ", "20260731", 12.34]],
+                }
+            },
+        },
+    }
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return _Response(payload)
+
+    monkeypatch.setattr(provider.requests, "get", fake_get)
+
+    rows = provider.query_api(
+        "daily",
+        {"ts_code": "000001.SZ"},
+        api_key="test-secret",
+        base_url="https://data.example/openapi/v1",
+    )
+
+    assert rows == [
+        {"ts_code": "000001.SZ", "trade_date": "20260731", "close": 12.34}
+    ]
+    assert calls[0][0] == "https://data.example/openapi/v1/tushare/daily"
+    assert calls[0][1]["headers"]["X-API-Key"] == "test-secret"
+    assert calls[0][1]["params"] == {"ts_code": "000001.SZ"}
+
+
+def test_query_api_reports_permission_error_without_leaking_key(monkeypatch):
+    monkeypatch.setattr(
+        provider.requests,
+        "get",
+        lambda *args, **kwargs: _Response(
+            {
+                "code": 403,
+                "message": "API_PERMISSION_DENIED",
+                "data": {"message": "permission denied"},
+            }
+        ),
+    )
+
+    with pytest.raises(provider.AgudataPermissionError) as exc_info:
+        provider.query_api("stk-auction", api_key="never-log-this")
+
+    assert "API_PERMISSION_DENIED" in str(exc_info.value)
+    assert "never-log-this" not in str(exc_info.value)
+
+
+def test_fetch_kline_qfq_applies_adjustment_factors(monkeypatch):
+    def fake_paged(endpoint, params, **kwargs):
+        if endpoint == "daily":
+            return [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "20260730",
+                    "open": 30,
+                    "high": 31,
+                    "low": 29,
+                    "close": 30,
+                    "vol": 100,
+                    "amount": 1000,
+                },
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "20260731",
+                    "open": 20,
+                    "high": 22,
+                    "low": 18,
+                    "close": 20,
+                    "vol": 200,
+                    "amount": 4000,
+                },
+            ]
+        if endpoint == "adj-factor":
+            return [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "20260730",
+                    "adj_factor": 1,
+                },
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "20260731",
+                    "adj_factor": 2,
+                },
+            ]
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(provider, "_paged_query", fake_paged)
+
+    frame = provider.fetch_kline_qfq(
+        "000001",
+        "20260730",
+        "20260731",
+        api_key="key",
+    )
+
+    assert list(frame.columns) == [
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+    ]
+    assert frame["close"].tolist() == [15.0, 20.0]
+    assert frame["volume"].tolist() == [100, 200]
+    assert frame["amount"].tolist() == [1000, 4000]
+
+
+def test_fetch_full_market_daily_pages_and_normalizes(monkeypatch):
+    offsets = []
+
+    def fake_query(endpoint, params, **kwargs):
+        assert endpoint == "daily"
+        offsets.append(params["offset"])
+        if params["offset"] == 0:
+            return [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "20260731",
+                    "open": 10,
+                    "high": 11,
+                    "low": 9,
+                    "close": 10.5,
+                    "vol": 100,
+                    "amount": 1050,
+                },
+                {
+                    "ts_code": "600000.SH",
+                    "trade_date": "20260731",
+                    "open": 20,
+                    "high": 21,
+                    "low": 19,
+                    "close": 20.5,
+                    "vol": 200,
+                    "amount": 4100,
+                },
+            ]
+        return []
+
+    monkeypatch.setattr(provider, "query_api", fake_query)
+
+    frame = provider.fetch_full_market_daily(
+        "20260731",
+        api_key="key",
+        page_size=2,
+    )
+
+    assert offsets == [0, 2]
+    assert frame["code"].tolist() == ["000001", "600000"]
+    assert frame["date"].dt.strftime("%Y%m%d").tolist() == [
+        "20260731",
+        "20260731",
+    ]
+
+
+def test_fetch_full_market_daily_uses_safe_default_page_size(monkeypatch):
+    limits = []
+
+    def fake_query(endpoint, params, **kwargs):
+        limits.append(params["limit"])
+        return [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20260731",
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10.5,
+                "vol": 100,
+                "amount": 1050,
+            }
+        ]
+
+    monkeypatch.setattr(provider, "query_api", fake_query)
+
+    frame = provider.fetch_full_market_daily(
+        "20260731",
+        api_key="key",
+    )
+
+    assert len(frame) == 1
+    assert limits == [500]
+
+
+def test_paged_query_reuses_one_http_session(monkeypatch):
+    sessions = []
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+            sessions.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs["params"]["offset"]))
+            offset = kwargs["params"]["offset"]
+            rows = (
+                [["000001.SZ"]]
+                if offset == 0
+                else []
+            )
+            return _Response(
+                {
+                    "code": 0,
+                    "data": {
+                        "data": {
+                            "data": {
+                                "fields": ["ts_code"],
+                                "items": rows,
+                            }
+                        }
+                    },
+                }
+            )
+
+    monkeypatch.setattr(provider.requests, "Session", FakeSession)
+    monkeypatch.setattr(
+        provider.requests,
+        "get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("pagination must use its shared session")
+        ),
+    )
+
+    rows = provider._paged_query(
+        "daily",
+        {"trade_date": "20260731"},
+        api_key="key",
+        page_size=1,
+        max_rows=2,
+    )
+
+    assert rows == [{"ts_code": "000001.SZ"}]
+    assert len(sessions) == 1
+    assert [offset for _, offset in sessions[0].calls] == [0, 1]
+
+
+def test_paged_query_retries_rate_limit_with_bounded_backoff(monkeypatch):
+    attempts = []
+    sleeps = []
+
+    def fake_query(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise provider.AgudataRateLimitError("connection limit")
+        return [{"ts_code": "000001.SZ"}]
+
+    monkeypatch.setattr(provider, "query_api", fake_query)
+    monkeypatch.setattr(
+        provider.time,
+        "sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+
+    rows = provider._paged_query(
+        "daily",
+        {"trade_date": "20260731"},
+        api_key="key",
+        page_size=1000,
+        max_rows=1000,
+    )
+
+    assert rows == [{"ts_code": "000001.SZ"}]
+    assert len(attempts) == 3
+    assert sleeps == [3.0, 10.0]
+
+
+def test_fetch_minute_kline_uses_historical_endpoint_for_trade_date(monkeypatch):
+    calls = []
+
+    def fake_paged(endpoint, params, **kwargs):
+        calls.append((endpoint, params))
+        return [
+            {
+                "ts_code": "000001.SZ",
+                "trade_time": "2026-07-31 09:30:00",
+                "open": 10,
+                "close": 10.1,
+                "high": 10.2,
+                "low": 9.9,
+                "vol": 100,
+                "amount": 1010,
+            }
+        ]
+
+    monkeypatch.setattr(provider, "_paged_query", fake_paged)
+
+    frame = provider.fetch_minute_kline(
+        "000001",
+        freq="1MIN",
+        trade_date="2026-07-31",
+        api_key="key",
+    )
+
+    assert calls == [
+        (
+            "stk-mins",
+            {
+                "ts_code": "000001.SZ",
+                "freq": "1min",
+                "start_date": "20260731 09:30:00",
+                "end_date": "20260731 15:00:00",
+                "fields": "ts_code,trade_time,open,close,high,low,vol,amount",
+            },
+        )
+    ]
+    assert frame["datetime"].dt.strftime("%H:%M:%S").tolist() == ["09:30:00"]
+    assert frame["is_complete"].tolist() == [True]
+
+
+def test_fetch_realtime_quotes_and_auction_snapshot(monkeypatch):
+    def fake_paged(endpoint, params, **kwargs):
+        if endpoint == "rt-k":
+            return [
+                {
+                    "ts_code": "000001.SZ",
+                    "name": "平安银行",
+                    "trade_time": "2026-07-31 14:59:58",
+                    "close": 12.0,
+                    "pre_close": 11.5,
+                    "open": 11.6,
+                    "high": 12.1,
+                    "low": 11.4,
+                    "vol": 123400,
+                    "amount": 1480800,
+                }
+            ]
+        if endpoint == "stk-auction":
+            return [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "20260731",
+                    "vol": 1000,
+                    "price": 11.8,
+                    "amount": 11800,
+                    "pre_close": 11.5,
+                    "turnover_rate": 0.01,
+                    "volume_ratio": 1.2,
+                    "float_share": 1000000,
+                }
+            ]
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(provider, "_paged_query", fake_paged)
+
+    quotes = provider.fetch_realtime_quotes(["000001"], api_key="key")
+    auction = provider.fetch_auction_snapshot(
+        "000001",
+        "20260731",
+        api_key="key",
+    )
+
+    assert quotes[0]["code"] == "000001"
+    assert quotes[0]["price"] == 12.0
+    assert quotes[0]["change_pct"] == pytest.approx((12.0 / 11.5 - 1) * 100)
+    assert quotes[0]["source"] == "agudata_rt_k"
+    assert auction["price"] == 11.8
+    assert auction["source"] == "agudata_stk_auction"
+
+
+def test_fetch_security_master_merges_agudata_profiles_with_trusted_lifecycle(
+    monkeypatch,
+):
+    lifecycle = [
+        {
+            "code": "000001",
+            "ts_code": "000001.SZ",
+            "name": "旧名称",
+            "list_date": "19910403",
+            "delist_date": "",
+            "list_status": "L",
+            "exchange": "SZ",
+        },
+        {
+            "code": "000002",
+            "ts_code": "000002.SZ",
+            "name": "退市深股",
+            "list_date": "19910129",
+            "delist_date": "20200102",
+            "list_status": "D",
+            "exchange": "SZ",
+        },
+        {
+            "code": "600000",
+            "ts_code": "600000.SH",
+            "name": "浦发银行",
+            "list_date": "19991110",
+            "delist_date": "",
+            "list_status": "L",
+            "exchange": "SH",
+        },
+        {
+            "code": "600001",
+            "ts_code": "600001.SH",
+            "name": "退市沪股",
+            "list_date": "19981231",
+            "delist_date": "20200103",
+            "list_status": "D",
+            "exchange": "SH",
+        },
+    ]
+    monkeypatch.setattr(
+        provider,
+        "_fetch_trusted_security_lifecycle",
+        lambda: lifecycle,
+        raising=False,
+    )
+    calls = []
+
+    def fake_paged(endpoint, params, **kwargs):
+        calls.append((endpoint, dict(params), kwargs))
+        if endpoint == "trade-cal":
+            return [
+                {
+                    "exchange": "SSE",
+                    "cal_date": "20260730",
+                    "is_open": 1,
+                    "pretrade_date": "20260729",
+                }
+            ]
+        if endpoint == "stock-basic" and params["list_status"] == "L":
+            return [
+                {
+                    "ts_code": "000001.SZ",
+                    "symbol": "000001",
+                    "name": "平安银行",
+                    "area": "深圳",
+                    "industry": "银行",
+                    "market": "主板",
+                    "list_date": "19910403",
+                    "delist_date": "",
+                    "list_status": "L",
+                }
+            ]
+        if endpoint == "stock-basic":
+            return []
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(provider, "_paged_query", fake_paged)
+    monkeypatch.setattr(
+        provider,
+        "datetime",
+        type(
+            "FixedDatetime",
+            (),
+            {"now": staticmethod(lambda: datetime(2026, 7, 31, 10, 0))},
+        ),
+    )
+
+    rows = provider.fetch_security_master(
+        api_key="key",
+        base_url="https://data.example/openapi/v1",
+    )
+
+    assert len(rows) == 4
+    assert rows[0]["name"] == "平安银行"
+    assert rows[0]["industry"] == "银行"
+    assert rows[0]["source"] == (
+        "agudata_stock_basic+baostock_stock_basic"
+    )
+    assert rows[1]["source"] == "baostock_stock_basic"
+    assert all(
+        row["security_master_snapshot_trade_date"] == "20260730"
+        for row in rows
+    )
+    assert all(
+        row["security_master_row_count"] == 4
+        and row["lifecycle_snapshot_complete"] is True
+        for row in rows
+    )
+    assert [
+        params["list_status"]
+        for endpoint, params, _ in calls
+        if endpoint == "stock-basic"
+    ] == ["L", "D", "P"]

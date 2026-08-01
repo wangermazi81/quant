@@ -17,6 +17,7 @@ from typing import Any, Iterable
 
 import pandas as pd
 
+from analytics import agudata_provider
 from analytics import datasource_config
 from analytics import tushare_provider
 
@@ -57,10 +58,10 @@ def _config() -> dict:
 def _source_order(cfg: dict | None = None) -> list[str]:
     cfg = cfg or _config()
     primary = str(cfg.get("provider") or "tushare").strip().lower()
-    if primary not in {"tushare", "current"}:
+    if primary not in {"agudata", "tushare", "current"}:
         primary = "tushare"
     order = [primary]
-    secondary = "current" if primary == "tushare" else "tushare"
+    secondary = "tushare" if primary == "current" else "current"
     if cfg.get("fallback_enabled", True) and secondary not in order:
         order.append(secondary)
     return order
@@ -78,6 +79,20 @@ def get_active_config() -> dict:
 
 def _has_tushare(cfg: dict) -> bool:
     return bool(cfg.get("tushare_enabled") and cfg.get("tushare_token"))
+
+
+def _has_agudata(cfg: dict) -> bool:
+    return bool(
+        cfg.get("agudata_enabled")
+        and cfg.get("agudata_api_key")
+    )
+
+
+def _agudata_kwargs(cfg: dict) -> dict:
+    return {
+        "api_key": cfg.get("agudata_api_key"),
+        "base_url": cfg.get("agudata_base_url"),
+    }
 
 
 def _empty_result(kind: str, cfg: dict, error: str = "") -> dict:
@@ -222,6 +237,35 @@ def _tushare_quotes(codes: Iterable[str], cfg: dict) -> list[dict]:
     return rows
 
 
+def _agudata_quotes(codes: Iterable[str], cfg: dict) -> list[dict]:
+    if not _has_agudata(cfg):
+        return []
+    clean = [
+        normalize_code(code)
+        for code in codes
+        if str(code or "").strip()
+    ]
+    rows: list[dict] = []
+    for index in range(0, len(clean), 200):
+        chunk = clean[index:index + 200]
+        try:
+            rows.extend(
+                agudata_provider.fetch_realtime_quotes(
+                    chunk,
+                    **_agudata_kwargs(cfg),
+                )
+                or []
+            )
+        except Exception as exc:
+            logger.debug(
+                "[gateway] agudata quotes failed %s-%s: %s",
+                index,
+                index + len(chunk),
+                exc,
+            )
+    return rows
+
+
 def get_realtime_quotes_result(codes: Iterable[str] | None = None) -> dict:
     cfg = _config()
     code_list = [normalize_code(c) for c in (codes or []) if str(c or "").strip()]
@@ -232,7 +276,9 @@ def get_realtime_quotes_result(codes: Iterable[str] | None = None) -> dict:
     for idx, source in enumerate(_source_order(cfg)):
         rows: list[dict] = []
         try:
-            if source == "tushare":
+            if source == "agudata":
+                rows = _agudata_quotes(code_list, cfg)
+            elif source == "tushare":
                 rows = _tushare_quotes(code_list, cfg)
             else:
                 rows = _current_quotes(code_list) if codes else _current_full_market_quotes()
@@ -400,7 +446,15 @@ def get_minute_kline_result(code: str, freq: str = "1MIN", limit: int | None = 2
     for idx, source in enumerate(_source_order(cfg)):
         df = pd.DataFrame()
         try:
-            if source == "tushare" and _has_tushare(cfg):
+            if source == "agudata" and _has_agudata(cfg):
+                df = agudata_provider.fetch_minute_kline(
+                    clean,
+                    freq=freq,
+                    limit=limit,
+                    trade_date=trade_date,
+                    **_agudata_kwargs(cfg),
+                )
+            elif source == "tushare" and _has_tushare(cfg):
                 df = tushare_provider.fetch_minute_kline(
                     clean,
                     freq=freq,

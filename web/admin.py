@@ -15,6 +15,7 @@ from flask import Blueprint, request, jsonify, session
 from core import user_manager as um
 from core import factor_watchlist as _fw
 import app_security as sec
+from analytics import agudata_provider
 from analytics import datasource_config
 from analytics import tushare_provider
 from analytics import relay_factor_mining
@@ -483,6 +484,26 @@ def admin_datasource_config_save():
 def admin_datasource_test():
     body = request.json or {}
     saved = datasource_config.get_internal_config()
+    provider = str(
+        body.get("provider")
+        or saved.get("provider")
+        or "tushare"
+    ).strip().lower()
+    if provider == "agudata":
+        api_key = str(body.get("agudata_api_key") or "").strip()
+        if not api_key:
+            api_key = datasource_config.resolve_agudata_api_key(saved)
+        base_url = str(
+            body.get("agudata_base_url")
+            or saved.get("agudata_base_url")
+            or ""
+        ).strip()
+        result = agudata_provider.test_connection(
+            api_key=api_key,
+            base_url=base_url,
+        )
+        status = 200 if result.get("ok") else 400
+        return jsonify(result), status
     mode = (body.get("tushare_mode") or saved.get("tushare_mode") or "replay").strip().lower()
     token = (body.get("tushare_token") or "").strip()
     if not token:
