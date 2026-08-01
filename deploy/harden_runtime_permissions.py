@@ -10,6 +10,7 @@ import re
 import secrets
 import stat
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlsplit
 
 
@@ -19,6 +20,11 @@ O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0x20000)
 O_NONBLOCK = getattr(os, "O_NONBLOCK", 0x800)
 _BRANCH_RE = re.compile(
     r"^(?!-)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._/-]+$"
+)
+_RELEASE_VENV_LIB64_RE = re.compile(
+    r"^\.venv-releases/"
+    r"release-[0-9a-f]{40}(?:[0-9a-f]{24})?\.[A-Za-z0-9]{6}/"
+    r"lib64$"
 )
 RUNTIME_SECRET_PATHS = (
     "data/.secret_key",
@@ -99,6 +105,16 @@ def _regular_mode(details: os.stat_result, private: bool) -> int:
     return 0o750 if details.st_mode & 0o111 else 0o640
 
 
+def _is_allowed_release_venv_symlink(
+    relative_path: str,
+    target: str,
+) -> bool:
+    return bool(
+        target == "lib"
+        and _RELEASE_VENV_LIB64_RE.fullmatch(relative_path)
+    )
+
+
 def _secure_directory_contents(
     directory_fd: int,
     *,
@@ -109,6 +125,7 @@ def _secure_directory_contents(
     expected_dev: int,
     relative_prefix: str = "",
     skip_paths: frozenset[str] = frozenset(),
+    allowed_symlink: Callable[[str, str], bool] | None = None,
 ) -> None:
     for name in sorted(os.listdir(directory_fd)):
         relative_path = (
@@ -127,6 +144,25 @@ def _secure_directory_contents(
         except OSError as error:
             raise RuntimeError(f"cannot inspect {name}: {error}") from error
         if stat.S_ISLNK(details.st_mode):
+            try:
+                target = os.readlink(name, dir_fd=directory_fd)
+            except OSError as error:
+                raise RuntimeError(
+                    f"cannot inspect symbolic link {name}: {error}"
+                ) from error
+            if (
+                details.st_dev == expected_dev
+                and allowed_symlink is not None
+                and allowed_symlink(relative_path, target)
+            ):
+                os.chown(
+                    name,
+                    uid,
+                    gid,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                continue
             raise RuntimeError(f"symbolic link is not allowed: {name}")
         if stat.S_ISDIR(details.st_mode):
             child_fd = _open_directory_at(directory_fd, name)
@@ -145,6 +181,7 @@ def _secure_directory_contents(
                     expected_dev=expected_dev,
                     relative_prefix=relative_path,
                     skip_paths=skip_paths,
+                    allowed_symlink=allowed_symlink,
                 )
                 os.fchown(child_fd, uid, gid)
                 os.fchmod(child_fd, directory_mode)
@@ -175,6 +212,7 @@ def _secure_tree_at(
     expected_dev: int,
     relative_prefix: str = "",
     skip_paths: frozenset[str] = frozenset(),
+    allowed_symlink: Callable[[str, str], bool] | None = None,
 ) -> None:
     directory_fd = _open_directory_at(parent_fd, name)
     try:
@@ -192,6 +230,7 @@ def _secure_tree_at(
             expected_dev=expected_dev,
             relative_prefix=relative_prefix or name,
             skip_paths=skip_paths,
+            allowed_symlink=allowed_symlink,
         )
         os.fchown(directory_fd, uid, gid)
         os.fchmod(directory_fd, directory_mode)
@@ -505,6 +544,11 @@ def harden_application(
                         frozenset()
                         if is_git
                         else _CODE_RUNTIME_PATHS
+                    ),
+                    allowed_symlink=(
+                        _is_allowed_release_venv_symlink
+                        if name == ".venv-releases"
+                        else None
                     ),
                 )
             elif stat.S_ISREG(details.st_mode):

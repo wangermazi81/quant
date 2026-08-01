@@ -135,6 +135,68 @@ def test_git_config_payload_disables_hooks_and_binds_remote():
         hardener._git_config_payload("file:///tmp/quant.git", "main")
 
 
+def test_release_venv_symlink_allowlist_is_exact():
+    from deploy import harden_runtime_permissions as hardener
+
+    release = (
+        ".venv-releases/"
+        "release-" + ("a" * 40) + ".ABC123/lib64"
+    )
+
+    assert hardener._is_allowed_release_venv_symlink(
+        release,
+        "lib",
+    )
+    assert not hardener._is_allowed_release_venv_symlink(
+        release,
+        "../lib",
+    )
+    assert not hardener._is_allowed_release_venv_symlink(
+        release.replace("/lib64", "/bin/python"),
+        "python3",
+    )
+    assert not hardener._is_allowed_release_venv_symlink(
+        release.replace("a" * 40, "not-a-commit"),
+        "lib",
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX fd semantics")
+def test_release_tree_hardening_accepts_only_standard_lib64_link(
+    tmp_path,
+):
+    from deploy import harden_runtime_permissions as hardener
+
+    releases = tmp_path / ".venv-releases"
+    release = releases / (
+        "release-" + ("a" * 40) + ".ABC123"
+    )
+    (release / "lib").mkdir(parents=True)
+    (release / "lib64").symlink_to("lib", target_is_directory=True)
+    root_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        hardener._secure_tree_at(
+            root_fd,
+            ".venv-releases",
+            uid=os.getuid(),
+            gid=os.getgid(),
+            directory_mode=0o750,
+            private=False,
+            expected_dev=os.fstat(root_fd).st_dev,
+            allowed_symlink=(
+                hardener._is_allowed_release_venv_symlink
+            ),
+        )
+    finally:
+        os.close(root_fd)
+
+    assert (release / "lib64").is_symlink()
+    assert os.readlink(release / "lib64") == "lib"
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX fd semantics")
 def test_runtime_hardening_preserves_non_secret_cache_permissions(
     tmp_path,
