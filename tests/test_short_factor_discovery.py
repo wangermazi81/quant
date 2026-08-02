@@ -217,6 +217,9 @@ def test_ic_significance_uses_conservative_newey_west_hac():
 
 def test_daily_rank_ic_matrix_matches_scalar_implementation():
     factors, labels = _discovery_sample(periods=12, codes=30)
+    labels["ts_code"] = discovery._code_key_series(
+        labels["ts_code"]
+    )
     frame = discovery._factor_long_frame(factors).merge(
         labels,
         on=["trade_date", "ts_code"],
@@ -457,6 +460,55 @@ def test_expression_candidates_are_deterministic_and_target_free():
         first["noise__x__predictive"],
         second["noise__x__predictive"],
     )
+    assert all(
+        set(frame.dtypes.astype(str)) == {"float32"}
+        for frame in first.values()
+    )
+
+
+def test_factor_long_frame_uses_float32_storage():
+    factors, _labels = _discovery_sample(periods=30)
+
+    frame = discovery._factor_long_frame(factors)
+
+    assert frame["predictive"].dtype == np.dtype("float32")
+    assert frame["noise"].dtype == np.dtype("float32")
+
+
+def test_compact_execution_labels_drops_diagnostics():
+    labels = pd.DataFrame(
+        {
+            "trade_date": ["2026-07-30"],
+            "ts_code": ["000001"],
+            "entry_date": ["2026-07-31"],
+            "exit_date": ["2026-08-03"],
+            "live_adjusted_return_pct": [1.2],
+            "forward_return_pct": [1.4],
+            "research_evaluable": [True],
+            "execution_blocked": [False],
+            "valuation_path": [[{"return_pct": 1.2}]],
+            "execution_flags": [[]],
+            "unused_diagnostic": ["large"],
+        }
+    )
+
+    compact = discovery._compact_execution_labels(labels)
+
+    assert list(compact.columns) == [
+        "trade_date",
+        "ts_code",
+        "entry_date",
+        "exit_date",
+        "live_adjusted_return_pct",
+        "forward_return_pct",
+        "research_evaluable",
+        "execution_blocked",
+    ]
+    assert "valuation_path" not in compact
+    assert compact["trade_date"].dtype == np.dtype("datetime64[ns]")
+    assert compact["entry_date"].dtype == np.dtype("datetime64[ns]")
+    assert compact["exit_date"].dtype == np.dtype("datetime64[ns]")
+    assert compact["ts_code"].dtype == np.dtype("int32")
 
 
 def test_walk_forward_discovery_selects_cost_positive_oos_factor():
@@ -634,6 +686,39 @@ def test_execution_horizon_is_selected_on_calibration_only():
             "execution_selection"
         ]["candidates"]
     )
+
+
+def test_execution_discovery_builds_factor_long_frame_once(
+    monkeypatch,
+):
+    factors, one_day = _discovery_sample(periods=90)
+    two_day = one_day.copy()
+    calls = 0
+    original = discovery._factor_long_frame
+
+    def counted(value):
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(discovery, "_factor_long_frame", counted)
+
+    discovery.run_walk_forward_execution_discovery(
+        factors,
+        {"hold_1": one_day, "hold_2": two_day},
+        execution_metadata={
+            "hold_1": {"hold_days": 1},
+            "hold_2": {"hold_days": 2},
+        },
+        train_days=50,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        min_cross_section=20,
+    )
+
+    assert calls == 1
 
 
 def test_execution_factor_requires_half_of_all_scheduled_windows(
