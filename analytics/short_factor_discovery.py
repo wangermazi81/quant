@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import combinations
@@ -162,6 +163,18 @@ def _float_frame(value: pd.DataFrame) -> pd.DataFrame:
     frame.index = pd.to_datetime(frame.index).normalize()
     frame.columns = [str(column) for column in frame.columns]
     return frame.apply(pd.to_numeric, errors="coerce").astype(float)
+
+
+def _factor_storage_frame(value: pd.DataFrame) -> pd.DataFrame:
+    frame = value.copy(deep=False)
+    frame.index = pd.to_datetime(frame.index).normalize()
+    frame.columns = [str(column) for column in frame.columns]
+    if not all(
+        pd.api.types.is_numeric_dtype(dtype)
+        for dtype in frame.dtypes
+    ):
+        frame = frame.apply(pd.to_numeric, errors="coerce")
+    return frame.astype(np.float32, copy=False)
 
 
 def _code_key_series(values: pd.Series) -> pd.Series:
@@ -602,10 +615,7 @@ def build_expression_candidates(
         if isinstance(frame, pd.DataFrame)
     )
     result = {
-        name: _float_frame(base_factors[name]).astype(
-            np.float32,
-            copy=False,
-        )
+        name: _factor_storage_frame(base_factors[name])
         for name in names
     }
     interaction_count = 0
@@ -633,6 +643,208 @@ def build_expression_candidates(
         ).astype(np.float32, copy=False)
         interaction_count += 1
     return result
+
+
+def _expression_candidate_plan(
+    base_factors: Mapping[str, pd.DataFrame],
+    *,
+    max_interactions: int,
+) -> tuple[list[str], list[tuple[str, str, str]]]:
+    if isinstance(max_interactions, bool) or int(max_interactions) < 0:
+        raise ValueError("max_interactions must be non-negative")
+    names = sorted(
+        str(name)
+        for name, frame in base_factors.items()
+        if isinstance(frame, pd.DataFrame)
+    )
+    interactions = []
+    for left_name, right_name in combinations(names, 2):
+        if len(interactions) >= int(max_interactions):
+            break
+        left = base_factors[left_name]
+        right = base_factors[right_name]
+        left_index = pd.DatetimeIndex(
+            pd.to_datetime(left.index)
+        ).normalize()
+        right_index = pd.DatetimeIndex(
+            pd.to_datetime(right.index)
+        ).normalize()
+        if (
+            left_index.intersection(right_index).empty
+            or pd.Index([str(value) for value in left.columns])
+            .intersection(
+                pd.Index([str(value) for value in right.columns])
+            )
+            .empty
+        ):
+            continue
+        interactions.append(
+            (
+                f"{left_name}__x__{right_name}",
+                left_name,
+                right_name,
+            )
+        )
+    return names, interactions
+
+
+def _assemble_factor_long_frame(
+    names: Sequence[str],
+    *,
+    index: pd.DatetimeIndex,
+    columns: pd.Index,
+    load_frame: Callable[[str], pd.DataFrame],
+    release_frame: Callable[[str], None] | None = None,
+) -> pd.DataFrame:
+    ordered = sorted(set(str(name) for name in names))
+    if not ordered:
+        return pd.DataFrame()
+    index = pd.DatetimeIndex(index).dropna().sort_values()
+    columns = pd.Index(
+        [str(column) for column in columns],
+        dtype="object",
+    ).sort_values()
+    if index.empty or columns.empty:
+        return pd.DataFrame(
+            columns=["trade_date", "ts_code", *ordered]
+        )
+    row_count = len(index) * len(columns)
+    values = np.empty(
+        (row_count, len(ordered)),
+        dtype=np.float32,
+    )
+    for position, name in enumerate(ordered):
+        normalized = _factor_storage_frame(
+            load_frame(name)
+        ).reindex(
+            index=index,
+            columns=columns,
+        )
+        values[:, position] = normalized.to_numpy(
+            dtype=np.float32,
+            copy=False,
+        ).reshape(-1)
+        del normalized
+        if release_frame is not None:
+            release_frame(name)
+    usable = ~np.isnan(values).all(axis=1)
+    factor_values = values if bool(usable.all()) else values[usable]
+    result = pd.DataFrame(
+        factor_values,
+        columns=ordered,
+        copy=False,
+    )
+    dates = np.repeat(index.to_numpy(), len(columns))
+    code_axis = _code_key_series(
+        pd.Series(columns.to_numpy())
+    ).to_numpy()
+    codes = np.tile(code_axis, len(index))
+    if not bool(usable.all()):
+        dates = dates[usable]
+        codes = codes[usable]
+    result.insert(0, "ts_code", codes)
+    result.insert(0, "trade_date", dates)
+    return result
+
+
+def _build_expression_feature_frame(
+    base_factors: Mapping[str, pd.DataFrame],
+    *,
+    max_interactions: int = 30,
+    consume_base: bool = False,
+) -> tuple[list[str], pd.DataFrame]:
+    base_names, interactions = _expression_candidate_plan(
+        base_factors,
+        max_interactions=max_interactions,
+    )
+    candidate_names = [
+        *base_names,
+        *(name for name, _left, _right in interactions),
+    ]
+    if not base_names:
+        return candidate_names, pd.DataFrame()
+    index = pd.DatetimeIndex([])
+    columns = pd.Index([], dtype="object")
+    for name in base_names:
+        frame = base_factors[name]
+        index = index.union(
+            pd.DatetimeIndex(
+                pd.to_datetime(frame.index, errors="coerce")
+            ).normalize()
+        )
+        columns = columns.union(
+            pd.Index(
+                [str(column) for column in frame.columns],
+                dtype="object",
+            )
+        )
+    interaction_sources = {
+        name: (left, right)
+        for name, left, right in interactions
+    }
+    if consume_base:
+        if not isinstance(base_factors, MutableMapping):
+            raise TypeError(
+                "consume_base requires a mutable factor mapping"
+            )
+        sources: Mapping[str, pd.DataFrame] = dict(base_factors)
+        base_factors.clear()
+    else:
+        sources = base_factors
+    remaining_uses = {name: 0 for name in base_names}
+    for _name, left_name, right_name in interactions:
+        remaining_uses[left_name] += 1
+        remaining_uses[right_name] += 1
+    loaded_bases: set[str] = set()
+
+    def load_frame(name: str) -> pd.DataFrame:
+        sources = interaction_sources.get(name)
+        if sources is None:
+            return source_frames[name]
+        left = _factor_storage_frame(source_frames[sources[0]])
+        right = _factor_storage_frame(source_frames[sources[1]])
+        shared_index = left.index.intersection(right.index)
+        shared_columns = left.columns.intersection(right.columns)
+        left_rank = left.loc[shared_index, shared_columns].rank(
+            axis=1,
+            pct=True,
+            method="average",
+        )
+        right_rank = right.loc[shared_index, shared_columns].rank(
+            axis=1,
+            pct=True,
+            method="average",
+        )
+        return (
+            (left_rank - 0.5) * (right_rank - 0.5)
+        ).astype(np.float32, copy=False)
+
+    source_frames = sources
+
+    def release_frame(name: str) -> None:
+        if not consume_base:
+            return
+        interaction = interaction_sources.get(name)
+        if interaction is None:
+            loaded_bases.add(name)
+            if remaining_uses[name] == 0:
+                source_frames.pop(name, None)
+            return
+        for source_name in interaction:
+            remaining_uses[source_name] -= 1
+            if (
+                remaining_uses[source_name] == 0
+                and source_name in loaded_bases
+            ):
+                source_frames.pop(source_name, None)
+
+    return candidate_names, _assemble_factor_long_frame(
+        candidate_names,
+        index=index,
+        columns=columns,
+        load_frame=load_frame,
+        release_frame=release_frame,
+    )
 
 
 def build_structural_candidate_factors(
@@ -669,7 +881,7 @@ def build_structural_candidate_factors(
                 pct=True,
                 method="average",
             )
-        result[name] = interaction
+        result[name] = _factor_storage_frame(interaction)
     return result
 
 
@@ -732,7 +944,7 @@ def build_daily_basic_candidate_factors(
         turnover,
         turnover.rolling(5, min_periods=3).mean(),
     )
-    return {
+    factors = {
         "turnover_rate_1": turnover,
         "turnover_acceleration_1_5": acceleration,
         "turnover_free_spread_1": turnover_free - turnover,
@@ -741,6 +953,7 @@ def build_daily_basic_candidate_factors(
         "float_share_ratio_1": _safe_div(float_share, total_share),
         "liquidity_crowding_1": turnover * volume_ratio,
     }
+    return factors
 
 
 def _factor_long_frame(
@@ -766,48 +979,12 @@ def _factor_long_frame(
         )
         index = index.union(frame_index)
         columns = columns.union(frame_columns)
-    index = index.dropna().sort_values()
-    columns = columns.sort_values()
-    if index.empty or columns.empty:
-        return pd.DataFrame(
-            columns=["trade_date", "ts_code", *names]
-        )
-    row_count = len(index) * len(columns)
-    values = np.full(
-        (row_count, len(names)),
-        np.nan,
-        dtype=np.float32,
+    return _assemble_factor_long_frame(
+        names,
+        index=index,
+        columns=columns,
+        load_frame=factors.__getitem__,
     )
-    for position, name in enumerate(names):
-        normalized = _float_frame(factors[name]).reindex(
-            index=index,
-            columns=columns,
-        )
-        values[:, position] = normalized.to_numpy(
-            dtype=np.float32,
-            copy=False,
-        ).reshape(-1)
-    usable = ~np.isnan(values).all(axis=1)
-    if bool(usable.all()):
-        factor_values = values
-    else:
-        factor_values = values[usable]
-    result = pd.DataFrame(
-        factor_values,
-        columns=names,
-        copy=False,
-    )
-    dates = np.repeat(index.to_numpy(), len(columns))
-    code_axis = _code_key_series(
-        pd.Series(columns.to_numpy())
-    ).to_numpy()
-    codes = np.tile(code_axis, len(index))
-    if not bool(usable.all()):
-        dates = dates[usable]
-        codes = codes[usable]
-    result.insert(0, "ts_code", codes)
-    result.insert(0, "trade_date", dates)
-    return result
 
 
 def _daily_rank_ic(
@@ -2012,45 +2189,21 @@ def _execution_factor_summary(
     return result
 
 
-def run_walk_forward_execution_discovery(
-    factors: Mapping[str, pd.DataFrame],
-    execution_labels: Mapping[str, pd.DataFrame],
+def _combine_execution_discovery_reports(
+    candidate_names: Sequence[str],
+    reports: Mapping[str, Mapping[str, Any]],
     *,
-    execution_metadata: Mapping[str, Mapping[str, Any]] | None = None,
-    target_col: str = "live_adjusted_return_pct",
-    fdr_alpha: float = 0.05,
-    _prepared_feature_frame: pd.DataFrame | None = None,
-    **discovery_kwargs: Any,
+    execution_metadata: Mapping[str, Mapping[str, Any]] | None,
+    target_col: str,
+    effective_fdr_alpha: float,
 ) -> dict[str, Any]:
-    labels_by_execution = {
-        str(name): frame
-        for name, frame in execution_labels.items()
-        if isinstance(frame, pd.DataFrame)
-    }
-    if not labels_by_execution:
-        raise ValueError("execution_labels must not be empty")
+    names = sorted(str(name) for name in reports)
+    if not names:
+        raise ValueError("execution reports must not be empty")
     metadata = {
         str(name): dict(details)
         for name, details in (execution_metadata or {}).items()
         if isinstance(details, Mapping)
-    }
-    names = sorted(labels_by_execution)
-    effective_alpha = float(fdr_alpha) / len(names)
-    prepared_feature_frame = (
-        _prepared_feature_frame
-        if isinstance(_prepared_feature_frame, pd.DataFrame)
-        else _factor_long_frame(factors)
-    )
-    reports = {
-        name: run_walk_forward_discovery(
-            factors,
-            labels_by_execution[name],
-            target_col=target_col,
-            fdr_alpha=effective_alpha,
-            _prepared_feature_frame=prepared_feature_frame,
-            **discovery_kwargs,
-        )
-        for name in names
     }
     window_ids = sorted(
         {
@@ -2160,21 +2313,20 @@ def run_walk_forward_execution_discovery(
         and float(summary["total_return_pct"]) > 0.0
         and float(summary["max_drawdown_pct"]) >= -20.0
     )
-    candidate_names = sorted(str(name) for name in factors)
     factor_summary = _execution_factor_summary(
-        candidate_names,
+        sorted(str(name) for name in candidate_names),
         selected_windows,
         window_count=len(selected_windows),
     )
     first_policy = dict(
-        next(iter(reports.values())).get("selection_policy") or {}
+        reports[names[0]].get("selection_policy") or {}
     )
     first_policy.update(
         {
             "execution_selection": "calibration_only",
             "execution_candidates": names,
             "execution_family_correction": "bonferroni",
-            "effective_fdr_alpha": effective_alpha,
+            "effective_fdr_alpha": float(effective_fdr_alpha),
             "test_execution_refit": False,
         }
     )
@@ -2191,6 +2343,125 @@ def run_walk_forward_execution_discovery(
         "windows": selected_windows,
         "factor_summary": factor_summary,
     }
+
+
+def run_walk_forward_execution_discovery(
+    factors: Mapping[str, pd.DataFrame],
+    execution_labels: Mapping[str, pd.DataFrame],
+    *,
+    execution_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    target_col: str = "live_adjusted_return_pct",
+    fdr_alpha: float = 0.05,
+    _prepared_feature_frame: pd.DataFrame | None = None,
+    **discovery_kwargs: Any,
+) -> dict[str, Any]:
+    labels_by_execution = {
+        str(name): frame
+        for name, frame in execution_labels.items()
+        if isinstance(frame, pd.DataFrame)
+    }
+    if not labels_by_execution:
+        raise ValueError("execution_labels must not be empty")
+    metadata = {
+        str(name): dict(details)
+        for name, details in (execution_metadata or {}).items()
+        if isinstance(details, Mapping)
+    }
+    names = sorted(labels_by_execution)
+    effective_alpha = float(fdr_alpha) / len(names)
+    prepared_feature_frame = (
+        _prepared_feature_frame
+        if isinstance(_prepared_feature_frame, pd.DataFrame)
+        else _factor_long_frame(factors)
+    )
+    reports = {
+        name: run_walk_forward_discovery(
+            factors,
+            labels_by_execution[name],
+            target_col=target_col,
+            fdr_alpha=effective_alpha,
+            _prepared_feature_frame=prepared_feature_frame,
+            **discovery_kwargs,
+        )
+        for name in names
+    }
+    return _combine_execution_discovery_reports(
+        sorted(str(name) for name in factors),
+        reports,
+        execution_metadata=metadata,
+        target_col=target_col,
+        effective_fdr_alpha=effective_alpha,
+    )
+
+
+def _run_generated_execution_discovery(
+    factors: Mapping[str, pd.DataFrame],
+    prepared_feature_frame: pd.DataFrame,
+    panel: Mapping[str, pd.DataFrame],
+    *,
+    hold_days_candidates: Sequence[int],
+    stop_loss: float,
+    take_profit: float,
+    fdr_alpha: float,
+    discovery_kwargs: Mapping[str, Any],
+) -> tuple[dict[str, Any], str | None]:
+    from analytics import relay_factor_mining
+
+    holds = [int(value) for value in hold_days_candidates]
+    if not holds:
+        raise ValueError("hold_days_candidates must not be empty")
+    names = [f"hold_{value}" for value in holds]
+    effective_alpha = float(fdr_alpha) / len(names)
+    metadata = {
+        f"hold_{value}": {"hold_days": value}
+        for value in holds
+    }
+    reports = {}
+    maximum_exit: pd.Timestamp | None = None
+    for value, name in zip(holds, names):
+        generated = relay_factor_mining.build_label_frame(
+            dict(panel),
+            hold_days=value,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            compact_diagnostics=True,
+        )
+        execution_labels = _compact_execution_labels(generated)
+        del generated
+        if (
+            "exit_date" in execution_labels
+            and execution_labels["exit_date"].notna().any()
+        ):
+            current_exit = pd.Timestamp(
+                execution_labels["exit_date"].max()
+            ).normalize()
+            maximum_exit = (
+                current_exit
+                if maximum_exit is None
+                else max(maximum_exit, current_exit)
+            )
+        reports[name] = run_walk_forward_discovery(
+            factors,
+            execution_labels,
+            fdr_alpha=effective_alpha,
+            _prepared_feature_frame=prepared_feature_frame,
+            **dict(discovery_kwargs),
+        )
+        del execution_labels
+    return (
+        _combine_execution_discovery_reports(
+            sorted(str(name) for name in factors),
+            reports,
+            execution_metadata=metadata,
+            target_col="live_adjusted_return_pct",
+            effective_fdr_alpha=effective_alpha,
+        ),
+        (
+            maximum_exit.strftime("%Y-%m-%d")
+            if maximum_exit is not None
+            else None
+        ),
+    )
 
 
 def _auction_candidate_factors(
@@ -2237,7 +2508,7 @@ def _auction_candidate_factors(
             )
             .sort_index()
             .sort_index(axis=1)
-            .astype(float)
+            .astype(np.float32)
         )
     return factors
 
@@ -2426,11 +2697,8 @@ def run_short_factor_research(
     min_cross_section: int = 20,
     run_id: str | None = None,
 ) -> dict[str, Any]:
-    execution_labels: dict[str, pd.DataFrame]
-    execution_metadata: dict[str, dict[str, int]]
+    generated_execution_labels = labels is None
     if labels is None:
-        from analytics import relay_factor_mining
-
         candidate_values = (
             tuple(hold_days_candidates)
             if hold_days_candidates is not None
@@ -2448,35 +2716,11 @@ def run_short_factor_research(
         if not normalized_holds:
             raise ValueError("hold_days_candidates must not be empty")
         normalized_holds.sort()
-        execution_labels = {}
-        for value in normalized_holds:
-            generated = relay_factor_mining.build_label_frame(
-                dict(panel),
-                hold_days=value,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                compact_diagnostics=True,
-            )
-            execution_labels[f"hold_{value}"] = (
-                _compact_execution_labels(generated)
-            )
-            del generated
-        execution_metadata = {
-            f"hold_{value}": {"hold_days": value}
-            for value in normalized_holds
-        }
-        labels = execution_labels[
-            f"hold_{hold_days}"
-            if f"hold_{hold_days}" in execution_labels
-            else next(iter(execution_labels))
-        ]
+        execution_labels = None
     else:
         normalized_holds = [int(hold_days)]
         labels = _compact_execution_labels(labels)
         execution_labels = {f"hold_{hold_days}": labels}
-        execution_metadata = {
-            f"hold_{hold_days}": {"hold_days": int(hold_days)}
-        }
     resolved_purge = (
         int(purge_days)
         if purge_days is not None
@@ -2551,16 +2795,21 @@ def run_short_factor_research(
     close_base.update(
         build_structural_candidate_factors(close_base)
     )
-    close_candidates = build_expression_candidates(
+    (
+        close_candidate_names,
+        close_feature_frame,
+    ) = _build_expression_feature_frame(
         close_base,
         max_interactions=max_interactions,
+        consume_base=not auction_used,
     )
-    close_candidate_names = list(close_candidates)
-    auction_base = _auction_candidate_factors(
-        labels,
-        auction if auction_used else None,
+    auction_base = (
+        _auction_candidate_factors(labels, auction)
+        if not generated_execution_labels and auction_used
+        else {}
     )
-    if not auction_base:
+    close_base_retained = auction_used
+    if not close_base_retained:
         del close_base
     common_args = {
         "train_days": train_days,
@@ -2573,59 +2822,97 @@ def run_short_factor_research(
         "max_abs_correlation": max_abs_correlation,
         "min_cross_section": min_cross_section,
     }
-    if len(execution_labels) > 1:
-        close_feature_frame = _factor_long_frame(close_candidates)
-        close_factor_refs = {
-            name: pd.DataFrame()
-            for name in close_candidate_names
-        }
-        del close_candidates
-        close_report = run_walk_forward_execution_discovery(
+    close_factor_refs = {
+        name: pd.DataFrame()
+        for name in close_candidate_names
+    }
+    if generated_execution_labels:
+        generated_args = dict(common_args)
+        generated_args.pop("fdr_alpha")
+        (
+            close_report,
+            label_max_exit,
+        ) = _run_generated_execution_discovery(
             close_factor_refs,
-            execution_labels,
-            execution_metadata=execution_metadata,
+            close_feature_frame,
+            panel,
+            hold_days_candidates=normalized_holds,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            fdr_alpha=fdr_alpha,
+            discovery_kwargs=generated_args,
+        )
+    else:
+        close_report = run_walk_forward_discovery(
+            close_factor_refs,
+            labels,
             _prepared_feature_frame=close_feature_frame,
             **common_args,
         )
-        del close_feature_frame
-        del close_factor_refs
-    else:
-        close_report = run_walk_forward_discovery(
-            close_candidates,
-            labels,
-            **common_args,
+        label_max_exit = _maximum_label_exit(execution_labels)
+    del close_feature_frame
+    del close_factor_refs
+    if generated_execution_labels and auction_used:
+        from analytics import relay_factor_mining
+
+        anchor_hold = (
+            int(hold_days)
+            if int(hold_days) in normalized_holds
+            else normalized_holds[0]
         )
+        generated = relay_factor_mining.build_label_frame(
+            dict(panel),
+            hold_days=anchor_hold,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            compact_diagnostics=True,
+        )
+        auction_labels = _compact_execution_labels(generated)
+        del generated
+        auction_base = _auction_candidate_factors(
+            auction_labels,
+            auction,
+        )
+        del auction_labels
     if auction_base:
-        auction_candidates = build_expression_candidates(
+        (
+            auction_candidate_names,
+            auction_feature_frame,
+        ) = _build_expression_feature_frame(
             {**close_base, **auction_base},
             max_interactions=max_interactions,
         )
-        auction_candidate_names = list(auction_candidates)
-        if len(execution_labels) > 1:
-            auction_feature_frame = _factor_long_frame(
-                auction_candidates
+        del close_base
+        del auction_base
+        auction_factor_refs = {
+            name: pd.DataFrame()
+            for name in auction_candidate_names
+        }
+        if generated_execution_labels:
+            auction_report, _auction_label_max_exit = (
+                _run_generated_execution_discovery(
+                    auction_factor_refs,
+                    auction_feature_frame,
+                    panel,
+                    hold_days_candidates=normalized_holds,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    fdr_alpha=fdr_alpha,
+                    discovery_kwargs=generated_args,
+                )
             )
-            auction_factor_refs = {
-                name: pd.DataFrame()
-                for name in auction_candidate_names
-            }
-            del auction_candidates
-            auction_report = run_walk_forward_execution_discovery(
+        else:
+            auction_report = run_walk_forward_discovery(
                 auction_factor_refs,
-                execution_labels,
-                execution_metadata=execution_metadata,
+                labels,
                 _prepared_feature_frame=auction_feature_frame,
                 **common_args,
             )
-            del auction_feature_frame
-            del auction_factor_refs
-        else:
-            auction_report = run_walk_forward_discovery(
-                auction_candidates,
-                labels,
-                **common_args,
-            )
+        del auction_feature_frame
+        del auction_factor_refs
     else:
+        if close_base_retained:
+            del close_base
         auction_candidate_names = []
         auction_report = {
             "status": "unavailable",
@@ -2725,7 +3012,6 @@ def run_short_factor_research(
         quality_issues.append(
             "auction_coverage_below_80pct"
         )
-    label_max_exit = _maximum_label_exit(execution_labels)
     auction_available_through = None
     if auction is not None and not auction.empty and "date" in auction:
         auction_dates = pd.to_datetime(

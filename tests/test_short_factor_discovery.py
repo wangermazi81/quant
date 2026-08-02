@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import warnings
+import weakref
 
 import numpy as np
 import pandas as pd
@@ -466,6 +467,163 @@ def test_expression_candidates_are_deterministic_and_target_free():
     )
 
 
+def test_expression_feature_frame_matches_materialized_candidates():
+    base = discovery.build_daily_candidate_factors(_panel())
+    base.update(discovery.build_structural_candidate_factors(base))
+    materialized = discovery.build_expression_candidates(
+        base,
+        max_interactions=12,
+    )
+
+    names, streamed = discovery._build_expression_feature_frame(
+        base,
+        max_interactions=12,
+    )
+    expected = discovery._factor_long_frame(materialized)
+
+    assert names == list(materialized)
+    pd.testing.assert_frame_equal(
+        streamed,
+        expected,
+        check_exact=True,
+    )
+
+
+def test_expression_feature_plan_normalizes_mixed_date_index_types():
+    dates = pd.bdate_range("2026-07-01", periods=4)
+    base = {
+        "left": pd.DataFrame(
+            [[1.0], [2.0], [3.0], [4.0]],
+            index=dates.strftime("%Y-%m-%d"),
+            columns=["000001"],
+        ),
+        "right": pd.DataFrame(
+            [[4.0], [3.0], [2.0], [1.0]],
+            index=dates,
+            columns=["000001"],
+        ),
+    }
+    materialized = discovery.build_expression_candidates(
+        base,
+        max_interactions=1,
+    )
+
+    names, streamed = discovery._build_expression_feature_frame(
+        base,
+        max_interactions=1,
+    )
+
+    assert "left__x__right" in names
+    pd.testing.assert_frame_equal(
+        streamed,
+        discovery._factor_long_frame(materialized),
+        check_exact=True,
+    )
+
+
+def test_expression_feature_frame_can_release_consumed_base_matrices():
+    base = discovery.build_daily_candidate_factors(_panel())
+    base.update(discovery.build_structural_candidate_factors(base))
+    materialized = discovery.build_expression_candidates(
+        base,
+        max_interactions=8,
+    )
+    consumable = dict(base)
+
+    names, streamed = discovery._build_expression_feature_frame(
+        consumable,
+        max_interactions=8,
+        consume_base=True,
+    )
+
+    assert consumable == {}
+    assert names == list(materialized)
+    pd.testing.assert_frame_equal(
+        streamed,
+        discovery._factor_long_frame(materialized),
+        check_exact=True,
+    )
+
+
+def test_factor_builders_preserve_precision_until_materialization():
+    panel = _panel()
+    close = discovery.build_daily_candidate_factors(panel)
+    rows = []
+    for index, trade_date in enumerate(panel["close"].index):
+        for code in panel["close"].columns:
+            rows.append(
+                {
+                    "code": code,
+                    "date": trade_date,
+                    "turnover_rate": 1.0 + index / 10,
+                    "turnover_rate_f": 1.2 + index / 10,
+                    "volume_ratio": 0.8 + index / 100,
+                    "float_share": 1000.0,
+                    "total_share": 1500.0,
+                    "circ_mv": 1800.0 + index,
+                }
+            )
+    close.update(
+        discovery.build_daily_basic_candidate_factors(
+            pd.DataFrame(rows)
+        )
+    )
+    structural = discovery.build_structural_candidate_factors(close)
+    materialized = discovery.build_expression_candidates(
+        {**close, **structural},
+        max_interactions=2,
+    )
+
+    assert close
+    assert structural
+    assert all(
+        set(frame.dtypes) == {np.dtype("float64")}
+        for frame in close.values()
+        if not frame.empty
+    )
+    assert all(
+        set(frame.dtypes) == {np.dtype("float32")}
+        for frame in structural.values()
+        if not frame.empty
+    )
+    assert all(
+        set(frame.dtypes) == {np.dtype("float32")}
+        for frame in materialized.values()
+        if not frame.empty
+    )
+
+
+def test_structural_rank_uses_float64_values_before_storage():
+    dates = pd.DatetimeIndex(["2026-07-31"])
+    columns = ["000001", "000002", "000003"]
+    close_values = pd.DataFrame(
+        [[1.0, 1.0 + 1e-8, 1.0 + 2e-8]],
+        index=dates,
+        columns=columns,
+    )
+    pressure_values = pd.DataFrame(
+        [[2.0, 2.0 + 2e-8, 2.0 + 4e-8]],
+        index=dates,
+        columns=columns,
+    )
+
+    factors = discovery.build_structural_candidate_factors(
+        {
+            "turnover_acceleration_1_5": close_values,
+            "limit_close_strength_1": pressure_values,
+        }
+    )
+
+    result = factors["turnover_limit_pressure"]
+    np.testing.assert_allclose(
+        result.iloc[0].to_numpy(dtype=float),
+        np.array([1.0 / 9.0, 4.0 / 9.0, 1.0]),
+        rtol=1e-7,
+        atol=1e-7,
+    )
+    assert set(result.dtypes) == {np.dtype("float32")}
+
+
 def test_factor_long_frame_uses_float32_storage():
     factors, _labels = _discovery_sample(periods=30)
 
@@ -721,6 +879,77 @@ def test_execution_discovery_builds_factor_long_frame_once(
     assert calls == 1
 
 
+def test_generated_execution_discovery_releases_each_label_before_next(
+    monkeypatch,
+):
+    factors, labels = _discovery_sample(periods=10)
+    feature_frame = discovery._factor_long_frame(factors)
+    observed: list[weakref.ReferenceType[pd.DataFrame]] = []
+    built_holds = []
+
+    def fake_build_label_frame(
+        _panel,
+        *,
+        hold_days,
+        **_kwargs,
+    ):
+        assert all(reference() is None for reference in observed)
+        built_holds.append(hold_days)
+        return labels.assign(
+            entry_date=labels["trade_date"] + pd.offsets.BDay(1),
+            exit_date=(
+                labels["trade_date"]
+                + pd.offsets.BDay(int(hold_days) + 1)
+            ),
+            research_evaluable=True,
+            execution_blocked=False,
+        )
+
+    def fake_discovery(_factors, execution_labels, **_kwargs):
+        observed.append(weakref.ref(execution_labels))
+        return {
+            "selection_policy": {},
+            "windows": [],
+            "factor_summary": {},
+            "summary": discovery._summary_from_windows([]),
+        }
+
+    from analytics import relay_factor_mining
+
+    monkeypatch.setattr(
+        relay_factor_mining,
+        "build_label_frame",
+        fake_build_label_frame,
+    )
+    monkeypatch.setattr(
+        discovery,
+        "run_walk_forward_discovery",
+        fake_discovery,
+    )
+
+    report, label_max_exit = (
+        discovery._run_generated_execution_discovery(
+            factors,
+            feature_frame,
+            {},
+            hold_days_candidates=(1, 2, 3),
+            stop_loss=-0.035,
+            take_profit=0.07,
+            fdr_alpha=0.05,
+            discovery_kwargs={},
+        )
+    )
+
+    assert built_holds == [1, 2, 3]
+    assert all(reference() is None for reference in observed)
+    assert report["selection_policy"]["execution_candidates"] == [
+        "hold_1",
+        "hold_2",
+        "hold_3",
+    ]
+    assert label_max_exit is not None
+
+
 def test_execution_factor_requires_half_of_all_scheduled_windows(
     monkeypatch,
 ):
@@ -948,6 +1177,96 @@ def test_run_short_factor_research_writes_auditable_report(tmp_path):
     )
     assert report["data_quality"]["st_status_coverage"] == 1.0
     assert "factor_catalog" in report
+
+
+def test_generated_research_streams_close_and_auction_executions(
+    monkeypatch,
+):
+    panel = _panel(periods=40, codes=24)
+    _factors, labels = _discovery_sample(periods=40, codes=24)
+    labels = labels.assign(
+        entry_date=labels["trade_date"] + pd.offsets.BDay(1),
+        exit_date=labels["trade_date"] + pd.offsets.BDay(3),
+        research_evaluable=True,
+        execution_blocked=False,
+    )
+    build_calls = []
+    discovery_calls = []
+
+    def fake_build_label_frame(
+        _panel,
+        *,
+        hold_days,
+        **_kwargs,
+    ):
+        build_calls.append(int(hold_days))
+        return labels.assign(
+            exit_date=(
+                labels["trade_date"]
+                + pd.offsets.BDay(int(hold_days) + 1)
+            )
+        )
+
+    def fake_discovery(candidate_factors, _labels, **kwargs):
+        discovery_calls.append(
+            (
+                len(candidate_factors),
+                float(kwargs["fdr_alpha"]),
+            )
+        )
+        return {
+            "selection_policy": {},
+            "windows": [],
+            "factor_summary": {},
+            "summary": discovery._summary_from_windows([]),
+        }
+
+    from analytics import relay_factor_mining
+
+    monkeypatch.setattr(
+        relay_factor_mining,
+        "build_label_frame",
+        fake_build_label_frame,
+    )
+    monkeypatch.setattr(
+        discovery,
+        "run_walk_forward_discovery",
+        fake_discovery,
+    )
+    auction = labels[
+        ["ts_code", "entry_date"]
+    ].drop_duplicates().rename(
+        columns={"ts_code": "code", "entry_date": "date"}
+    )
+    auction["auction_price"] = 10.1
+    auction["pre_close"] = 10.0
+    auction["auction_amount"] = 1_000_000.0
+    auction["auction_turnover_rate"] = 0.5
+    auction["auction_volume_ratio"] = 1.2
+
+    report = discovery.run_short_factor_research(
+        panel,
+        auction=auction,
+        expected_codes=list(panel["close"].columns),
+        hold_days_candidates=(1, 2, 3),
+        max_interactions=0,
+    )
+
+    assert build_calls == [1, 2, 3, 2, 1, 2, 3]
+    assert len(discovery_calls) == 6
+    assert all(
+        alpha == pytest.approx(0.05 / 3)
+        for _factor_count, alpha in discovery_calls
+    )
+    expected_executions = ["hold_1", "hold_2", "hold_3"]
+    assert report["close_discovery"]["selection_policy"][
+        "execution_candidates"
+    ] == expected_executions
+    assert report["auction_confirmation_discovery"][
+        "selection_policy"
+    ]["execution_candidates"] == expected_executions
+    assert report["as_of"]["label_max_exit"] is not None
+    assert "auction_gap" in report["factor_catalog"]
 
 
 def test_partial_auxiliary_coverage_is_excluded_from_candidates():
