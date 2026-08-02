@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ctypes
+import gc
 import hashlib
 import json
 import math
+import os
 from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -57,6 +60,48 @@ BASE_FACTOR_FORMULAS: dict[str, str] = {
         "limit_proximity_1 * (close_location_1 + 1) / 2 "
         "* amount_shock_1_20"
     ),
+    "close_flow_3": (
+        "sum(close_location_1 * amount, 3) / sum(amount, 3)"
+    ),
+    "close_flow_acceleration_3_10": (
+        "close_flow_3 - sum(close_location_1 * amount, 10) "
+        "/ sum(amount, 10)"
+    ),
+    "signed_amount_flow_5": (
+        "sum(sign(return_1) * amount, 5) / sum(amount, 5)"
+    ),
+    "amount_impulse_decay_1_5": (
+        "amount_shock_1_20 - mean(lag(amount_shock_1_20, 1), 5)"
+    ),
+    "range_regime_shift_3_20": (
+        "mean(range_pct_1, 3) / mean(range_pct_1, 20)"
+    ),
+    "overnight_intraday_divergence_3": (
+        "mean(intraday_absorption_1 - gap_open_1, 3)"
+    ),
+    "return_autocorrelation_10": "corr(return_1, lag(return_1, 1), 10)",
+    "realized_skew_10": "skew(return_1, 10)",
+    "idiosyncratic_momentum_5_20": (
+        "return_5 - beta_20(return_1, market_return_1) "
+        "* compound(market_return_1, 5)"
+    ),
+    "downside_resilience_10": (
+        "mean(return_1 - market_return_1, 10) "
+        "where market_return_1 < 0"
+    ),
+    "volume_price_elasticity_10": (
+        "cov(return_1, delta(log(volume)), 10) "
+        "/ var(delta(log(volume)), 10)"
+    ),
+    "illiquidity_regime_5_20": (
+        "mean(abs(return_1) / amount, 5) "
+        "/ mean(abs(return_1) / amount, 20)"
+    ),
+    "volume_concentration_5": "max(volume, 5) / sum(volume, 5)",
+    "limit_pressure_persistence_3": (
+        "mean(max(limit_proximity_1, 0) "
+        "* (close_location_1 + 1) / 2, 3)"
+    ),
 }
 
 AUCTION_FACTOR_FORMULAS: dict[str, str] = {
@@ -101,6 +146,39 @@ STRUCTURAL_FACTOR_FORMULAS: dict[str, str] = {
         "rank(-volatility_compression_5_20) "
         "* rank(limit_proximity_1) * rank(amount_shock_1_20)"
     ),
+    "flow_breakout_confirmation": (
+        "rank(distance_high_20) * rank(close_flow_3) "
+        "* rank(amount_shock_1_20)"
+    ),
+    "idiosyncratic_flow_momentum": (
+        "rank(idiosyncratic_momentum_5_20) "
+        "* rank(signed_amount_flow_5) * rank(close_flow_3)"
+    ),
+    "compressed_attention_release": (
+        "rank(-range_regime_shift_3_20) "
+        "* rank(amount_impulse_decay_1_5) * rank(close_flow_3)"
+    ),
+    "downside_resilience_accumulation": (
+        "rank(downside_resilience_10) * rank(close_flow_3) "
+        "* rank(-volume_concentration_5)"
+    ),
+    "persistent_limit_absorption": (
+        "rank(limit_pressure_persistence_3) "
+        "* rank(turnover_acceleration_1_5) * rank(-upper_shadow_1)"
+    ),
+    "liquidity_regime_breakout": (
+        "rank(-illiquidity_regime_5_20) * rank(distance_high_20) "
+        "* rank(amount_impulse_decay_1_5)"
+    ),
+    "intraday_leadership_shift": (
+        "rank(overnight_intraday_divergence_3) "
+        "* rank(idiosyncratic_momentum_5_20) * rank(close_flow_3)"
+    ),
+    "serial_flow_continuation": (
+        "rank(return_autocorrelation_10) "
+        "* rank(signed_amount_flow_5) "
+        "* rank(close_flow_acceleration_3_10)"
+    ),
 }
 _STRUCTURAL_FACTOR_INPUTS: dict[
     str,
@@ -134,8 +212,90 @@ _STRUCTURAL_FACTOR_INPUTS: dict[
         ("limit_proximity_1", 1.0),
         ("amount_shock_1_20", 1.0),
     ),
+    "flow_breakout_confirmation": (
+        ("distance_high_20", 1.0),
+        ("close_flow_3", 1.0),
+        ("amount_shock_1_20", 1.0),
+    ),
+    "idiosyncratic_flow_momentum": (
+        ("idiosyncratic_momentum_5_20", 1.0),
+        ("signed_amount_flow_5", 1.0),
+        ("close_flow_3", 1.0),
+    ),
+    "compressed_attention_release": (
+        ("range_regime_shift_3_20", -1.0),
+        ("amount_impulse_decay_1_5", 1.0),
+        ("close_flow_3", 1.0),
+    ),
+    "downside_resilience_accumulation": (
+        ("downside_resilience_10", 1.0),
+        ("close_flow_3", 1.0),
+        ("volume_concentration_5", -1.0),
+    ),
+    "persistent_limit_absorption": (
+        ("limit_pressure_persistence_3", 1.0),
+        ("turnover_acceleration_1_5", 1.0),
+        ("upper_shadow_1", -1.0),
+    ),
+    "liquidity_regime_breakout": (
+        ("illiquidity_regime_5_20", -1.0),
+        ("distance_high_20", 1.0),
+        ("amount_impulse_decay_1_5", 1.0),
+    ),
+    "intraday_leadership_shift": (
+        ("overnight_intraday_divergence_3", 1.0),
+        ("idiosyncratic_momentum_5_20", 1.0),
+        ("close_flow_3", 1.0),
+    ),
+    "serial_flow_continuation": (
+        ("return_autocorrelation_10", 1.0),
+        ("signed_amount_flow_5", 1.0),
+        ("close_flow_acceleration_3_10", 1.0),
+    ),
 }
+CURATED_INTERACTION_PAIRS = (
+    ("auction_gap", "close_flow_3"),
+    ("auction_gap", "limit_pressure_persistence_3"),
+    ("auction_gap", "idiosyncratic_momentum_5_20"),
+    ("auction_turnover_rate", "amount_shock_1_20"),
+    ("auction_turnover_rate", "limit_proximity_1"),
+    ("auction_volume_ratio", "signed_amount_flow_5"),
+    ("auction_volume_ratio", "distance_high_20"),
+    ("auction_amount", "turnover_acceleration_1_5"),
+    ("return_1", "amount_shock_1_20"),
+    ("return_3", "volume_dryup_5_20"),
+    ("return_5", "close_flow_3"),
+    ("return_20", "idiosyncratic_momentum_5_20"),
+    ("gap_open_1", "intraday_absorption_1"),
+    ("close_location_1", "amount_shock_1_20"),
+    ("close_flow_3", "amount_impulse_decay_1_5"),
+    ("close_flow_acceleration_3_10", "range_regime_shift_3_20"),
+    ("signed_amount_flow_5", "idiosyncratic_momentum_5_20"),
+    ("downside_resilience_10", "amount_shock_1_20"),
+    ("distance_high_20", "range_regime_shift_3_20"),
+    ("distance_high_20", "volume_concentration_5"),
+    ("limit_proximity_1", "turnover_acceleration_1_5"),
+    ("limit_pressure_persistence_3", "turnover_acceleration_1_5"),
+    ("upper_shadow_1", "amount_shock_1_20"),
+    ("lower_shadow_1", "amount_shock_1_20"),
+    ("return_autocorrelation_10", "signed_amount_flow_5"),
+    ("realized_skew_10", "amount_shock_1_20"),
+    ("volume_price_elasticity_10", "return_5"),
+    ("illiquidity_regime_5_20", "amount_impulse_decay_1_5"),
+    ("trend_efficiency_5", "close_flow_3"),
+    ("volatility_compression_5_20", "amount_impulse_decay_1_5"),
+    ("overnight_intraday_divergence_3", "close_flow_3"),
+    ("panic_recovery_1", "turnover_acceleration_1_5"),
+    ("quiet_breakout_20", "close_flow_3"),
+    ("liquidity_reversal_3_20", "close_flow_3"),
+    ("price_volume_divergence_5_20", "signed_amount_flow_5"),
+    ("turnover_free_spread_1", "idiosyncratic_momentum_5_20"),
+    ("volume_ratio_basic_1", "close_flow_3"),
+    ("float_share_ratio_1", "turnover_rate_1"),
+)
 AUXILIARY_MIN_CODE_COVERAGE = 0.80
+AUCTION_MIN_ALIGNMENT_COVERAGE = 0.80
+LABEL_CODE_CHUNK_SIZE = 160
 MARKET_REGIME_FEATURES = (
     "market_return_1",
     "market_return_5",
@@ -147,6 +307,14 @@ MARKET_REGIME_FEATURES = (
     "market_range",
     "market_amount_shock",
     "market_volatility_compression",
+)
+MARKET_REGIME_SOURCE_COLUMNS = (
+    "return_1",
+    "return_5",
+    "return_20",
+    "range_pct_1",
+    "amount_shock_1_20",
+    "volatility_compression_5_20",
 )
 
 
@@ -278,10 +446,11 @@ def build_daily_candidate_factors(
         amount.rolling(20, min_periods=10).median(),
     )
     amount_in_hundred_million = amount / 100_000_000.0
-    amihud = _safe_div(
+    daily_amihud = _safe_div(
         ret_1.abs(),
         amount_in_hundred_million,
-    ).rolling(5, min_periods=5).mean()
+    )
+    amihud = daily_amihud.rolling(5, min_periods=5).mean()
     breakout_quality = (
         _safe_div(
             close,
@@ -313,6 +482,93 @@ def build_daily_candidate_factors(
         volatility_compression,
     )
     return_to_risk = _safe_div(ret_5, volatility_20)
+    close_amount_pressure = close_location * amount
+    close_flow_3 = _safe_div(
+        close_amount_pressure.rolling(3, min_periods=3).sum(),
+        amount.rolling(3, min_periods=3).sum(),
+    )
+    close_flow_10 = _safe_div(
+        close_amount_pressure.rolling(10, min_periods=7).sum(),
+        amount.rolling(10, min_periods=7).sum(),
+    )
+    close_flow_acceleration = close_flow_3 - close_flow_10
+    signed_amount_flow = _safe_div(
+        (
+            np.sign(ret_1) * amount
+        ).rolling(5, min_periods=5).sum(),
+        amount.rolling(5, min_periods=5).sum(),
+    )
+    amount_impulse_decay = (
+        amount_shock
+        - amount_shock.shift(1).rolling(5, min_periods=3).mean()
+    )
+    range_regime_shift = _safe_div(
+        range_pct.rolling(3, min_periods=3).mean(),
+        range_pct.rolling(20, min_periods=10).mean(),
+    )
+    overnight_intraday_divergence = (
+        intraday - gap_open
+    ).rolling(3, min_periods=3).mean()
+    return_autocorrelation = ret_1.rolling(
+        10,
+        min_periods=8,
+    ).corr(ret_1.shift(1))
+    realized_skew = ret_1.rolling(
+        10,
+        min_periods=8,
+    ).skew()
+    market_return_1 = ret_1.median(axis=1, skipna=True)
+    market_variance_20 = market_return_1.rolling(
+        20,
+        min_periods=10,
+    ).var(ddof=1)
+    market_beta_20 = (
+        ret_1.rolling(20, min_periods=10)
+        .cov(market_return_1)
+        .div(market_variance_20, axis=0)
+    )
+    market_return_5 = (
+        (1.0 + market_return_1)
+        .rolling(5, min_periods=5)
+        .apply(np.prod, raw=True)
+        - 1.0
+    )
+    idiosyncratic_momentum = (
+        ret_5 - market_beta_20.mul(market_return_5, axis=0)
+    )
+    market_excess_return = ret_1.sub(market_return_1, axis=0)
+    downside_mask = pd.DataFrame(
+        np.repeat(
+            market_return_1.lt(0.0).to_numpy()[:, None],
+            len(columns),
+            axis=1,
+        ),
+        index=index,
+        columns=columns,
+    )
+    downside_resilience = (
+        market_excess_return.where(downside_mask)
+        .rolling(10, min_periods=3)
+        .mean()
+    )
+    log_volume_change = np.log(
+        volume.where(volume > 0.0)
+    ).diff()
+    volume_price_elasticity = _safe_div(
+        ret_1.rolling(10, min_periods=8).cov(log_volume_change),
+        log_volume_change.rolling(
+            10,
+            min_periods=8,
+        ).var(ddof=1),
+    )
+    illiquidity_regime = _safe_div(
+        daily_amihud.rolling(5, min_periods=5).mean(),
+        daily_amihud.rolling(20, min_periods=10).mean(),
+    )
+    volume_concentration = _safe_div(
+        volume.rolling(5, min_periods=5).max(),
+        volume.rolling(5, min_periods=5).sum(),
+    )
     limit_rates = pd.Series(
         {
             code: (
@@ -346,6 +602,10 @@ def build_daily_candidate_factors(
         * ((close_location + 1.0) / 2.0)
         * amount_shock
     )
+    limit_pressure_persistence = (
+        limit_proximity.clip(lower=0.0)
+        * ((close_location + 1.0) / 2.0)
+    ).rolling(3, min_periods=2).mean()
 
     factors = {
         "return_1": ret_1,
@@ -380,6 +640,22 @@ def build_daily_candidate_factors(
         "return_to_risk_5_20": return_to_risk,
         "limit_proximity_1": limit_proximity,
         "limit_close_strength_1": limit_close_strength,
+        "close_flow_3": close_flow_3,
+        "close_flow_acceleration_3_10": close_flow_acceleration,
+        "signed_amount_flow_5": signed_amount_flow,
+        "amount_impulse_decay_1_5": amount_impulse_decay,
+        "range_regime_shift_3_20": range_regime_shift,
+        "overnight_intraday_divergence_3": (
+            overnight_intraday_divergence
+        ),
+        "return_autocorrelation_10": return_autocorrelation,
+        "realized_skew_10": realized_skew,
+        "idiosyncratic_momentum_5_20": idiosyncratic_momentum,
+        "downside_resilience_10": downside_resilience,
+        "volume_price_elasticity_10": volume_price_elasticity,
+        "illiquidity_regime_5_20": illiquidity_regime,
+        "volume_concentration_5": volume_concentration,
+        "limit_pressure_persistence_3": limit_pressure_persistence,
     }
     eligibility = panel.get("universe_eligible")
     if isinstance(eligibility, pd.DataFrame):
@@ -421,59 +697,102 @@ def align_auction_confirmation(
         .str.zfill(6)
     )
     data["date"] = pd.to_datetime(data["date"], errors="coerce").dt.normalize()
-    data = data.dropna(subset=["date"]).sort_values(["code", "date"])
-    by_code = {
-        str(code): group.reset_index(drop=True)
-        for code, group in data.groupby("code", sort=False)
-    }
-
-    for index, row in result.iterrows():
-        code = str(row.get("ts_code") or row.get("code") or "").zfill(6)
-        candidates = by_code.get(code)
-        if candidates is None or candidates.empty:
-            continue
-        signal_date = pd.to_datetime(
-            row.get("trade_date") or row.get("signal_date"),
-            errors="coerce",
+    data = (
+        data.dropna(subset=["date"])
+        .sort_values(["code", "date"], kind="stable")
+        .drop_duplicates(["code", "date"], keep="first")
+        .reset_index(drop=True)
+    )
+    if not data.empty:
+        code_source = (
+            result["ts_code"]
+            if "ts_code" in result
+            else result.get(
+                "code",
+                pd.Series("", index=result.index),
+            )
         )
-        entry_date = pd.to_datetime(row.get("entry_date"), errors="coerce")
-        if pd.notna(entry_date):
-            matched = candidates[candidates["date"].eq(entry_date.normalize())]
-        elif pd.notna(signal_date):
-            matched = candidates[
-                candidates["date"].gt(signal_date.normalize())
-            ].head(1)
-        else:
-            matched = candidates.iloc[0:0]
-        if matched.empty:
-            continue
-        auction_row = matched.iloc[0]
-        auction_price = pd.to_numeric(
-            pd.Series([auction_row.get("auction_price")]),
+        feature_codes = (
+            code_source.astype(str)
+            .str.replace(r"\.0$", "", regex=True)
+            .str.zfill(6)
+        )
+        entry_dates = pd.to_datetime(
+            (
+                result["entry_date"]
+                if "entry_date" in result
+                else pd.Series(pd.NaT, index=result.index)
+            ),
             errors="coerce",
-        ).iloc[0]
-        previous_close = pd.to_numeric(
-            pd.Series([auction_row.get("pre_close")]),
-            errors="coerce",
-        ).iloc[0]
-        result.at[index, "auction_trade_date"] = auction_row[
-            "date"
-        ].strftime("%Y-%m-%d")
-        if (
-            pd.notna(auction_price)
-            and pd.notna(previous_close)
-            and float(previous_close) > 0
-        ):
-            result.at[index, "auction_gap"] = round(
-                float(auction_price) / float(previous_close) - 1.0,
+        ).dt.normalize()
+        matched_rows = np.full(len(result), -1, dtype=np.int64)
+
+        exact_mask = entry_dates.notna()
+        if bool(exact_mask.any()):
+            lookup = pd.Series(
+                data.index.to_numpy(dtype=np.int64),
+                index=pd.MultiIndex.from_frame(
+                    data[["code", "date"]]
+                ),
+            )
+            exact_keys = pd.MultiIndex.from_arrays(
+                [
+                    feature_codes.loc[exact_mask].to_numpy(),
+                    entry_dates.loc[exact_mask].to_numpy(),
+                ],
+                names=["code", "date"],
+            )
+            exact_matches = lookup.reindex(exact_keys).to_numpy()
+            exact_positions = np.flatnonzero(
+                exact_mask.to_numpy()
+            )
+            found = pd.notna(exact_matches)
+            matched_rows[exact_positions[found]] = (
+                exact_matches[found].astype(np.int64)
+            )
+
+        matched_mask = matched_rows >= 0
+        if bool(matched_mask.any()):
+            matched = data.iloc[matched_rows[matched_mask]]
+            result.loc[
+                matched_mask,
+                "auction_trade_date",
+            ] = matched["date"].dt.strftime("%Y-%m-%d").to_numpy()
+
+            def numeric_values(column: str) -> np.ndarray:
+                if column not in matched:
+                    return np.full(len(matched), np.nan, dtype=float)
+                return pd.to_numeric(
+                    matched[column],
+                    errors="coerce",
+                ).to_numpy(dtype=float)
+
+            auction_price = numeric_values("auction_price")
+            previous_close = numeric_values("pre_close")
+            gap = np.full(len(matched), np.nan, dtype=float)
+            valid_gap = (
+                np.isfinite(auction_price)
+                & np.isfinite(previous_close)
+                & (previous_close > 0)
+            )
+            gap[valid_gap] = np.round(
+                auction_price[valid_gap]
+                / previous_close[valid_gap]
+                - 1.0,
                 10,
             )
-        for source, target in (
-            ("auction_amount", "auction_amount"),
-            ("auction_turnover_rate", "auction_turnover_rate"),
-            ("auction_volume_ratio", "auction_volume_ratio"),
-        ):
-            result.at[index, target] = auction_row.get(source)
+            result.loc[matched_mask, "auction_gap"] = gap
+            for source, target in (
+                ("auction_amount", "auction_amount"),
+                ("auction_turnover_rate", "auction_turnover_rate"),
+                ("auction_volume_ratio", "auction_volume_ratio"),
+            ):
+                values = (
+                    matched[source].to_numpy()
+                    if source in matched
+                    else np.full(len(matched), np.nan)
+                )
+                result.loc[matched_mask, target] = values
     for column in output_columns[1:]:
         result[column] = pd.to_numeric(result[column], errors="coerce")
     return result
@@ -512,17 +831,23 @@ def purged_walk_forward_windows(
     test_days: int,
     step_days: int,
     purge_days: int,
+    min_partial_test_days: int = 0,
 ) -> list[WalkForwardWindow]:
     for name, value in (
         ("train_days", train_days),
         ("test_days", test_days),
         ("step_days", step_days),
         ("purge_days", purge_days),
+        ("min_partial_test_days", min_partial_test_days),
     ):
         if isinstance(value, bool) or int(value) != value or value < 0:
             raise ValueError(f"{name} must be a non-negative integer")
     if train_days < 1 or test_days < 1 or step_days < 1:
         raise ValueError("train, test and step days must be positive")
+    if int(min_partial_test_days) > int(test_days):
+        raise ValueError(
+            "min_partial_test_days must not exceed test_days"
+        )
     normalized = tuple(
         sorted(
             {
@@ -535,23 +860,37 @@ def purged_walk_forward_windows(
     windows = []
     test_start = int(train_days) + int(purge_days)
     window_id = 1
-    while test_start + int(test_days) <= len(normalized):
+    while test_start < len(normalized):
+        remaining_test_days = len(normalized) - test_start
+        full_window = remaining_test_days >= int(test_days)
+        if (
+            not full_window
+            and (
+                int(min_partial_test_days) < 1
+                or remaining_test_days < int(min_partial_test_days)
+            )
+        ):
+            break
         train_end = test_start - int(purge_days)
         train_start = train_end - int(train_days)
         if train_start < 0:
             test_start += int(step_days)
             continue
+        test_end = min(
+            test_start + int(test_days),
+            len(normalized),
+        )
         windows.append(
             WalkForwardWindow(
                 window_id=window_id,
                 train_dates=normalized[train_start:train_end],
                 purged_dates=normalized[train_end:test_start],
-                test_dates=normalized[
-                    test_start:test_start + int(test_days)
-                ],
+                test_dates=normalized[test_start:test_end],
             )
         )
         window_id += 1
+        if not full_window:
+            break
         test_start += int(step_days)
     return windows
 
@@ -607,21 +946,15 @@ def build_expression_candidates(
     *,
     max_interactions: int = 30,
 ) -> dict[str, pd.DataFrame]:
-    if isinstance(max_interactions, bool) or int(max_interactions) < 0:
-        raise ValueError("max_interactions must be non-negative")
-    names = sorted(
-        str(name)
-        for name, frame in base_factors.items()
-        if isinstance(frame, pd.DataFrame)
+    names, interactions = _expression_candidate_plan(
+        base_factors,
+        max_interactions=max_interactions,
     )
     result = {
         name: _factor_storage_frame(base_factors[name])
         for name in names
     }
-    interaction_count = 0
-    for left_name, right_name in combinations(names, 2):
-        if interaction_count >= int(max_interactions):
-            break
+    for interaction_name, left_name, right_name in interactions:
         left = result[left_name]
         right = result[right_name]
         index = left.index.intersection(right.index)
@@ -638,10 +971,9 @@ def build_expression_candidates(
             pct=True,
             method="average",
         )
-        result[f"{left_name}__x__{right_name}"] = (
+        result[interaction_name] = (
             (left_rank - 0.5) * (right_rank - 0.5)
         ).astype(np.float32, copy=False)
-        interaction_count += 1
     return result
 
 
@@ -657,17 +989,29 @@ def _expression_candidate_plan(
         for name, frame in base_factors.items()
         if isinstance(frame, pd.DataFrame)
     )
-    interactions = []
-    for left_name, right_name in combinations(names, 2):
+    available = set(names)
+    interactions: list[tuple[str, str, str]] = []
+    used_pairs: set[frozenset[str]] = set()
+
+    def append_interaction(left_name: str, right_name: str) -> None:
         if len(interactions) >= int(max_interactions):
-            break
+            return
+        if (
+            left_name not in available
+            or right_name not in available
+            or left_name == right_name
+        ):
+            return
+        pair_key = frozenset((left_name, right_name))
+        if pair_key in used_pairs:
+            return
         left = base_factors[left_name]
         right = base_factors[right_name]
         left_index = pd.DatetimeIndex(
-            pd.to_datetime(left.index)
+            pd.to_datetime(left.index, errors="coerce")
         ).normalize()
         right_index = pd.DatetimeIndex(
-            pd.to_datetime(right.index)
+            pd.to_datetime(right.index, errors="coerce")
         ).normalize()
         if (
             left_index.intersection(right_index).empty
@@ -677,7 +1021,7 @@ def _expression_candidate_plan(
             )
             .empty
         ):
-            continue
+            return
         interactions.append(
             (
                 f"{left_name}__x__{right_name}",
@@ -685,6 +1029,14 @@ def _expression_candidate_plan(
                 right_name,
             )
         )
+        used_pairs.add(pair_key)
+
+    for left_name, right_name in CURATED_INTERACTION_PAIRS:
+        append_interaction(left_name, right_name)
+    for left_name, right_name in combinations(names, 2):
+        append_interaction(left_name, right_name)
+        if len(interactions) >= int(max_interactions):
+            break
     return names, interactions
 
 
@@ -752,11 +1104,30 @@ def _build_expression_feature_frame(
     *,
     max_interactions: int = 30,
     consume_base: bool = False,
+    candidate_plan: tuple[
+        Sequence[str],
+        Sequence[tuple[str, str, str]],
+    ]
+    | None = None,
 ) -> tuple[list[str], pd.DataFrame]:
-    base_names, interactions = _expression_candidate_plan(
-        base_factors,
-        max_interactions=max_interactions,
-    )
+    if candidate_plan is None:
+        base_names, interactions = _expression_candidate_plan(
+            base_factors,
+            max_interactions=max_interactions,
+        )
+    else:
+        base_names = [
+            str(name)
+            for name in candidate_plan[0]
+        ]
+        interactions = [
+            (
+                str(name),
+                str(left_name),
+                str(right_name),
+            )
+            for name, left_name, right_name in candidate_plan[1]
+        ]
     candidate_names = [
         *base_names,
         *(name for name, _left, _right in interactions),
@@ -1092,12 +1463,36 @@ def _daily_rank_ic_matrix(
     )
 
 
+def _candidate_non_null_row_mask(
+    frame: pd.DataFrame,
+    candidate_names: Sequence[str],
+) -> np.ndarray:
+    mask = np.zeros(len(frame), dtype=bool)
+    for name in candidate_names:
+        if name not in frame:
+            continue
+        np.logical_or(
+            mask,
+            frame[name].notna().to_numpy(copy=False),
+            out=mask,
+        )
+    return mask
+
+
 def _market_regime_daily_frame(
     frame: pd.DataFrame,
 ) -> pd.DataFrame:
     if frame.empty or "trade_date" not in frame:
         return pd.DataFrame(columns=MARKET_REGIME_FEATURES)
-    data = frame.copy()
+    source_columns = [
+        "trade_date",
+        *(
+            name
+            for name in MARKET_REGIME_SOURCE_COLUMNS
+            if name in frame
+        ),
+    ]
+    data = frame.loc[:, source_columns].copy()
     data["trade_date"] = pd.to_datetime(
         data["trade_date"],
         errors="coerce",
@@ -1560,6 +1955,7 @@ def run_walk_forward_discovery(
     test_days: int = 20,
     step_days: int = 20,
     purge_days: int = 3,
+    min_partial_test_days: int = 0,
     top_k: int = 10,
     max_factors: int = 6,
     fdr_alpha: float = 0.05,
@@ -1584,12 +1980,53 @@ def run_walk_forward_discovery(
             "windows": [],
             "factor_summary": {},
         }
+    candidate_names = [
+        name
+        for name in sorted(factors)
+        if name in feature_frame.columns
+    ]
+    if not candidate_names:
+        return {
+            "status": "rejected",
+            "reason": "no_candidate_factors",
+            "summary": _summary_from_windows([]),
+            "windows": [],
+            "factor_summary": {},
+        }
+    candidate_row_valid = _candidate_non_null_row_mask(
+        feature_frame,
+        candidate_names,
+    )
+    if not bool(candidate_row_valid.all()):
+        feature_frame = feature_frame.loc[
+            candidate_row_valid
+        ].copy(deep=False)
+    if feature_frame.empty:
+        return {
+            "status": "rejected",
+            "reason": "no_candidate_factors",
+            "summary": _summary_from_windows([]),
+            "windows": [],
+            "factor_summary": {},
+        }
     target = target_col
     if target not in labels.columns:
         if "forward_return_pct" not in labels.columns:
             raise KeyError(f"labels missing target column: {target_col}")
         target = "forward_return_pct"
-    label_frame = labels.copy()
+    label_input_columns = [
+        column
+        for column in (
+            "trade_date",
+            "ts_code",
+            target,
+            "exit_date",
+            "research_evaluable",
+            "execution_blocked",
+        )
+        if column in labels
+    ]
+    label_frame = labels.loc[:, label_input_columns].copy()
     label_frame["trade_date"] = pd.to_datetime(
         label_frame["trade_date"],
         errors="coerce",
@@ -1643,11 +2080,6 @@ def run_walk_forward_discovery(
     if "exit_date" in aligned_labels:
         merged["exit_date"] = aligned_labels["exit_date"].to_numpy()
     merged["_label_valid"] = merged[target].notna().to_numpy()
-    candidate_names = [
-        name
-        for name in sorted(factors)
-        if name in merged.columns
-    ]
     dates = sorted(
         merged.loc[
             merged["_label_valid"],
@@ -1664,6 +2096,7 @@ def run_walk_forward_discovery(
         test_days=test_days,
         step_days=step_days,
         purge_days=purge_days,
+        min_partial_test_days=min_partial_test_days,
     )
     reports: list[dict[str, Any]] = []
     factor_oos: dict[str, list[float]] = {
@@ -1677,20 +2110,25 @@ def run_walk_forward_discovery(
     }
 
     for window in windows:
-        train = merged[
+        train_mask = (
             merged["_label_valid"]
             & merged["trade_date"].isin(window.train_dates)
-        ]
-        if "exit_date" in train.columns:
-            train = train[
-                train["exit_date"].notna()
-                & train["exit_date"].lt(window.test_dates[0])
-            ]
-        test = merged[
+        )
+        if "exit_date" in merged.columns:
+            train_mask &= (
+                merged["exit_date"].notna()
+                & merged["exit_date"].lt(window.test_dates[0])
+            )
+        test_mask = (
             merged["_label_valid"]
             & merged["trade_date"].isin(window.test_dates)
-        ].copy()
-        train_dates = sorted(train["trade_date"].dropna().unique())
+        )
+        train_dates = sorted(
+            merged.loc[
+                train_mask,
+                "trade_date",
+            ].dropna().unique()
+        )
         calibration_days = min(
             max(10, int(test_days)),
             max(0, len(train_dates) - int(purge_days) - 20),
@@ -1706,18 +2144,56 @@ def run_walk_forward_discovery(
             if calibration_days
             else []
         )
-        fit = train[train["trade_date"].isin(fit_dates)]
-        calibration = train[
-            train["trade_date"].isin(calibration_dates)
-        ].copy()
+        fit_mask = (
+            train_mask
+            & merged["trade_date"].isin(fit_dates)
+        )
+        calibration_mask = (
+            train_mask
+            & merged["trade_date"].isin(calibration_dates)
+        )
         if (
-            "exit_date" in fit.columns
+            "exit_date" in merged.columns
             and calibration_dates
         ):
-            fit = fit[
-                fit["exit_date"].notna()
-                & fit["exit_date"].lt(calibration_dates[0])
-            ]
+            fit_mask &= (
+                merged["exit_date"].notna()
+                & merged["exit_date"].lt(calibration_dates[0])
+            )
+        fit_columns = list(
+            dict.fromkeys(
+                [
+                    "trade_date",
+                    "ts_code",
+                    target,
+                    *candidate_names,
+                    *(
+                        name
+                        for name in MARKET_REGIME_SOURCE_COLUMNS
+                        if name in merged.columns
+                    ),
+                ]
+            )
+        )
+        fit = merged.loc[fit_mask, fit_columns]
+        train_sample_count = int(train_mask.sum())
+        fit_sample_count = int(fit_mask.sum())
+        calibration_sample_count = int(
+            calibration_mask.sum()
+        )
+        test_sample_count = int(test_mask.sum())
+        if (
+            "exit_date" in merged.columns
+            and bool(train_mask.any())
+        ):
+            train_exit = merged.loc[train_mask, "exit_date"]
+            train_label_max_exit = (
+                pd.Timestamp(train_exit.max()).strftime("%Y-%m-%d")
+                if train_exit.notna().any()
+                else None
+            )
+        else:
+            train_label_max_exit = None
         diagnostics: dict[str, dict[str, Any]] = {}
         p_values: dict[str, float] = {}
         evidence_scores: dict[str, float] = {}
@@ -1748,6 +2224,7 @@ def run_walk_forward_discovery(
                 * math.sqrt(max(1, int(stats["ic_count"])))
                 / max(float(stats["ic_std"]), 1e-6)
             )
+        del fit_ic
         accepted = benjamini_hochberg(
             p_values,
             alpha=fdr_alpha,
@@ -1760,7 +2237,7 @@ def run_walk_forward_discovery(
             and abs(float(diagnostics[name]["mean_rank_ic"])) >= 0.005
         ]
         selected = decorrelate_factors(
-            fit.set_index(["trade_date", "ts_code"]),
+            fit,
             eligible,
             evidence_scores=evidence_scores,
             max_abs_correlation=max_abs_correlation,
@@ -1769,14 +2246,53 @@ def run_walk_forward_discovery(
             selected,
             diagnostics,
         )
+        market_fit_columns = list(
+            dict.fromkeys(
+                [
+                    "trade_date",
+                    target,
+                    *(
+                        name
+                        for name in MARKET_REGIME_SOURCE_COLUMNS
+                        if name in fit.columns
+                    ),
+                ]
+            )
+        )
+        market_fit = fit.loc[:, market_fit_columns]
+        del fit
         market_model = _fit_market_regime_model(
-            fit,
+            market_fit,
             target,
             min_days=max(
                 20,
                 min(40, max(20, len(fit_dates) // 2)),
             ),
         )
+        del market_fit
+        scoring_columns = list(
+            dict.fromkeys(
+                [
+                    "trade_date",
+                    "ts_code",
+                    target,
+                    *selected,
+                    *(
+                        name
+                        for name in MARKET_REGIME_SOURCE_COLUMNS
+                        if name in merged.columns
+                    ),
+                ]
+            )
+        )
+        calibration = merged.loc[
+            calibration_mask,
+            scoring_columns,
+        ]
+        test = merged.loc[
+            test_mask,
+            scoring_columns,
+        ]
         calibration_market_prediction = _predict_market_regime(
             market_model,
             calibration,
@@ -1795,7 +2311,7 @@ def run_walk_forward_discovery(
                 calibration["trade_date"].isin(
                     calibration_trade_dates
                 )
-            ].copy()
+            ]
         else:
             calibration_trade_dates = set(calibration_dates)
             calibration_for_scoring = calibration
@@ -1840,9 +2356,9 @@ def run_walk_forward_discovery(
                 value.strftime("%Y-%m-%d")
                 for value in window.purged_dates
             ],
-            "train_sample_count": int(len(train)),
-            "fit_sample_count": int(len(fit)),
-            "calibration_sample_count": int(len(calibration)),
+            "train_sample_count": train_sample_count,
+            "fit_sample_count": fit_sample_count,
+            "calibration_sample_count": calibration_sample_count,
             "fit_end": (
                 pd.Timestamp(fit_dates[-1]).strftime("%Y-%m-%d")
                 if fit_dates
@@ -1879,13 +2395,8 @@ def run_walk_forward_discovery(
                     calibration_dates
                 ),
             },
-            "test_sample_count": int(len(test)),
-            "train_label_max_exit": (
-                pd.Timestamp(train["exit_date"].max()).strftime("%Y-%m-%d")
-                if "exit_date" in train.columns
-                and train["exit_date"].notna().any()
-                else None
-            ),
+            "test_sample_count": test_sample_count,
+            "train_label_max_exit": train_label_max_exit,
             "selected_factors": selected,
             "score_weights": score_weights,
             "factor_diagnostics": {
@@ -1924,7 +2435,7 @@ def run_walk_forward_discovery(
             )
             test = test[
                 test["trade_date"].isin(test_trade_dates)
-            ].copy()
+            ]
         else:
             test_trade_dates = set(window.test_dates)
         report["market_regime"]["test_trade_date_count"] = len(
@@ -2189,6 +2700,20 @@ def _execution_factor_summary(
     return result
 
 
+def _execution_window_signature(
+    window: Mapping[str, Any],
+) -> tuple[Any, ...]:
+    return (
+        window.get("train_start"),
+        window.get("train_end"),
+        window.get("fit_end"),
+        window.get("calibration_start"),
+        window.get("calibration_end"),
+        tuple(window.get("purged_dates") or []),
+        tuple(window.get("test_dates") or []),
+    )
+
+
 def _combine_execution_discovery_reports(
     candidate_names: Sequence[str],
     reports: Mapping[str, Mapping[str, Any]],
@@ -2221,6 +2746,87 @@ def _combine_execution_discovery_reports(
     }
     selected_windows = []
     for window_id in window_ids:
+        aligned_windows = {
+            name: by_execution[name].get(window_id)
+            for name in names
+        }
+        signatures = {
+            _execution_window_signature(window)
+            for window in aligned_windows.values()
+            if window is not None
+        }
+        if (
+            any(window is None for window in aligned_windows.values())
+            or len(signatures) != 1
+        ):
+            template = next(
+                (
+                    window
+                    for window in aligned_windows.values()
+                    if window is not None
+                ),
+                {"window_id": window_id},
+            )
+            mismatch = {
+                key: template[key]
+                for key in (
+                    "window_id",
+                    "train_start",
+                    "train_end",
+                    "fit_end",
+                    "calibration_start",
+                    "calibration_end",
+                    "purged_dates",
+                    "test_start",
+                    "test_end",
+                    "test_dates",
+                )
+                if key in template
+            }
+            mismatch.update(
+                {
+                    "status": "execution_window_mismatch",
+                    "reason": (
+                        "execution_label_calendars_not_aligned"
+                    ),
+                    "calibration_passed": False,
+                    "selected_factors": [],
+                    "score_weights": {},
+                    "selected_execution": None,
+                    "execution_selection": {
+                        "policy": "strict_window_alignment",
+                        "selected": None,
+                        "candidates": [
+                            {
+                                "execution": name,
+                                "metadata": metadata.get(name, {}),
+                                "status": (
+                                    str(window.get("status") or "")
+                                    if window is not None
+                                    else "missing_window"
+                                ),
+                                "window_signature": (
+                                    list(
+                                        _execution_window_signature(
+                                            window
+                                        )
+                                    )
+                                    if window is not None
+                                    else None
+                                ),
+                            }
+                            for name, window in aligned_windows.items()
+                        ],
+                    },
+                    "oos_rank_ic": None,
+                    **_portfolio_metrics(
+                        pd.DataFrame(),
+                        target_col,
+                    ),
+                }
+            )
+            selected_windows.append(mismatch)
+            continue
         candidates = []
         eligible = []
         for index, name in enumerate(names):
@@ -2324,6 +2930,9 @@ def _combine_execution_discovery_reports(
     first_policy.update(
         {
             "execution_selection": "calibration_only",
+            "execution_window_alignment": (
+                "strict_train_calibration_test_signature"
+            ),
             "execution_candidates": names,
             "execution_family_correction": "bonferroni",
             "effective_fdr_alpha": float(effective_fdr_alpha),
@@ -2405,8 +3014,6 @@ def _run_generated_execution_discovery(
     fdr_alpha: float,
     discovery_kwargs: Mapping[str, Any],
 ) -> tuple[dict[str, Any], str | None]:
-    from analytics import relay_factor_mining
-
     holds = [int(value) for value in hold_days_candidates]
     if not holds:
         raise ValueError("hold_days_candidates must not be empty")
@@ -2419,15 +3026,12 @@ def _run_generated_execution_discovery(
     reports = {}
     maximum_exit: pd.Timestamp | None = None
     for value, name in zip(holds, names):
-        generated = relay_factor_mining.build_label_frame(
-            dict(panel),
+        execution_labels = _build_chunked_execution_labels(
+            panel,
             hold_days=value,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            compact_diagnostics=True,
         )
-        execution_labels = _compact_execution_labels(generated)
-        del generated
         if (
             "exit_date" in execution_labels
             and execution_labels["exit_date"].notna().any()
@@ -2448,6 +3052,7 @@ def _run_generated_execution_discovery(
             **dict(discovery_kwargs),
         )
         del execution_labels
+        _release_research_memory()
     return (
         _combine_execution_discovery_reports(
             sorted(str(name) for name in factors),
@@ -2464,12 +3069,124 @@ def _run_generated_execution_discovery(
     )
 
 
+def _release_research_memory() -> None:
+    gc.collect()
+    try:
+        if os.name == "posix":
+            malloc_trim = getattr(
+                ctypes.CDLL(None),
+                "malloc_trim",
+                None,
+            )
+            if malloc_trim is not None:
+                malloc_trim(0)
+    except (AttributeError, OSError):
+        pass
+
+
+def _run_generated_dual_execution_discovery(
+    close_factors: Mapping[str, pd.DataFrame],
+    auction_factors: Mapping[str, pd.DataFrame],
+    prepared_feature_frame: pd.DataFrame,
+    panel: Mapping[str, pd.DataFrame],
+    *,
+    hold_days_candidates: Sequence[int],
+    stop_loss: float,
+    take_profit: float,
+    fdr_alpha: float,
+    discovery_kwargs: Mapping[str, Any],
+    prebuilt_execution_labels: MutableMapping[
+        int,
+        pd.DataFrame,
+    ]
+    | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], str | None]:
+    holds = [int(value) for value in hold_days_candidates]
+    if not holds:
+        raise ValueError("hold_days_candidates must not be empty")
+    names = [f"hold_{value}" for value in holds]
+    effective_alpha = float(fdr_alpha) / len(names)
+    metadata = {
+        f"hold_{value}": {"hold_days": value}
+        for value in holds
+    }
+    cached = prebuilt_execution_labels or {}
+    close_reports = {}
+    auction_reports = {}
+    maximum_exit: pd.Timestamp | None = None
+    for value, name in zip(holds, names):
+        execution_labels = cached.pop(value, None)
+        if execution_labels is None:
+            execution_labels = _build_chunked_execution_labels(
+                panel,
+                hold_days=value,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+            )
+        if (
+            "exit_date" in execution_labels
+            and execution_labels["exit_date"].notna().any()
+        ):
+            current_exit = pd.Timestamp(
+                execution_labels["exit_date"].max()
+            ).normalize()
+            maximum_exit = (
+                current_exit
+                if maximum_exit is None
+                else max(maximum_exit, current_exit)
+            )
+        close_reports[name] = run_walk_forward_discovery(
+            close_factors,
+            execution_labels,
+            fdr_alpha=effective_alpha,
+            _prepared_feature_frame=prepared_feature_frame,
+            **dict(discovery_kwargs),
+        )
+        _release_research_memory()
+        auction_reports[name] = run_walk_forward_discovery(
+            auction_factors,
+            execution_labels,
+            fdr_alpha=effective_alpha,
+            _prepared_feature_frame=prepared_feature_frame,
+            **dict(discovery_kwargs),
+        )
+        del execution_labels
+        _release_research_memory()
+    cached.clear()
+    return (
+        _combine_execution_discovery_reports(
+            sorted(str(name) for name in close_factors),
+            close_reports,
+            execution_metadata=metadata,
+            target_col="live_adjusted_return_pct",
+            effective_fdr_alpha=effective_alpha,
+        ),
+        _combine_execution_discovery_reports(
+            sorted(str(name) for name in auction_factors),
+            auction_reports,
+            execution_metadata=metadata,
+            target_col="live_adjusted_return_pct",
+            effective_fdr_alpha=effective_alpha,
+        ),
+        (
+            maximum_exit.strftime("%Y-%m-%d")
+            if maximum_exit is not None
+            else None
+        ),
+    )
+
+
 def _auction_candidate_factors(
     labels: pd.DataFrame,
     auction: pd.DataFrame | None,
-) -> dict[str, pd.DataFrame]:
+) -> tuple[dict[str, pd.DataFrame], dict[str, float | int]]:
+    empty_quality: dict[str, float | int] = {
+        "eligible_rows": 0,
+        "matched_rows": 0,
+        "coverage": 0.0,
+    }
     if auction is None or auction.empty:
-        return {}
+        return {}, empty_quality
     columns = ["trade_date", "ts_code"]
     if "entry_date" in labels.columns:
         columns.append("entry_date")
@@ -2481,7 +3198,34 @@ def _auction_candidate_factors(
         auction,
     )
     if aligned.empty:
-        return {}
+        return {}, empty_quality
+    entry_dates = pd.to_datetime(
+        (
+            aligned["entry_date"]
+            if "entry_date" in aligned
+            else pd.Series(pd.NaT, index=aligned.index)
+        ),
+        errors="coerce",
+    )
+    eligible = entry_dates.notna()
+    matched = (
+        eligible
+        & aligned["auction_trade_date"].notna()
+    )
+    eligible_rows = int(eligible.sum())
+    matched_rows = int(matched.sum())
+    alignment_coverage = (
+        matched_rows / eligible_rows
+        if eligible_rows
+        else 0.0
+    )
+    quality: dict[str, float | int] = {
+        "eligible_rows": eligible_rows,
+        "matched_rows": matched_rows,
+        "coverage": float(alignment_coverage),
+    }
+    if alignment_coverage < AUCTION_MIN_ALIGNMENT_COVERAGE:
+        return {}, quality
     aligned["trade_date"] = pd.to_datetime(
         aligned["trade_date"],
         errors="coerce",
@@ -2500,7 +3244,7 @@ def _auction_candidate_factors(
     }
     factors = {}
     for name, source in source_columns.items():
-        factors[name] = (
+        factor = (
             aligned.pivot(
                 index="trade_date",
                 columns="ts_code",
@@ -2510,7 +3254,9 @@ def _auction_candidate_factors(
             .sort_index(axis=1)
             .astype(np.float32)
         )
-    return factors
+        if factor.notna().to_numpy().any():
+            factors[name] = factor
+    return factors, quality
 
 
 def _factor_catalog(
@@ -2528,7 +3274,10 @@ def _factor_catalog(
             formula = formulas[name]
         elif "__x__" in name:
             left, right = name.split("__x__", 1)
-            formula = f"rank({left}) * rank({right})"
+            formula = (
+                f"(rank({left}) - 0.5) "
+                f"* (rank({right}) - 0.5)"
+            )
         else:
             formula = name
         auction_based = (
@@ -2673,6 +3422,63 @@ def _compact_execution_labels(
     return result
 
 
+def _build_chunked_execution_labels(
+    panel: Mapping[str, pd.DataFrame],
+    *,
+    hold_days: int,
+    stop_loss: float,
+    take_profit: float,
+    chunk_size: int = LABEL_CODE_CHUNK_SIZE,
+) -> pd.DataFrame:
+    from analytics import relay_factor_mining
+
+    if (
+        isinstance(chunk_size, bool)
+        or int(chunk_size) != chunk_size
+        or int(chunk_size) < 1
+    ):
+        raise ValueError("chunk_size must be a positive integer")
+    close = panel.get("close")
+    if not isinstance(close, pd.DataFrame) or close.empty:
+        raise ValueError("label panel close matrix is empty")
+    codes = list(close.columns)
+    compact_chunks = []
+    for offset in range(0, len(codes), int(chunk_size)):
+        chunk_codes = codes[offset : offset + int(chunk_size)]
+        chunk_panel = {}
+        for name, frame in panel.items():
+            if (
+                isinstance(frame, pd.DataFrame)
+                and set(chunk_codes).issubset(frame.columns)
+            ):
+                chunk_panel[name] = frame.loc[:, chunk_codes]
+            else:
+                chunk_panel[name] = frame
+        generated = relay_factor_mining.build_label_frame(
+            chunk_panel,
+            hold_days=hold_days,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            compact_diagnostics=True,
+        )
+        compact_chunks.append(
+            _compact_execution_labels(generated)
+        )
+        del generated
+        del chunk_panel
+    if not compact_chunks:
+        return pd.DataFrame()
+    combined = pd.concat(compact_chunks, ignore_index=True)
+    compact_chunks.clear()
+    combined.sort_values(
+        ["trade_date", "ts_code"],
+        kind="stable",
+        ignore_index=True,
+        inplace=True,
+    )
+    return combined
+
+
 def run_short_factor_research(
     panel: Mapping[str, pd.DataFrame],
     *,
@@ -2689,6 +3495,7 @@ def run_short_factor_research(
     test_days: int = 20,
     step_days: int = 20,
     purge_days: int | None = None,
+    min_partial_test_days: int | None = None,
     top_k: int = 10,
     max_factors: int = 6,
     max_interactions: int = 30,
@@ -2726,6 +3533,18 @@ def run_short_factor_research(
         if purge_days is not None
         else max(normalized_holds) + 1
     )
+    resolved_partial_test_days = (
+        min(10, int(test_days))
+        if min_partial_test_days is None
+        else int(min_partial_test_days)
+    )
+    if (
+        isinstance(min_partial_test_days, bool)
+        or not 0 <= resolved_partial_test_days <= int(test_days)
+    ):
+        raise ValueError(
+            "min_partial_test_days must be between zero and test_days"
+        )
     expected_code_set = {
         str(value).split(".", 1)[0].zfill(6)
         for value in (expected_codes or [])
@@ -2758,6 +3577,26 @@ def run_short_factor_research(
 
     daily_basic_codes = auxiliary_codes(daily_basic)
     auction_codes = auxiliary_codes(auction)
+    daily_basic_row_count = (
+        int(len(daily_basic))
+        if daily_basic is not None
+        else 0
+    )
+    auction_row_count = (
+        int(len(auction))
+        if auction is not None
+        else 0
+    )
+    auction_available_through = None
+    if auction is not None and not auction.empty and "date" in auction:
+        auction_dates = pd.to_datetime(
+            auction["date"],
+            errors="coerce",
+        ).dropna()
+        if not auction_dates.empty:
+            auction_available_through = auction_dates.max().strftime(
+                "%Y-%m-%d"
+            )
     expected_code_count = len(expected_code_set)
     daily_basic_coverage = (
         len(daily_basic_codes) / expected_code_count
@@ -2778,7 +3617,7 @@ def run_short_factor_research(
             >= AUXILIARY_MIN_CODE_COVERAGE
         )
     )
-    auction_used = bool(
+    auction_history_eligible = bool(
         auction is not None
         and not auction.empty
         and (
@@ -2795,27 +3634,117 @@ def run_short_factor_research(
     close_base.update(
         build_structural_candidate_factors(close_base)
     )
-    (
-        close_candidate_names,
-        close_feature_frame,
-    ) = _build_expression_feature_frame(
-        close_base,
-        max_interactions=max_interactions,
-        consume_base=not auction_used,
+    close_base_names, close_interactions = (
+        _expression_candidate_plan(
+            close_base,
+            max_interactions=max_interactions,
+        )
     )
-    auction_base = (
-        _auction_candidate_factors(labels, auction)
-        if not generated_execution_labels and auction_used
-        else {}
-    )
-    close_base_retained = auction_used
-    if not close_base_retained:
-        del close_base
+    close_candidate_names = [
+        *close_base_names,
+        *(
+            name
+            for name, _left, _right in close_interactions
+        ),
+    ]
+    prebuilt_execution_labels: dict[int, pd.DataFrame] = {}
+    auction_base: dict[str, pd.DataFrame] = {}
+    auction_alignment: dict[str, float | int] = {
+        "eligible_rows": 0,
+        "matched_rows": 0,
+        "coverage": 0.0,
+    }
+    if auction_history_eligible:
+        if generated_execution_labels:
+            anchor_hold = (
+                int(hold_days)
+                if int(hold_days) in normalized_holds
+                else normalized_holds[0]
+            )
+            auction_labels = _build_chunked_execution_labels(
+                panel,
+                hold_days=anchor_hold,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+            )
+            auction_base, auction_alignment = _auction_candidate_factors(
+                auction_labels,
+                auction,
+            )
+            prebuilt_execution_labels[anchor_hold] = (
+                auction_labels
+            )
+        else:
+            auction_base, auction_alignment = _auction_candidate_factors(
+                labels,
+                auction,
+            )
+    del daily_basic
+    del auction
+    auction_used = bool(auction_base)
+    if auction_base:
+        auction_source_names = set(auction_base)
+        close_base.update(auction_base)
+        auction_base.clear()
+        auction_all_base_names, auction_all_interactions = (
+            _expression_candidate_plan(
+                close_base,
+                max_interactions=max_interactions,
+            )
+        )
+        auction_interactions = [
+            interaction
+            for interaction in auction_all_interactions
+            if (
+                interaction[1] in auction_source_names
+                or interaction[2] in auction_source_names
+            )
+        ]
+        auction_candidate_names = [
+            *sorted(auction_source_names),
+            *(
+                name
+                for name, _left, _right in auction_interactions
+            ),
+        ]
+        union_interactions = []
+        union_interaction_names: set[str] = set()
+        for interaction in (
+            *close_interactions,
+            *auction_interactions,
+        ):
+            if interaction[0] in union_interaction_names:
+                continue
+            union_interactions.append(interaction)
+            union_interaction_names.add(interaction[0])
+        (
+            _union_candidate_names,
+            feature_frame,
+        ) = _build_expression_feature_frame(
+            close_base,
+            max_interactions=max_interactions,
+            consume_base=True,
+            candidate_plan=(
+                auction_all_base_names,
+                union_interactions,
+            ),
+        )
+    else:
+        (
+            close_candidate_names,
+            feature_frame,
+        ) = _build_expression_feature_frame(
+            close_base,
+            max_interactions=max_interactions,
+            consume_base=True,
+        )
+        auction_candidate_names = []
     common_args = {
         "train_days": train_days,
         "test_days": test_days,
         "step_days": step_days,
         "purge_days": resolved_purge,
+        "min_partial_test_days": resolved_partial_test_days,
         "top_k": top_k,
         "max_factors": max_factors,
         "fdr_alpha": fdr_alpha,
@@ -2826,101 +3755,86 @@ def run_short_factor_research(
         name: pd.DataFrame()
         for name in close_candidate_names
     }
+    auction_factor_refs = {
+        name: pd.DataFrame()
+        for name in auction_candidate_names
+    }
+    if auction_row_count < 1:
+        unavailable_auction_reason = "auction_history_not_loaded"
+    elif not auction_history_eligible:
+        unavailable_auction_reason = (
+            "auction_history_coverage_below_threshold"
+        )
+    else:
+        unavailable_auction_reason = (
+            "auction_entry_alignment_unavailable"
+        )
+    unavailable_auction_report = {
+        "status": "unavailable",
+        "reason": unavailable_auction_reason,
+        "summary": _summary_from_windows([]),
+        "windows": [],
+        "factor_summary": {},
+    }
     if generated_execution_labels:
         generated_args = dict(common_args)
         generated_args.pop("fdr_alpha")
-        (
-            close_report,
-            label_max_exit,
-        ) = _run_generated_execution_discovery(
-            close_factor_refs,
-            close_feature_frame,
-            panel,
-            hold_days_candidates=normalized_holds,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            fdr_alpha=fdr_alpha,
-            discovery_kwargs=generated_args,
-        )
+        if auction_factor_refs:
+            (
+                close_report,
+                auction_report,
+                label_max_exit,
+            ) = _run_generated_dual_execution_discovery(
+                close_factor_refs,
+                auction_factor_refs,
+                feature_frame,
+                panel,
+                hold_days_candidates=normalized_holds,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                fdr_alpha=fdr_alpha,
+                discovery_kwargs=generated_args,
+                prebuilt_execution_labels=(
+                    prebuilt_execution_labels
+                ),
+            )
+        else:
+            prebuilt_execution_labels.clear()
+            (
+                close_report,
+                label_max_exit,
+            ) = _run_generated_execution_discovery(
+                close_factor_refs,
+                feature_frame,
+                panel,
+                hold_days_candidates=normalized_holds,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                fdr_alpha=fdr_alpha,
+                discovery_kwargs=generated_args,
+            )
+            auction_report = unavailable_auction_report
     else:
         close_report = run_walk_forward_discovery(
             close_factor_refs,
             labels,
-            _prepared_feature_frame=close_feature_frame,
+            _prepared_feature_frame=feature_frame,
             **common_args,
         )
         label_max_exit = _maximum_label_exit(execution_labels)
-    del close_feature_frame
-    del close_factor_refs
-    if generated_execution_labels and auction_used:
-        from analytics import relay_factor_mining
-
-        anchor_hold = (
-            int(hold_days)
-            if int(hold_days) in normalized_holds
-            else normalized_holds[0]
-        )
-        generated = relay_factor_mining.build_label_frame(
-            dict(panel),
-            hold_days=anchor_hold,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            compact_diagnostics=True,
-        )
-        auction_labels = _compact_execution_labels(generated)
-        del generated
-        auction_base = _auction_candidate_factors(
-            auction_labels,
-            auction,
-        )
-        del auction_labels
-    if auction_base:
-        (
-            auction_candidate_names,
-            auction_feature_frame,
-        ) = _build_expression_feature_frame(
-            {**close_base, **auction_base},
-            max_interactions=max_interactions,
-        )
-        del close_base
-        del auction_base
-        auction_factor_refs = {
-            name: pd.DataFrame()
-            for name in auction_candidate_names
-        }
-        if generated_execution_labels:
-            auction_report, _auction_label_max_exit = (
-                _run_generated_execution_discovery(
-                    auction_factor_refs,
-                    auction_feature_frame,
-                    panel,
-                    hold_days_candidates=normalized_holds,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                    fdr_alpha=fdr_alpha,
-                    discovery_kwargs=generated_args,
-                )
-            )
-        else:
-            auction_report = run_walk_forward_discovery(
+        auction_report = (
+            run_walk_forward_discovery(
                 auction_factor_refs,
                 labels,
-                _prepared_feature_frame=auction_feature_frame,
+                _prepared_feature_frame=feature_frame,
                 **common_args,
             )
-        del auction_feature_frame
-        del auction_factor_refs
-    else:
-        if close_base_retained:
-            del close_base
-        auction_candidate_names = []
-        auction_report = {
-            "status": "unavailable",
-            "reason": "auction_history_not_loaded",
-            "summary": _summary_from_windows([]),
-            "windows": [],
-            "factor_summary": {},
-        }
+            if auction_factor_refs
+            else unavailable_auction_report
+        )
+    del close_factor_refs
+    del auction_factor_refs
+    del feature_frame
     factor_names = [
         *close_candidate_names,
         *auction_candidate_names,
@@ -3012,16 +3926,10 @@ def run_short_factor_research(
         quality_issues.append(
             "auction_coverage_below_80pct"
         )
-    auction_available_through = None
-    if auction is not None and not auction.empty and "date" in auction:
-        auction_dates = pd.to_datetime(
-            auction["date"],
-            errors="coerce",
-        ).dropna()
-        if not auction_dates.empty:
-            auction_available_through = auction_dates.max().strftime(
-                "%Y-%m-%d"
-            )
+    if auction_history_eligible and not auction_used:
+        quality_issues.append(
+            "auction_entry_alignment_unavailable"
+        )
     resolved_run_id = str(
         run_id
         or datetime.now().strftime("sfd-%Y%m%d-%H%M%S")
@@ -3035,6 +3943,7 @@ def run_short_factor_research(
         "test_days": int(test_days),
         "step_days": int(step_days),
         "purge_days": int(resolved_purge),
+        "min_partial_test_days": int(resolved_partial_test_days),
         "top_k": int(top_k),
         "max_factors": int(max_factors),
         "max_interactions": int(max_interactions),
@@ -3047,24 +3956,40 @@ def run_short_factor_research(
         "daily_basic": DAILY_BASIC_FACTOR_FORMULAS,
         "structural": STRUCTURAL_FACTOR_FORMULAS,
         "auction": AUCTION_FACTOR_FORMULAS,
-        "interaction_operator": "cross_section_rank_product",
+        "interaction_operator": "centered_cross_section_rank_product",
+        "curated_interaction_pairs": [
+            list(pair)
+            for pair in CURATED_INTERACTION_PAIRS
+        ],
         "max_interactions": int(max_interactions),
     }
-    promotion_candidates = [
-        *_promotion_candidates(close_report, scope="close"),
-        *_promotion_candidates(
-            auction_report,
-            scope="auction_confirmation",
-        ),
-    ]
-    close_summary = close_report.get("summary") or {}
+    close_promotions = _promotion_candidates(
+        close_report,
+        scope="close",
+    )
+    auction_promotions = _promotion_candidates(
+        auction_report,
+        scope="auction_confirmation",
+    )
+    if auction_used:
+        primary_channel = "auction_confirmation"
+        primary_report = auction_report
+        primary_candidate_names = auction_candidate_names
+        promotion_candidates = auction_promotions
+    else:
+        primary_channel = "close"
+        primary_report = close_report
+        primary_candidate_names = close_candidate_names
+        promotion_candidates = close_promotions
+    primary_summary = primary_report.get("summary") or {}
     report = {
         "schema_version": "short_factor_discovery_report_v1",
         "channel": "short_factor_discovery",
         "run_id": resolved_run_id,
         "protocol_version": "short_factor_discovery_v1",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "status": str(close_report.get("status") or "rejected"),
+        "status": str(primary_report.get("status") or "rejected"),
+        "primary_channel": primary_channel,
         "research_only": True,
         "deployment_eligible": False,
         "production_write_attempted": False,
@@ -3102,45 +4027,56 @@ def run_short_factor_research(
         },
         "data_coverage": {
             "expected_code_count": expected_code_count,
-            "daily_basic_rows": (
-                int(len(daily_basic))
-                if daily_basic is not None
-                else 0
-            ),
+            "daily_basic_rows": daily_basic_row_count,
             "daily_basic_code_count": len(daily_basic_codes),
             "daily_basic_coverage": round(
                 daily_basic_coverage,
                 6,
             ),
             "daily_basic_used": daily_basic_used,
-            "auction_rows": int(len(auction)) if auction is not None else 0,
+            "auction_rows": auction_row_count,
             "auction_code_count": len(auction_codes),
             "auction_coverage": round(
                 auction_coverage,
                 6,
             ),
+            "auction_history_eligible": auction_history_eligible,
+            "auction_alignment_eligible_rows": int(
+                auction_alignment["eligible_rows"]
+            ),
+            "auction_alignment_matched_rows": int(
+                auction_alignment["matched_rows"]
+            ),
+            "auction_alignment_coverage": round(
+                float(auction_alignment["coverage"]),
+                6,
+            ),
             "auction_used": auction_used,
         },
         "summary": {
-            "tested_factor_count": int(len(close_candidate_names)),
+            "tested_factor_count": int(len(primary_candidate_names)),
             "promotion_candidate_count": len(promotion_candidates),
             "oos_window_count": int(
-                close_summary.get("window_count") or 0
+                primary_summary.get("window_count") or 0
             ),
             "oos_rank_ic": float(
-                close_summary.get("oos_rank_ic") or 0.0
+                primary_summary.get("oos_rank_ic") or 0.0
             ),
             "net_return_pct": float(
-                close_summary.get("total_return_pct") or 0.0
+                primary_summary.get("total_return_pct") or 0.0
             ),
             "max_drawdown_pct": float(
-                close_summary.get("max_drawdown_pct") or 0.0
+                primary_summary.get("max_drawdown_pct") or 0.0
             ),
         },
         "factor_catalog": _factor_catalog(factor_names),
         "close_discovery": close_report,
         "auction_confirmation_discovery": auction_report,
         "promotion_candidates": promotion_candidates,
+        "channel_promotion_candidates": {
+            "close": close_promotions,
+            "auction_confirmation": auction_promotions,
+        },
         "rejections": [],
         "warnings": quality_issues,
     }

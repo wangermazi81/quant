@@ -312,11 +312,23 @@ def test_scheduler_service_is_private_and_loads_release_environment():
     update_script = Path("deploy/server_update.sh").read_text(
         encoding="utf-8"
     )
+    active_unit_lines = {
+        line.strip()
+        for line in unit.split("\n")
+        if line.strip() and not line.lstrip().startswith("#")
+    }
 
     assert "EnvironmentFile=/opt/quant/.env" in unit
     assert "UMask=0077" in unit
     assert "--wait-seconds 70" in unit
     assert "TimeoutStartSec=90" in unit
+    assert "Nice=10" in active_unit_lines
+    assert "CPUWeight=20" in active_unit_lines
+    assert "IOWeight=20" in active_unit_lines
+    assert "MemoryHigh=620M" in active_unit_lines
+    assert "MemoryMax=768M" in active_unit_lines
+    assert "MemorySwapMax=128M" in active_unit_lines
+    assert "OOMPolicy=kill" in active_unit_lines
     assert "UMask=0077" in init_script
     assert "UMask=0077" in update_script
 

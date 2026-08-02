@@ -125,30 +125,44 @@ def run_discovery_job(
     )
     close = panel.get("close")
     if not isinstance(close, pd.DataFrame) or close.empty:
+        del close
+        del panel
+        short_factor_discovery._release_research_memory()
         raise ValueError("short factor panel is empty")
     latest_trade_date = pd.Timestamp(close.index.max()).strftime("%Y-%m-%d")
     expected_trade_date = data_manager.expected_completed_trade_date(
         current
     )
     if latest_trade_date != expected_trade_date:
+        del close
+        del panel
+        short_factor_discovery._release_research_memory()
         raise ValueError(
             "short factor cache is stale: "
             f"expected {expected_trade_date}, got {latest_trade_date}"
         )
     start_date = pd.Timestamp(close.index.min()).strftime("%Y%m%d")
     end_date = pd.Timestamp(close.index.max()).strftime("%Y%m%d")
-    st_refresh = short_factor_st_status.refresh_daily_status_cache(
-        codes,
-        start_date,
-        end_date,
-    )
-    panel, st_quality = (
-        short_factor_st_status.enrich_panel_daily_status(panel)
-    )
+    del close
+    try:
+        st_refresh = short_factor_st_status.refresh_daily_status_cache(
+            codes,
+            start_date,
+            end_date,
+        )
+        panel, st_quality = (
+            short_factor_st_status.enrich_panel_daily_status(panel)
+        )
+    except Exception:
+        del panel
+        short_factor_discovery._release_research_memory()
+        raise
     if (
         float(st_quality.get("coverage") or 0.0)
         < short_factor_st_status.DAILY_STATUS_MIN_COVERAGE
     ):
+        del panel
+        short_factor_discovery._release_research_memory()
         raise ValueError(
             "short factor ST status coverage too low: "
             f"{float(st_quality.get('coverage') or 0.0):.2%}"
@@ -188,6 +202,10 @@ def run_discovery_job(
             "error": str(exc)[:180],
             "resume_from_cache": True,
         }
+    except Exception:
+        del panel
+        short_factor_discovery._release_research_memory()
+        raise
     try:
         turnover_refresh = (
             short_factor_data.refresh_baostock_turnover_history(
@@ -204,31 +222,44 @@ def run_discovery_job(
             "error": str(exc)[:180],
             "resume_from_cache": True,
         }
-    auxiliary = short_factor_data.load_auxiliary_history(
-        root=auxiliary_root,
-    )
+    try:
+        auxiliary = short_factor_data.load_auxiliary_history(
+            root=auxiliary_root,
+        )
+    except Exception:
+        del panel
+        short_factor_discovery._release_research_memory()
+        raise
     run_id = current.strftime("sfd-%Y%m%d-%H%M%S")
     out_dir = ROOT / "runs" / run_id
-    report = short_factor_discovery.run_short_factor_research(
-        panel,
-        daily_basic=auxiliary["daily_basic"],
-        auction=auxiliary["auction"],
-        expected_codes=codes,
-        out_dir=out_dir,
-        run_id=run_id,
-        hold_days=resolved["hold_days"],
-        stop_loss=resolved["stop_loss"],
-        take_profit=resolved["take_profit"],
-        train_days=resolved["train_days"],
-        test_days=resolved["test_days"],
-        step_days=resolved["step_days"],
-        top_k=resolved["top_k"],
-        max_factors=resolved["max_factors"],
-        max_interactions=resolved["max_interactions"],
-        fdr_alpha=resolved["fdr_alpha"],
-        max_abs_correlation=resolved["max_abs_correlation"],
-        min_cross_section=resolved["min_cross_section"],
-    )
+    try:
+        report = short_factor_discovery.run_short_factor_research(
+            panel,
+            daily_basic=auxiliary.pop(
+                "daily_basic",
+                pd.DataFrame(),
+            ),
+            auction=auxiliary.pop("auction", pd.DataFrame()),
+            expected_codes=codes,
+            out_dir=out_dir,
+            run_id=run_id,
+            hold_days=resolved["hold_days"],
+            stop_loss=resolved["stop_loss"],
+            take_profit=resolved["take_profit"],
+            train_days=resolved["train_days"],
+            test_days=resolved["test_days"],
+            step_days=resolved["step_days"],
+            top_k=resolved["top_k"],
+            max_factors=resolved["max_factors"],
+            max_interactions=resolved["max_interactions"],
+            fdr_alpha=resolved["fdr_alpha"],
+            max_abs_correlation=resolved["max_abs_correlation"],
+            min_cross_section=resolved["min_cross_section"],
+        )
+    finally:
+        auxiliary.clear()
+        del panel
+        short_factor_discovery._release_research_memory()
     _write_json_atomic(ROOT / "latest.json", report)
     summary = report.get("summary") or {}
     return {

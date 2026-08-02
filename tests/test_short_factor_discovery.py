@@ -92,6 +92,20 @@ def test_daily_candidates_include_extreme_short_structure_grammar():
         "return_to_risk_5_20",
         "limit_proximity_1",
         "limit_close_strength_1",
+        "close_flow_3",
+        "close_flow_acceleration_3_10",
+        "signed_amount_flow_5",
+        "amount_impulse_decay_1_5",
+        "range_regime_shift_3_20",
+        "overnight_intraday_divergence_3",
+        "return_autocorrelation_10",
+        "realized_skew_10",
+        "idiosyncratic_momentum_5_20",
+        "downside_resilience_10",
+        "volume_price_elasticity_10",
+        "illiquidity_regime_5_20",
+        "volume_concentration_5",
+        "limit_pressure_persistence_3",
     }.issubset(factors)
     assert all(
         frame.shape == factors["return_1"].shape
@@ -146,6 +160,14 @@ def test_structural_candidates_are_target_free_and_point_in_time():
         "strong_stock_dryup_pullback",
         "liquidity_close_confirmation",
         "compression_limit_pressure",
+        "flow_breakout_confirmation",
+        "idiosyncratic_flow_momentum",
+        "compressed_attention_release",
+        "downside_resilience_accumulation",
+        "persistent_limit_absorption",
+        "liquidity_regime_breakout",
+        "intraday_leadership_shift",
+        "serial_flow_continuation",
     }
     assert set(original) == set(discovery.STRUCTURAL_FACTOR_FORMULAS)
     for name in original:
@@ -161,6 +183,9 @@ def test_align_auction_confirmation_uses_entry_date_not_signal_date():
         {
             "trade_date": signal_dates.strftime("%Y-%m-%d"),
             "ts_code": ["000001", "000001"],
+            "entry_date": pd.to_datetime(
+                ["2026-07-31", "2026-08-03"]
+            ),
         }
     )
     auction = pd.DataFrame(
@@ -182,6 +207,177 @@ def test_align_auction_confirmation_uses_entry_date_not_signal_date():
     assert first["auction_trade_date"] == "2026-07-31"
     assert first["auction_gap"] == 0.1
     assert pd.isna(second["auction_gap"])
+
+
+def test_align_auction_confirmation_requires_exact_entry_date():
+    features = pd.DataFrame(
+        {
+            "trade_date": pd.to_datetime(
+                ["2026-07-30", "2026-07-31"]
+            ),
+            "ts_code": ["000001", "000001"],
+        }
+    )
+    auction = pd.DataFrame(
+        {
+            "code": ["000001"],
+            "date": pd.to_datetime(["2026-07-31"]),
+            "auction_price": [11.0],
+            "pre_close": [10.0],
+        }
+    )
+
+    aligned = discovery.align_auction_confirmation(features, auction)
+
+    assert aligned["auction_trade_date"].isna().all()
+    assert aligned["auction_gap"].isna().all()
+
+
+def test_align_auction_confirmation_does_not_bridge_missing_trading_day():
+    features = pd.DataFrame(
+        {
+            "trade_date": pd.to_datetime(
+                ["2026-07-30", "2026-07-31"]
+            ),
+            "ts_code": ["000001", "000001"],
+        }
+    )
+    auction = pd.DataFrame(
+        {
+            "code": ["000001"],
+            "date": pd.to_datetime(["2026-08-03"]),
+            "auction_price": [11.0],
+            "pre_close": [10.0],
+        }
+    )
+
+    aligned = discovery.align_auction_confirmation(features, auction)
+
+    assert aligned["auction_trade_date"].isna().all()
+    assert aligned["auction_gap"].isna().all()
+
+
+def test_align_auction_confirmation_does_not_scan_feature_rows(
+    monkeypatch,
+):
+    features = pd.DataFrame(
+        {
+            "trade_date": pd.to_datetime(
+                ["2026-07-29", "2026-07-30", "2026-07-30"]
+            ),
+            "ts_code": ["000001", "000001", "000002"],
+            "entry_date": pd.to_datetime(
+                ["2026-07-30", "2026-07-31", "2026-07-31"]
+            ),
+        }
+    )
+    auction = pd.DataFrame(
+        {
+            "code": ["000001", "000001", "000002"],
+            "date": pd.to_datetime(
+                ["2026-07-30", "2026-07-31", "2026-07-31"]
+            ),
+            "auction_price": [10.5, 10.8, 20.2],
+            "pre_close": [10.0, 10.5, 20.0],
+            "auction_amount": [1_000_000.0, 1_200_000.0, 900_000.0],
+            "auction_turnover_rate": [0.2, 0.3, 0.1],
+            "auction_volume_ratio": [1.1, 1.2, 0.8],
+        }
+    )
+
+    def fail_iterrows(_self):
+        raise AssertionError("auction alignment must not scan feature rows")
+
+    monkeypatch.setattr(pd.DataFrame, "iterrows", fail_iterrows)
+
+    aligned = discovery.align_auction_confirmation(features, auction)
+
+    assert aligned["auction_trade_date"].tolist() == [
+        "2026-07-30",
+        "2026-07-31",
+        "2026-07-31",
+    ]
+    np.testing.assert_allclose(
+        aligned["auction_gap"].to_numpy(dtype=float),
+        np.array([0.05, 10.8 / 10.5 - 1.0, 0.01]),
+    )
+
+
+def test_align_auction_confirmation_tolerates_missing_optional_values():
+    features = pd.DataFrame(
+        {
+            "trade_date": pd.to_datetime(["2026-07-30"]),
+            "ts_code": ["000001"],
+            "entry_date": pd.to_datetime(["2026-07-31"]),
+        }
+    )
+    auction = pd.DataFrame(
+        {
+            "code": ["000001"],
+            "date": pd.to_datetime(["2026-07-31"]),
+        }
+    )
+
+    aligned = discovery.align_auction_confirmation(features, auction)
+
+    assert aligned.loc[0, "auction_trade_date"] == "2026-07-31"
+    assert pd.isna(aligned.loc[0, "auction_gap"])
+    assert pd.isna(aligned.loc[0, "auction_amount"])
+
+
+def test_auction_candidate_factors_fail_closed_without_exact_match():
+    labels = pd.DataFrame(
+        {
+            "trade_date": pd.to_datetime(["2026-07-30"]),
+            "ts_code": ["000001"],
+            "entry_date": pd.to_datetime(["2026-07-31"]),
+        }
+    )
+    auction = pd.DataFrame(
+        {
+            "code": ["000001"],
+            "date": pd.to_datetime(["2026-08-03"]),
+            "auction_price": [11.0],
+            "pre_close": [10.0],
+        }
+    )
+
+    factors, quality = discovery._auction_candidate_factors(
+        labels,
+        auction,
+    )
+
+    assert factors == {}
+    assert quality["coverage"] == 0.0
+
+
+def test_auction_candidate_factors_omit_empty_optional_sources():
+    labels = pd.DataFrame(
+        {
+            "trade_date": pd.to_datetime(["2026-07-30"]),
+            "ts_code": ["000001"],
+            "entry_date": pd.to_datetime(["2026-07-31"]),
+        }
+    )
+    auction = pd.DataFrame(
+        {
+            "code": ["000001"],
+            "date": pd.to_datetime(["2026-07-31"]),
+            "auction_amount": [1_000_000.0],
+        }
+    )
+
+    factors, quality = discovery._auction_candidate_factors(
+        labels,
+        auction,
+    )
+
+    assert set(factors) == {"auction_amount"}
+    assert quality["coverage"] == 1.0
+    assert factors["auction_amount"].loc[
+        pd.Timestamp("2026-07-30"),
+        "000001",
+    ] == pytest.approx(1_000_000.0)
 
 
 def test_benjamini_hochberg_controls_false_discoveries():
@@ -349,6 +545,24 @@ def test_purged_walk_forward_never_trains_on_test_labels():
         assert distance == 4
 
 
+def test_purged_walk_forward_includes_requested_recent_partial_tail():
+    dates = pd.bdate_range("2026-01-05", periods=80)
+
+    windows = discovery.purged_walk_forward_windows(
+        dates,
+        train_days=40,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        min_partial_test_days=5,
+    )
+
+    assert len(windows) == 4
+    assert windows[-1].test_dates == tuple(dates[73:])
+    assert len(windows[-1].test_dates) == 7
+    assert windows[-1].train_dates[-1] < windows[-1].test_dates[0]
+
+
 def test_decorrelate_factors_keeps_stronger_candidate():
     index = pd.MultiIndex.from_product(
         [
@@ -465,6 +679,97 @@ def test_expression_candidates_are_deterministic_and_target_free():
         set(frame.dtypes.astype(str)) == {"float32"}
         for frame in first.values()
     )
+
+
+def test_expression_candidates_prioritize_domain_pairs_before_fallback():
+    all_factors = discovery.build_daily_candidate_factors(_panel())
+    factors = {
+        name: all_factors[name]
+        for name in (
+            "return_1",
+            "amount_shock_1_20",
+            "return_3",
+            "volume_dryup_5_20",
+            "return_5",
+            "close_flow_3",
+        )
+    }
+
+    _names, interactions = discovery._expression_candidate_plan(
+        {key: factors[key] for key in reversed(factors)},
+        max_interactions=3,
+    )
+
+    assert interactions == [
+        (
+            "return_1__x__amount_shock_1_20",
+            "return_1",
+            "amount_shock_1_20",
+        ),
+        (
+            "return_3__x__volume_dryup_5_20",
+            "return_3",
+            "volume_dryup_5_20",
+        ),
+        (
+            "return_5__x__close_flow_3",
+            "return_5",
+            "close_flow_3",
+        ),
+    ]
+
+
+def test_expression_candidate_plan_reserves_default_auction_interactions():
+    index = pd.bdate_range("2026-07-01", periods=2)
+    columns = ["000001", "600000"]
+    factor_names = {
+        name
+        for pair in discovery.CURATED_INTERACTION_PAIRS
+        for name in pair
+    }
+    factor_names.update(discovery.AUCTION_FACTOR_FORMULAS)
+    factors = {
+        name: pd.DataFrame(1.0, index=index, columns=columns)
+        for name in factor_names
+    }
+
+    _names, interactions = discovery._expression_candidate_plan(
+        factors,
+        max_interactions=30,
+    )
+
+    assert len(interactions) == 30
+    assert any(
+        left in discovery.AUCTION_FACTOR_FORMULAS
+        or right in discovery.AUCTION_FACTOR_FORMULAS
+        for _name, left, right in interactions
+    )
+
+
+def test_expression_candidate_plan_keeps_close_default_interactions():
+    auction_names = set(discovery.AUCTION_FACTOR_FORMULAS)
+    expected_pairs = [
+        pair
+        for pair in discovery.CURATED_INTERACTION_PAIRS
+        if not auction_names.intersection(pair)
+    ]
+    index = pd.bdate_range("2026-07-01", periods=2)
+    columns = ["000001", "600000"]
+    factors = {
+        name: pd.DataFrame(1.0, index=index, columns=columns)
+        for pair in expected_pairs
+        for name in pair
+    }
+
+    _names, interactions = discovery._expression_candidate_plan(
+        factors,
+        max_interactions=30,
+    )
+
+    assert [
+        (left, right)
+        for _name, left, right in interactions
+    ] == expected_pairs
 
 
 def test_expression_feature_frame_matches_materialized_candidates():
@@ -669,6 +974,35 @@ def test_compact_execution_labels_drops_diagnostics():
     assert compact["ts_code"].dtype == np.dtype("int32")
 
 
+def test_chunked_execution_labels_match_frozen_full_panel_builder():
+    from analytics import relay_factor_mining
+
+    panel = _panel(periods=45, codes=18)
+    expected = discovery._compact_execution_labels(
+        relay_factor_mining.build_label_frame(
+            dict(panel),
+            hold_days=2,
+            stop_loss=-0.035,
+            take_profit=0.07,
+            compact_diagnostics=True,
+        )
+    ).sort_values(
+        ["trade_date", "ts_code"],
+        kind="stable",
+        ignore_index=True,
+    )
+
+    actual = discovery._build_chunked_execution_labels(
+        panel,
+        hold_days=2,
+        stop_loss=-0.035,
+        take_profit=0.07,
+        chunk_size=7,
+    )
+
+    pd.testing.assert_frame_equal(actual, expected, check_exact=True)
+
+
 def test_walk_forward_discovery_selects_cost_positive_oos_factor():
     factors, labels = _discovery_sample()
 
@@ -695,6 +1029,216 @@ def test_walk_forward_discovery_selects_cost_positive_oos_factor():
         assert sum(window["score_weights"].values()) == pytest.approx(
             1.0
         )
+
+
+def test_walk_forward_scoring_drops_unselected_candidate_columns(
+    monkeypatch,
+):
+    factors, labels = _discovery_sample()
+    factors["unused_constant"] = pd.DataFrame(
+        1.0,
+        index=factors["predictive"].index,
+        columns=factors["predictive"].columns,
+    )
+    observed_columns = []
+    original = discovery._composite_scores
+
+    def inspected(frame, selected, directions, weights):
+        if selected:
+            observed_columns.append(set(frame.columns))
+        return original(frame, selected, directions, weights)
+
+    monkeypatch.setattr(discovery, "_composite_scores", inspected)
+
+    discovery.run_walk_forward_discovery(
+        factors,
+        labels,
+        train_days=60,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        max_factors=3,
+        fdr_alpha=0.05,
+        min_cross_section=20,
+    )
+
+    assert observed_columns
+    assert all(
+        "unused_constant" not in columns
+        for columns in observed_columns
+    )
+
+
+def test_walk_forward_ignores_rows_with_only_other_channel_values():
+    factors, labels = _discovery_sample()
+    masked_factors = {
+        name: frame.copy()
+        for name, frame in factors.items()
+    }
+    trade_date = masked_factors["predictive"].index[65]
+    code = masked_factors["predictive"].columns[0]
+    for frame in masked_factors.values():
+        frame.loc[trade_date, code] = np.nan
+
+    baseline = discovery.run_walk_forward_discovery(
+        masked_factors,
+        labels,
+        train_days=60,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        max_factors=3,
+        fdr_alpha=0.05,
+        min_cross_section=20,
+    )
+    union_frame = discovery._factor_long_frame(factors)
+    row = (
+        union_frame["trade_date"].eq(trade_date)
+        & union_frame["ts_code"].eq(int(code))
+    )
+    union_frame.loc[row, list(factors)] = np.nan
+    union_frame["auction_gap"] = np.where(row, 0.05, np.nan)
+
+    actual = discovery.run_walk_forward_discovery(
+        {
+            name: pd.DataFrame()
+            for name in masked_factors
+        },
+        labels,
+        _prepared_feature_frame=union_frame,
+        train_days=60,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        max_factors=3,
+        fdr_alpha=0.05,
+        min_cross_section=20,
+    )
+
+    assert actual == baseline
+
+
+def test_candidate_row_mask_is_computed_without_wide_frame_copy():
+    frame = pd.DataFrame(
+        {
+            "left": [1.0, np.nan, np.nan],
+            "right": [np.nan, 2.0, np.nan],
+            "other_channel": [np.nan, np.nan, 3.0],
+        }
+    )
+
+    mask = discovery._candidate_non_null_row_mask(
+        frame,
+        ["left", "right"],
+    )
+
+    np.testing.assert_array_equal(
+        mask,
+        np.array([True, True, False]),
+    )
+
+
+def test_market_regime_frame_copies_only_required_source_columns():
+    class CopyGuardFrame(pd.DataFrame):
+        @property
+        def _constructor(self):
+            return CopyGuardFrame
+
+        def copy(self, deep=True):
+            assert "unused_candidate" not in self.columns
+            return super().copy(deep=deep)
+
+    dates = pd.to_datetime(
+        ["2026-07-30", "2026-07-30", "2026-07-31"]
+    )
+    frame = CopyGuardFrame(
+        {
+            "trade_date": dates,
+            "return_1": [0.01, -0.01, 0.02],
+            "unused_candidate": [1.0, 2.0, 3.0],
+        }
+    )
+
+    result = discovery._market_regime_daily_frame(frame)
+
+    assert list(result.index) == list(pd.DatetimeIndex(dates.unique()))
+    assert "market_return_1" in result
+
+
+def test_release_research_memory_does_not_trim_windows_working_set(
+    monkeypatch,
+):
+    class Guard:
+        def __getattr__(self, _name):
+            raise AssertionError(
+                "active Windows working set must not be trimmed"
+            )
+
+    collect_calls = []
+    monkeypatch.setattr(
+        discovery.gc,
+        "collect",
+        lambda: collect_calls.append(True),
+    )
+    monkeypatch.setattr(discovery.os, "name", "nt")
+    monkeypatch.setattr(
+        discovery.ctypes,
+        "windll",
+        Guard(),
+        raising=False,
+    )
+
+    discovery._release_research_memory()
+
+    assert collect_calls == [True]
+
+
+def test_walk_forward_fit_keeps_market_sources_from_prepared_frame(
+    monkeypatch,
+):
+    factors, labels = _discovery_sample()
+    prepared_factors = {"predictive": factors["predictive"]}
+    for index, name in enumerate(
+        discovery.MARKET_REGIME_SOURCE_COLUMNS
+    ):
+        prepared_factors[name] = (
+            factors["noise"] + float(index) / 100.0
+        )
+    prepared = discovery._factor_long_frame(prepared_factors)
+    observed_columns = []
+    original = discovery._fit_market_regime_model
+
+    def inspected(frame, target, *, min_days):
+        observed_columns.append(set(frame.columns))
+        return original(frame, target, min_days=min_days)
+
+    monkeypatch.setattr(
+        discovery,
+        "_fit_market_regime_model",
+        inspected,
+    )
+
+    discovery.run_walk_forward_discovery(
+        {"predictive": pd.DataFrame()},
+        labels,
+        _prepared_feature_frame=prepared,
+        train_days=60,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        min_cross_section=20,
+    )
+
+    assert observed_columns
+    required = set(discovery.MARKET_REGIME_SOURCE_COLUMNS)
+    assert all(
+        required.issubset(columns)
+        for columns in observed_columns
+    )
 
 
 def test_high_ic_factor_is_not_promoted_when_calibration_returns_are_negative():
@@ -846,6 +1390,40 @@ def test_execution_horizon_is_selected_on_calibration_only():
     )
 
 
+def test_execution_horizons_reject_misaligned_walk_forward_windows():
+    factors, one_day = _discovery_sample(periods=100)
+    first_date = one_day["trade_date"].min()
+    shifted = one_day.loc[
+        one_day["trade_date"].ne(first_date)
+    ].copy()
+
+    report = discovery.run_walk_forward_execution_discovery(
+        factors,
+        {
+            "hold_1": one_day,
+            "hold_3": shifted,
+        },
+        execution_metadata={
+            "hold_1": {"hold_days": 1},
+            "hold_3": {"hold_days": 3},
+        },
+        train_days=60,
+        test_days=10,
+        step_days=10,
+        purge_days=4,
+        top_k=5,
+        max_factors=3,
+        fdr_alpha=0.05,
+        min_cross_section=20,
+    )
+
+    assert report["windows"][0]["status"] == (
+        "execution_window_mismatch"
+    )
+    assert report["windows"][0]["selected_execution"] is None
+    assert report["windows"][0]["trade_count"] == 0
+
+
 def test_execution_discovery_builds_factor_long_frame_once(
     monkeypatch,
 ):
@@ -931,7 +1509,7 @@ def test_generated_execution_discovery_releases_each_label_before_next(
         discovery._run_generated_execution_discovery(
             factors,
             feature_frame,
-            {},
+            {"close": factors["predictive"]},
             hold_days_candidates=(1, 2, 3),
             stop_loss=-0.035,
             take_profit=0.07,
@@ -1162,6 +1740,7 @@ def test_run_short_factor_research_writes_auditable_report(tmp_path):
     assert report["research_only"] is True
     assert report["deployment_eligible"] is False
     assert report["production_write_attempted"] is False
+    assert report["config"]["min_partial_test_days"] == 10
     assert len(report["protocol"]["candidate_grammar_sha256"]) == 64
     assert len(report["protocol"]["config_sha256"]) == 64
     assert report["lookahead_policy"]["close_factors"] == (
@@ -1177,6 +1756,89 @@ def test_run_short_factor_research_writes_auditable_report(tmp_path):
     )
     assert report["data_quality"]["st_status_coverage"] == 1.0
     assert "factor_catalog" in report
+    assert report["primary_channel"] == "close"
+    interaction_name = "return_1__x__amount_shock_1_20"
+    assert report["factor_catalog"][interaction_name]["formula"] == (
+        "(rank(return_1) - 0.5) "
+        "* (rank(amount_shock_1_20) - 0.5)"
+    )
+    grammar = {
+        "base": discovery.BASE_FACTOR_FORMULAS,
+        "daily_basic": discovery.DAILY_BASIC_FACTOR_FORMULAS,
+        "structural": discovery.STRUCTURAL_FACTOR_FORMULAS,
+        "auction": discovery.AUCTION_FACTOR_FORMULAS,
+        "interaction_operator": "centered_cross_section_rank_product",
+        "curated_interaction_pairs": [
+            list(pair)
+            for pair in discovery.CURATED_INTERACTION_PAIRS
+        ],
+        "max_interactions": 2,
+    }
+    assert report["protocol"]["candidate_grammar_sha256"] == (
+        discovery._canonical_sha256(grammar)
+    )
+
+
+def test_research_report_distinguishes_unaligned_auction_history(
+    tmp_path,
+):
+    panel = _panel(periods=80, codes=24)
+    panel["security_master_eligible"] = pd.DataFrame(
+        1.0,
+        index=panel["close"].index,
+        columns=panel["close"].columns,
+    )
+    panel["st_status_known"] = pd.DataFrame(
+        1.0,
+        index=panel["close"].index,
+        columns=panel["close"].columns,
+    )
+    _factors, labels = _discovery_sample(periods=80, codes=24)
+    label_dates = sorted(labels["trade_date"].unique())
+    panel_dates = list(panel["close"].index)
+    labels["trade_date"] = labels["trade_date"].map(
+        dict(zip(label_dates, panel_dates))
+    )
+    labels["entry_date"] = (
+        pd.to_datetime(labels["trade_date"]) + pd.offsets.BDay(1)
+    )
+    auction = pd.DataFrame(
+        {
+            "code": list(panel["close"].columns),
+            "date": pd.Timestamp("2025-12-31"),
+            "auction_price": 10.1,
+            "pre_close": 10.0,
+        }
+    )
+    auction.loc[0, "date"] = labels["entry_date"].dropna().iloc[0]
+
+    report = discovery.run_short_factor_research(
+        panel,
+        labels=labels,
+        auction=auction,
+        expected_codes=list(panel["close"].columns),
+        out_dir=tmp_path,
+        train_days=40,
+        test_days=10,
+        step_days=10,
+        purge_days=3,
+        top_k=5,
+        max_interactions=2,
+        min_cross_section=20,
+    )
+
+    assert report["data_coverage"]["auction_history_eligible"] is True
+    assert report["data_coverage"]["auction_used"] is False
+    assert (
+        report["data_coverage"]["auction_alignment_coverage"]
+        < discovery.AUCTION_MIN_ALIGNMENT_COVERAGE
+    )
+    assert "auction_entry_alignment_unavailable" in (
+        report["data_quality"]["issues"]
+    )
+    assert report["auction_confirmation_discovery"]["reason"] == (
+        "auction_entry_alignment_unavailable"
+    )
 
 
 def test_generated_research_streams_close_and_auction_executions(
@@ -1192,6 +1854,11 @@ def test_generated_research_streams_close_and_auction_executions(
     )
     build_calls = []
     discovery_calls = []
+    expression_calls = []
+    memory_release_calls = []
+    original_expression_builder = (
+        discovery._build_expression_feature_frame
+    )
 
     def fake_build_label_frame(
         _panel,
@@ -1209,10 +1876,15 @@ def test_generated_research_streams_close_and_auction_executions(
 
     def fake_discovery(candidate_factors, _labels, **kwargs):
         discovery_calls.append(
-            (
-                len(candidate_factors),
-                float(kwargs["fdr_alpha"]),
-            )
+            {
+                "factor_count": len(candidate_factors),
+                "factor_names": set(candidate_factors),
+                "fdr_alpha": float(kwargs["fdr_alpha"]),
+                "missing_factors": (
+                    set(candidate_factors)
+                    - set(kwargs["_prepared_feature_frame"].columns)
+                ),
+            }
         )
         return {
             "selection_policy": {},
@@ -1233,6 +1905,37 @@ def test_generated_research_streams_close_and_auction_executions(
         "run_walk_forward_discovery",
         fake_discovery,
     )
+    monkeypatch.setattr(
+        discovery,
+        "_release_research_memory",
+        lambda: memory_release_calls.append(True),
+    )
+
+    def tracked_expression_builder(
+        base_factors,
+        *,
+        max_interactions=30,
+        consume_base=False,
+        candidate_plan=None,
+    ):
+        expression_calls.append(
+            {
+                "factor_names": set(base_factors),
+                "consume_base": bool(consume_base),
+            }
+        )
+        return original_expression_builder(
+            base_factors,
+            max_interactions=max_interactions,
+            consume_base=consume_base,
+            candidate_plan=candidate_plan,
+        )
+
+    monkeypatch.setattr(
+        discovery,
+        "_build_expression_feature_frame",
+        tracked_expression_builder,
+    )
     auction = labels[
         ["ts_code", "entry_date"]
     ].drop_duplicates().rename(
@@ -1249,15 +1952,41 @@ def test_generated_research_streams_close_and_auction_executions(
         auction=auction,
         expected_codes=list(panel["close"].columns),
         hold_days_candidates=(1, 2, 3),
-        max_interactions=0,
+        max_interactions=30,
     )
 
-    assert build_calls == [1, 2, 3, 2, 1, 2, 3]
+    assert build_calls == [2, 1, 3]
     assert len(discovery_calls) == 6
+    assert len(memory_release_calls) == 6
     assert all(
-        alpha == pytest.approx(0.05 / 3)
-        for _factor_count, alpha in discovery_calls
+        call["fdr_alpha"] == pytest.approx(0.05 / 3)
+        for call in discovery_calls
     )
+    assert all(
+        not call["missing_factors"]
+        for call in discovery_calls
+    )
+    assert all(
+        not any(
+            name.startswith("auction_")
+            or "__x__auction_" in name
+            for name in call["factor_names"]
+        )
+        for call in discovery_calls[::2]
+    )
+    assert all(
+        all(
+            any(
+                part in discovery.AUCTION_FACTOR_FORMULAS
+                for part in name.split("__x__")
+            )
+            for name in call["factor_names"]
+        )
+        for call in discovery_calls[1::2]
+    )
+    assert len(expression_calls) == 1
+    assert expression_calls[0]["consume_base"] is True
+    assert "auction_gap" in expression_calls[0]["factor_names"]
     expected_executions = ["hold_1", "hold_2", "hold_3"]
     assert report["close_discovery"]["selection_policy"][
         "execution_candidates"
@@ -1267,6 +1996,7 @@ def test_generated_research_streams_close_and_auction_executions(
     ]["execution_candidates"] == expected_executions
     assert report["as_of"]["label_max_exit"] is not None
     assert "auction_gap" in report["factor_catalog"]
+    assert report["primary_channel"] == "auction_confirmation"
 
 
 def test_partial_auxiliary_coverage_is_excluded_from_candidates():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import weakref
 from datetime import datetime
 
 import pandas as pd
@@ -42,13 +43,23 @@ def test_run_discovery_job_isolated_and_writes_latest(
     tmp_path,
     monkeypatch,
 ):
-    panel = _panel()
     calls = []
+    release_calls = []
+    close_refs = []
+    auxiliary = {
+        "daily_basic": pd.DataFrame(),
+        "auction": pd.DataFrame(),
+    }
     monkeypatch.setattr(short_factor_job, "ROOT", tmp_path)
+    def build_panel(**_kwargs):
+        panel = _panel()
+        close_refs.append(weakref.ref(panel["close"]))
+        return panel, ["000001", "600000"]
+
     monkeypatch.setattr(
         short_factor_job.scorer,
         "build_panel_from_cache",
-        lambda **kwargs: (panel, ["000001", "600000"]),
+        build_panel,
     )
     monkeypatch.setattr(
         short_factor_job.short_factor_st_status,
@@ -101,15 +112,12 @@ def test_run_discovery_job_isolated_and_writes_latest(
     monkeypatch.setattr(
         short_factor_job.short_factor_data,
         "load_auxiliary_history",
-        lambda **kwargs: {
-            "daily_basic": pd.DataFrame(),
-            "auction": pd.DataFrame(),
-        },
+        lambda **kwargs: auxiliary,
     )
-    monkeypatch.setattr(
-        short_factor_job.short_factor_discovery,
-        "run_short_factor_research",
-        lambda panel, **kwargs: {
+
+    def fake_research(panel, **kwargs):
+        assert auxiliary == {}
+        return {
             "schema_version": "short_factor_discovery_report_v1",
             "run_id": kwargs["run_id"],
             "status": "accepted",
@@ -120,8 +128,20 @@ def test_run_discovery_job_isolated_and_writes_latest(
                 "oos_rank_ic": 0.03,
                 "net_return_pct": 5.0,
             },
-            "promotion_candidates": [{"factor": "gap_absorption_1"}],
-        },
+            "promotion_candidates": [
+                {"factor": "gap_absorption_1"}
+            ],
+        }
+
+    monkeypatch.setattr(
+        short_factor_job.short_factor_discovery,
+        "run_short_factor_research",
+        fake_research,
+    )
+    monkeypatch.setattr(
+        short_factor_job.short_factor_discovery,
+        "_release_research_memory",
+        lambda: release_calls.append(close_refs[-1]() is None),
     )
 
     result = short_factor_job.run_discovery_job(
@@ -142,6 +162,7 @@ def test_run_discovery_job_isolated_and_writes_latest(
     assert result["ok"] is True
     assert result["status"] == "accepted"
     assert result["promotion_candidate_count"] == 1
+    assert release_calls == [True]
     assert result["st_status"]["coverage"] == 1.0
     assert calls == [
         (["000001", "600000"], "20260330", "20260731")
@@ -269,11 +290,18 @@ def test_run_discovery_job_continues_with_cached_data_on_rate_limit(
 def test_run_discovery_job_rejects_incomplete_st_status(
     monkeypatch,
 ):
-    panel = _panel()
+    close_refs = []
+    release_calls = []
+
+    def build_panel(**_kwargs):
+        panel = _panel()
+        close_refs.append(weakref.ref(panel["close"]))
+        return panel, ["000001", "600000"]
+
     monkeypatch.setattr(
         short_factor_job.scorer,
         "build_panel_from_cache",
-        lambda **kwargs: (panel, ["000001", "600000"]),
+        build_panel,
     )
     monkeypatch.setattr(
         short_factor_job.short_factor_st_status,
@@ -295,6 +323,11 @@ def test_run_discovery_job_rejects_incomplete_st_status(
             },
         ),
     )
+    monkeypatch.setattr(
+        short_factor_job.short_factor_discovery,
+        "_release_research_memory",
+        lambda: release_calls.append(close_refs[-1]() is None),
+    )
 
     with pytest.raises(
         ValueError,
@@ -314,3 +347,4 @@ def test_run_discovery_job_rejects_incomplete_st_status(
             },
             now=datetime(2026, 7, 31, 17, 10),
         )
+    assert release_calls == [True]
