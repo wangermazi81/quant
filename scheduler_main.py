@@ -48,6 +48,7 @@ def _supervise_factor_scheduler(
     grace_seconds: int = 120,
     max_factor_progress_age_seconds: int = 3600,
     max_factor_job_age_seconds: int = 21600,
+    max_data_refresh_job_age_seconds: int = 2700,
     max_data_progress_age_seconds: int = 900,
     monotonic=time.monotonic,
 ) -> int:
@@ -60,15 +61,21 @@ def _supervise_factor_scheduler(
             return 1
         if runtime.get("job_running") is True:
             factor_job_age = runtime.get("job_age_seconds")
+            current_job = str(runtime.get("current_job") or "unknown")
+            job_age_limit = (
+                max_data_refresh_job_age_seconds
+                if current_job == "data_refresh"
+                else max_factor_job_age_seconds
+            )
             if (
                 not isinstance(factor_job_age, (int, float))
                 or isinstance(factor_job_age, bool)
-                or factor_job_age
-                > max(1, max_factor_job_age_seconds)
+                or factor_job_age > max(1, job_age_limit)
             ):
                 logger.error(
-                    "AI 因子任务运行超时或缺少起始时间，"
-                    "终止主进程以触发重启"
+                    "因子任务 %s 运行超时或缺少起始时间，"
+                    "终止主进程以触发重启",
+                    current_job,
                 )
                 return 1
         else:
@@ -173,6 +180,15 @@ def main() -> int:
     except ValueError:
         factor_job_age = 21600
     try:
+        data_refresh_job_age = int(
+            os.environ.get(
+                "SCHEDULER_DATA_REFRESH_MAX_JOB_AGE_SECONDS",
+                "2700",
+            )
+        )
+    except ValueError:
+        data_refresh_job_age = 2700
+    try:
         data_progress_age = int(
             os.environ.get(
                 "SCHEDULER_DATA_MAX_PROGRESS_AGE_SECONDS",
@@ -187,6 +203,7 @@ def main() -> int:
         grace_seconds=max(1, grace_seconds),
         max_factor_progress_age_seconds=max(1, factor_progress_age),
         max_factor_job_age_seconds=max(1, factor_job_age),
+        max_data_refresh_job_age_seconds=max(1, data_refresh_job_age),
         max_data_progress_age_seconds=max(1, data_progress_age),
     )
     try:

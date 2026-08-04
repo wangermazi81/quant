@@ -11,6 +11,32 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_completed_trade_date(monkeypatch):
+    import analytics.data_manager as dm
+
+    def expected_trade_date(now=None):
+        current = now or datetime(2026, 7, 31, 17, 10)
+        close_guard = current.replace(
+            hour=15,
+            minute=30,
+            second=0,
+            microsecond=0,
+        )
+        candidate = current.date()
+        if current < close_guard:
+            candidate -= timedelta(days=1)
+        while candidate.weekday() >= 5:
+            candidate -= timedelta(days=1)
+        return candidate.isoformat()
+
+    monkeypatch.setattr(
+        dm,
+        "expected_completed_trade_date",
+        expected_trade_date,
+    )
+
+
 def _kline_frame(end_date, periods=30, start_price=10.0):
     dates = pd.bdate_range(end=end_date, periods=periods)
     prices = [start_price + i * 0.1 for i in range(periods)]

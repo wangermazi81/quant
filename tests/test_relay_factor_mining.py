@@ -3671,8 +3671,9 @@ def test_legacy_v4_model_preregistration_remains_auditable():
     assert registration["record"]["protocol_version"] == (
         "relay_fixed_ridge_preregistered_v4"
     )
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == (
-        "7b25a57f44a31e04c387771c0ef916ab584beda8dc7c6881e1ebe095ff8c2ab2"
+    canonical_bytes = path.read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(canonical_bytes).hexdigest() == (
+        "dde238528d350d2153464b86e6bf3b9dbc7b0bd1648805ed84cf2f1653501180"
     )
 
 

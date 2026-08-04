@@ -10,6 +10,49 @@ import pytest
 from analytics import short_factor_job
 
 
+@pytest.fixture(autouse=True)
+def _fresh_factor_cache(monkeypatch):
+    def expected_trade_date(now=None):
+        current = now or datetime(2026, 7, 31, 17, 10)
+        close_guard = current.replace(
+            hour=15,
+            minute=30,
+            second=0,
+            microsecond=0,
+        )
+        candidate = current.date()
+        if current < close_guard:
+            candidate -= pd.Timedelta(days=1)
+        while candidate.weekday() >= 5:
+            candidate -= pd.Timedelta(days=1)
+        return candidate.isoformat()
+
+    monkeypatch.setattr(
+        short_factor_job.data_manager,
+        "expected_completed_trade_date",
+        expected_trade_date,
+    )
+
+    def fresh_cache(**kwargs):
+        expected = expected_trade_date(kwargs.get("now"))
+        return {
+            "status": "fresh",
+            "expected_trade_date": expected,
+            "security_master_trade_date": expected,
+            "daily_cache_trade_date": expected,
+            "daily_latest_count": 2,
+            "min_required": 2,
+            "security_master_fresh": True,
+            "daily_cache_fresh": True,
+        }
+
+    monkeypatch.setattr(
+        short_factor_job.data_manager,
+        "factor_cache_freshness",
+        fresh_cache,
+    )
+
+
 def _panel() -> dict[str, pd.DataFrame]:
     dates = pd.bdate_range(end="2026-07-31", periods=90)
     codes = ["000001", "600000"]

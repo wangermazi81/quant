@@ -2672,3 +2672,312 @@ def test_validated_untrusted_snapshot_advances_empty_watchlist_scope(
     assert result["reason"] == "market_data_untrusted"
     assert result["latest_scope"]["trade_date"] == "2026-07-29"
     assert result["latest_scope"]["candidate_count"] == 0
+
+
+
+def _scheduler_cycle_config(scheduler, **overrides):
+    config = {
+        **scheduler.DEFAULT_CONFIG,
+        "data_refresh_times": [],
+        "ai_decision_times": [],
+        "mining": dict(scheduler.DEFAULT_CONFIG["mining"]),
+    }
+    config.update(overrides)
+    return config
+
+
+def test_scheduler_cycle_prioritizes_short_factor_before_other_close_jobs(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(scheduler, "get_status", lambda: {"jobs": {}})
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, slot=None, force=False: calls.append((job, slot))
+        or {"ok": True},
+    )
+    config = _scheduler_cycle_config(
+        scheduler,
+        data_refresh_times=["17:00"],
+        factor_mining_time="17:10",
+        short_factor_discovery_time="17:10",
+        data_refresh_window_minutes=20,
+    )
+
+    scheduler._run_scheduler_cycle(
+        datetime(2026, 8, 4, 17, 15),
+        config,
+    )
+
+    assert calls == [
+        ("short_factor_discovery", "17:10"),
+        ("factor_mining", "17:10"),
+        ("data_refresh", "17:00"),
+    ]
+
+
+def test_scheduler_cycle_catches_up_missed_short_factor_before_deadline(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(scheduler, "get_status", lambda: {"jobs": {}})
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, slot=None, force=False: calls.append((job, slot))
+        or {"ok": True},
+    )
+    config = _scheduler_cycle_config(
+        scheduler,
+        short_factor_discovery_time="17:10",
+        short_factor_catch_up_deadline="23:30",
+    )
+
+    scheduler._run_scheduler_cycle(
+        datetime(2026, 8, 4, 22, 26),
+        config,
+    )
+
+    assert calls == [("short_factor_discovery", "17:10")]
+
+
+def test_scheduler_cycle_does_not_repeat_successful_short_factor_catch_up(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    key = scheduler._job_key(
+        "short_factor_discovery",
+        "17:10",
+        "2026-08-04",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "get_status",
+        lambda: {"jobs": {key: {"ok": True, "attempt_count": 1}}},
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda *args, **kwargs: pytest.fail(
+            "successful short-factor run must not be repeated"
+        ),
+    )
+    config = _scheduler_cycle_config(
+        scheduler,
+        short_factor_discovery_time="17:10",
+        short_factor_catch_up_deadline="23:30",
+    )
+
+    scheduler._run_scheduler_cycle(
+        datetime(2026, 8, 4, 22, 26),
+        config,
+    )
+
+
+def test_scheduler_cycle_does_not_catch_up_short_factor_after_deadline(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    monkeypatch.setattr(scheduler, "get_status", lambda: {"jobs": {}})
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda *args, **kwargs: pytest.fail(
+            "short-factor catch-up must stop after deadline"
+        ),
+    )
+    config = _scheduler_cycle_config(
+        scheduler,
+        short_factor_discovery_time="17:10",
+        short_factor_catch_up_deadline="23:30",
+    )
+
+    scheduler._run_scheduler_cycle(
+        datetime(2026, 8, 4, 23, 31),
+        config,
+    )
+
+
+def test_scheduler_cycle_does_not_repeat_failed_data_refresh_slot(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    key = scheduler._job_key("data_refresh", "16:10", "2026-08-04")
+    monkeypatch.setattr(
+        scheduler,
+        "get_status",
+        lambda: {
+            "jobs": {
+                key: {
+                    "ok": False,
+                    "attempt_count": 1,
+                    "finished_at": "2026-08-04 16:11:00",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda *args, **kwargs: pytest.fail(
+            "data-refresh slot is limited to one automatic attempt"
+        ),
+    )
+    config = _scheduler_cycle_config(
+        scheduler,
+        data_refresh_times=["16:10"],
+        data_refresh_window_minutes=20,
+        data_refresh_max_attempts_per_slot=1,
+    )
+
+    scheduler._run_scheduler_cycle(
+        datetime(2026, 8, 4, 16, 15),
+        config,
+    )
+
+
+def test_run_job_records_attempt_and_retry_metadata(monkeypatch, tmp_path):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    monkeypatch.setattr(scheduler, "_today_text", lambda: "2026-08-04")
+    monkeypatch.setattr(
+        scheduler,
+        "_now_text",
+        lambda: "2026-08-04 17:12:00",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_runtime_now",
+        lambda: "2026-08-04T17:11:00+08:00",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_run_short_factor_discovery",
+        lambda _date: {"ok": False, "error": "stale cache"},
+    )
+
+    result = scheduler.run_job(
+        "short_factor_discovery",
+        slot="17:10",
+        force=True,
+    )
+
+    assert result["ok"] is False
+    record = scheduler.get_status()["jobs"][
+        "2026-08-04:short_factor_discovery:1710"
+    ]
+    assert record["attempt_count"] == 1
+    assert record["last_attempt_at"] == "2026-08-04 17:12:00"
+    assert record["next_retry_at"] == "2026-08-04 17:22:00"
+    assert record["blocked_by"] == "retry_cooldown"
+
+
+
+
+def test_run_job_alerts_when_short_factor_attempts_are_exhausted(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    from core import notification_manager
+
+    root.mkdir(parents=True)
+    key = "2026-08-04:short_factor_discovery:1710"
+    scheduler.STATUS_PATH.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "enabled": True,
+                "running": False,
+                "jobs": {
+                    key: {
+                        "job": "short_factor_discovery",
+                        "slot": "17:10",
+                        "date": "2026-08-04",
+                        "ok": False,
+                        "attempt_count": 2,
+                        "finished_at": "2026-08-04 17:30:00",
+                    }
+                },
+                "history": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scheduler, "_today_text", lambda: "2026-08-04")
+    monkeypatch.setattr(
+        scheduler,
+        "_now_text",
+        lambda: "2026-08-04 17:45:00",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_run_short_factor_discovery",
+        lambda _date: {"ok": False, "error": "provider unavailable"},
+    )
+    alerts = []
+    monkeypatch.setattr(
+        notification_manager,
+        "send_notification",
+        lambda title, content, config=None: alerts.append(
+            (title, content)
+        )
+        or {"ok": True},
+    )
+
+    scheduler.run_job(
+        "short_factor_discovery",
+        slot="17:10",
+        force=True,
+    )
+
+    record = scheduler.get_status()["jobs"][key]
+    assert record["attempt_count"] == 3
+    assert record["blocked_by"] == "max_attempts"
+    assert len(alerts) == 1
+    assert "short_factor_discovery" in alerts[0][1]
+    assert "provider unavailable" in alerts[0][1]
+
+def test_stale_recovery_records_interrupted_slot_as_failed_attempt(
+    monkeypatch,
+    tmp_path,
+):
+    scheduler, root = _isolate_scheduler(monkeypatch, tmp_path)
+    root.mkdir(parents=True)
+    status = {
+        "ok": True,
+        "enabled": True,
+        "running": True,
+        "current_job": "data_refresh",
+        "current_job_slot": "16:10",
+        "current_job_date": "2026-08-04",
+        "current_job_started_at": "2026-08-04T16:10:00+08:00",
+        "jobs": {},
+        "history": [],
+    }
+    scheduler.STATUS_PATH.write_text(
+        json.dumps(status),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_now_text",
+        lambda: "2026-08-04 16:55:00",
+    )
+
+    recovered = scheduler._recover_stale_runtime_state(status)
+
+    record = recovered["jobs"]["2026-08-04:data_refresh:1610"]
+    assert record["ok"] is False
+    assert record["attempt_count"] == 1
+    assert record["blocked_by"] == "max_attempts"
+    assert record["result"]["error"] == "stale scheduler lock recovered"
+    assert "current_job_slot" not in recovered
+    assert "current_job_date" not in recovered

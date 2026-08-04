@@ -14,8 +14,39 @@ if str(ANALYTICS) not in sys.path:
     sys.path.insert(0, str(ANALYTICS))
 
 from analytics import data_manager as dm  # noqa: E402
+from analytics import factor_history_quarantine  # noqa: E402
 from analytics import st_status_history  # noqa: E402
 from analytics.factors_zoo import scorer  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolated_factor_history_quarantine(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        factor_history_quarantine,
+        "QUARANTINE_PATH",
+        tmp_path / "factor_history_quarantine.json",
+    )
+
+    def expected_trade_date(now=None):
+        current = now or datetime(2026, 7, 30, 17, 10)
+        close_guard = current.replace(
+            hour=15,
+            minute=30,
+            second=0,
+            microsecond=0,
+        )
+        candidate = current.date()
+        if current < close_guard:
+            candidate -= pd.Timedelta(days=1)
+        while candidate.weekday() >= 5:
+            candidate -= pd.Timedelta(days=1)
+        return candidate.isoformat()
+
+    monkeypatch.setattr(
+        dm,
+        "expected_completed_trade_date",
+        expected_trade_date,
+    )
 
 
 def _daily_frame(start: str, periods: int) -> pd.DataFrame:
@@ -645,11 +676,13 @@ def test_refresh_security_master_requires_every_sampled_history(
         mode="replay",
     )
 
-    assert result["ok"] is False, result
+    assert result["ok"] is True, result
     assert result["history_required"] == 3
     assert result["history_usable"] == 2
     assert result["history_failed"] == 1
-    assert result["minimum_usable"] == 3
+    assert result["minimum_usable"] == 2
+    assert result["history_quarantined"] == 1
+    assert result["quarantined_codes"] == ["000009"]
 
 
 def test_refresh_security_master_repairs_missing_reserve_even_when_target_is_usable(
@@ -702,11 +735,13 @@ def test_refresh_security_master_repairs_missing_reserve_even_when_target_is_usa
         mode="replay",
     )
 
-    assert result["ok"] is False, result
+    assert result["ok"] is True, result
     assert result["history_usable"] == 2
     assert result["history_incomplete"] == 1
     assert result["history_failed"] == 1
-    assert result["minimum_usable"] == 3
+    assert result["minimum_usable"] == 2
+    assert result["history_quarantined"] == 1
+    assert result["quarantined_codes"] == ["000006"]
     assert calls
 
 
@@ -844,7 +879,8 @@ def test_refresh_factor_daily_cache_limits_master_history_to_required_sample(
         refresh_security_master=True,
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is False
+    assert result["error"] == "daily cache is empty"
     assert captured["n_stocks"] == 37
 
 
@@ -1139,7 +1175,7 @@ def test_point_in_time_panel_refills_invalid_member_from_stable_reserve(
     assert bool(latest.get("000009", False)) is False
 
 
-def test_point_in_time_panel_rejects_missing_reserve_when_target_is_available(
+def test_point_in_time_panel_accepts_target_when_only_reserve_history_is_missing(
     tmp_path,
     monkeypatch,
 ):
@@ -1182,18 +1218,17 @@ def test_point_in_time_panel_rejects_missing_reserve_when_target_is_available(
         index=False,
     )
 
-    with pytest.raises(
-        ValueError,
-        match="security master histories missing",
-    ):
-        scorer.build_panel_from_cache(
-            n_stocks=2,
-            days=60,
-            min_history=10,
-            require_latest=True,
-            point_in_time=True,
-            require_security_master=True,
-        )
+    panel, codes = scorer.build_panel_from_cache(
+        n_stocks=2,
+        days=60,
+        min_history=10,
+        require_latest=True,
+        point_in_time=True,
+        require_security_master=True,
+    )
+
+    assert codes == ["000004", "000009"]
+    assert int(panel["universe_eligible"].iloc[-1].sum()) == 2
 
 
 def test_point_in_time_panel_quarantines_only_from_first_price_break(tmp_path, monkeypatch):

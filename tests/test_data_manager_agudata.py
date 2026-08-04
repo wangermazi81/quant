@@ -1,8 +1,33 @@
 from datetime import datetime
 
 import pandas as pd
+import pytest
 
 from analytics import data_manager as manager
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_completed_trade_date(monkeypatch):
+    def expected_trade_date(now=None):
+        current = now or datetime(2026, 7, 31, 17, 10)
+        close_guard = current.replace(
+            hour=15,
+            minute=30,
+            second=0,
+            microsecond=0,
+        )
+        candidate = current.date()
+        if current < close_guard:
+            candidate -= pd.Timedelta(days=1)
+        while candidate.weekday() >= 5:
+            candidate -= pd.Timedelta(days=1)
+        return candidate.isoformat()
+
+    monkeypatch.setattr(
+        manager,
+        "expected_completed_trade_date",
+        expected_trade_date,
+    )
 
 
 def _config(**overrides):

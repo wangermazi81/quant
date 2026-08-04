@@ -17,9 +17,15 @@ import akshare as ak
 try:
     from analytics import agudata_provider
     from analytics import datasource_config
+    from analytics import factor_history_quarantine
     from analytics import tushare_provider
 except Exception:  # pragma: no cover - package import fallback for tests/tools
-    from . import agudata_provider, datasource_config, tushare_provider  # type: ignore
+    from . import (  # type: ignore
+        agudata_provider,
+        datasource_config,
+        factor_history_quarantine,
+        tushare_provider,
+    )
 
 # ── 强制 akshare 不走代理（直连国内行情接口）───────────────
 # requests 底层：trust_env=False 完全忽略系统代理
@@ -1014,6 +1020,81 @@ def _security_master_validation_error(
     return None
 
 
+
+def factor_cache_freshness(
+    *,
+    now: datetime | None = None,
+    min_required: int = 800,
+) -> dict:
+    """Validate point-in-time master and latest daily cross-section coverage."""
+    current = now or datetime.now()
+    expected_trade_date = expected_completed_trade_date(current)
+    minimum = max(1, int(min_required))
+    quarantined = factor_history_quarantine.active_codes()
+
+    master_trade_date = None
+    master_error = None
+    if not SECURITY_MASTER_FILE.is_file():
+        master_error = "security master is missing"
+    else:
+        try:
+            master = pd.read_csv(
+                SECURITY_MASTER_FILE,
+                dtype={"code": "string", "security_master_snapshot_trade_date": "string"},
+            )
+            if master.empty or "security_master_snapshot_trade_date" not in master.columns:
+                master_error = "security master snapshot trade date is missing"
+            else:
+                snapshots = pd.to_datetime(
+                    master["security_master_snapshot_trade_date"]
+                    .astype("string")
+                    .str.replace(r"\.0$", "", regex=True),
+                    format="%Y%m%d",
+                    errors="coerce",
+                ).dropna()
+                if snapshots.empty:
+                    master_error = "security master snapshot trade date is invalid"
+                else:
+                    master_trade_date = snapshots.min().strftime("%Y-%m-%d")
+        except Exception as exc:
+            master_error = f"security master unreadable: {str(exc)[:160]}"
+
+    latest_by_code: dict[str, str] = {}
+    for path in sorted(DATA_DIR.glob("*.csv")):
+        code = path.stem.split(".", 1)[0].zfill(6)
+        if code in quarantined:
+            continue
+        try:
+            dates = pd.read_csv(path, usecols=["date"])["date"]
+            parsed = pd.to_datetime(dates, errors="coerce").dropna()
+        except Exception:
+            continue
+        if not parsed.empty:
+            latest_by_code[code] = parsed.max().strftime("%Y-%m-%d")
+    daily_cache_trade_date = max(latest_by_code.values()) if latest_by_code else None
+    daily_latest_count = sum(
+        trade_date == expected_trade_date
+        for trade_date in latest_by_code.values()
+    )
+    security_master_fresh = bool(
+        master_trade_date == expected_trade_date
+        and master_error is None
+    )
+    daily_cache_fresh = daily_latest_count >= minimum
+    status = "fresh" if security_master_fresh and daily_cache_fresh else "stale"
+    return {
+        "status": status,
+        "expected_trade_date": expected_trade_date,
+        "security_master_trade_date": master_trade_date,
+        "daily_cache_trade_date": daily_cache_trade_date,
+        "daily_latest_count": int(daily_latest_count),
+        "min_required": minimum,
+        "security_master_fresh": security_master_fresh,
+        "daily_cache_fresh": daily_cache_fresh,
+        "quarantined_count": len(quarantined),
+        "security_master_error": master_error,
+    }
+
 def refresh_factor_security_master_history(
     days: int = 180,
     n_stocks: int | None = None,
@@ -1135,7 +1216,11 @@ def refresh_factor_security_master_history(
         relevant = master["code"].isin(required_codes)
 
     required_count = int(relevant.sum())
-    minimum_usable = required_count
+    minimum_usable = (
+        max(0, int(n_stocks))
+        if n_stocks is not None
+        else required_count
+    )
     entries = []
     for index, row in master.loc[relevant].iterrows():
         code = str(row["code"])
@@ -1175,71 +1260,84 @@ def refresh_factor_security_master_history(
     failed = 0
     usable = sum(1 for *_, complete in entries if complete)
     errors: list[str] = []
-    if usable < minimum_usable:
-        for (
-            code,
-            cache_path,
-            security_start,
-            security_end,
-            require_end_coverage,
-            complete,
-        ) in entries:
-            if complete:
-                continue
+    failure_reasons: dict[str, str] = {}
+    recovered_codes: list[str] = []
+    for (
+        code,
+        cache_path,
+        security_start,
+        security_end,
+        require_end_coverage,
+        complete,
+    ) in entries:
+        if complete:
+            recovered_codes.append(code)
+            continue
+        try:
             try:
-                try:
-                    if selected_history_provider == "agudata":
-                        history = agudata_provider.fetch_kline_qfq(
-                            code,
-                            security_start.strftime("%Y%m%d"),
-                            security_end.strftime("%Y%m%d"),
-                            api_key=(
-                                agudata_api_key
-                                or cfg.get("agudata_api_key")
-                            ),
-                            base_url=(
-                                agudata_base_url
-                                or cfg.get("agudata_base_url")
-                            ),
-                        )
-                    else:
-                        history = tushare_provider.fetch_kline_qfq(
-                            code,
-                            security_start.strftime("%Y%m%d"),
-                            security_end.strftime("%Y%m%d"),
-                            token=resolved_token,
-                            mode=resolved_mode,
-                        )
-                except Exception:
-                    history = None
-                history = _standardize_kline_for_cache(history)
-                if history.empty:
-                    history = _standardize_kline_for_cache(
-                        _fetch_kline_baostock(
-                            code,
-                            security_start.strftime("%Y-%m-%d"),
-                            security_end.strftime("%Y-%m-%d"),
-                        )
+                if selected_history_provider == "agudata":
+                    history = agudata_provider.fetch_kline_qfq(
+                        code,
+                        security_start.strftime("%Y%m%d"),
+                        security_end.strftime("%Y%m%d"),
+                        api_key=(
+                            agudata_api_key
+                            or cfg.get("agudata_api_key")
+                        ),
+                        base_url=(
+                            agudata_base_url
+                            or cfg.get("agudata_base_url")
+                        ),
                     )
-                if history is None or history.empty:
-                    raise ValueError("empty qfq history")
-                merged = merge_kline_cache(code, history)
-                if merged.empty:
-                    raise ValueError("cache merge produced no rows")
-                if not _factor_history_cache_complete(
-                    cache_path,
-                    security_start=security_start,
-                    security_end=security_end,
-                    minimum_rows=min(max(1, int(days)), 60),
-                    require_end_coverage=require_end_coverage,
-                ):
-                    raise ValueError("history remains incomplete after backfill")
-                backfilled += 1
-                usable += 1
-            except Exception as exc:
-                failed += 1
-                if len(errors) < 20:
-                    errors.append(f"{code}: {str(exc)[:160]}")
+                else:
+                    history = tushare_provider.fetch_kline_qfq(
+                        code,
+                        security_start.strftime("%Y%m%d"),
+                        security_end.strftime("%Y%m%d"),
+                        token=resolved_token,
+                        mode=resolved_mode,
+                    )
+            except Exception:
+                history = None
+            history = _standardize_kline_for_cache(history)
+            if history.empty:
+                history = _standardize_kline_for_cache(
+                    _fetch_kline_baostock(
+                        code,
+                        security_start.strftime("%Y-%m-%d"),
+                        security_end.strftime("%Y-%m-%d"),
+                    )
+                )
+            if history is None or history.empty:
+                raise ValueError("empty qfq history")
+            merged = merge_kline_cache(code, history)
+            if merged.empty:
+                raise ValueError("cache merge produced no rows")
+            if not _factor_history_cache_complete(
+                cache_path,
+                security_start=security_start,
+                security_end=security_end,
+                minimum_rows=min(max(1, int(days)), 60),
+                require_end_coverage=require_end_coverage,
+            ):
+                raise ValueError("history remains incomplete after backfill")
+            backfilled += 1
+            usable += 1
+            recovered_codes.append(code)
+        except Exception as exc:
+            failed += 1
+            reason = str(exc)[:160]
+            failure_reasons[code] = reason
+            if len(errors) < 20:
+                errors.append(f"{code}: {reason}")
+
+
+    if failure_reasons:
+        factor_history_quarantine.record_failures(failure_reasons)
+    if recovered_codes:
+        factor_history_quarantine.clear_codes(recovered_codes)
+    active_quarantine = factor_history_quarantine.active_codes()
+
 
     return {
         "ok": usable >= minimum_usable,
@@ -1250,6 +1348,11 @@ def refresh_factor_security_master_history(
         "history_usable": usable,
         "history_incomplete": required_count - usable,
         "minimum_usable": minimum_usable,
+        "history_quarantined": len(failure_reasons),
+        "quarantined_codes": sorted(failure_reasons),
+        "quarantine_reasons": failure_reasons,
+        "active_quarantine_count": len(active_quarantine),
+        "coverage": (usable / minimum_usable) if minimum_usable else 1.0,
         "errors": errors,
         "path": str(SECURITY_MASTER_FILE),
     }

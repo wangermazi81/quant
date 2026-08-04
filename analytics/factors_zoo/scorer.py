@@ -39,7 +39,7 @@ from typing import Any, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from analytics import st_status_history
+from analytics import factor_history_quarantine, st_status_history
 
 logger = logging.getLogger(__name__)
 
@@ -386,6 +386,13 @@ def build_panel_from_cache(
     )
     if require_security_master and security_master.empty:
         raise ValueError("point-in-time security master unavailable")
+    quarantined_codes = factor_history_quarantine.active_codes()
+    if quarantined_codes:
+        ranked_csvs = [
+            item
+            for item in ranked_csvs
+            if item[2].split(".", 1)[0].zfill(6) not in quarantined_codes
+        ]
     newest_cache_date = (
         max(item[0] for item in ranked_csvs)
         if ranked_csvs
@@ -400,6 +407,10 @@ def build_panel_from_cache(
         )
     ):
         raise ValueError("point-in-time security master lifecycle snapshot is untrusted")
+    if not security_master.empty and quarantined_codes:
+        security_master = security_master.loc[
+            ~security_master.index.astype(str).isin(quarantined_codes)
+        ].copy()
     if not security_master.empty and ranked_csvs:
         newest_master_date = max(item[0] for item in ranked_csvs)
         sample_start = newest_master_date - pd.offsets.BDay(
@@ -422,6 +433,7 @@ def build_panel_from_cache(
         if (
             require_security_master
             and missing_histories
+            and n_stocks is None
         ):
             preview = ",".join(missing_histories[:10])
             raise ValueError(
@@ -499,7 +511,7 @@ def build_panel_from_cache(
 
     if require_security_master and required_codes:
         unusable_histories = sorted(required_codes - set(per))
-        if unusable_histories:
+        if unusable_histories and n_stocks is None:
             preview = ",".join(unusable_histories[:10])
             raise ValueError(
                 "point-in-time security master histories unusable: "

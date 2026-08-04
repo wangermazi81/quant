@@ -462,3 +462,65 @@ def test_scheduler_does_not_dispatch_scans_outside_trading_hours(monkeypatch):
         schedulers.run_scheduler()
 
     assert started == []
+
+
+
+def test_scheduler_supervisor_uses_shorter_deadline_for_data_refresh(caplog):
+    import scheduler_main
+
+    class StopEvent:
+        @staticmethod
+        def wait(_timeout):
+            return False
+
+    class FactorScheduler:
+        @staticmethod
+        def refresh_runtime_heartbeat():
+            return {
+                "ready": True,
+                "thread_alive": True,
+                "progress_age_seconds": 1,
+                "job_running": True,
+                "current_job": "data_refresh",
+                "job_age_seconds": 2701,
+            }
+
+    assert scheduler_main._supervise_factor_scheduler(
+        FactorScheduler(),
+        stop_event=StopEvent(),
+        interval_seconds=0,
+        max_factor_job_age_seconds=21600,
+        max_data_refresh_job_age_seconds=2700,
+    ) == 1
+    assert "data_refresh" in caplog.text
+
+
+def test_scheduler_supervisor_keeps_generic_deadline_for_non_refresh_job():
+    import scheduler_main
+
+    class StopEvent:
+        calls = 0
+
+        def wait(self, _timeout):
+            self.calls += 1
+            return self.calls >= 2
+
+    class FactorScheduler:
+        @staticmethod
+        def refresh_runtime_heartbeat():
+            return {
+                "ready": True,
+                "thread_alive": True,
+                "progress_age_seconds": 1,
+                "job_running": True,
+                "current_job": "short_factor_discovery",
+                "job_age_seconds": 2701,
+            }
+
+    assert scheduler_main._supervise_factor_scheduler(
+        FactorScheduler(),
+        stop_event=StopEvent(),
+        interval_seconds=0,
+        max_factor_job_age_seconds=21600,
+        max_data_refresh_job_age_seconds=2700,
+    ) == 0

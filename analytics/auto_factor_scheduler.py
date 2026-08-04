@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """Root-admin auto research scheduler for factor mining and AI trade decisions.
 
 The scheduler runs inside the existing web service process. It never exposes
@@ -19,7 +19,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from core import user_manager as um
 from analytics import relay_factor_mining
@@ -43,7 +43,11 @@ DEFAULT_CONFIG = {
     "short_factor_discovery_time": "17:10",
     "ai_decision_times": ["09:15", "09:25"],
     "window_minutes": 90,
+    "data_refresh_window_minutes": 20,
     "retry_cooldown_minutes": 10,
+    "data_refresh_max_attempts_per_slot": 1,
+    "short_factor_max_attempts_per_day": 3,
+    "short_factor_catch_up_deadline": "23:30",
     "max_candidates": 6,
     "execute_paper": False,
     "mining": {
@@ -411,10 +415,29 @@ def _validated_scheduler_config() -> dict[str, Any]:
         "window_minutes",
         maximum=1_440,
     )
+    normalized["data_refresh_window_minutes"] = _config_int(
+        raw.get("data_refresh_window_minutes"),
+        "data_refresh_window_minutes",
+        maximum=1_440,
+    )
     normalized["retry_cooldown_minutes"] = _config_int(
         raw.get("retry_cooldown_minutes"),
         "retry_cooldown_minutes",
         maximum=1_440,
+    )
+    normalized["data_refresh_max_attempts_per_slot"] = _config_int(
+        raw.get("data_refresh_max_attempts_per_slot"),
+        "data_refresh_max_attempts_per_slot",
+        maximum=20,
+    )
+    normalized["short_factor_max_attempts_per_day"] = _config_int(
+        raw.get("short_factor_max_attempts_per_day"),
+        "short_factor_max_attempts_per_day",
+        maximum=20,
+    )
+    normalized["short_factor_catch_up_deadline"] = _schedule_time(
+        raw.get("short_factor_catch_up_deadline"),
+        "short_factor_catch_up_deadline",
     )
     normalized["max_candidates"] = _config_int(
         raw.get("max_candidates"),
@@ -969,16 +992,37 @@ def _recover_stale_runtime_state(status: dict) -> dict:
         if LOCK_PATH.exists() and not stale_lock_removed:
             return status
         job = str(status.get("current_job") or "unknown")
+        slot = str(status.get("current_job_slot") or "").strip() or None
+        date_text = (
+            str(status.get("current_job_date") or "").strip()
+            or str(status.get("current_job_started_at") or "")[:10]
+            or _today_text()
+        )
+        key = _job_key(job, slot, date_text)
+        result = {
+            "ok": False,
+            "error": "stale scheduler lock recovered",
+        }
+        jobs = status.setdefault("jobs", {})
+        jobs[key] = _completed_job_record(
+            job=job,
+            slot=slot,
+            date_text=date_text,
+            result=result,
+            previous=jobs.get(key),
+        )
         status["running"] = False
         status.pop("current_job", None)
+        status.pop("current_job_slot", None)
+        status.pop("current_job_date", None)
         status.pop("current_job_started_at", None)
-        status.setdefault("jobs", {})
         _append_history(
             status,
             {
                 "job": job,
+                "slot": slot,
                 "ok": False,
-                "error": "stale scheduler lock recovered",
+                "error": result["error"],
             },
         )
         _save_status(status)
@@ -1155,6 +1199,17 @@ def _parse_time(date_text: str, hhmm: str) -> datetime | None:
 def _in_window(now: datetime, hhmm: str, minutes: int) -> bool:
     start = _parse_time(now.strftime("%Y-%m-%d"), hhmm)
     return bool(start and start <= now <= start + timedelta(minutes=max(1, minutes)))
+
+
+def _in_catch_up_window(
+    now: datetime,
+    hhmm: str,
+    deadline_hhmm: str,
+) -> bool:
+    date_text = now.strftime("%Y-%m-%d")
+    start = _parse_time(date_text, hhmm)
+    deadline = _parse_time(date_text, deadline_hhmm)
+    return bool(start and deadline and start <= now <= deadline)
 
 
 def _is_weekday(now: datetime | None = None) -> bool:
@@ -1805,6 +1860,127 @@ def _run_ai_decision(date_text: str) -> dict:
     }
 
 
+def _recorded_attempt_count(record: Any) -> int:
+    if not isinstance(record, dict):
+        return 0
+    value = record.get("attempt_count")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return int(value)
+    return 1
+
+
+def _job_attempt_limit(
+    job: str,
+    cfg: Mapping[str, Any] | None = None,
+) -> int | None:
+    resolved = cfg if isinstance(cfg, Mapping) else get_config()
+    if job == "data_refresh":
+        field = "data_refresh_max_attempts_per_slot"
+    elif job == "short_factor_discovery":
+        field = "short_factor_max_attempts_per_day"
+    else:
+        return None
+    try:
+        value = int(resolved.get(field, DEFAULT_CONFIG[field]))
+    except (TypeError, ValueError):
+        value = int(DEFAULT_CONFIG[field])
+    return max(1, value)
+
+
+def _parse_job_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+
+
+def _completed_job_record(
+    *,
+    job: str,
+    slot: str | None,
+    date_text: str,
+    result: Mapping[str, Any],
+    previous: Any = None,
+    cfg: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    finished_at = _now_text()
+    attempt_count = _recorded_attempt_count(previous) + 1
+    ok = bool(result.get("ok"))
+    limit = _job_attempt_limit(job, cfg)
+    retry_cooldown = int(
+        (cfg or get_config()).get(
+            "retry_cooldown_minutes",
+            DEFAULT_CONFIG["retry_cooldown_minutes"],
+        )
+        or DEFAULT_CONFIG["retry_cooldown_minutes"]
+    )
+    next_retry_at: str | None = None
+    if ok:
+        blocked_by = "already_succeeded"
+    elif limit is not None and attempt_count >= limit:
+        blocked_by = "max_attempts"
+    else:
+        blocked_by = "retry_cooldown"
+        finished = _parse_job_timestamp(finished_at)
+        if finished is not None:
+            next_retry_at = (
+                finished
+                + timedelta(minutes=max(1, retry_cooldown))
+            ).strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "job": job,
+        "slot": slot,
+        "date": date_text,
+        "ok": ok,
+        "attempt_count": attempt_count,
+        "last_attempt_at": finished_at,
+        "next_retry_at": next_retry_at,
+        "blocked_by": blocked_by,
+        "finished_at": finished_at,
+        "result": dict(result),
+    }
+
+
+def _alert_exhausted_short_factor(record: Mapping[str, Any]) -> None:
+    if (
+        record.get("job") != "short_factor_discovery"
+        or record.get("ok") is True
+        or record.get("blocked_by") != "max_attempts"
+    ):
+        return
+    try:
+        from core import notification_manager
+
+        result = record.get("result")
+        error = (
+            str(result.get("error") or "unknown error")[:300]
+            if isinstance(result, Mapping)
+            else "unknown error"
+        )
+        notification_manager.send_notification(
+            "见微 Alpha 短因子重试耗尽",
+            "job=short_factor_discovery\n"
+            f"date={record.get('date')}\n"
+            f"slot={record.get('slot')}\n"
+            f"attempt_count={record.get('attempt_count')}\n"
+            f"error={error}",
+        )
+    except Exception as exc:
+        logger.warning(
+            "[auto_factor_scheduler] exhausted-attempt alert failed: %s",
+            exc,
+        )
+
+
 def run_job(job: str, slot: str | None = None, force: bool = False) -> dict:
     job = str(job or "").strip()
     if job not in {
@@ -1830,6 +2006,8 @@ def run_job(job: str, slot: str | None = None, force: bool = False) -> dict:
                 status = get_status()
                 status["running"] = True
                 status["current_job"] = job
+                status["current_job_slot"] = slot
+                status["current_job_date"] = date_text
                 status["current_job_started_at"] = _runtime_now()
                 _save_status(status)
                 try:
@@ -1874,17 +2052,21 @@ def run_job(job: str, slot: str | None = None, force: bool = False) -> dict:
                 status = get_status()
                 status["running"] = False
                 status.pop("current_job", None)
+                status.pop("current_job_slot", None)
+                status.pop("current_job_date", None)
                 status.pop("current_job_started_at", None)
-                status.setdefault("jobs", {})[key] = {
-                    "job": job,
-                    "slot": slot,
-                    "date": date_text,
-                    "ok": bool(result.get("ok")),
-                    "finished_at": _now_text(),
-                    "result": result,
-                }
+                jobs = status.setdefault("jobs", {})
+                record = _completed_job_record(
+                    job=job,
+                    slot=slot,
+                    date_text=date_text,
+                    result=result,
+                    previous=jobs.get(key),
+                )
+                jobs[key] = record
                 _append_history(status, {"job": job, "slot": slot, "ok": bool(result.get("ok")), "result": result})
                 _save_status(status)
+                _alert_exhausted_short_factor(record)
                 return result
         except Exception as exc:
             logger.exception("[auto_factor_scheduler] job %s failed", job)
@@ -1892,17 +2074,21 @@ def run_job(job: str, slot: str | None = None, force: bool = False) -> dict:
             status = get_status()
             status["running"] = False
             status.pop("current_job", None)
+            status.pop("current_job_slot", None)
+            status.pop("current_job_date", None)
             status.pop("current_job_started_at", None)
-            status.setdefault("jobs", {})[key] = {
-                "job": job,
-                "slot": slot,
-                "date": date_text,
-                "ok": False,
-                "finished_at": _now_text(),
-                "result": result,
-            }
+            jobs = status.setdefault("jobs", {})
+            record = _completed_job_record(
+                job=job,
+                slot=slot,
+                date_text=date_text,
+                result=result,
+                previous=jobs.get(key),
+            )
+            jobs[key] = record
             _append_history(status, {"job": job, "slot": slot, "ok": False, "error": result["error"]})
             _save_status(status)
+            _alert_exhausted_short_factor(record)
             return result
 
 
@@ -1918,19 +2104,131 @@ def _attempt_blocked(
     date_text: str,
     now: datetime | None = None,
     retry_cooldown_minutes: int = 10,
+    max_attempts: int | None = None,
 ) -> bool:
     rec = status.get("jobs", {}).get(_job_key(job, slot, date_text))
     if not rec:
         return False
     if rec.get("ok"):
         return True
-    finished = rec.get("finished_at")
-    try:
-        finished_at = datetime.strptime(str(finished), "%Y-%m-%d %H:%M:%S")
-    except Exception:
-        return False
-    retry_at = finished_at + timedelta(minutes=max(1, int(retry_cooldown_minutes)))
+    if (
+        max_attempts is not None
+        and _recorded_attempt_count(rec) >= max(1, int(max_attempts))
+    ):
+        return True
+    retry_at = _parse_job_timestamp(rec.get("next_retry_at"))
+    if retry_at is None:
+        finished_at = _parse_job_timestamp(rec.get("finished_at"))
+        if finished_at is None:
+            return False
+        retry_at = finished_at + timedelta(
+            minutes=max(1, int(retry_cooldown_minutes))
+        )
     return (now or datetime.now()) < retry_at
+
+
+def _run_scheduler_cycle(
+    now: datetime,
+    cfg: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    status = get_status()
+    date_text = now.strftime("%Y-%m-%d")
+    window = int(cfg.get("window_minutes", 90) or 90)
+    data_window = int(
+        cfg.get(
+            "data_refresh_window_minutes",
+            DEFAULT_CONFIG["data_refresh_window_minutes"],
+        )
+        or DEFAULT_CONFIG["data_refresh_window_minutes"]
+    )
+    retry_cooldown = int(
+        cfg.get("retry_cooldown_minutes", 10) or 10
+    )
+    executed: list[dict[str, Any]] = []
+
+    def run_due(
+        job: str,
+        slot: str,
+        *,
+        due: bool,
+        max_attempts: int | None = None,
+    ) -> None:
+        nonlocal status
+        if not due or _attempt_blocked(
+            status,
+            job,
+            slot,
+            date_text,
+            now=now,
+            retry_cooldown_minutes=retry_cooldown,
+            max_attempts=max_attempts,
+        ):
+            return
+        _mark_scheduler_progress()
+        result = run_job(job, slot=slot)
+        executed.append({"job": job, "slot": slot, "result": result})
+        _mark_scheduler_progress()
+        status = get_status()
+
+    short_slot = str(
+        cfg.get("short_factor_discovery_time")
+        or DEFAULT_CONFIG["short_factor_discovery_time"]
+    )
+    catch_up_deadline = str(
+        cfg.get("short_factor_catch_up_deadline")
+        or DEFAULT_CONFIG["short_factor_catch_up_deadline"]
+    )
+    run_due(
+        "short_factor_discovery",
+        short_slot,
+        due=_in_catch_up_window(
+            now,
+            short_slot,
+            catch_up_deadline,
+        ),
+        max_attempts=int(
+            cfg.get(
+                "short_factor_max_attempts_per_day",
+                DEFAULT_CONFIG["short_factor_max_attempts_per_day"],
+            )
+            or DEFAULT_CONFIG["short_factor_max_attempts_per_day"]
+        ),
+    )
+
+    factor_slot = str(
+        cfg.get("factor_mining_time")
+        or DEFAULT_CONFIG["factor_mining_time"]
+    )
+    run_due(
+        "factor_mining",
+        factor_slot,
+        due=_in_window(now, factor_slot, window),
+    )
+
+    data_max_attempts = int(
+        cfg.get(
+            "data_refresh_max_attempts_per_slot",
+            DEFAULT_CONFIG["data_refresh_max_attempts_per_slot"],
+        )
+        or DEFAULT_CONFIG["data_refresh_max_attempts_per_slot"]
+    )
+    for value in cfg.get("data_refresh_times") or []:
+        data_slot = str(value)
+        run_due(
+            "data_refresh",
+            data_slot,
+            due=_in_window(now, data_slot, data_window),
+            max_attempts=data_max_attempts,
+        )
+
+    for value in cfg.get("ai_decision_times") or []:
+        ai_slot = str(value)
+        run_due(
+            "ai_decision",
+            ai_slot,
+            due=_in_window(now, ai_slot, 20),
+        )
+    return executed
 
 
 def run_scheduler_loop(interval_seconds: int = 30) -> None:
@@ -1958,52 +2256,7 @@ def run_scheduler_loop(interval_seconds: int = 30) -> None:
                 and calendar_ready
                 and _is_weekday(now)
             ):
-                status = get_status()
-                date_text = now.strftime("%Y-%m-%d")
-                window = int(cfg.get("window_minutes", 90) or 90)
-                retry_cooldown = int(cfg.get("retry_cooldown_minutes", 10) or 10)
-                for slot in cfg.get("data_refresh_times") or []:
-                    slot = str(slot)
-                    if _in_window(now, slot, window) and not _attempt_blocked(
-                        status, "data_refresh", slot, date_text, now=now, retry_cooldown_minutes=retry_cooldown
-                    ):
-                        _mark_scheduler_progress()
-                        run_job("data_refresh", slot=slot)
-                        _mark_scheduler_progress()
-                        status = get_status()
-                slot = str(cfg.get("factor_mining_time") or DEFAULT_CONFIG["factor_mining_time"])
-                if _in_window(now, slot, window) and not _attempt_blocked(
-                    status, "factor_mining", slot, date_text, now=now, retry_cooldown_minutes=retry_cooldown
-                ):
-                    _mark_scheduler_progress()
-                    run_job("factor_mining", slot=slot)
-                    _mark_scheduler_progress()
-                    status = get_status()
-                slot = str(
-                    cfg.get("short_factor_discovery_time")
-                    or DEFAULT_CONFIG["short_factor_discovery_time"]
-                )
-                if _in_window(now, slot, window) and not _attempt_blocked(
-                    status,
-                    "short_factor_discovery",
-                    slot,
-                    date_text,
-                    now=now,
-                    retry_cooldown_minutes=retry_cooldown,
-                ):
-                    _mark_scheduler_progress()
-                    run_job("short_factor_discovery", slot=slot)
-                    _mark_scheduler_progress()
-                    status = get_status()
-                for slot in cfg.get("ai_decision_times") or []:
-                    slot = str(slot)
-                    if _in_window(now, slot, 20) and not _attempt_blocked(
-                        status, "ai_decision", slot, date_text, now=now, retry_cooldown_minutes=retry_cooldown
-                    ):
-                        _mark_scheduler_progress()
-                        run_job("ai_decision", slot=slot)
-                        _mark_scheduler_progress()
-                        status = get_status()
+                _run_scheduler_cycle(now, cfg)
         except Exception as exc:
             logger.warning(f"[auto_factor_scheduler] loop error: {exc}")
             if first_cycle:

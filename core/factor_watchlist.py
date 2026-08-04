@@ -329,11 +329,26 @@ def sanitize_watchlist_item(raw: dict, run_id: str | None = None,
     if not ts_code:
         return None
     code = ts_code.split(".")[0]
+    if len(code) != 6 or not code.isdigit():
+        return None
     item = {
         "ts_code": ts_code,
         "code": code,
         "name": resolve_watchlist_name(ts_code, raw.get("name")),
         "trade_date": clean_watchlist_text(raw.get("trade_date"), 20),
+        "signal_trade_date": clean_watchlist_text(raw.get("signal_trade_date"), 20),
+        "planned_entry_date": clean_watchlist_text(raw.get("planned_entry_date"), 20),
+        "entry_window": clean_watchlist_text(raw.get("entry_window"), 20),
+        "state": clean_watchlist_text(raw.get("state"), 30),
+        "allow_real_order": _strict_optional_bool(raw.get("allow_real_order")),
+        "execution_mode": clean_watchlist_text(raw.get("execution_mode"), 20),
+        "factor_model_version": clean_watchlist_text(raw.get("factor_model_version"), 120),
+        "slippage": raw.get("slippage"),
+        "limit_up_down_handling": clean_watchlist_text(raw.get("limit_up_down_handling"), 40),
+        "suspension_filter": _strict_optional_bool(raw.get("suspension_filter")),
+        "st_filter": _strict_optional_bool(raw.get("st_filter")),
+        "accepted_factors": raw.get("accepted_factors") if isinstance(raw.get("accepted_factors"), list) else [],
+        "factor_score": raw.get("factor_score"),
         "source_run_id": clean_watchlist_text(run_id or raw.get("source_run_id") or raw.get("run_id"), 40),
         "strategy_key": clean_watchlist_text(raw.get("strategy_key"), 120),
         "model_version": clean_watchlist_text(raw.get("model_version"), 120),
@@ -534,6 +549,12 @@ def save_ai_trade_decision(data: dict) -> None:
 
 
 def is_deployable_factor_candidate(item: dict) -> bool:
+    if item.get("allow_real_order") is False:
+        return False
+    if str(item.get("execution_mode") or "").lower() == "paper":
+        return False
+    if str(item.get("state") or "").lower() == "paper_candidate":
+        return False
     try:
         position_pct = float(item.get("position_pct"))
     except (TypeError, ValueError):
