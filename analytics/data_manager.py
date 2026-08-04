@@ -824,6 +824,7 @@ def _factor_history_cache_complete(
     security_end: pd.Timestamp,
     minimum_rows: int,
     require_end_coverage: bool,
+    end_tolerance_days: int = 0,
 ) -> bool:
     if not cache_path.is_file():
         return False
@@ -852,9 +853,10 @@ def _factor_history_cache_complete(
         return False
     if pd.Timestamp(relevant["date"].min()) > security_start + tolerance:
         return False
+    end_tolerance = pd.Timedelta(days=max(0, int(end_tolerance_days)))
     if (
         require_end_coverage
-        and pd.Timestamp(relevant["date"].max()) < security_end - tolerance
+        and pd.Timestamp(relevant["date"].max()) < security_end - end_tolerance
     ):
         return False
     if bool(relevant["close"].pct_change(fill_method=None).abs().gt(0.35).any()):
@@ -1202,9 +1204,12 @@ def refresh_factor_security_master_history(
         format="%Y%m%d",
         errors="coerce",
     )
-    relevant = (list_dates.isna() | (list_dates <= end_date)) & (
+    lifecycle_relevant = (list_dates.isna() | (list_dates <= end_date)) & (
         delist_dates.isna() | (delist_dates >= window_start)
     )
+    sample_master: pd.DataFrame | None = None
+    sample_dates = pd.DatetimeIndex([])
+    pool_size: int | None = None
     if n_stocks is not None:
         from analytics.factors_zoo.scorer import (
             _master_sample_mask,
@@ -1219,77 +1224,99 @@ def refresh_factor_security_master_history(
         sample_master["list_date"] = list_dates
         sample_master["delist_date"] = delist_dates
         sample_master = sample_master.set_index("code", drop=False)
+        sample_dates = pd.bdate_range(sample_start, end_date)
+        pool_size = _point_in_time_pool_size(n_stocks)
+
+    def sampled_required_codes(excluded_codes: set[str] | None = None) -> set[str]:
+        if n_stocks is None:
+            return set(master.loc[lifecycle_relevant, "code"].astype(str))
+        assert sample_master is not None
+        eligible_master = sample_master
+        if excluded_codes:
+            eligible_master = eligible_master.loc[
+                ~eligible_master.index.astype(str).isin(excluded_codes)
+            ]
         sample_mask = _master_sample_mask(
-            sample_master,
-            pd.bdate_range(sample_start, end_date),
-            _point_in_time_pool_size(n_stocks),
+            eligible_master,
+            sample_dates,
+            pool_size,
             minimum_history=minimum_history,
         )
-        required_codes = {
+        return {
             str(code)
             for code in sample_mask.columns
             if bool(sample_mask[code].any())
         }
-        relevant = master["code"].isin(required_codes)
 
-    required_count = int(relevant.sum())
     minimum_usable = (
         max(0, int(n_stocks))
         if n_stocks is not None
-        else required_count
+        else int(lifecycle_relevant.sum())
     )
-    entries = []
-    for index, row in master.loc[relevant].iterrows():
-        code = str(row["code"])
-        cache_path = DATA_DIR / f"{code}.csv"
-        security_end = min(
-            end_date,
-            pd.Timestamp(delist_dates.loc[index])
-            if pd.notna(delist_dates.loc[index])
-            else end_date,
-        )
-        security_start = max(
-            window_start,
-            pd.Timestamp(list_dates.loc[index])
-            if pd.notna(list_dates.loc[index])
-            else window_start,
-        )
-        require_end_coverage = pd.notna(delist_dates.loc[index])
-        complete = _factor_history_cache_complete(
-            cache_path,
-            security_start=security_start,
-            security_end=security_end,
-            minimum_rows=min(max(1, int(days)), 60),
-            require_end_coverage=require_end_coverage,
-        )
-        entries.append(
-            (
-                code,
-                cache_path,
-                security_start,
-                security_end,
-                require_end_coverage,
-                complete,
-            )
-        )
-
+    active_quarantine_before = factor_history_quarantine.active_codes()
+    attempted_codes: set[str] = set()
     backfilled = 0
     failed = 0
-    usable = sum(1 for *_, complete in entries if complete)
+    usable = 0
     errors: list[str] = []
     failure_reasons: dict[str, str] = {}
     recovered_codes: list[str] = []
-    for (
-        code,
-        cache_path,
-        security_start,
-        security_end,
-        require_end_coverage,
-        complete,
-    ) in entries:
+
+    def build_entries(codes: set[str]) -> list[tuple]:
+        entries: list[tuple] = []
+        selected_rows = master.loc[master["code"].isin(codes)]
+        for index, row in selected_rows.iterrows():
+            code = str(row["code"])
+            cache_path = DATA_DIR / f"{code}.csv"
+            is_delisted = pd.notna(delist_dates.loc[index])
+            security_end = min(
+                end_date,
+                pd.Timestamp(delist_dates.loc[index])
+                if is_delisted
+                else end_date,
+            )
+            security_start = max(
+                window_start,
+                pd.Timestamp(list_dates.loc[index])
+                if pd.notna(list_dates.loc[index])
+                else window_start,
+            )
+            end_tolerance_days = 14 if is_delisted else 0
+            complete = _factor_history_cache_complete(
+                cache_path,
+                security_start=security_start,
+                security_end=security_end,
+                minimum_rows=min(max(1, int(days)), 60),
+                require_end_coverage=True,
+                end_tolerance_days=end_tolerance_days,
+            )
+            entries.append(
+                (
+                    code,
+                    cache_path,
+                    security_start,
+                    security_end,
+                    end_tolerance_days,
+                    complete,
+                )
+            )
+        return entries
+
+    def process_entry(entry: tuple) -> None:
+        nonlocal backfilled, failed, usable
+        (
+            code,
+            cache_path,
+            security_start,
+            security_end,
+            end_tolerance_days,
+            complete,
+        ) = entry
+        attempted_codes.add(code)
         if complete:
+            usable += 1
             recovered_codes.append(code)
-            continue
+            return
         try:
             try:
                 if selected_history_provider == "agudata":
@@ -1335,7 +1362,8 @@ def refresh_factor_security_master_history(
                 security_start=security_start,
                 security_end=security_end,
                 minimum_rows=min(max(1, int(days)), 60),
-                require_end_coverage=require_end_coverage,
+                require_end_coverage=True,
+                end_tolerance_days=end_tolerance_days,
             ):
                 raise ValueError("history remains incomplete after backfill")
             backfilled += 1
@@ -1348,7 +1376,21 @@ def refresh_factor_security_master_history(
             if len(errors) < 20:
                 errors.append(f"{code}: {reason}")
 
+    pending_codes = sampled_required_codes()
+    while pending_codes:
+        new_codes = pending_codes - attempted_codes
+        if not new_codes:
+            break
+        for entry in build_entries(new_codes):
+            process_entry(entry)
+        if n_stocks is None:
+            break
+        excluded_codes = (
+            active_quarantine_before | set(failure_reasons)
+        ) - set(recovered_codes)
+        pending_codes = sampled_required_codes(excluded_codes)
 
+    required_count = len(attempted_codes)
     if failure_reasons:
         factor_history_quarantine.record_failures(failure_reasons)
     if recovered_codes:

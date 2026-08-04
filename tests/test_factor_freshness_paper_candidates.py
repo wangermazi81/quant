@@ -239,6 +239,12 @@ def test_quarantine_round_trip_and_recovery(tmp_path, monkeypatch):
     assert quarantine.active_codes() == set()
 
 
+def test_point_in_time_pool_uses_fixed_protocol_reserve():
+    assert scorer._point_in_time_pool_size(0) == 0
+    assert scorer._point_in_time_pool_size(10) == 12
+    assert scorer._point_in_time_pool_size(880) == 1056
+
+
 def test_point_in_time_panel_excludes_quarantined_before_sampling_and_refills(
     tmp_path,
     monkeypatch,

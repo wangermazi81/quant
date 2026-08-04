@@ -56,6 +56,7 @@ _MIN_CROSS_SECTION = 5
 # 年化常数（A 股交易日数）
 _TRADING_DAYS = 252
 MAX_ABS_DAILY_RETURN = 0.35
+POINT_IN_TIME_RESERVE_PERCENT = 20
 
 # 分类阈值
 _TH_ALIVE_IC = 0.02
@@ -207,7 +208,14 @@ def _point_in_time_pool_size(n_stocks: int | None) -> int | None:
     sample_size = max(0, int(n_stocks))
     if sample_size == 0:
         return 0
-    reserve = max(1, (sample_size + 19) // 20)
+    reserve = max(
+        1,
+        (
+            sample_size * POINT_IN_TIME_RESERVE_PERCENT
+            + 99
+        )
+        // 100,
+    )
     return sample_size + reserve
 
 

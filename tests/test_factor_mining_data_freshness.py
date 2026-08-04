@@ -202,6 +202,74 @@ def test_factor_history_cache_requires_continuous_prices_and_real_amount(
     ) is True
 
 
+def test_factor_history_cache_requires_strict_current_end_coverage(tmp_path):
+    path = tmp_path / "000001.csv"
+    frame = _daily_frame("2025-07-01", 280)
+    frame["date"] = pd.bdate_range(end="2026-08-03", periods=len(frame))
+    frame.to_csv(path, index=False)
+
+    assert dm._factor_history_cache_complete(
+        path,
+        security_start=pd.Timestamp("2025-08-04"),
+        security_end=pd.Timestamp("2026-08-04"),
+        minimum_rows=60,
+        require_end_coverage=True,
+    ) is False
+
+
+def test_refresh_security_master_backfills_stale_active_history(
+    tmp_path,
+    monkeypatch,
+):
+    daily_dir = tmp_path / "daily"
+    daily_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", daily_dir)
+    monkeypatch.setattr(dm, "SECURITY_MASTER_FILE", tmp_path / "security_master.csv")
+    monkeypatch.setattr(dm, "_load_meta", lambda: {})
+    monkeypatch.setattr(dm, "_save_meta", lambda meta: None)
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_security_master",
+        lambda **kwargs: _trusted_security_master([
+            {
+                "code": code,
+                "list_date": "20200101",
+                "delist_date": "",
+                "list_status": "L",
+                "lifecycle_snapshot_complete": True,
+            }
+            for code in ("000009", "000004")
+        ]),
+    )
+    stale = _daily_frame("2025-07-01", 280)
+    stale["date"] = pd.bdate_range(end="2026-08-03", periods=len(stale))
+    stale.to_csv(daily_dir / "000009.csv", index=False)
+    current = _daily_frame("2025-07-01", 280)
+    current["date"] = pd.bdate_range(end="2026-08-04", periods=len(current))
+    current.to_csv(daily_dir / "000004.csv", index=False)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_kline_qfq",
+        lambda code, *args, **kwargs: calls.append(code) or current,
+    )
+    monkeypatch.setattr(dm, "_fetch_kline_baostock", lambda *args, **kwargs: None)
+
+    result = dm.refresh_factor_security_master_history(
+        days=120,
+        n_stocks=1,
+        now=datetime(2026, 8, 4, 17, 10),
+        token="tok",
+        mode="replay",
+    )
+
+    assert result["ok"] is True, result
+    assert calls == ["000009"]
+    assert result["history_backfilled"] == 1
+    repaired = pd.read_csv(daily_dir / "000009.csv")
+    assert str(repaired["date"].max())[:10] == "2026-08-04"
+
+
 def test_refresh_security_master_backfills_missing_delisted_history(
     tmp_path,
     monkeypatch,
@@ -606,7 +674,8 @@ def test_refresh_security_master_backfills_only_point_in_time_pool(
             for index in range(1, 6)
         ]),
     )
-    history = _daily_frame("2025-07-01", 120)
+    history = _daily_frame("2025-07-01", 280)
+    history["date"] = pd.bdate_range(end="2026-07-30", periods=len(history))
     calls = []
 
     def fake_fetch(code, *args, **kwargs):
@@ -682,6 +751,58 @@ def test_refresh_security_master_requires_every_sampled_history(
     assert result["history_failed"] == 1
     assert result["minimum_usable"] == 2
     assert result["history_quarantined"] == 1
+    assert result["quarantined_codes"] == ["000009"]
+
+
+def test_refresh_security_master_refills_pool_after_new_quarantine_shift(
+    tmp_path,
+    monkeypatch,
+):
+    daily_dir = tmp_path / "daily"
+    daily_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", daily_dir)
+    monkeypatch.setattr(dm, "SECURITY_MASTER_FILE", tmp_path / "security_master.csv")
+    monkeypatch.setattr(dm, "_load_meta", lambda: {})
+    monkeypatch.setattr(dm, "_save_meta", lambda meta: None)
+    monkeypatch.setattr(scorer, "_point_in_time_pool_size", lambda n_stocks: 3)
+    codes = ("000009", "000004", "000006", "000003")
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_security_master",
+        lambda **kwargs: _trusted_security_master([
+            {
+                "code": code,
+                "list_date": "20200101",
+                "delist_date": "",
+                "list_status": "L",
+                "lifecycle_snapshot_complete": True,
+            }
+            for code in codes
+        ]),
+    )
+    history = _daily_frame("2025-07-01", 280)
+    history["date"] = pd.bdate_range(end="2026-08-04", periods=len(history))
+    calls: list[str] = []
+
+    def fetch_history(code, *args, **kwargs):
+        calls.append(code)
+        return None if code == "000009" else history
+
+    monkeypatch.setattr(dm.tushare_provider, "fetch_kline_qfq", fetch_history)
+    monkeypatch.setattr(dm, "_fetch_kline_baostock", lambda *args, **kwargs: None)
+
+    result = dm.refresh_factor_security_master_history(
+        days=120,
+        n_stocks=2,
+        now=datetime(2026, 8, 4, 17, 10),
+        token="tok",
+        mode="replay",
+    )
+
+    assert result["ok"] is True, result
+    assert calls == ["000004", "000006", "000009", "000003"]
+    assert result["history_required"] == 4
+    assert result["history_usable"] == 3
     assert result["quarantined_codes"] == ["000009"]
 
 
@@ -789,7 +910,8 @@ def test_refresh_security_master_sample_ignores_pre_window_delists_and_recent_ip
             },
         ]),
     )
-    history = _daily_frame("2025-07-30", 120)
+    history = _daily_frame("2025-07-01", 280)
+    history["date"] = pd.bdate_range(end="2026-07-30", periods=len(history))
     calls = []
 
     def fake_fetch(code, *args, **kwargs):
