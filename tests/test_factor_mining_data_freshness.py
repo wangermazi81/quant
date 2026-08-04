@@ -854,8 +854,12 @@ def test_refresh_security_master_zero_sample_requires_no_history(
 
 
 def test_refresh_factor_daily_cache_limits_master_history_to_required_sample(
+    tmp_path,
     monkeypatch,
 ):
+    daily_dir = tmp_path / "daily"
+    daily_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", daily_dir)
     captured = {}
     enabled = iter((True, False))
     monkeypatch.setattr(dm.datasource_config, "get_internal_config", lambda: {})
