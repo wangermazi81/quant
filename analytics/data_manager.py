@@ -1115,32 +1115,49 @@ def refresh_factor_security_master_history(
         mode=mode or cfg.get("tushare_mode"),
     )
     resolved_mode = mode or cfg.get("tushare_mode")
+    rows: list[dict] = []
+    provider_errors: list[str] = []
+    master_source = f"{selected_history_provider}_security_master"
+    fallback_used = False
     try:
         if selected_history_provider == "agudata":
             rows = agudata_provider.fetch_security_master(
                 api_key=agudata_api_key or cfg.get("agudata_api_key"),
                 base_url=agudata_base_url or cfg.get("agudata_base_url"),
             )
+        elif selected_history_provider == "baostock":
+            rows = tushare_provider.fetch_baostock_security_master(
+                snapshot_now=current,
+            )
+            master_source = "baostock_security_master"
         else:
             rows = tushare_provider.fetch_security_master(
                 token=resolved_token,
                 mode=resolved_mode,
             )
     except Exception as exc:
-        return {
-            "ok": False,
-            "error": f"security master provider failed: {str(exc)[:200]}",
-            "master_count": 0,
-            "history_required": 0,
-            "history_backfilled": 0,
-        }
+        provider_errors.append(
+            f"{selected_history_provider or 'remote'}: {str(exc)[:200]}"
+        )
+
+    if not rows and selected_history_provider != "baostock":
+        fallback_used = True
+        try:
+            rows = tushare_provider.fetch_baostock_security_master(
+                snapshot_now=current,
+            )
+            master_source = "baostock_security_master"
+        except Exception as exc:
+            provider_errors.append(f"baostock: {str(exc)[:200]}")
+
     if not rows:
         return {
             "ok": False,
-            "error": (
-                f"{selected_history_provider or 'remote'} "
-                "security master is empty"
-            ),
+            "error": "security master provider failed",
+            "source": master_source,
+            "primary_source": f"{selected_history_provider}_security_master",
+            "fallback_used": fallback_used,
+            "provider_errors": provider_errors,
             "master_count": 0,
             "history_required": 0,
             "history_backfilled": 0,
@@ -1341,6 +1358,10 @@ def refresh_factor_security_master_history(
 
     return {
         "ok": usable >= minimum_usable,
+        "source": master_source,
+        "primary_source": f"{selected_history_provider}_security_master",
+        "fallback_used": fallback_used,
+        "provider_errors": provider_errors,
         "master_count": int(len(master)),
         "history_required": required_count,
         "history_backfilled": backfilled,
@@ -1372,15 +1393,6 @@ def refresh_factor_daily_cache(
     )
     security_master_result: dict | None = None
     if refresh_security_master:
-        if remote_provider is None:
-            return {
-                "ok": False,
-                "error": "point-in-time security master requires a remote data provider",
-                "security_master": {
-                    "ok": False,
-                    "error": "remote data provider unavailable",
-                },
-            }
         try:
             security_master_result = refresh_factor_security_master_history(
                 days=days,
@@ -1388,7 +1400,7 @@ def refresh_factor_daily_cache(
                 now=current,
                 token=config.get("tushare_token"),
                 mode=config.get("tushare_mode"),
-                history_provider=remote_name,
+                history_provider=remote_name or "baostock",
                 agudata_api_key=config.get("agudata_api_key"),
                 agudata_base_url=config.get("agudata_base_url"),
             )
@@ -1504,6 +1516,49 @@ def refresh_factor_daily_cache(
                     )
 
     if source_date is None or source_frame.empty:
+        cache_freshness = factor_cache_freshness(
+            now=current,
+            min_required=min_required,
+        )
+        cache_is_usable = bool(
+            cache_freshness.get("daily_cache_fresh")
+            and (
+                not refresh_security_master
+                or cache_freshness.get("security_master_fresh")
+            )
+        )
+        if cache_is_usable:
+            result = {
+                "ok": True,
+                "source": "existing_daily_cache",
+                "primary_source": configured_source,
+                "fallback_used": True,
+                "source_trade_date": cache_freshness.get(
+                    "daily_cache_trade_date"
+                ),
+                "expected_trade_date": cache_freshness.get(
+                    "expected_trade_date"
+                ),
+                "latest_count": int(
+                    cache_freshness.get("daily_latest_count") or 0
+                ),
+                "min_required": max(1, int(min_required)),
+                "already_current": int(
+                    cache_freshness.get("daily_latest_count") or 0
+                ),
+                "refreshed": 0,
+                "failed": 0,
+                "tushare_count": 0,
+                "agudata_count": 0,
+                "tushare_qfq_count": 0,
+                "baostock_qfq_count": 0,
+                "tdx_fallback_count": 0,
+                "security_master": security_master_result,
+                "cache_freshness": cache_freshness,
+            }
+            if tushare_errors:
+                result["tushare_errors"] = tushare_errors
+            return result
         if not fallback_enabled:
             return {
                 "ok": False,
@@ -1516,6 +1571,7 @@ def refresh_factor_daily_cache(
                 "tushare_qfq_count": 0,
                 "tdx_fallback_count": 0,
                 "tushare_errors": tushare_errors,
+                "cache_freshness": cache_freshness,
             }
         result = _refresh_factor_daily_cache_tdx(days=days, min_required=min_required, now=current)
         result["primary_source"] = "tdx_daily"

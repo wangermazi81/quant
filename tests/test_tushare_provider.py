@@ -1,6 +1,6 @@
 import sys
 import types
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -689,6 +689,18 @@ def test_fetch_security_master_uses_latest_completed_trade_day_for_snapshot(
 def test_fetch_security_master_fails_closed_without_completed_trade_day(
     monkeypatch,
 ):
+    from market import trading_calendar
+
+    monkeypatch.setattr(
+        trading_calendar,
+        "has_verified_calendar",
+        lambda year: False,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "authoritative_year",
+        lambda year: None,
+    )
     monkeypatch.setattr(
         tp,
         "query_replay_api",
@@ -710,6 +722,173 @@ def test_fetch_security_master_fails_closed_without_completed_trade_day(
             token="tok",
             mode="replay",
             statuses=("L",),
+        )
+
+
+
+def test_fetch_security_master_falls_back_to_verified_local_calendar_when_remote_calendar_fails(
+    monkeypatch,
+):
+    from market import trading_calendar
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 8, 4, 16, 0, 0)
+
+    monkeypatch.setattr(tp, "datetime", FrozenDatetime)
+    monkeypatch.setattr(
+        tp,
+        "fetch_trade_calendar",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("403 Forbidden")
+        ),
+    )
+    monkeypatch.setattr(tp, "query_replay_api", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        tp,
+        "_fetch_baostock_security_lifecycle",
+        _complete_baostock_lifecycle,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "has_verified_calendar",
+        lambda year: int(year) == 2026,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "is_trading_day",
+        lambda value: value == date(2026, 8, 4),
+    )
+
+    rows = tp.fetch_security_master(
+        token="expired-token",
+        mode="replay",
+        statuses=(),
+    )
+
+    assert {row["security_master_snapshot_trade_date"] for row in rows} == {
+        "20260804"
+    }
+    assert {row["security_master_calendar_source"] for row in rows} == {
+        "verified_local_trading_calendar"
+    }
+
+
+def test_fetch_baostock_security_master_uses_only_verified_local_calendar(
+    monkeypatch,
+):
+    from market import trading_calendar
+
+    monkeypatch.setattr(
+        tp,
+        "_fetch_baostock_security_lifecycle",
+        _complete_baostock_lifecycle,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "has_verified_calendar",
+        lambda year: int(year) == 2026,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "is_trading_day",
+        lambda value: value == date(2026, 8, 4),
+    )
+    monkeypatch.setattr(
+        tp,
+        "query_replay_api",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Baostock-only master must not call a remote profile API")
+        ),
+    )
+
+    rows = tp.fetch_baostock_security_master(
+        snapshot_now=datetime(2026, 8, 4, 17, 10),
+    )
+
+    assert len(rows) == 4
+    assert {row["source"] for row in rows} == {"baostock_stock_basic"}
+    assert {row["security_master_snapshot_trade_date"] for row in rows} == {
+        "20260804"
+    }
+    assert {row["security_master_calendar_source"] for row in rows} == {
+        "verified_local_trading_calendar"
+    }
+
+
+def test_local_calendar_fallback_accepts_valid_authoritative_commitment(
+    monkeypatch,
+):
+    from market import trading_calendar
+
+    authority = types.SimpleNamespace(
+        closed_days=frozenset({"2026-10-01"}),
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "has_verified_calendar",
+        lambda year: False,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "authoritative_year",
+        lambda year: authority if int(year) == 2026 else None,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "is_trading_day",
+        lambda value: (_ for _ in ()).throw(
+            AssertionError("mutable calendar must not be used")
+        ),
+    )
+
+    trade_date = tp._latest_completed_trade_date_from_verified_local_calendar(
+        datetime(2026, 8, 4, 17, 10),
+    )
+
+    assert trade_date == "20260804"
+
+
+def test_fetch_security_master_fails_closed_when_remote_and_local_calendars_are_untrusted(
+    monkeypatch,
+):
+    from market import trading_calendar
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 8, 4, 16, 0, 0)
+
+    monkeypatch.setattr(tp, "datetime", FrozenDatetime)
+    monkeypatch.setattr(
+        tp,
+        "fetch_trade_calendar",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("403 Forbidden")
+        ),
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "has_verified_calendar",
+        lambda year: False,
+    )
+    monkeypatch.setattr(
+        trading_calendar,
+        "authoritative_year",
+        lambda year: None,
+    )
+    monkeypatch.setattr(
+        tp,
+        "_fetch_baostock_security_lifecycle",
+        _complete_baostock_lifecycle,
+    )
+
+    with pytest.raises(RuntimeError, match="verified local trading calendar"):
+        tp.fetch_security_master(
+            token="expired-token",
+            mode="replay",
+            statuses=(),
         )
 
 

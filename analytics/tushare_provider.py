@@ -1005,23 +1005,74 @@ def _fetch_baostock_security_lifecycle() -> list[dict]:
                 pass
 
 
-def _latest_completed_trade_date(
-    snapshot_now: datetime,
-    token: str | None,
-    mode: str | None,
-) -> str:
-    completed_through = (
+def _completed_trade_limit(snapshot_now: datetime) -> datetime:
+    return (
         snapshot_now
         if snapshot_now.hour >= 15
         else snapshot_now - timedelta(days=1)
     )
-    calendar_start = completed_through - timedelta(days=31)
-    trade_dates = fetch_trade_calendar(
-        calendar_start.strftime("%Y%m%d"),
-        completed_through.strftime("%Y%m%d"),
-        token=token,
-        mode=mode,
+
+
+def _latest_completed_trade_date_from_verified_local_calendar(
+    snapshot_now: datetime,
+) -> str:
+    try:
+        from market import trading_calendar
+    except Exception as exc:
+        raise RuntimeError(
+            "cannot verify latest completed trade date for security master snapshot: "
+            "verified local trading calendar is unavailable"
+        ) from exc
+
+    candidate = _completed_trade_limit(snapshot_now).date()
+    for _ in range(32):
+        has_verified_calendar = bool(
+            trading_calendar.has_verified_calendar(candidate.year)
+        )
+        authoritative_calendar = trading_calendar.authoritative_year(
+            candidate.year
+        )
+        if has_verified_calendar:
+            is_trade_day = trading_calendar.is_trading_day(candidate)
+        elif authoritative_calendar is not None:
+            is_trade_day = bool(
+                candidate.weekday() < 5
+                and candidate.isoformat()
+                not in authoritative_calendar.closed_days
+            )
+        else:
+            raise RuntimeError(
+                "cannot verify latest completed trade date for security master snapshot: "
+                f"verified local trading calendar is unavailable for {candidate.year}"
+            )
+        if is_trade_day:
+            return candidate.strftime("%Y%m%d")
+        candidate -= timedelta(days=1)
+    raise RuntimeError(
+        "cannot verify latest completed trade date for security master snapshot: "
+        "verified local trading calendar has no completed trade day"
     )
+
+
+def _latest_completed_trade_date_with_source(
+    snapshot_now: datetime,
+    token: str | None,
+    mode: str | None,
+) -> tuple[str, str]:
+    completed_through = _completed_trade_limit(snapshot_now)
+    calendar_start = completed_through - timedelta(days=31)
+    remote_error = ""
+    try:
+        trade_dates = fetch_trade_calendar(
+            calendar_start.strftime("%Y%m%d"),
+            completed_through.strftime("%Y%m%d"),
+            token=token,
+            mode=mode,
+        )
+    except Exception as exc:
+        trade_dates = []
+        remote_error = str(exc)[:160]
+
     completed_limit = completed_through.strftime("%Y%m%d")
     completed_dates = {
         _date_text(value)
@@ -1030,11 +1081,34 @@ def _latest_completed_trade_date(
         and _date_text(value).isdigit()
         and _date_text(value) <= completed_limit
     }
-    if not completed_dates:
-        raise RuntimeError(
-            "cannot verify latest completed trade date for security master snapshot"
+    if completed_dates:
+        return max(completed_dates), "tushare_trade_cal"
+
+    if remote_error:
+        logger.warning(
+            "[security-master] remote trade calendar failed, using verified local calendar: %s",
+            remote_error,
         )
-    return max(completed_dates)
+    else:
+        logger.warning(
+            "[security-master] remote trade calendar is empty, using verified local calendar"
+        )
+    return (
+        _latest_completed_trade_date_from_verified_local_calendar(snapshot_now),
+        "verified_local_trading_calendar",
+    )
+
+
+def _latest_completed_trade_date(
+    snapshot_now: datetime,
+    token: str | None,
+    mode: str | None,
+) -> str:
+    return _latest_completed_trade_date_with_source(
+        snapshot_now,
+        token,
+        mode,
+    )[0]
 
 
 def _fetch_stock_basic_pages(
@@ -1121,6 +1195,75 @@ def _fetch_stock_basic_pages(
     )
 
 
+def _build_security_master_rows(
+    lifecycle_rows: list[dict],
+    *,
+    profiles: Mapping[str, dict] | None,
+    snapshot_now: datetime,
+    snapshot_trade_date: str,
+    calendar_source: str,
+    profile_page_requests: int = 0,
+) -> list[dict]:
+    trusted_lifecycle = _validate_baostock_security_lifecycle(lifecycle_rows)
+    optional_profiles = dict(profiles or {})
+    normalized: dict[str, dict] = {}
+    for lifecycle in trusted_lifecycle:
+        code = str(lifecycle["code"])
+        profile = optional_profiles.get(code, {})
+        normalized[code] = {
+            **lifecycle,
+            "name": str(
+                profile.get("name") or lifecycle.get("name") or ""
+            ).strip(),
+            "industry": str(profile.get("industry") or "").strip(),
+            "area": str(profile.get("area") or "").strip(),
+            "market": str(profile.get("market") or "").strip(),
+            "source": (
+                "tushare_stock_basic+baostock_stock_basic"
+                if profile
+                else "baostock_stock_basic"
+            ),
+        }
+
+    snapshot_at = snapshot_now.isoformat(timespec="seconds")
+    row_count = len(normalized)
+    for row in normalized.values():
+        row.update(
+            {
+                "lifecycle_source": "baostock_stock_basic",
+                "lifecycle_snapshot_complete": True,
+                "universe_scope": "sh_sz_a_share",
+                "snapshot_at": snapshot_at,
+                "security_master_pagination_complete": True,
+                "security_master_page_requests": 1,
+                "security_master_row_count": row_count,
+                "security_master_snapshot_complete": True,
+                "security_master_snapshot_trade_date": snapshot_trade_date,
+                "security_master_calendar_source": calendar_source,
+                "tushare_profile_snapshot_complete": False,
+                "tushare_profile_page_requests": int(profile_page_requests),
+                "tushare_profile_row_count": len(optional_profiles),
+            }
+        )
+    return [normalized[code] for code in sorted(normalized)]
+
+
+def fetch_baostock_security_master(
+    snapshot_now: datetime | None = None,
+) -> list[dict]:
+    current = snapshot_now or datetime.now()
+    snapshot_trade_date = (
+        _latest_completed_trade_date_from_verified_local_calendar(current)
+    )
+    return _build_security_master_rows(
+        _fetch_baostock_security_lifecycle(),
+        profiles={},
+        snapshot_now=current,
+        snapshot_trade_date=snapshot_trade_date,
+        calendar_source="verified_local_trading_calendar",
+    )
+
+
 def fetch_security_master(
     token: str | None = None,
     mode: str | None = None,
@@ -1131,14 +1274,14 @@ def fetch_security_master(
         "list_date,delist_date,list_status"
     )
     snapshot_now = datetime.now()
-    snapshot_trade_date = _latest_completed_trade_date(
-        snapshot_now,
-        token,
-        mode,
+    snapshot_trade_date, calendar_source = (
+        _latest_completed_trade_date_with_source(
+            snapshot_now,
+            token,
+            mode,
+        )
     )
-    lifecycle_rows = _validate_baostock_security_lifecycle(
-        _fetch_baostock_security_lifecycle()
-    )
+    lifecycle_rows = _fetch_baostock_security_lifecycle()
     profiles: dict[str, dict] = {}
     page_requests = 0
     for status in statuses:
@@ -1184,45 +1327,14 @@ def fetch_security_master(
                 "source": "tushare_stock_basic",
             }
 
-    normalized: dict[str, dict] = {}
-    for lifecycle in lifecycle_rows:
-        code = str(lifecycle["code"])
-        profile = profiles.get(code, {})
-        normalized[code] = {
-            **lifecycle,
-            "name": str(
-                profile.get("name") or lifecycle.get("name") or ""
-            ).strip(),
-            "industry": str(profile.get("industry") or "").strip(),
-            "area": str(profile.get("area") or "").strip(),
-            "market": str(profile.get("market") or "").strip(),
-            "source": (
-                "tushare_stock_basic+baostock_stock_basic"
-                if profile
-                else "baostock_stock_basic"
-            ),
-        }
-
-    snapshot_at = snapshot_now.isoformat(timespec="seconds")
-    row_count = len(normalized)
-    for row in normalized.values():
-        row.update(
-            {
-                "lifecycle_source": "baostock_stock_basic",
-                "lifecycle_snapshot_complete": True,
-                "universe_scope": "sh_sz_a_share",
-                "snapshot_at": snapshot_at,
-                "security_master_pagination_complete": True,
-                "security_master_page_requests": 1,
-                "security_master_row_count": row_count,
-                "security_master_snapshot_complete": True,
-                "security_master_snapshot_trade_date": snapshot_trade_date,
-                "tushare_profile_snapshot_complete": False,
-                "tushare_profile_page_requests": page_requests,
-                "tushare_profile_row_count": len(profiles),
-            }
-        )
-    return [normalized[code] for code in sorted(normalized)]
+    return _build_security_master_rows(
+        lifecycle_rows,
+        profiles=profiles,
+        snapshot_now=snapshot_now,
+        snapshot_trade_date=snapshot_trade_date,
+        calendar_source=calendar_source,
+        profile_page_requests=page_requests,
+    )
 
 
 def fetch_stock_basic(

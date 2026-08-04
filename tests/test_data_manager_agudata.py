@@ -185,3 +185,127 @@ def test_refresh_factor_daily_cache_uses_agudata_batch(
         parse_dates=["date"],
     )
     assert saved["date"].max() == pd.Timestamp("2026-07-30")
+
+
+
+def _complete_security_master(trade_date: str = "20260804") -> list[dict]:
+    raw = [
+        ("000001", "SZ", "L", "19910403", ""),
+        ("000002", "SZ", "D", "19910129", "20260731"),
+        ("600000", "SH", "L", "19991110", ""),
+        ("600001", "SH", "D", "19980122", "20260731"),
+    ]
+    snapshot_at = "2026-08-04T17:10:00"
+    return [
+        {
+            "code": code,
+            "ts_code": f"{code}.{exchange}",
+            "name": code,
+            "list_date": list_date,
+            "delist_date": delist_date,
+            "list_status": status,
+            "exchange": exchange,
+            "source": "baostock_stock_basic",
+            "lifecycle_source": "baostock_stock_basic",
+            "lifecycle_snapshot_complete": True,
+            "universe_scope": "sh_sz_a_share",
+            "snapshot_at": snapshot_at,
+            "security_master_pagination_complete": True,
+            "security_master_page_requests": 1,
+            "security_master_row_count": 4,
+            "security_master_snapshot_complete": True,
+            "security_master_snapshot_trade_date": trade_date,
+            "security_master_calendar_source": "verified_local_trading_calendar",
+        }
+        for code, exchange, status, list_date, delist_date in raw
+    ]
+
+
+def test_refresh_factor_daily_cache_uses_baostock_master_fallback_and_current_cache(
+    monkeypatch,
+    tmp_path,
+):
+    daily_dir = tmp_path / "daily"
+    daily_dir.mkdir()
+    for row in _complete_security_master():
+        _history("2026-08-04").to_csv(
+            daily_dir / f"{row['code']}.csv",
+            index=False,
+        )
+
+    monkeypatch.setattr(manager, "DATA_DIR", daily_dir)
+    monkeypatch.setattr(
+        manager,
+        "SECURITY_MASTER_FILE",
+        tmp_path / "security_master.csv",
+    )
+    monkeypatch.setattr(manager, "META_FILE", tmp_path / "metadata.json")
+    monkeypatch.setattr(manager, "_load_meta", lambda: {})
+    monkeypatch.setattr(manager, "_save_meta", lambda metadata: None)
+    monkeypatch.setattr(
+        manager.factor_history_quarantine,
+        "active_codes",
+        lambda: set(),
+    )
+    monkeypatch.setattr(
+        manager.factor_history_quarantine,
+        "record_failures",
+        lambda failures: None,
+    )
+    monkeypatch.setattr(
+        manager.factor_history_quarantine,
+        "clear_codes",
+        lambda codes: None,
+    )
+    monkeypatch.setattr(
+        manager,
+        "_factor_history_cache_complete",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        manager.datasource_config,
+        "get_internal_config",
+        lambda: _config(fallback_enabled=False),
+    )
+    monkeypatch.setattr(
+        manager.agudata_provider,
+        "fetch_security_master",
+        lambda **kwargs: (_ for _ in ()).throw(
+            RuntimeError("API key unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        manager.tushare_provider,
+        "fetch_baostock_security_master",
+        lambda **kwargs: _complete_security_master(),
+    )
+    monkeypatch.setattr(
+        manager.agudata_provider,
+        "fetch_full_market_daily",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("daily provider unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        manager.agudata_provider,
+        "fetch_full_market_realtime_daily",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("realtime provider unavailable")
+        ),
+    )
+
+    result = manager.refresh_factor_daily_cache(
+        days=60,
+        min_required=1,
+        now=datetime(2026, 8, 4, 17, 10),
+        refresh_security_master=True,
+    )
+
+    assert result["ok"] is True, result
+    assert result["source"] == "existing_daily_cache"
+    assert result["primary_source"] == "agudata_daily"
+    assert result["fallback_used"] is True
+    assert result["source_trade_date"] == "2026-08-04"
+    assert result["latest_count"] >= 1
+    assert result["security_master"]["fallback_used"] is True
+    assert result["security_master"]["source"] == "baostock_security_master"
