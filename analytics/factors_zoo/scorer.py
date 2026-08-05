@@ -357,6 +357,7 @@ def build_panel_from_cache(
     require_latest: bool = False,
     point_in_time: bool = False,
     require_security_master: bool = False,
+    as_of: Any = None,
 ) -> tuple[dict[str, pd.DataFrame], list[str]]:
     """从 data/daily/*.csv 拼一个 wide OHLCV panel。
 
@@ -370,6 +371,14 @@ def build_panel_from_cache(
         raise FileNotFoundError(f"数据缓存目录不存在: {_DATA_DIR}")
     if min_history is None:
         min_history = days
+    as_of_timestamp = None
+    if as_of is not None:
+        as_of_timestamp = pd.Timestamp(as_of)
+        if pd.isna(as_of_timestamp):
+            raise ValueError("invalid as_of date")
+        if as_of_timestamp.tzinfo is not None:
+            as_of_timestamp = as_of_timestamp.tz_localize(None)
+        as_of_timestamp = as_of_timestamp.normalize()
 
     csvs = sorted(_DATA_DIR.glob("*.csv"))
     ranked_csvs: list[tuple[pd.Timestamp, int, str, Path]] = []
@@ -379,13 +388,13 @@ def build_panel_from_cache(
             dates = pd.read_csv(csv, usecols=["date"])
         except Exception:
             continue
-        if len(dates) < min_history:
+        parsed = pd.to_datetime(dates["date"], errors="coerce").dropna()
+        if as_of_timestamp is not None:
+            parsed = parsed.loc[parsed <= as_of_timestamp]
+        if len(parsed) < min_history:
             skipped_short += 1
             continue
-        parsed = pd.to_datetime(dates["date"], errors="coerce").dropna()
-        if parsed.empty:
-            continue
-        ranked_csvs.append((parsed.max().normalize(), len(dates), csv.stem, csv))
+        ranked_csvs.append((parsed.max().normalize(), len(parsed), csv.stem, csv))
 
     security_master = (
         _load_security_master(_SECURITY_MASTER_PATH)
@@ -488,6 +497,10 @@ def build_panel_from_cache(
             df = pd.read_csv(csv, parse_dates=["date"])
         except Exception:
             continue
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date"])
+        if as_of_timestamp is not None:
+            df = df.loc[df["date"] <= as_of_timestamp]
         if len(df) < min_history:
             skipped_short += 1
             continue

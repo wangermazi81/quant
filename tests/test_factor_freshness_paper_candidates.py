@@ -111,6 +111,48 @@ def test_factor_cache_freshness_uses_weakest_master_snapshot_and_cross_section_c
     assert result["daily_latest_count"] == 2
 
 
+def test_factor_cache_freshness_supports_historical_as_of_with_newer_cache(
+    tmp_path,
+    monkeypatch,
+):
+    daily_dir = tmp_path / "daily"
+    daily_dir.mkdir()
+    master_path = tmp_path / "security_master.csv"
+    _trusted_master(
+        ["000001", "000002"],
+        ["20260805", "20260805"],
+    ).to_csv(master_path, index=False)
+    _daily(daily_dir / "000001.csv", "2026-08-05")
+    _daily(daily_dir / "000002.csv", "2026-08-05")
+    monkeypatch.setattr(dm, "DATA_DIR", daily_dir)
+    monkeypatch.setattr(dm, "SECURITY_MASTER_FILE", master_path)
+    monkeypatch.setattr(
+        dm,
+        "expected_completed_trade_date",
+        lambda now=None: "2026-08-04",
+    )
+
+    strict = dm.factor_cache_freshness(
+        now=datetime(2026, 8, 4, 17, 10),
+        min_required=2,
+    )
+    historical = dm.factor_cache_freshness(
+        now=datetime(2026, 8, 4, 17, 10),
+        min_required=2,
+        allow_newer_security_master=True,
+    )
+
+    assert strict["status"] == "stale"
+    assert strict["security_master_fresh"] is False
+    assert historical["status"] == "fresh"
+    assert historical["security_master_trade_date"] == "2026-08-05"
+    assert historical["daily_cache_trade_date"] == "2026-08-04"
+    assert historical["daily_physical_latest_trade_date"] == "2026-08-05"
+    assert historical["daily_latest_count"] == 2
+    assert historical["future_daily_code_count"] == 2
+    assert historical["future_daily_row_count"] == 2
+
+
 def test_factor_cache_freshness_rejects_single_latest_file(
     tmp_path,
     monkeypatch,
@@ -224,6 +266,41 @@ def test_short_factor_job_fails_closed_before_panel_build_when_refresh_stays_sta
     assert builds == []
 
 
+def test_short_factor_job_passes_explicit_historical_as_of_to_cache_and_panel(
+    monkeypatch,
+):
+    freshness_calls = []
+    panel_calls = []
+
+    def fake_freshness(**kwargs):
+        freshness_calls.append(kwargs)
+        return _freshness("fresh", master_fresh=True, daily_fresh=True)
+
+    def fake_panel(**kwargs):
+        panel_calls.append(kwargs)
+        raise RuntimeError("panel sentinel")
+
+    monkeypatch.setattr(
+        short_factor_job,
+        "_ensure_factor_cache_freshness",
+        fake_freshness,
+    )
+    monkeypatch.setattr(
+        short_factor_job.scorer,
+        "build_panel_from_cache",
+        fake_panel,
+    )
+
+    with pytest.raises(RuntimeError, match="panel sentinel"):
+        short_factor_job.run_discovery_job(
+            config={"n_stocks": 2, "days": 90},
+            now=datetime(2026, 8, 4, 17, 10),
+        )
+
+    assert freshness_calls[0]["allow_newer_security_master"] is True
+    assert panel_calls[0]["as_of"] == "2026-08-04"
+
+
 def test_quarantine_round_trip_and_recovery(tmp_path, monkeypatch):
     from analytics import factor_history_quarantine as quarantine
 
@@ -283,6 +360,38 @@ def test_point_in_time_panel_excludes_quarantined_before_sampling_and_refills(
     )
 
     assert initially_selected[0] not in used
+    assert int(panel["universe_eligible"].iloc[-1].sum()) == 2
+
+
+def test_point_in_time_panel_honors_historical_as_of_cutoff(
+    tmp_path,
+    monkeypatch,
+):
+    daily_dir = tmp_path / "daily"
+    daily_dir.mkdir()
+    master_path = tmp_path / "security_master.csv"
+    codes = ["000001", "000002"]
+    _trusted_master(codes, ["20260805"] * len(codes)).to_csv(
+        master_path,
+        index=False,
+    )
+    for code in codes:
+        _daily(daily_dir / f"{code}.csv", "2026-08-05")
+    monkeypatch.setattr(scorer, "_DATA_DIR", daily_dir)
+    monkeypatch.setattr(scorer, "_SECURITY_MASTER_PATH", master_path)
+
+    panel, used = scorer.build_panel_from_cache(
+        n_stocks=2,
+        days=60,
+        min_history=10,
+        require_latest=True,
+        point_in_time=True,
+        require_security_master=True,
+        as_of="2026-08-04",
+    )
+
+    assert used == codes
+    assert panel["close"].index.max() == pd.Timestamp("2026-08-04")
     assert int(panel["universe_eligible"].iloc[-1].sum()) == 2
 
 

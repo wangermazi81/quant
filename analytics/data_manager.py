@@ -1027,8 +1027,9 @@ def factor_cache_freshness(
     *,
     now: datetime | None = None,
     min_required: int = 800,
+    allow_newer_security_master: bool = False,
 ) -> dict:
-    """Validate point-in-time master and latest daily cross-section coverage."""
+    """Validate point-in-time master and daily coverage as of the target date."""
     current = now or datetime.now()
     expected_trade_date = expected_completed_trade_date(current)
     minimum = max(1, int(min_required))
@@ -1061,7 +1062,11 @@ def factor_cache_freshness(
         except Exception as exc:
             master_error = f"security master unreadable: {str(exc)[:160]}"
 
+    expected_timestamp = pd.Timestamp(expected_trade_date).normalize()
     latest_by_code: dict[str, str] = {}
+    physical_latest_by_code: dict[str, str] = {}
+    future_daily_code_count = 0
+    future_daily_row_count = 0
     for path in sorted(DATA_DIR.glob("*.csv")):
         code = path.stem.split(".", 1)[0].zfill(6)
         if code in quarantined:
@@ -1071,15 +1076,34 @@ def factor_cache_freshness(
             parsed = pd.to_datetime(dates, errors="coerce").dropna()
         except Exception:
             continue
-        if not parsed.empty:
-            latest_by_code[code] = parsed.max().strftime("%Y-%m-%d")
+        if parsed.empty:
+            continue
+        physical_latest_by_code[code] = parsed.max().strftime("%Y-%m-%d")
+        future_rows = parsed > expected_timestamp
+        if bool(future_rows.any()):
+            future_daily_code_count += 1
+            future_daily_row_count += int(future_rows.sum())
+        as_of_dates = parsed.loc[~future_rows]
+        if not as_of_dates.empty:
+            latest_by_code[code] = as_of_dates.max().strftime("%Y-%m-%d")
     daily_cache_trade_date = max(latest_by_code.values()) if latest_by_code else None
+    daily_physical_latest_trade_date = (
+        max(physical_latest_by_code.values())
+        if physical_latest_by_code
+        else None
+    )
     daily_latest_count = sum(
         trade_date == expected_trade_date
         for trade_date in latest_by_code.values()
     )
+    if allow_newer_security_master and master_trade_date is not None:
+        master_date_matches = (
+            pd.Timestamp(master_trade_date).normalize() >= expected_timestamp
+        )
+    else:
+        master_date_matches = master_trade_date == expected_trade_date
     security_master_fresh = bool(
-        master_trade_date == expected_trade_date
+        master_date_matches
         and master_error is None
     )
     daily_cache_fresh = daily_latest_count >= minimum
@@ -1089,7 +1113,10 @@ def factor_cache_freshness(
         "expected_trade_date": expected_trade_date,
         "security_master_trade_date": master_trade_date,
         "daily_cache_trade_date": daily_cache_trade_date,
+        "daily_physical_latest_trade_date": daily_physical_latest_trade_date,
         "daily_latest_count": int(daily_latest_count),
+        "future_daily_code_count": int(future_daily_code_count),
+        "future_daily_row_count": int(future_daily_row_count),
         "min_required": minimum,
         "security_master_fresh": security_master_fresh,
         "daily_cache_fresh": daily_cache_fresh,

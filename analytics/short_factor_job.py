@@ -112,11 +112,13 @@ def _ensure_factor_cache_freshness(
     now: datetime,
     days: int,
     min_required: int,
+    allow_newer_security_master: bool = False,
 ) -> dict[str, Any]:
     initial = dict(
         data_manager.factor_cache_freshness(
             now=now,
             min_required=min_required,
+            allow_newer_security_master=allow_newer_security_master,
         )
     )
     if initial.get("status") == "fresh":
@@ -138,6 +140,7 @@ def _ensure_factor_cache_freshness(
         data_manager.factor_cache_freshness(
             now=now,
             min_required=min_required,
+            allow_newer_security_master=allow_newer_security_master,
         )
     )
     result = {
@@ -504,7 +507,9 @@ def run_discovery_job(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     resolved = _config(config)
+    explicit_as_of = now is not None
     current = now or datetime.now()
+    expected_trade_date = data_manager.expected_completed_trade_date(current)
     candidate_stocks = relay_factor_mining.research_candidate_pool_size(
         resolved["n_stocks"]
     )
@@ -512,6 +517,7 @@ def run_discovery_job(
         now=current,
         days=resolved["days"],
         min_required=candidate_stocks,
+        allow_newer_security_master=explicit_as_of,
     )
     panel, codes = scorer.build_panel_from_cache(
         n_stocks=candidate_stocks,
@@ -520,6 +526,7 @@ def run_discovery_job(
         require_latest=True,
         point_in_time=True,
         require_security_master=True,
+        as_of=expected_trade_date,
     )
     close = panel.get("close")
     if not isinstance(close, pd.DataFrame) or close.empty:
@@ -528,9 +535,6 @@ def run_discovery_job(
         short_factor_discovery._release_research_memory()
         raise ValueError("short factor panel is empty")
     latest_trade_date = pd.Timestamp(close.index.max()).strftime("%Y-%m-%d")
-    expected_trade_date = data_manager.expected_completed_trade_date(
-        current
-    )
     if latest_trade_date != expected_trade_date:
         del close
         del panel
