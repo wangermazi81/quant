@@ -301,3 +301,70 @@ def test_load_auxiliary_history_fills_turnover_from_baostock(
 
     assert values.loc["000001"] == 2.0
     assert values.loc["600000"] == 1.5
+
+
+def test_load_auxiliary_history_filters_scope_with_chunked_reads(
+    tmp_path,
+    monkeypatch,
+):
+    rows = [
+        {
+            "code": "000001",
+            "date": "2026-07-30",
+            "turnover_rate": 1.0,
+        },
+        {
+            "code": "000001",
+            "date": "2026-07-31",
+            "turnover_rate": 1.1,
+        },
+        {
+            "code": "000001",
+            "date": "2026-08-01",
+            "turnover_rate": 1.2,
+        },
+        {
+            "code": "600000",
+            "date": "2026-07-31",
+            "turnover_rate": 2.0,
+        },
+    ]
+    daily_basic = pd.DataFrame(rows)
+    for column in short_factor_data.DAILY_BASIC_COLUMNS:
+        if column not in daily_basic:
+            daily_basic[column] = pd.NA
+    daily_basic.to_csv(tmp_path / "daily_basic.csv", index=False)
+    pd.DataFrame(rows)[
+        short_factor_data.BAOSTOCK_TURNOVER_COLUMNS
+    ].to_csv(tmp_path / "baostock_turnover.csv", index=False)
+    auction = pd.DataFrame(rows).rename(
+        columns={"turnover_rate": "auction_turnover_rate"}
+    )
+    for column in short_factor_data.AUCTION_COLUMNS:
+        if column not in auction:
+            auction[column] = pd.NA
+    auction.to_csv(tmp_path / "auction.csv", index=False)
+
+    chunksizes = []
+    original_read_csv = pd.read_csv
+
+    def tracked_read_csv(*args, **kwargs):
+        chunksizes.append(kwargs.get("chunksize"))
+        return original_read_csv(*args, **kwargs)
+
+    monkeypatch.setattr(short_factor_data.pd, "read_csv", tracked_read_csv)
+
+    loaded = short_factor_data.load_auxiliary_history(
+        root=tmp_path,
+        codes=["000001"],
+        start_date="20260731",
+        end_date="20260731",
+    )
+
+    assert chunksizes == [50_000, 50_000, 50_000]
+    assert loaded["daily_basic"][["code", "date"]].to_dict("records") == [
+        {"code": "000001", "date": pd.Timestamp("2026-07-31")}
+    ]
+    assert loaded["auction"][["code", "date"]].to_dict("records") == [
+        {"code": "000001", "date": pd.Timestamp("2026-07-31")}
+    ]

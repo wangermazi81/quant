@@ -87,6 +87,7 @@ def test_run_discovery_job_isolated_and_writes_latest(
     monkeypatch,
 ):
     calls = []
+    auxiliary_load_calls = []
     release_calls = []
     close_refs = []
     auxiliary = {
@@ -155,7 +156,7 @@ def test_run_discovery_job_isolated_and_writes_latest(
     monkeypatch.setattr(
         short_factor_job.short_factor_data,
         "load_auxiliary_history",
-        lambda **kwargs: auxiliary,
+        lambda **kwargs: auxiliary_load_calls.append(kwargs) or auxiliary,
     )
 
     def fake_research(panel, **kwargs):
@@ -210,6 +211,12 @@ def test_run_discovery_job_isolated_and_writes_latest(
     assert calls == [
         (["000001", "600000"], "20260330", "20260731")
     ]
+    assert auxiliary_load_calls == [{
+        "root": tmp_path / "auxiliary",
+        "codes": ["000001", "600000"],
+        "start_date": "20260330",
+        "end_date": "20260731",
+    }]
     latest = json.loads(
         (tmp_path / "latest.json").read_text(encoding="utf-8")
     )

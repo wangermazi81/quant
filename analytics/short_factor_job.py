@@ -627,6 +627,9 @@ def run_discovery_job(
     try:
         auxiliary = short_factor_data.load_auxiliary_history(
             root=auxiliary_root,
+            codes=codes,
+            start_date=start_date,
+            end_date=end_date,
         )
     except Exception:
         del panel

@@ -79,28 +79,71 @@ def _empty(columns: list[str]) -> pd.DataFrame:
     return pd.DataFrame(columns=columns)
 
 
-def _read_csv(path: Path, columns: list[str]) -> pd.DataFrame:
+def _read_csv(
+    path: Path,
+    columns: list[str],
+    *,
+    codes=None,
+    start_date: Any = None,
+    end_date: Any = None,
+    chunksize: int = 50_000,
+) -> pd.DataFrame:
     if not path.is_file():
         return _empty(columns)
+
+    code_filter = set(_codes(codes)) if codes is not None else None
+    start = (
+        pd.to_datetime(_date_text(start_date), format="%Y%m%d")
+        if start_date is not None
+        else None
+    )
+    end = (
+        pd.to_datetime(_date_text(end_date), format="%Y%m%d")
+        if end_date is not None
+        else None
+    )
+    filtered_read = any(
+        value is not None
+        for value in (code_filter, start, end)
+    )
+
     try:
-        data = pd.read_csv(
+        source = pd.read_csv(
             path,
             parse_dates=["date"],
             dtype={"code": "string"},
+            **({"chunksize": max(1, int(chunksize))} if filtered_read else {}),
         )
+        frames = source if filtered_read else [source]
+        selected = []
+        for data in frames:
+            for column in columns:
+                if column not in data.columns:
+                    data[column] = pd.NA
+            data["code"] = (
+                data["code"]
+                .astype("string")
+                .str.replace(r"\.0$", "", regex=True)
+                .str.zfill(6)
+            )
+            if filtered_read:
+                mask = pd.Series(True, index=data.index)
+                if code_filter is not None:
+                    mask &= data["code"].isin(code_filter)
+                if start is not None:
+                    mask &= data["date"] >= start
+                if end is not None:
+                    mask &= data["date"] <= end
+                data = data.loc[mask]
+            if not data.empty:
+                selected.append(data[columns])
     except Exception:
         return _empty(columns)
-    for column in columns:
-        if column not in data.columns:
-            data[column] = pd.NA
-    if "code" in data:
-        data["code"] = (
-            data["code"]
-            .astype("string")
-            .str.replace(r"\.0$", "", regex=True)
-            .str.zfill(6)
-        )
-    return data[columns]
+    if not selected:
+        return _empty(columns)
+    if len(selected) == 1:
+        return selected[0].reset_index(drop=True)
+    return pd.concat(selected, ignore_index=True)
 
 
 def _write_csv_atomic(path: Path, frame: pd.DataFrame) -> None:
@@ -661,15 +704,25 @@ def _merge_turnover_fallback(
 def load_auxiliary_history(
     *,
     root: str | Path = ROOT,
+    codes=None,
+    start_date: Any = None,
+    end_date: Any = None,
 ) -> dict[str, pd.DataFrame]:
     source = Path(root)
+    filters = {
+        "codes": codes,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
     daily_basic = _read_csv(
         source / "daily_basic.csv",
         DAILY_BASIC_COLUMNS,
+        **filters,
     )
     fallback = _read_csv(
         source / "baostock_turnover.csv",
         BAOSTOCK_TURNOVER_COLUMNS,
+        **filters,
     )
     return {
         "daily_basic": _merge_turnover_fallback(
@@ -679,5 +732,6 @@ def load_auxiliary_history(
         "auction": _read_csv(
             source / "auction.csv",
             AUCTION_COLUMNS,
+            **filters,
         ),
     }
