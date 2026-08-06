@@ -1133,6 +1133,7 @@ def refresh_factor_security_master_history(
     history_provider: str | None = None,
     agudata_api_key: str | None = None,
     agudata_base_url: str | None = None,
+    defer_latest_active_bar: bool = False,
 ) -> dict:
     current = now or datetime.now()
     cfg = datasource_config.get_internal_config()
@@ -1215,6 +1216,18 @@ def refresh_factor_security_master_history(
     temp_path.replace(SECURITY_MASTER_FILE)
 
     end_date = pd.Timestamp(current.date())
+    deferred_active_validation_end: pd.Timestamp | None = None
+    if defer_latest_active_bar:
+        completed_end = pd.Timestamp(
+            expected_completed_trade_date(current)
+        ).normalize()
+        previous_probe = datetime.combine(
+            (completed_end - pd.Timedelta(days=1)).date(),
+            datetime.min.time(),
+        ).replace(hour=23)
+        deferred_active_validation_end = pd.Timestamp(
+            expected_completed_trade_date(previous_probe)
+        ).normalize()
     history_calendar_days = max(365, int(days) * 2 + 120)
     window_start = end_date - pd.Timedelta(days=history_calendar_days)
     list_dates = pd.to_datetime(
@@ -1309,10 +1322,19 @@ def refresh_factor_security_master_history(
                 else window_start,
             )
             end_tolerance_days = 14 if is_delisted else 0
+            validation_end = security_end
+            if (
+                not is_delisted
+                and deferred_active_validation_end is not None
+            ):
+                validation_end = min(
+                    security_end,
+                    deferred_active_validation_end,
+                )
             complete = _factor_history_cache_complete(
                 cache_path,
                 security_start=security_start,
-                security_end=security_end,
+                security_end=validation_end,
                 minimum_rows=min(max(1, int(days)), 60),
                 require_end_coverage=True,
                 end_tolerance_days=end_tolerance_days,
@@ -1472,6 +1494,7 @@ def refresh_factor_daily_cache(
                 history_provider=remote_name or "baostock",
                 agudata_api_key=config.get("agudata_api_key"),
                 agudata_base_url=config.get("agudata_base_url"),
+                defer_latest_active_bar=True,
             )
         except Exception as exc:
             security_master_result = {"ok": False, "error": str(exc)[:200]}

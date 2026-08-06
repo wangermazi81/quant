@@ -217,7 +217,7 @@ def test_factor_history_cache_requires_strict_current_end_coverage(tmp_path):
     ) is False
 
 
-def test_refresh_security_master_backfills_stale_active_history(
+def test_refresh_security_master_deferred_mode_backfills_older_active_history(
     tmp_path,
     monkeypatch,
 ):
@@ -242,10 +242,10 @@ def test_refresh_security_master_backfills_stale_active_history(
         ]),
     )
     stale = _daily_frame("2025-07-01", 280)
-    stale["date"] = pd.bdate_range(end="2026-08-03", periods=len(stale))
+    stale["date"] = pd.bdate_range(end="2026-08-04", periods=len(stale))
     stale.to_csv(daily_dir / "000009.csv", index=False)
     current = _daily_frame("2025-07-01", 280)
-    current["date"] = pd.bdate_range(end="2026-08-04", periods=len(current))
+    current["date"] = pd.bdate_range(end="2026-08-06", periods=len(current))
     current.to_csv(daily_dir / "000004.csv", index=False)
     calls: list[str] = []
     monkeypatch.setattr(
@@ -258,16 +258,68 @@ def test_refresh_security_master_backfills_stale_active_history(
     result = dm.refresh_factor_security_master_history(
         days=120,
         n_stocks=1,
-        now=datetime(2026, 8, 4, 17, 10),
+        now=datetime(2026, 8, 6, 17, 10),
         token="tok",
         mode="replay",
+        defer_latest_active_bar=True,
     )
 
     assert result["ok"] is True, result
     assert calls == ["000009"]
     assert result["history_backfilled"] == 1
     repaired = pd.read_csv(daily_dir / "000009.csv")
-    assert str(repaired["date"].max())[:10] == "2026-08-04"
+    assert str(repaired["date"].max())[:10] == "2026-08-06"
+
+
+def test_refresh_security_master_can_defer_latest_active_bar_to_batch_daily(
+    tmp_path,
+    monkeypatch,
+):
+    daily_dir = tmp_path / "daily"
+    daily_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", daily_dir)
+    monkeypatch.setattr(dm, "SECURITY_MASTER_FILE", tmp_path / "security_master.csv")
+    monkeypatch.setattr(dm, "_load_meta", lambda: {})
+    monkeypatch.setattr(dm, "_save_meta", lambda meta: None)
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_security_master",
+        lambda **kwargs: _trusted_security_master([
+            {
+                "code": code,
+                "list_date": "20200101",
+                "delist_date": "",
+                "list_status": "L",
+                "lifecycle_snapshot_complete": True,
+            }
+            for code in ("000009", "000004")
+        ]),
+    )
+    prior_day = _daily_frame("2025-07-01", 280)
+    prior_day["date"] = pd.bdate_range(end="2026-08-05", periods=len(prior_day))
+    for code in ("000009", "000004"):
+        prior_day.to_csv(daily_dir / f"{code}.csv", index=False)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        dm.tushare_provider,
+        "fetch_kline_qfq",
+        lambda code, *args, **kwargs: calls.append(code) or prior_day,
+    )
+    monkeypatch.setattr(dm, "_fetch_kline_baostock", lambda *args, **kwargs: None)
+
+    result = dm.refresh_factor_security_master_history(
+        days=120,
+        n_stocks=1,
+        now=datetime(2026, 8, 6, 17, 10),
+        token="tok",
+        mode="replay",
+        defer_latest_active_bar=True,
+    )
+
+    assert result["ok"] is True, result
+    assert result["history_usable"] == result["history_required"]
+    assert result["history_backfilled"] == 0
+    assert calls == []
 
 
 def test_refresh_security_master_backfills_missing_delisted_history(
@@ -1008,6 +1060,7 @@ def test_refresh_factor_daily_cache_limits_master_history_to_required_sample(
     assert result["ok"] is False
     assert result["error"] == "daily cache is empty"
     assert captured["n_stocks"] == 37
+    assert captured["defer_latest_active_bar"] is True
 
 
 def test_refresh_factor_daily_cache_limits_daily_work_to_point_in_time_sample(
