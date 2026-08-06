@@ -73,6 +73,7 @@ _SECTOR_CACHE_TTL = 86400
 _SECTOR_FAILURE_TTL = 900
 _MAX_CONCEPT_SCAN = 12
 _SECTOR_TIMEOUT_GUARD = 8.0
+_TDX_SNAPSHOT_MIN_VALID_QUOTES = 800
 
 
 def _eastmoney_secid(code: str) -> str:
@@ -630,6 +631,247 @@ def get_kline_by_config(code: str, days: int = 60, min_rows: int = 10, update_ca
     return result
 
 
+def _tdx_snapshot_time_in_close_window(value: object) -> bool:
+    match = re.search(r"(?<!\d)(\d{1,2}):(\d{2})(?::(\d{2}))?", str(value or ""))
+    if not match:
+        return False
+    hour, minute, second = (int(part or 0) for part in match.groups())
+    if hour > 23 or minute > 59 or second > 59:
+        return False
+    seconds = hour * 3600 + minute * 60 + second
+    return 15 * 3600 <= seconds <= 15 * 3600 + 31 * 60
+
+
+def _tdx_snapshot_cache_row(quote: dict, source_date: pd.Timestamp) -> dict | None:
+    code = str(quote.get("code") or "").strip().zfill(6)
+    if len(code) != 6 or not code.isdigit():
+        return None
+    if not _tdx_snapshot_time_in_close_window(quote.get("server_time")):
+        return None
+    try:
+        close = float(quote.get("price", quote.get("close", 0)) or 0)
+        last_close = float(quote.get("last_close") or 0)
+        open_price = float(quote.get("open") or 0)
+        high = float(quote.get("high") or 0)
+        low = float(quote.get("low") or 0)
+        volume = float(quote.get("vol", quote.get("volume", 0)) or 0)
+        amount_yuan = float(quote.get("amount") or 0)
+    except (TypeError, ValueError):
+        return None
+    if min(close, last_close, open_price, high, low) <= 0:
+        return None
+    if volume < 0 or amount_yuan < 0:
+        return None
+    if high < max(open_price, close, low) or low > min(open_price, close, high):
+        return None
+    return {
+        "code": code,
+        "last_close": last_close,
+        "date": source_date,
+        "open": open_price,
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": volume,
+        # pytdx amount is yuan; the factor daily cache follows Tushare's thousand-yuan unit.
+        "amount": amount_yuan / 1000.0,
+    }
+
+
+def _refresh_factor_daily_cache_tdx_snapshot(
+    client,
+    *,
+    days: int = 180,
+    min_required: int = 800,
+    now: datetime | None = None,
+) -> dict:
+    """Safely append a completed TDX full-market close snapshot to factor caches."""
+    current = now or datetime.now()
+    minimum = max(1, int(min_required))
+    expected_trade_date = expected_completed_trade_date(current)
+    source_date = pd.Timestamp(expected_trade_date).normalize()
+    base_result = {
+        "ok": False,
+        "source": "tdx_close_snapshot",
+        "source_trade_date": expected_trade_date,
+        "expected_trade_date": expected_trade_date,
+        "min_required": minimum,
+        "snapshot_quote_count": 0,
+        "snapshot_valid_count": 0,
+        "continuity_eligible_count": 0,
+        "continuity_rejected_count": 0,
+        "already_current": 0,
+        "refreshed": 0,
+        "failed": 0,
+        "latest_count": 0,
+        "tdx_fallback_count": 0,
+    }
+
+    market_close_guard = current.replace(hour=15, minute=30, second=0, microsecond=0)
+    if source_date.date() == current.date() and current < market_close_guard:
+        base_result["error"] = "TDX close snapshot is unavailable before market close"
+        return base_result
+
+    fetch_snapshot = getattr(client, "get_full_market_quotes", None)
+    if not callable(fetch_snapshot):
+        base_result["error"] = "TDX full-market close snapshot is unsupported"
+        return base_result
+    try:
+        quotes = fetch_snapshot() or []
+    except Exception as exc:
+        base_result["error"] = f"TDX full-market close snapshot failed: {str(exc)[:160]}"
+        return base_result
+    base_result["snapshot_quote_count"] = len(quotes)
+
+    valid_rows: dict[str, dict] = {}
+    for quote in quotes:
+        if not isinstance(quote, dict):
+            continue
+        row = _tdx_snapshot_cache_row(quote, source_date)
+        if row is not None:
+            valid_rows[row["code"]] = row
+    valid_count = len(valid_rows)
+    base_result["snapshot_valid_count"] = valid_count
+    minimum_quote_count = max(1, int(_TDX_SNAPSHOT_MIN_VALID_QUOTES))
+    if valid_count < minimum_quote_count:
+        base_result["error"] = (
+            f"TDX close-window coverage {valid_count} is below required {minimum_quote_count}"
+        )
+        return base_result
+
+    csv_paths = sorted(DATA_DIR.glob("*.csv"))
+    if not csv_paths:
+        base_result["error"] = "daily cache is empty"
+        return base_result
+
+    previous_reference = source_date.to_pydatetime().replace(
+        hour=12,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    previous_trade_date = pd.Timestamp(
+        expected_completed_trade_date(previous_reference)
+    ).normalize()
+    min_history = min(max(1, int(days)), 60)
+    eligible: dict[str, dict] = {}
+    already_current = 0
+    rejected = 0
+    missing_quote = 0
+    errors: list[str] = []
+
+    # Phase one is validation-only. Do not write any cache until safe coverage is known.
+    for csv_path in csv_paths:
+        code = csv_path.stem.split(".", 1)[0].zfill(6)
+        quote_row = valid_rows.get(code)
+        try:
+            cached = pd.read_csv(csv_path, parse_dates=["date"])
+            cached = _standardize_kline_for_cache(cached)
+        except Exception as exc:
+            cached = pd.DataFrame()
+            if len(errors) < 20:
+                errors.append(f"{code}: cache unreadable: {str(exc)[:100]}")
+        if cached.empty or len(cached) < min_history:
+            if quote_row is not None:
+                rejected += 1
+            continue
+        latest_date = pd.Timestamp(cached["date"].max()).normalize()
+        if latest_date == source_date:
+            already_current += 1
+            continue
+        if quote_row is None:
+            missing_quote += 1
+            continue
+        if latest_date != previous_trade_date:
+            rejected += 1
+            continue
+        try:
+            cached_close = float(cached.loc[cached["date"] == latest_date, "close"].iloc[-1])
+        except (IndexError, TypeError, ValueError):
+            rejected += 1
+            continue
+        if abs(cached_close - float(quote_row["last_close"])) > 1e-6:
+            rejected += 1
+            continue
+        eligible[code] = quote_row
+
+    base_result.update(
+        {
+            "already_current": already_current,
+            "continuity_eligible_count": len(eligible),
+            "continuity_rejected_count": rejected,
+            "missing_quote_count": missing_quote,
+            "latest_count": already_current,
+        }
+    )
+    if already_current + len(eligible) < minimum:
+        base_result["failed"] = rejected + missing_quote
+        base_result["error"] = (
+            "safe TDX close snapshot coverage "
+            f"{already_current + len(eligible)} is below required {minimum}"
+        )
+        if errors:
+            base_result["errors"] = errors
+        return base_result
+
+    metadata = _load_meta()
+    refreshed = 0
+    write_failed = 0
+    for code, quote_row in eligible.items():
+        cache_row = {key: value for key, value in quote_row.items() if key not in {"code", "last_close"}}
+        try:
+            merged = merge_kline_cache(
+                code,
+                pd.DataFrame([cache_row]),
+                update_metadata=False,
+            )
+            if (
+                merged.empty
+                or len(merged) < min_history
+                or pd.Timestamp(merged["date"].max()).normalize() != source_date
+            ):
+                write_failed += 1
+                continue
+            refreshed += 1
+            item = dict(metadata.get(code, {}))
+            item.update(
+                {
+                    "name": item.get("name") or code,
+                    "start": str(pd.Timestamp(merged["date"].iloc[0]).date()),
+                    "end": str(source_date.date()),
+                    "rows": len(merged),
+                    "updated": current.strftime("%Y-%m-%d %H:%M"),
+                }
+            )
+            metadata[code] = item
+        except Exception as exc:
+            write_failed += 1
+            if len(errors) < 20:
+                errors.append(f"{code}: {str(exc)[:120]}")
+
+    if refreshed:
+        _save_meta(metadata)
+    latest_count = already_current + refreshed
+    cache_freshness = factor_cache_freshness(now=current, min_required=minimum)
+    base_result.update(
+        {
+            "ok": latest_count >= minimum,
+            "latest_count": latest_count,
+            "refreshed": refreshed,
+            "failed": rejected + missing_quote + write_failed,
+            "write_failed_count": write_failed,
+            "tdx_fallback_count": refreshed,
+            "cache_freshness": cache_freshness,
+        }
+    )
+    if errors:
+        base_result["errors"] = errors
+    if not base_result["ok"]:
+        base_result["error"] = (
+            f"latest daily coverage {latest_count} is below required {minimum}"
+        )
+    return base_result
+
 def _refresh_factor_daily_cache_tdx(days: int = 180, min_required: int = 800, now: datetime | None = None) -> dict:
     """Incrementally refresh the factor-mining daily cache from the TDX fallback."""
     from market import ths_quote
@@ -637,6 +879,17 @@ def _refresh_factor_daily_cache_tdx(days: int = 180, min_required: int = 800, no
     client = ths_quote.get_client()
     if client is None or not getattr(client, "_ok", True):
         return {"ok": False, "error": "TDX daily source unavailable", "latest_count": 0, "min_required": min_required}
+
+    snapshot_result = None
+    if callable(getattr(client, "get_full_market_quotes", None)):
+        snapshot_result = _refresh_factor_daily_cache_tdx_snapshot(
+            client,
+            days=days,
+            min_required=min_required,
+            now=now,
+        )
+        if snapshot_result.get("ok"):
+            return snapshot_result
 
     index_bars = client.get_index_kline("000001", 1, 5) or []
     source_dates = pd.to_datetime([row.get("date") for row in index_bars], errors="coerce")

@@ -892,3 +892,267 @@ def test_refresh_factor_daily_cache_rejects_previous_session_after_close(monkeyp
     assert result["error"] == (
         "factor daily source is stale: expected 2026-07-14, got 2026-07-13"
     )
+
+def _tdx_snapshot_quote(
+    code,
+    *,
+    last_close,
+    close=None,
+    server_time="15:05:00",
+    amount=1_000_000.0,
+):
+    close = float(close if close is not None else last_close + 0.1)
+    return {
+        "code": str(code).zfill(6),
+        "price": close,
+        "last_close": float(last_close),
+        "open": close - 0.05,
+        "high": close + 0.1,
+        "low": close - 0.1,
+        "vol": 12_345,
+        "amount": amount,
+        "server_time": server_time,
+    }
+
+
+def _write_factor_cache(path, end_date, *, start_price=10.0):
+    frame = _kline_frame(end_date, periods=80, start_price=start_price)
+    frame["amount"] = [100_000.0 + i for i in range(len(frame))]
+    frame.to_csv(path, index=False, encoding="utf-8")
+    return frame
+
+
+def _prepare_tdx_snapshot_cache(monkeypatch, tmp_path):
+    import analytics.data_manager as dm
+
+    data_dir = tmp_path / "daily"
+    data_dir.mkdir()
+    monkeypatch.setattr(dm, "DATA_DIR", data_dir)
+    monkeypatch.setattr(dm, "META_FILE", tmp_path / "metadata.json")
+    monkeypatch.setattr(dm, "SECURITY_MASTER_FILE", tmp_path / "security_master.csv")
+    monkeypatch.setattr(dm, "_TDX_SNAPSHOT_MIN_VALID_QUOTES", 2, raising=False)
+    monkeypatch.setattr(dm.factor_history_quarantine, "active_codes", lambda: set())
+    return dm, data_dir
+
+
+def test_tdx_close_snapshot_rejects_same_day_before_close(monkeypatch, tmp_path):
+    dm, data_dir = _prepare_tdx_snapshot_cache(monkeypatch, tmp_path)
+    stale = _write_factor_cache(data_dir / "000001.csv", "2026-08-05")
+    monkeypatch.setattr(dm, "expected_completed_trade_date", lambda now=None: "2026-08-06")
+
+    client = types.SimpleNamespace(
+        get_full_market_quotes=lambda: [
+            _tdx_snapshot_quote("000001", last_close=float(stale["close"].iloc[-1])),
+            _tdx_snapshot_quote("000002", last_close=20.0),
+        ]
+    )
+    result = dm._refresh_factor_daily_cache_tdx_snapshot(
+        client,
+        days=180,
+        min_required=1,
+        now=datetime(2026, 8, 6, 15, 20),
+    )
+
+    assert result["ok"] is False
+    assert "before market close" in result["error"]
+    saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
+    assert saved["date"].max() == pd.Timestamp("2026-08-05")
+
+
+def test_tdx_close_snapshot_rejects_non_close_server_time(monkeypatch, tmp_path):
+    dm, data_dir = _prepare_tdx_snapshot_cache(monkeypatch, tmp_path)
+    first = _write_factor_cache(data_dir / "000001.csv", "2026-08-05", start_price=10.0)
+    second = _write_factor_cache(data_dir / "000002.csv", "2026-08-05", start_price=20.0)
+    client = types.SimpleNamespace(
+        get_full_market_quotes=lambda: [
+            _tdx_snapshot_quote(
+                "000001",
+                last_close=float(first["close"].iloc[-1]),
+                server_time="14:59:59",
+            ),
+            _tdx_snapshot_quote(
+                "000002",
+                last_close=float(second["close"].iloc[-1]),
+                server_time="09:31:00",
+            ),
+        ]
+    )
+
+    result = dm._refresh_factor_daily_cache_tdx_snapshot(
+        client,
+        days=180,
+        min_required=1,
+        now=datetime(2026, 8, 6, 17, 10),
+    )
+
+    assert result["ok"] is False
+    assert result["snapshot_valid_count"] == 0
+    assert "close-window coverage" in result["error"]
+
+
+def test_tdx_close_snapshot_rejects_insufficient_market_coverage(monkeypatch, tmp_path):
+    dm, data_dir = _prepare_tdx_snapshot_cache(monkeypatch, tmp_path)
+    stale = _write_factor_cache(data_dir / "000001.csv", "2026-08-05")
+    client = types.SimpleNamespace(
+        get_full_market_quotes=lambda: [
+            _tdx_snapshot_quote("000001", last_close=float(stale["close"].iloc[-1]))
+        ]
+    )
+
+    result = dm._refresh_factor_daily_cache_tdx_snapshot(
+        client,
+        days=180,
+        min_required=1,
+        now=datetime(2026, 8, 6, 17, 10),
+    )
+
+    assert result["ok"] is False
+    assert result["snapshot_quote_count"] == 1
+    assert result["snapshot_valid_count"] == 1
+    assert "below required 2" in result["error"]
+
+
+def test_tdx_close_snapshot_rejects_gap_and_previous_close_mismatch_without_writes(
+    monkeypatch,
+    tmp_path,
+):
+    dm, data_dir = _prepare_tdx_snapshot_cache(monkeypatch, tmp_path)
+    gap = _write_factor_cache(data_dir / "000001.csv", "2026-08-04", start_price=10.0)
+    mismatch = _write_factor_cache(data_dir / "000002.csv", "2026-08-05", start_price=20.0)
+    client = types.SimpleNamespace(
+        get_full_market_quotes=lambda: [
+            _tdx_snapshot_quote("000001", last_close=float(gap["close"].iloc[-1])),
+            _tdx_snapshot_quote(
+                "000002",
+                last_close=float(mismatch["close"].iloc[-1]) + 0.01,
+            ),
+        ]
+    )
+
+    result = dm._refresh_factor_daily_cache_tdx_snapshot(
+        client,
+        days=180,
+        min_required=1,
+        now=datetime(2026, 8, 6, 17, 10),
+    )
+
+    assert result["ok"] is False
+    assert result["continuity_eligible_count"] == 0
+    assert result["continuity_rejected_count"] == 2
+    gap_saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
+    mismatch_saved = pd.read_csv(data_dir / "000002.csv", parse_dates=["date"])
+    assert gap_saved["date"].max() == pd.Timestamp("2026-08-04")
+    assert mismatch_saved["date"].max() == pd.Timestamp("2026-08-05")
+
+
+def test_tdx_close_snapshot_prevalidates_coverage_before_writing(monkeypatch, tmp_path):
+    dm, data_dir = _prepare_tdx_snapshot_cache(monkeypatch, tmp_path)
+    eligible = _write_factor_cache(data_dir / "000001.csv", "2026-08-05", start_price=10.0)
+    rejected = _write_factor_cache(data_dir / "000002.csv", "2026-08-05", start_price=20.0)
+    client = types.SimpleNamespace(
+        get_full_market_quotes=lambda: [
+            _tdx_snapshot_quote("000001", last_close=float(eligible["close"].iloc[-1])),
+            _tdx_snapshot_quote(
+                "000002",
+                last_close=float(rejected["close"].iloc[-1]) + 0.01,
+            ),
+        ]
+    )
+
+    result = dm._refresh_factor_daily_cache_tdx_snapshot(
+        client,
+        days=180,
+        min_required=2,
+        now=datetime(2026, 8, 6, 17, 10),
+    )
+
+    assert result["ok"] is False
+    assert result["continuity_eligible_count"] == 1
+    assert result["latest_count"] == 0
+    eligible_saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
+    assert eligible_saved["date"].max() == pd.Timestamp("2026-08-05")
+
+
+def test_tdx_close_snapshot_safely_appends_and_reports_fresh_cache(monkeypatch, tmp_path):
+    dm, data_dir = _prepare_tdx_snapshot_cache(monkeypatch, tmp_path)
+    first = _write_factor_cache(data_dir / "000001.csv", "2026-08-05", start_price=10.0)
+    second = _write_factor_cache(data_dir / "000002.csv", "2026-08-05", start_price=20.0)
+    pd.DataFrame(
+        {
+            "code": ["000001", "000002"],
+            "security_master_snapshot_trade_date": ["20260806", "20260806"],
+        }
+    ).to_csv(dm.SECURITY_MASTER_FILE, index=False, encoding="utf-8")
+    quotes = [
+        _tdx_snapshot_quote(
+            "000001",
+            last_close=float(first["close"].iloc[-1]),
+            close=float(first["close"].iloc[-1]) + 0.2,
+            amount=1_234_000.0,
+        ),
+        _tdx_snapshot_quote(
+            "000002",
+            last_close=float(second["close"].iloc[-1]),
+            close=float(second["close"].iloc[-1]) + 0.3,
+            amount=2_345_000.0,
+        ),
+    ]
+    client = types.SimpleNamespace(get_full_market_quotes=lambda: quotes)
+
+    result = dm._refresh_factor_daily_cache_tdx_snapshot(
+        client,
+        days=180,
+        min_required=2,
+        now=datetime(2026, 8, 6, 17, 10),
+    )
+
+    assert result["ok"] is True, result
+    assert result["source"] == "tdx_close_snapshot"
+    assert result["source_trade_date"] == "2026-08-06"
+    assert result["latest_count"] == 2
+    assert result["refreshed"] == 2
+    assert result["continuity_eligible_count"] == 2
+    assert result["continuity_rejected_count"] == 0
+    assert result["tdx_fallback_count"] == 2
+    assert result["cache_freshness"]["status"] == "fresh"
+    assert result["cache_freshness"]["daily_latest_count"] == 2
+
+    saved = pd.read_csv(data_dir / "000001.csv", parse_dates=["date"])
+    latest = saved.loc[saved["date"] == pd.Timestamp("2026-08-06")].iloc[-1]
+    assert latest["volume"] == 12_345
+    assert latest["amount"] == pytest.approx(1_234.0)
+
+
+def test_refresh_factor_daily_cache_uses_tdx_close_snapshot_before_daily_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    import market.ths_quote as ths_quote
+
+    dm, data_dir = _prepare_tdx_snapshot_cache(monkeypatch, tmp_path)
+    first = _write_factor_cache(data_dir / "000001.csv", "2026-08-05", start_price=10.0)
+    second = _write_factor_cache(data_dir / "000002.csv", "2026-08-05", start_price=20.0)
+
+    class FakeClient:
+        _ok = True
+
+        def get_full_market_quotes(self):
+            return [
+                _tdx_snapshot_quote("000001", last_close=float(first["close"].iloc[-1])),
+                _tdx_snapshot_quote("000002", last_close=float(second["close"].iloc[-1])),
+            ]
+
+        def get_index_kline(self, code, market, days):
+            raise AssertionError("per-symbol TDX daily fallback must not run after snapshot success")
+
+    monkeypatch.setattr(ths_quote, "get_client", lambda: FakeClient())
+
+    result = dm._refresh_factor_daily_cache_tdx(
+        days=180,
+        min_required=2,
+        now=datetime(2026, 8, 6, 17, 10),
+    )
+
+    assert result["ok"] is True, result
+    assert result["source"] == "tdx_close_snapshot"
+    assert result["latest_count"] == 2
