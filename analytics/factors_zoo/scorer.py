@@ -350,6 +350,124 @@ def _st_status_from_cache(
     return is_st.astype(np.float64), known.astype(np.float64)
 
 
+def factor_universe_codes_from_cache(
+    n_stocks: Optional[int] = None,
+    days: int = 252,
+    min_history: Optional[int] = None,
+    require_latest: bool = False,
+    require_security_master: bool = False,
+    as_of: Any = None,
+) -> list[str]:
+    """Return the point-in-time factor universe without loading OHLCV panels."""
+    if not _DATA_DIR.is_dir():
+        raise FileNotFoundError(f"?????????: {_DATA_DIR}")
+    if min_history is None:
+        min_history = days
+    minimum_history = max(0, int(min_history))
+
+    as_of_timestamp = None
+    if as_of is not None:
+        as_of_timestamp = pd.Timestamp(as_of)
+        if pd.isna(as_of_timestamp):
+            raise ValueError("invalid as_of date")
+        if as_of_timestamp.tzinfo is not None:
+            as_of_timestamp = as_of_timestamp.tz_localize(None)
+        as_of_timestamp = as_of_timestamp.normalize()
+
+    ranked_csvs: list[tuple[pd.Timestamp, int, str, Path]] = []
+    for csv in sorted(_DATA_DIR.glob("*.csv")):
+        try:
+            dates = pd.read_csv(csv, usecols=["date"])
+        except Exception:
+            continue
+        parsed = pd.to_datetime(dates["date"], errors="coerce").dropna()
+        if as_of_timestamp is not None:
+            parsed = parsed.loc[parsed <= as_of_timestamp]
+        if len(parsed) < minimum_history:
+            continue
+        ranked_csvs.append((parsed.max().normalize(), len(parsed), csv.stem, csv))
+
+    security_master = _load_security_master(_SECURITY_MASTER_PATH)
+    if require_security_master and security_master.empty:
+        raise ValueError("point-in-time security master unavailable")
+
+    quarantined_codes = factor_history_quarantine.active_codes()
+    if quarantined_codes:
+        ranked_csvs = [
+            item
+            for item in ranked_csvs
+            if item[2].split(".", 1)[0].zfill(6) not in quarantined_codes
+        ]
+
+    newest_cache_date = (
+        max(item[0] for item in ranked_csvs)
+        if ranked_csvs
+        else None
+    )
+    if (
+        require_security_master
+        and not _security_master_lifecycle_trusted(
+            security_master,
+            minimum_snapshot_date=newest_cache_date,
+        )
+    ):
+        raise ValueError("point-in-time security master lifecycle snapshot is untrusted")
+
+    if not security_master.empty and quarantined_codes:
+        security_master = security_master.loc[
+            ~security_master.index.astype(str).isin(quarantined_codes)
+        ].copy()
+
+    if not security_master.empty and ranked_csvs:
+        newest_master_date = max(item[0] for item in ranked_csvs)
+        sample_start = newest_master_date - pd.offsets.BDay(
+            max(int(days), minimum_history) + 5
+        )
+        sample_dates = pd.bdate_range(sample_start, newest_master_date)
+        master_sample = _master_sample_mask(
+            security_master,
+            sample_dates,
+            _point_in_time_pool_size(n_stocks),
+            minimum_history=minimum_history,
+        )
+        required_codes = {
+            str(code)
+            for code in master_sample.columns
+            if bool(master_sample[code].any())
+        }
+        cached_codes = {item[2] for item in ranked_csvs}
+        missing_histories = sorted(required_codes - cached_codes)
+        if require_security_master and missing_histories and n_stocks is None:
+            preview = ",".join(missing_histories[:10])
+            raise ValueError(
+                "point-in-time security master histories missing: "
+                f"{len(missing_histories)} codes ({preview})"
+            )
+        ranked_csvs = [item for item in ranked_csvs if item[2] in required_codes]
+
+    if n_stocks is not None and ranked_csvs:
+        latest_counts: dict[pd.Timestamp, int] = {}
+        for latest, _rows, _code, _csv in ranked_csvs:
+            latest_counts[latest] = latest_counts.get(latest, 0) + 1
+        newest_date = max(latest_counts)
+        newest_count = latest_counts[newest_date]
+        if require_latest and newest_count < n_stocks:
+            raise ValueError(
+                f"latest cache date {newest_date.date()} only has {newest_count} eligible stocks; "
+                f"need {n_stocks}. Refresh data before generating live signals."
+            )
+
+    if n_stocks is not None and security_master.empty:
+        ranked_csvs.sort(
+            key=lambda item: hashlib.sha256(
+                item[2].encode("ascii", errors="ignore")
+            ).hexdigest()
+        )
+        ranked_csvs = ranked_csvs[: max(0, int(n_stocks))]
+
+    return sorted(item[2] for item in ranked_csvs)
+
+
 def build_panel_from_cache(
     n_stocks: Optional[int] = None,
     days: int = 252,

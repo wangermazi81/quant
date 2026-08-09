@@ -1276,45 +1276,72 @@ def _run_data_refresh(date_text: str) -> dict:
         details["name_cache_count"] = len(names or {})
         mining_cfg = get_config().get("mining", {})
         target_stocks = int(mining_cfg.get("n_stocks", 800))
-        candidate_stocks = (
-            relay_factor_mining.research_candidate_pool_size(
-                target_stocks
-            )
+        candidate_stocks = relay_factor_mining.research_candidate_pool_size(
+            target_stocks
         )
-        details["factor_cache"] = dm.refresh_factor_daily_cache(
-            days=int(mining_cfg.get("days", 320)),
+        days = int(mining_cfg.get("days", 320))
+        cache_freshness = dm.factor_cache_freshness(
             min_required=candidate_stocks,
-            refresh_security_master=True,
         )
-        factor_cache_ok = bool(details["factor_cache"].get("ok"))
+        details["factor_cache_freshness"] = cache_freshness
+
+        if cache_freshness.get("security_master_fresh"):
+            details["security_master"] = {
+                "ok": True,
+                "already_current": True,
+                "security_master_trade_date": cache_freshness.get(
+                    "security_master_trade_date"
+                ),
+                "expected_trade_date": cache_freshness.get(
+                    "expected_trade_date"
+                ),
+            }
+        else:
+            details["security_master"] = (
+                dm.refresh_factor_security_master_history(
+                    days=days,
+                    n_stocks=candidate_stocks,
+                    defer_latest_active_bar=True,
+                )
+            )
+
+        security_master_ok = bool(details["security_master"].get("ok"))
+        if security_master_ok:
+            details["factor_cache"] = dm.refresh_factor_daily_cache(
+                days=days,
+                min_required=candidate_stocks,
+                refresh_security_master=False,
+            )
+        else:
+            details["factor_cache"] = {
+                "ok": False,
+                "error": "point-in-time security master refresh failed",
+            }
+        factor_cache_ok = security_master_ok and bool(
+            details["factor_cache"].get("ok")
+        )
     except Exception as exc:
         details["name_cache_error"] = str(exc)[:180]
-        details["factor_cache"] = {"ok": False, "error": str(exc)[:180]}
+        details.setdefault(
+            "factor_cache",
+            {"ok": False, "error": str(exc)[:180]},
+        )
 
     if factor_cache_ok:
         try:
             from analytics import st_status_history
             from analytics.factors_zoo import scorer
 
-            mining_cfg = get_config().get("mining", {})
-            target_stocks = int(mining_cfg.get("n_stocks", 800))
-            _panel, factor_codes = scorer.build_panel_from_cache(
-                n_stocks=(
-                    relay_factor_mining.research_candidate_pool_size(
-                        target_stocks
-                    )
-                ),
-                days=int(mining_cfg.get("days", 320)),
-                min_history=min(int(mining_cfg.get("days", 320)), 60),
+            factor_codes = scorer.factor_universe_codes_from_cache(
+                n_stocks=candidate_stocks,
+                days=days,
+                min_history=min(days, 60),
                 require_latest=True,
-                point_in_time=True,
                 require_security_master=True,
             )
             details["st_status"] = st_status_history.refresh_cache(factor_codes)
-            factor_cache_ok = bool(details["st_status"].get("ok"))
         except Exception as exc:
             details["st_status"] = {"ok": False, "error": str(exc)[:180]}
-            factor_cache_ok = False
 
     try:
         from market import market_stats

@@ -1716,6 +1716,15 @@ def test_data_refresh_reports_failure_when_factor_cache_is_incomplete(monkeypatc
     monkeypatch.setattr(dm, "refresh_name_cache", lambda: {"000001": "平安银行"})
     monkeypatch.setattr(
         dm,
+        "factor_cache_freshness",
+        lambda **kwargs: {
+            "security_master_fresh": True,
+            "security_master_trade_date": "2026-07-13",
+            "expected_trade_date": "2026-07-13",
+        },
+    )
+    monkeypatch.setattr(
+        dm,
         "refresh_factor_daily_cache",
         lambda **kwargs: {"ok": False, "latest_count": 2, "min_required": 800},
         raising=False,
@@ -1730,7 +1739,7 @@ def test_data_refresh_reports_failure_when_factor_cache_is_incomplete(monkeypatc
     assert result["details"]["factor_cache"]["latest_count"] == 2
 
 
-def test_data_refresh_updates_st_history_for_factor_universe(monkeypatch, tmp_path):
+def test_data_refresh_updates_st_history_without_building_factor_panel(monkeypatch, tmp_path):
     scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
     from analytics import data_manager as dm
     from analytics import lhb_engine
@@ -1739,6 +1748,14 @@ def test_data_refresh_updates_st_history_for_factor_universe(monkeypatch, tmp_pa
     from market import market_stats
 
     monkeypatch.setattr(dm, "refresh_name_cache", lambda: {"000001": "平安银行"})
+    monkeypatch.setattr(
+        dm,
+        "factor_cache_freshness",
+        lambda **kwargs: {
+            "security_master_fresh": True,
+            "security_master_trade_date": "2026-07-13",
+        },
+    )
     refresh_kwargs = {}
 
     def fake_refresh_factor_daily_cache(**kwargs):
@@ -1751,16 +1768,22 @@ def test_data_refresh_updates_st_history_for_factor_universe(monkeypatch, tmp_pa
         fake_refresh_factor_daily_cache,
         raising=False,
     )
-    panel_kwargs = {}
+    universe_kwargs = {}
 
-    def fake_build_panel_from_cache(**kwargs):
-        panel_kwargs.update(kwargs)
-        return {"close": object()}, ["000001", "000002"]
+    def fake_factor_universe_codes_from_cache(**kwargs):
+        universe_kwargs.update(kwargs)
+        return ["000001", "000002"]
 
     monkeypatch.setattr(
         scorer,
+        "factor_universe_codes_from_cache",
+        fake_factor_universe_codes_from_cache,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scorer,
         "build_panel_from_cache",
-        fake_build_panel_from_cache,
+        lambda **kwargs: pytest.fail("data refresh must not build a factor panel"),
     )
     captured = {}
 
@@ -1777,11 +1800,78 @@ def test_data_refresh_updates_st_history_for_factor_universe(monkeypatch, tmp_pa
 
     assert result["ok"] is True
     assert captured["codes"] == ["000001", "000002"]
-    assert refresh_kwargs["refresh_security_master"] is True
+    assert refresh_kwargs["refresh_security_master"] is False
     assert refresh_kwargs["min_required"] == 880
-    assert panel_kwargs["n_stocks"] == 880
-    assert panel_kwargs["require_security_master"] is True
+    assert universe_kwargs["n_stocks"] == 880
+    assert universe_kwargs["require_security_master"] is True
+    assert result["details"]["security_master"]["already_current"] is True
     assert result["details"]["st_status"]["coverage"] == 1.0
+
+
+def test_data_refresh_refreshes_stale_security_master_separately(monkeypatch, tmp_path):
+    scheduler, _root = _isolate_scheduler(monkeypatch, tmp_path)
+    from analytics import data_manager as dm
+    from analytics import lhb_engine
+    from analytics import st_status_history
+    from analytics.factors_zoo import scorer
+    from market import market_stats
+
+    monkeypatch.setattr(dm, "refresh_name_cache", lambda: {"000001": "平安银行"})
+    monkeypatch.setattr(
+        dm,
+        "factor_cache_freshness",
+        lambda **kwargs: {
+            "security_master_fresh": False,
+            "security_master_trade_date": "2026-07-10",
+            "expected_trade_date": "2026-07-13",
+        },
+    )
+    master_kwargs = {}
+
+    def fake_refresh_factor_security_master_history(**kwargs):
+        master_kwargs.update(kwargs)
+        return {"ok": True, "master_count": 5000, "history_usable": 880}
+
+    monkeypatch.setattr(
+        dm,
+        "refresh_factor_security_master_history",
+        fake_refresh_factor_security_master_history,
+    )
+    daily_kwargs = {}
+
+    def fake_refresh_factor_daily_cache(**kwargs):
+        daily_kwargs.update(kwargs)
+        return {"ok": True, "latest_count": 880, "min_required": 880}
+
+    monkeypatch.setattr(dm, "refresh_factor_daily_cache", fake_refresh_factor_daily_cache)
+    monkeypatch.setattr(
+        scorer,
+        "factor_universe_codes_from_cache",
+        lambda **kwargs: ["000001"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scorer,
+        "build_panel_from_cache",
+        lambda **kwargs: pytest.fail("data refresh must not build a factor panel"),
+    )
+    monkeypatch.setattr(
+        st_status_history,
+        "refresh_cache",
+        lambda codes, **kwargs: {"ok": False, "coverage": 0.9},
+    )
+    monkeypatch.setattr(market_stats, "get_market_breadth", lambda date_text=None: {"ok": True})
+    monkeypatch.setattr(market_stats, "get_market_turnover", lambda date_text=None: {"ok": True})
+    monkeypatch.setattr(lhb_engine, "get_lhb_data", lambda date_text, force_refresh=False: {"ok": True, "total": 0})
+
+    result = scheduler._run_data_refresh("2026-07-13")
+
+    assert result["ok"] is True
+    assert master_kwargs["n_stocks"] == 880
+    assert master_kwargs["defer_latest_active_bar"] is True
+    assert daily_kwargs["refresh_security_master"] is False
+    assert result["details"]["security_master"]["ok"] is True
+    assert result["details"]["st_status"]["ok"] is False
 
 
 def test_failed_job_is_cooled_down_before_retry(monkeypatch, tmp_path):

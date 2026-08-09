@@ -1188,6 +1188,47 @@ def test_refresh_factor_daily_cache_limits_daily_work_to_point_in_time_sample(
     assert qfq_calls == []
 
 
+def test_factor_universe_codes_from_cache_avoids_materializing_ohlcv_panel(tmp_path, monkeypatch):
+    daily_dir = tmp_path / "daily"
+    daily_dir.mkdir()
+    monkeypatch.setattr(scorer, "_DATA_DIR", daily_dir)
+    master_path = tmp_path / "security_master.csv"
+    monkeypatch.setattr(scorer, "_SECURITY_MASTER_PATH", master_path)
+
+    for code in ("000001", "000002"):
+        _daily_frame("2026-01-01", 70).to_csv(
+            daily_dir / f"{code}.csv",
+            index=False,
+        )
+    _daily_frame("2026-01-01", 10).to_csv(
+        daily_dir / "000003.csv",
+        index=False,
+    )
+    pd.DataFrame(
+        _trusted_security_master(
+            [
+                {
+                    "code": code,
+                    "list_date": "20200101",
+                    "delist_date": "",
+                    "list_status": "L",
+                }
+                for code in ("000001", "000002", "000003")
+            ]
+        )
+    ).to_csv(master_path, index=False)
+
+    codes = scorer.factor_universe_codes_from_cache(
+        n_stocks=2,
+        days=60,
+        min_history=60,
+        require_latest=True,
+        require_security_master=True,
+    )
+
+    assert codes == ["000001", "000002"]
+
+
 def test_build_panel_from_cache_prefers_freshest_files_before_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(scorer, "_DATA_DIR", tmp_path)
 

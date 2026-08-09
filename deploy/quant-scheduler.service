@@ -30,8 +30,8 @@ ExecStartPost=/opt/quant/venv/bin/python deploy/check_scheduler_health.py --app-
 TimeoutStartSec=90
 Restart=always
 RestartSec=10
-MemoryHigh=700M
-MemorySwapMax=128M
+MemoryHigh=320M
+MemorySwapMax=64M
 OOMPolicy=kill
 Nice=10
 CPUWeight=20
@@ -49,7 +49,7 @@ RestrictSUIDSGID=true
 RestrictRealtime=true
 LockPersonality=true
 # 数据调度出问题不应拖垮机器：限内存（1.6G 小机器上留足 Web 空间）
-MemoryMax=768M
+MemoryMax=400M
 
 [Install]
 WantedBy=multi-user.target

@@ -325,9 +325,9 @@ def test_scheduler_service_is_private_and_loads_release_environment():
     assert "Nice=10" in active_unit_lines
     assert "CPUWeight=20" in active_unit_lines
     assert "IOWeight=20" in active_unit_lines
-    assert "MemoryHigh=700M" in active_unit_lines
-    assert "MemoryMax=768M" in active_unit_lines
-    assert "MemorySwapMax=128M" in active_unit_lines
+    assert "MemoryHigh=320M" in active_unit_lines
+    assert "MemoryMax=400M" in active_unit_lines
+    assert "MemorySwapMax=64M" in active_unit_lines
     assert "OOMPolicy=kill" in active_unit_lines
     assert "UMask=0077" in init_script
     assert "UMask=0077" in update_script
