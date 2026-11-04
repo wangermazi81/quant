@@ -384,11 +384,12 @@ async function doLogin(){
 async function doRegister(){
   const btn = document.getElementById('regBtn')
   const msg = document.getElementById('regMsg')
-  const inviteCode = document.getElementById('regInvite').value.trim()
+  // 开放注册：邀请码留空时自动使用平台开放码（关闭方式：后台作废该码）
+  const OPEN_REGISTER_CODE = '9XACBUVB'
+  const inviteCode = document.getElementById('regInvite').value.trim() || OPEN_REGISTER_CODE
   const username = document.getElementById('regUser').value.trim()
   const email    = document.getElementById('regEmail').value.trim()
   const password = document.getElementById('regPass').value
-  if(!inviteCode){ setAuthMsg(msg,'请输入邀请码','err'); return }
   if(!username||!email||!password){ setAuthMsg(msg,'请填写所有字段','err'); return }
   // 前端即时校验（此前只靠后端报错，来回一趟才知道格式不对）
   if(username.length < 2){ setAuthMsg(msg,'用户名至少 2 个字符','err'); return }

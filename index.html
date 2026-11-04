@@ -80,8 +80,8 @@
       <!-- 注册表单 -->
       <div class="auth-form" id="authRegisterForm">
         <div class="auth-row">
-          <label class="auth-label">邀请码</label>
-          <input class="auth-inp" id="regInvite" placeholder="请输入邀请码（必填）"
+          <label class="auth-label">邀请码（选填）</label>
+          <input class="auth-inp" id="regInvite" placeholder="有邀请码可填写，没有可留空"
                  data-ui-keydown="if(event.key==='Enter')doRegister()">
         </div>
         <div class="auth-row">
@@ -101,7 +101,7 @@
           </div>
         </div>
         <button class="auth-btn" data-ui-click="doRegister()" id="regBtn">注册账号</button>
-        <div class="auth-hint">需要邀请码才能注册。联系管理员或已有用户获取邀请码。</div>
+        <div class="auth-hint">目前开放注册，没有邀请码也可直接注册。</div>
         <div class="auth-msg" id="regMsg"></div>
       </div>
       <!-- 找回密码表单 -->
